@@ -124,6 +124,15 @@ public:
         connect(m_controlReconnectTimer, &QTimer::timeout,
                 this, &AirPodsTrayApp::attemptControlReconnect);
 
+        // Its bounded retries (m_retryAttempts) can still exhaust with BlueZ sitting on
+        // Connected the whole time (no transition ever arrives to retrigger recovery) -
+        // this periodic check is the fallback for that case. See checkControlLinkWatchdog().
+        m_controlWatchdogTimer = new QTimer(this);
+        m_controlWatchdogTimer->setInterval(ControlReconnect::watchdogIntervalMs);
+        connect(m_controlWatchdogTimer, &QTimer::timeout,
+                this, &AirPodsTrayApp::checkControlLinkWatchdog);
+        m_controlWatchdogTimer->start();
+
         connect(m_bleManager, &BleManager::deviceFound, this, &AirPodsTrayApp::bleDeviceFound);
         connect(m_deviceInfo->getBattery(), &Battery::primaryChanged, this, &AirPodsTrayApp::primaryChanged);
         connect(m_systemSleepMonitor, &SystemSleepMonitor::systemGoingToSleep, this, &AirPodsTrayApp::onSystemGoingToSleep);
@@ -923,6 +932,28 @@ private slots:
         }
     }
 
+    // Runs every ControlReconnect::watchdogIntervalMs. scheduleControlReconnect() only
+    // fires from a BlueZ PropertiesChanged transition or a control-socket callback, so once
+    // its bounded retry budget (scheduleControlRecoveryRetry -> finalizeDeviceDisconnected)
+    // is exhausted, nothing retries again unless one of those events happens to fire - even
+    // though the AirPods can still be sitting connected the whole time. This is the fallback
+    // that notices and tries again, on a slow enough cadence to stay a safety net rather than
+    // a second retry loop racing the bounded one.
+    void checkControlLinkWatchdog()
+    {
+        if (areAirpodsConnected() || m_controlRecovery.isActive() || m_isSuspending) {
+            return;
+        }
+        if (m_lastAirPodsAddress.isEmpty()) {
+            return;
+        }
+
+        LOG_INFO("Control link watchdog: rechecking BlueZ connection state for "
+                 << m_lastAirPodsAddress);
+        scheduleControlReconnect(m_lastAirPodsAddress, m_lastAirPodsName,
+                                 QStringLiteral("watchdog recheck"));
+    }
+
     void attemptControlReconnect()
     {
         if (m_controlRecovery.state() != ControlReconnect::State::Waiting) {
@@ -1618,6 +1649,8 @@ private:
     TrayIconManager *trayManager = nullptr;
     BluetoothMonitor *monitor;
     QTimer *m_controlReconnectTimer = nullptr;
+    // Safety net behind m_controlReconnectTimer's bounded retries; see checkControlLinkWatchdog().
+    QTimer *m_controlWatchdogTimer = nullptr;
     QSettings *m_settings;
     AutoStartManager *m_autoStartManager;
     int m_retryAttempts = 3;

@@ -25,6 +25,12 @@ inline constexpr int firstDelayMs = 750;
 // Ten retries on the ladder above is roughly two minutes, longer than any profile rebuild measured here.
 inline constexpr int connectedAttemptLimit = 10;
 
+// Fallback poll once even the connected-attempt ladder above is exhausted and nothing else
+// is left to notify us: BlueZ can settle into Device1::Connected without ever emitting
+// another PropertiesChanged transition, so a session that gave up would otherwise never be
+// retried. Slow enough to stay a safety net rather than a second retry loop.
+inline constexpr int watchdogIntervalMs = 30000;
+
 inline int delayMs(int attempt, int jitterMs)
 {
     const int boundedAttempt = std::clamp(attempt, 1, maxDoublings);
