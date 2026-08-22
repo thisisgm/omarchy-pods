@@ -52,33 +52,32 @@ void PlayerStatusWatcher::onServiceOwnerChanged(const QString &name, const QStri
     }
 }
 
+QString PlayerStatusWatcher::playbackStatusOf(const QString &playerService)
+{
+    if (playerService.isEmpty()) return QString();
+
+    QDBusInterface props(playerService, "/org/mpris/MediaPlayer2",
+                         "org.freedesktop.DBus.Properties", QDBusConnection::sessionBus());
+    if (!props.isValid()) return QString();
+
+    QDBusReply<QVariant> reply = props.call("Get", "org.mpris.MediaPlayer2.Player", "PlaybackStatus");
+    if (!reply.isValid()) return QString();
+
+    return reply.value().toString();
+}
+
 QString PlayerStatusWatcher::getCurrentPlaybackStatus(const QString &playerService)
 {
-    QDBusConnection bus = QDBusConnection::sessionBus();
-
     // If a specific player was requested, query only that one.
-    if (!playerService.isEmpty()) {
-        QDBusInterface iface(playerService, "/org/mpris/MediaPlayer2",
-                             "org.mpris.MediaPlayer2.Player", bus);
-        if (iface.isValid()) {
-            QVariant status = iface.property("PlaybackStatus");
-            if (status.isValid()) return status.toString();
-        }
-        return QString();
-    }
+    if (!playerService.isEmpty()) return playbackStatusOf(playerService);
 
     // Otherwise pick the most-active player. Priority: Playing > Paused >
     // anything else (Stopped/empty).
     QString fallback;
-    QStringList services = bus.interface()->registeredServiceNames().value();
+    QStringList services = QDBusConnection::sessionBus().interface()->registeredServiceNames().value();
     for (const QString &service : services) {
         if (!service.startsWith("org.mpris.MediaPlayer2.")) continue;
-        QDBusInterface iface(service, "/org/mpris/MediaPlayer2",
-                             "org.mpris.MediaPlayer2.Player", bus);
-        if (!iface.isValid()) continue;
-        QVariant status = iface.property("PlaybackStatus");
-        if (!status.isValid()) continue;
-        QString s = status.toString();
+        const QString s = playbackStatusOf(service);
         if (s == "Playing") return s;
         if (s == "Paused" && fallback.isEmpty()) fallback = s;
     }
