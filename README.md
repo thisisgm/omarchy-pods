@@ -284,3 +284,9 @@ bar shows the hardware you actually own. AirPods, AirPods Pro and AirPods Max ar
 trademarks of Apple Inc., which does not sponsor or endorse this plugin. Those
 outlines are not this project's to license, so the MIT grant above does not reach
 them and nothing here gives you permission to reuse them.
+
+The Powerbeats Pro 2 product images in `daemon/assets/` are cropped from the
+[official Beats product page](https://www.beatsbydre.com/earbuds/powerbeats-pro-2/MX723/jet-black).
+Beats and Powerbeats Pro are trademarks of Beats Electronics, LLC, which does
+not sponsor or endorse this plugin. Those images are not this project's to
+license, so the GPL grant for `daemon/` does not reach them.

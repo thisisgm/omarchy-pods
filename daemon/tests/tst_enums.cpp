@@ -134,6 +134,14 @@ private slots:
         QCOMPARE(modelDisplayName(AirPodsModel::AirPods4ANC), QStringLiteral("AirPods 4"));
     }
 
+    void powerbeatsUsesPowerbeatsAssets()
+    {
+        const auto icons = getModelIcon(AirPodsModel::PowerbeatsPro2);
+
+        QCOMPARE(icons.first, QStringLiteral("powerbeatspro2.png"));
+        QCOMPARE(icons.second, QStringLiteral("powerbeatspro2_case.png"));
+    }
+
     // model_int is persisted and published, so any renumbering here is a break, not a refactor.
     void modelIntsAreStable()
     {

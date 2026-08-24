@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS }"
+  source + "; return { parseStatus, podFrom, defaultPod, iconVariant, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS }"
 )()
 
 let failures = 0
@@ -88,6 +88,11 @@ check("max is flagged a headset", max.isHeadset, true)
 check("max headset level", max.headset, { level: 100, charging: false })
 check("max has no pods", max.left.level, Model.LEVEL_UNKNOWN)
 check("max has no case", max.caseBattery.level, Model.LEVEL_UNKNOWN)
+check("max uses the headset mark", Model.iconVariant(max.modelName, max.isProSeries, max.isHeadset), "max")
+
+const powerbeats = Model.parseStatus('{"connected":true,"is_headset":false,"is_pro_series":false,"model_name":"Powerbeats Pro 2","noise_mode":1,"schema_version":1}')
+check("Powerbeats use the ear-hook mark", Model.iconVariant(powerbeats.modelName, powerbeats.isProSeries, powerbeats.isHeadset), "powerbeats")
+check("Powerbeats do not fall through to plain buds", Model.iconVariant(powerbeats.modelName, false, false) === "buds", false)
 
 // Between connect and the first battery packet the daemon sends the flag with no headset object at all.
 const maxFresh = Model.parseStatus('{"connected":true,"is_headset":true,"noise_mode":1,"schema_version":1}')

@@ -97,9 +97,9 @@ namespace AirpodsTrayApp
                 case AirPodsModel::AirPodsPro2Lightning:
                 case AirPodsModel::AirPodsPro2USBC:
                 case AirPodsModel::AirPodsPro3:
-                case AirPodsModel::PowerbeatsPro2:
-                    // Powerbeats Pro 2 uses the closest bundled in-ear asset.
                     return {"podpro.png", "podpro_case.png"};
+                case AirPodsModel::PowerbeatsPro2:
+                    return {"powerbeatspro2.png", "powerbeatspro2_case.png"};
                 case AirPodsModel::AirPodsMaxLightning:
                 case AirPodsModel::AirPodsMaxUSBC:
                 case AirPodsModel::AirPodsMax2:

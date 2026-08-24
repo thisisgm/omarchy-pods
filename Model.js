@@ -76,6 +76,12 @@ function boolOr(value, fallback) {
   return value === undefined ? fallback : value === true
 }
 
+function iconVariant(modelName, isProSeries, isHeadset) {
+  if (String(modelName || "").startsWith("Powerbeats")) return "powerbeats"
+  if (isHeadset) return "max"
+  return isProSeries ? "pro" : "buds"
+}
+
 function podFrom(raw) {
   var pod = defaultPod()
   if (!raw || typeof raw !== "object") return pod

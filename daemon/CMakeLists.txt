@@ -77,6 +77,8 @@ qt_add_resources(librepods "resources"
         assets/podpro.png
         assets/podpro_case.png
         assets/podmax.png
+        assets/powerbeatspro2.png
+        assets/powerbeatspro2_case.png
 )
 
 target_link_libraries(librepods
