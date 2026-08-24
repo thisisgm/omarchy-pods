@@ -69,6 +69,7 @@ private slots:
     void unparseableFrameIsDropped_data();
     void unparseableFrameIsDropped();
     void realAirPodsFrameIsParsed();
+    void powerbeatsFrameIsIdentified();
     void podsBatteryKeepsLeftAndRightApart();
 };
 
@@ -101,6 +102,18 @@ void TestBleManager::realAirPodsFrameIsParsed()
     // Decoded from the capture: 0x8f is a case nibble of 15 meaning absent, 0x04 is idle.
     QCOMPARE(parsed.caseBattery, -1);
     QCOMPARE(parsed.connectionState, BleInfo::ConnectionState::IDLE);
+}
+
+void TestBleManager::powerbeatsFrameIsIdentified()
+{
+    QByteArray frame = QByteArray::fromHex(airPodsFrameHex);
+    frame[3] = char(0x1D);
+    frame[4] = char(0x20);
+    BleInfo parsed;
+
+    // The paired device reports product 0x201D in BlueZ's Modalias.
+    QCOMPARE(parseFrame(frame, &parsed), 1);
+    QCOMPARE(int(parsed.modelName), int(AirpodsTrayApp::Enums::AirPodsModel::PowerbeatsPro2));
 }
 
 void TestBleManager::podsBatteryKeepsLeftAndRightApart()
