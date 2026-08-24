@@ -140,7 +140,7 @@ Panel {
         AirPodsIcon {
           anchors.centerIn: parent
           // A pair of buds is wider than it is tall, so it takes a size above the stock 12 to carry the row.
-          iconSize: Style.space(13)
+          iconSize: Style.space(root.podsVariant === "powerbeats" ? 16 : 13)
           color: root.barIconColor
           variant: root.podsVariant
         }
@@ -217,7 +217,7 @@ Panel {
             iconComponent: Component {
               AirPodsIcon {
                 // Same reason as the bar: display leaves the wide marks short against a two line title.
-                iconSize: Style.font.displayLarge
+                iconSize: root.podsVariant === "powerbeats" ? Style.space(44) : Style.font.displayLarge
                 color: pods.hasAirPods ? root.foreground : root.dim
                 variant: root.podsVariant
               }
