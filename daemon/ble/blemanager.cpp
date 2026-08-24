@@ -8,6 +8,14 @@
 // Fixed header data[0] through data[10], then a 16-byte encrypted payload.
 static constexpr int proximityPairingBytes = 11 + 16;
 
+// AirPods broadcast proximity pairing at roughly 3-10Hz whenever the case
+// lid is open or a pod is out, so an 8-second listen catches them with wide
+// margin. The dark stretch is what matters to the rest of the radio: with
+// the controller out of inquiry ~87% of the time, bonded devices (keyboards,
+// mice) can complete their reconnects instead of queueing behind the scan.
+static constexpr int scanBurstMs = 8000;
+static constexpr int scanIdleMs = 52000;
+
 AirpodsTrayApp::Enums::AirPodsModel getModelName(quint16 modelId)
 {
     using namespace AirpodsTrayApp::Enums;
@@ -99,6 +107,10 @@ BleManager::BleManager(QObject *parent) : QObject(parent)
             this, &BleManager::onScanFinished);
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::errorOccurred,
             this, &BleManager::onErrorOccurred);
+
+    dutyCycleTimer = new QTimer(this);
+    dutyCycleTimer->setSingleShot(true);
+    connect(dutyCycleTimer, &QTimer::timeout, this, &BleManager::onDutyCycleTick);
 }
 
 BleManager::~BleManager()
@@ -112,19 +124,48 @@ BleManager::~BleManager()
 
 void BleManager::startScan()
 {
-    LOG_DEBUG("Starting BLE scan...");
+    LOG_DEBUG("Starting BLE scan (duty-cycled)...");
+    scanRequested = true;
+    inBurst = true;
     discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+    dutyCycleTimer->start(scanBurstMs);
 }
 
 void BleManager::stopScan()
 {
     LOG_DEBUG("Stopping BLE scan...");
+    scanRequested = false;
+    inBurst = false;
+    dutyCycleTimer->stop();
     discoveryAgent->stop();
 }
 
+// Callers ask "was scanning supposed to be running", not "is the radio in
+// inquiry this instant" — the recovery paths save this to restore the scan
+// afterwards, and a burst's dark stretch must not read as caller intent to
+// leave the scan off.
 bool BleManager::isScanning() const
 {
-    return discoveryAgent->isActive();
+    return scanRequested;
+}
+
+void BleManager::onDutyCycleTick()
+{
+    if (!scanRequested)
+        return;
+
+    if (inBurst)
+    {
+        inBurst = false;
+        discoveryAgent->stop();
+        dutyCycleTimer->start(scanIdleMs);
+    }
+    else
+    {
+        inBurst = true;
+        discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+        dutyCycleTimer->start(scanBurstMs);
+    }
 }
 
 void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
@@ -228,7 +269,9 @@ void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
 
 void BleManager::onScanFinished()
 {
-    if (discoveryAgent->isActive())
+    // Keep-alive for a burst the stack ended early; the dark stretch of the
+    // duty cycle ends bursts on purpose and must not be undone here.
+    if (scanRequested && inBurst)
     {
         discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
     }

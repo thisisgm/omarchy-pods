@@ -78,6 +78,7 @@ private slots:
     void onDeviceDiscovered(const QBluetoothDeviceInfo &info);
     void onScanFinished();
     void onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error);
+    void onDutyCycleTick();
 
 signals:
     void deviceFound(const BleInfo &device);
@@ -88,6 +89,17 @@ private:
     // that start/stop/isScan would dereference. Real assignment
     // happens in BleManager::BleManager() via parented `new`.
     QBluetoothDeviceDiscoveryAgent *discoveryAgent = nullptr;
+
+    // A BlueZ discovery session keeps the controller in inquiry, and a
+    // controller stuck in inquiry cannot service the connection
+    // requests of other bonded devices — a keyboard trying to reconnect
+    // at boot waits forever behind a scan that never yields. So the
+    // scan runs in bursts: long enough to catch the AirPods' next
+    // advertisement, dark long enough for everything else on the
+    // radio to get through.
+    QTimer *dutyCycleTimer = nullptr;
+    bool scanRequested = false; // callers' intent, held across bursts
+    bool inBurst = false;
 };
 
 #endif // BLEMANAGER_H
