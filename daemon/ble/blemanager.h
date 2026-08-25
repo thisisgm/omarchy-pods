@@ -74,16 +74,23 @@ public:
     void stopScan();
     bool isScanning() const;
 
+    // Keep the radio dark for `ms` even if a scan is requested. Bonded
+    // devices reconnect in the first seconds after resume and after the
+    // adapter powers up; a burst landing in that window is what leaves a
+    // keyboard dead until Bluetooth is toggled.
+    void holdOff(int ms);
+
 private slots:
     void onDeviceDiscovered(const QBluetoothDeviceInfo &info);
     void onScanFinished();
     void onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error);
-    void onDutyCycleTick();
 
 signals:
     void deviceFound(const BleInfo &device);
 
 private:
+    void beginBurst();
+
     // Default-init so a partial construction (or a refactor that
     // skips the explicit ctor body) doesn't leave a dangling pointer
     // that start/stop/isScan would dereference. Real assignment
@@ -94,12 +101,16 @@ private:
     // controller stuck in inquiry cannot service the connection
     // requests of other bonded devices — a keyboard trying to reconnect
     // at boot waits forever behind a scan that never yields. So the
-    // scan runs in bursts: long enough to catch the AirPods' next
-    // advertisement, dark long enough for everything else on the
-    // radio to get through.
-    QTimer *dutyCycleTimer = nullptr;
-    bool scanRequested = false; // callers' intent, held across bursts
-    bool inBurst = false;
+    // scan runs in bursts on a fixed cycle clock that callers cannot
+    // reset: the control-link recovery ladder legitimately stops and
+    // restarts the scan every few seconds while pods are near but not
+    // connected, and letting each restart begin a fresh burst pinned
+    // the radio in inquiry exactly as if there were no duty cycle.
+    QTimer *cycleTimer = nullptr; // repeating, one burst per period
+    QTimer *burstTimer = nullptr; // single-shot, ends the burst
+    bool scanRequested = false;   // callers' intent, held across bursts
+    qint64 lastBurstStartMs = -1; // CLOCK_MONOTONIC, gates early bursts
+    qint64 holdOffUntilMs = -1;   // CLOCK_MONOTONIC, no bursts before this
 };
 
 #endif // BLEMANAGER_H

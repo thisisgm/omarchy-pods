@@ -2,6 +2,7 @@
 #include "enums.h"
 #include <QDebug>
 #include <QTimer>
+#include <QDeadlineTimer>
 #include "logger.h"
 #include <QMap>
 
@@ -108,9 +109,14 @@ BleManager::BleManager(QObject *parent) : QObject(parent)
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::errorOccurred,
             this, &BleManager::onErrorOccurred);
 
-    dutyCycleTimer = new QTimer(this);
-    dutyCycleTimer->setSingleShot(true);
-    connect(dutyCycleTimer, &QTimer::timeout, this, &BleManager::onDutyCycleTick);
+    cycleTimer = new QTimer(this);
+    cycleTimer->setInterval(scanBurstMs + scanIdleMs);
+    connect(cycleTimer, &QTimer::timeout, this, &BleManager::beginBurst);
+
+    burstTimer = new QTimer(this);
+    burstTimer->setSingleShot(true);
+    burstTimer->setInterval(scanBurstMs);
+    connect(burstTimer, &QTimer::timeout, this, [this]() { discoveryAgent->stop(); });
 }
 
 BleManager::~BleManager()
@@ -126,17 +132,25 @@ void BleManager::startScan()
 {
     LOG_DEBUG("Starting BLE scan (duty-cycled)...");
     scanRequested = true;
-    inBurst = true;
-    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
-    dutyCycleTimer->start(scanBurstMs);
+    if (!cycleTimer->isActive())
+        cycleTimer->start();
+    beginBurst();
 }
 
 void BleManager::stopScan()
 {
     LOG_DEBUG("Stopping BLE scan...");
     scanRequested = false;
-    inBurst = false;
-    dutyCycleTimer->stop();
+    cycleTimer->stop();
+    burstTimer->stop();
+    discoveryAgent->stop();
+}
+
+void BleManager::holdOff(int ms)
+{
+    LOG_DEBUG("Holding BLE scan off for" << ms << "ms so bonded devices can reconnect first");
+    holdOffUntilMs = QDeadlineTimer::current().deadline() + ms;
+    burstTimer->stop();
     discoveryAgent->stop();
 }
 
@@ -149,23 +163,27 @@ bool BleManager::isScanning() const
     return scanRequested;
 }
 
-void BleManager::onDutyCycleTick()
+// The one entrance to inquiry, and the budget lives here, not in the
+// callers: however often startScan() is invoked, a burst begins at most
+// once per cycle period. lastBurstStartMs gates the stop/start churn of
+// control-link recovery, which would otherwise chain bursts back to back.
+void BleManager::beginBurst()
 {
     if (!scanRequested)
         return;
 
-    if (inBurst)
-    {
-        inBurst = false;
-        discoveryAgent->stop();
-        dutyCycleTimer->start(scanIdleMs);
-    }
-    else
-    {
-        inBurst = true;
-        discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
-        dutyCycleTimer->start(scanBurstMs);
-    }
+    // Gate on the idle span rather than the whole period: Qt's coarse
+    // timers run up to 5% early, and a full-period gate would reject the
+    // cycle tick it is meant to admit, silently halving the duty cycle.
+    const qint64 nowMs = QDeadlineTimer::current().deadline();
+    if (nowMs < holdOffUntilMs)
+        return; // the cycle clock keeps ticking; the first burst lands after the hold-off
+    if (lastBurstStartMs >= 0 && nowMs - lastBurstStartMs < scanIdleMs)
+        return;
+
+    lastBurstStartMs = nowMs;
+    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+    burstTimer->start();
 }
 
 void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
@@ -271,7 +289,7 @@ void BleManager::onScanFinished()
 {
     // Keep-alive for a burst the stack ended early; the dark stretch of the
     // duty cycle ends bursts on purpose and must not be undone here.
-    if (scanRequested && inBurst)
+    if (scanRequested && burstTimer->isActive())
     {
         discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
     }
@@ -279,6 +297,14 @@ void BleManager::onScanFinished()
 
 void BleManager::onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error)
 {
-    LOG_ERROR("BLE scan error occurred:" << error);
-    stopScan();
+    // Transient at boot: the daemon can beat the adapter's power-up and the
+    // first start lands PoweredOffError. Ending only the burst keeps the
+    // caller's intent, so the cycle clock retries on its next period
+    // instead of leaving the scan off until the next restart.
+    LOG_ERROR("BLE scan error occurred:" << error << "- retrying next cycle");
+    burstTimer->stop();
+    discoveryAgent->stop();
+    // The failed start spent no airtime, so it does not count against the
+    // budget — without this the gate would swallow the retry tick too.
+    lastBurstStartMs = -1;
 }
