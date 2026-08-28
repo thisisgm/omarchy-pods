@@ -2,11 +2,20 @@
 #include "enums.h"
 #include <QDebug>
 #include <QTimer>
+#include <QDeadlineTimer>
 #include "logger.h"
 #include <QMap>
 
 // Fixed header data[0] through data[10], then a 16-byte encrypted payload.
 static constexpr int proximityPairingBytes = 11 + 16;
+
+// AirPods broadcast proximity pairing at roughly 3-10Hz whenever the case
+// lid is open or a pod is out, so an 8-second listen catches them with wide
+// margin. The dark stretch is what matters to the rest of the radio: with
+// the controller out of inquiry ~87% of the time, bonded devices (keyboards,
+// mice) can complete their reconnects instead of queueing behind the scan.
+static constexpr int scanBurstMs = 8000;
+static constexpr int scanIdleMs = 52000;
 
 AirpodsTrayApp::Enums::AirPodsModel getModelName(quint16 modelId)
 {
@@ -99,6 +108,19 @@ BleManager::BleManager(QObject *parent) : QObject(parent)
             this, &BleManager::onScanFinished);
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::errorOccurred,
             this, &BleManager::onErrorOccurred);
+
+    cycleTimer = new QTimer(this);
+    // Precise: a coarse timer may fire up to 5% early, and a tick landing
+    // inside a hold-off is rejected — which would push the first burst a
+    // whole period past the hold-off it was meant to follow.
+    cycleTimer->setTimerType(Qt::PreciseTimer);
+    cycleTimer->setInterval(scanBurstMs + scanIdleMs);
+    connect(cycleTimer, &QTimer::timeout, this, [this]() { beginBurst(true); });
+
+    burstTimer = new QTimer(this);
+    burstTimer->setSingleShot(true);
+    burstTimer->setInterval(scanBurstMs);
+    connect(burstTimer, &QTimer::timeout, this, [this]() { discoveryAgent->stop(); });
 }
 
 BleManager::~BleManager()
@@ -112,19 +134,73 @@ BleManager::~BleManager()
 
 void BleManager::startScan()
 {
-    LOG_DEBUG("Starting BLE scan...");
-    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+    LOG_DEBUG("Starting BLE scan (duty-cycled)...");
+    scanRequested = true;
+    if (!cycleTimer->isActive())
+        cycleTimer->start();
+    beginBurst(false);
 }
 
 void BleManager::stopScan()
 {
     LOG_DEBUG("Stopping BLE scan...");
+    scanRequested = false;
+    cycleTimer->stop();
+    burstTimer->stop();
     discoveryAgent->stop();
 }
 
+void BleManager::holdOff(int ms)
+{
+    LOG_DEBUG("Holding BLE scan off for" << ms << "ms so bonded devices can reconnect first");
+    holdOffUntilMs = QDeadlineTimer::current().deadline() + ms;
+    burstTimer->stop();
+    discoveryAgent->stop();
+    // Re-phase the cycle so its next tick lands at the end of the hold-off
+    // rather than somewhere inside it, for any hold-off length. beginBurst()
+    // restores the standard period once that tick is served.
+    cycleTimer->start(ms);
+}
+
+// Callers ask "was scanning supposed to be running", not "is the radio in
+// inquiry this instant" — the recovery paths save this to restore the scan
+// afterwards, and a burst's dark stretch must not read as caller intent to
+// leave the scan off.
 bool BleManager::isScanning() const
 {
-    return discoveryAgent->isActive();
+    return scanRequested;
+}
+
+// The one entrance to inquiry, and the budget lives here, not in the
+// callers: however often startScan() is invoked, a burst begins at most
+// once per cycle period. lastBurstStartMs gates the stop/start churn of
+// control-link recovery, which would otherwise chain bursts back to back.
+void BleManager::beginBurst(bool fromCycleTick)
+{
+    if (!scanRequested)
+        return;
+
+    const qint64 nowMs = QDeadlineTimer::current().deadline();
+    if (nowMs < holdOffUntilMs)
+        return; // the cycle clock keeps ticking; the first burst lands after the hold-off
+
+    // Only caller-initiated starts are gated, and on the full period so a
+    // burst is always followed by scanIdleMs of dark radio. The cycle tick is
+    // exempt: it is already one-per-period, and gating it on elapsed time
+    // makes the duty cycle hostage to timer jitter — a tick arriving a
+    // millisecond early would be dropped and halve the scan rate.
+    if (!fromCycleTick && lastBurstStartMs >= 0
+        && nowMs - lastBurstStartMs < scanBurstMs + scanIdleMs)
+        return;
+
+    lastBurstStartMs = nowMs;
+    // Re-phase the cycle onto this burst, whichever path started it: the next
+    // tick is then a full period away, and a hold-off's shortened interval is
+    // restored here.
+    cycleTimer->setInterval(scanBurstMs + scanIdleMs);
+    cycleTimer->start();
+    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+    burstTimer->start();
 }
 
 void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
@@ -228,7 +304,9 @@ void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
 
 void BleManager::onScanFinished()
 {
-    if (discoveryAgent->isActive())
+    // Keep-alive for a burst the stack ended early; the dark stretch of the
+    // duty cycle ends bursts on purpose and must not be undone here.
+    if (scanRequested && burstTimer->isActive())
     {
         discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
     }
@@ -236,6 +314,16 @@ void BleManager::onScanFinished()
 
 void BleManager::onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error)
 {
-    LOG_ERROR("BLE scan error occurred:" << error);
-    stopScan();
+    // Transient at boot: the daemon can beat the adapter's power-up and the
+    // first start lands PoweredOffError. Ending only the burst keeps the
+    // caller's intent, so the cycle clock retries on its next period
+    // instead of leaving the scan off until the next restart.
+    LOG_ERROR("BLE scan error occurred:" << error << "- retrying next cycle");
+    burstTimer->stop();
+    discoveryAgent->stop();
+    // lastBurstStartMs deliberately survives: beginBurst() stamps it before
+    // start(), so the next cycle tick clears the idle gate on its own and
+    // the retry needs no help. Clearing it here would instead let any
+    // startScan() from the recovery ladder start a burst immediately,
+    // reintroducing exactly the rapid churn the gate exists to stop.
 }
