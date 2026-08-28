@@ -110,6 +110,10 @@ BleManager::BleManager(QObject *parent) : QObject(parent)
             this, &BleManager::onErrorOccurred);
 
     cycleTimer = new QTimer(this);
+    // Precise: a coarse timer may fire up to 5% early, and a tick landing
+    // inside a hold-off is rejected — which would push the first burst a
+    // whole period past the hold-off it was meant to follow.
+    cycleTimer->setTimerType(Qt::PreciseTimer);
     cycleTimer->setInterval(scanBurstMs + scanIdleMs);
     connect(cycleTimer, &QTimer::timeout, this, &BleManager::beginBurst);
 
@@ -152,6 +156,10 @@ void BleManager::holdOff(int ms)
     holdOffUntilMs = QDeadlineTimer::current().deadline() + ms;
     burstTimer->stop();
     discoveryAgent->stop();
+    // Re-phase the cycle so its next tick lands at the end of the hold-off
+    // rather than somewhere inside it, for any hold-off length. beginBurst()
+    // restores the standard period once that tick is served.
+    cycleTimer->start(ms);
 }
 
 // Callers ask "was scanning supposed to be running", not "is the radio in
@@ -172,14 +180,18 @@ void BleManager::beginBurst()
     if (!scanRequested)
         return;
 
-    // Gate on the idle span rather than the whole period: Qt's coarse
-    // timers run up to 5% early, and a full-period gate would reject the
-    // cycle tick it is meant to admit, silently halving the duty cycle.
+    // Gate on the idle span, not the whole period: a full-period gate would
+    // reject the very cycle tick it exists to admit, silently halving the
+    // duty cycle if a tick arrives even marginally early.
     const qint64 nowMs = QDeadlineTimer::current().deadline();
     if (nowMs < holdOffUntilMs)
         return; // the cycle clock keeps ticking; the first burst lands after the hold-off
     if (lastBurstStartMs >= 0 && nowMs - lastBurstStartMs < scanIdleMs)
         return;
+
+    // Back to the standard cadence after a hold-off re-phased the cycle.
+    if (cycleTimer->interval() != scanBurstMs + scanIdleMs)
+        cycleTimer->setInterval(scanBurstMs + scanIdleMs);
 
     lastBurstStartMs = nowMs;
     discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
@@ -304,7 +316,9 @@ void BleManager::onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error)
     LOG_ERROR("BLE scan error occurred:" << error << "- retrying next cycle");
     burstTimer->stop();
     discoveryAgent->stop();
-    // The failed start spent no airtime, so it does not count against the
-    // budget — without this the gate would swallow the retry tick too.
-    lastBurstStartMs = -1;
+    // lastBurstStartMs deliberately survives: beginBurst() stamps it before
+    // start(), so the next cycle tick clears the idle gate on its own and
+    // the retry needs no help. Clearing it here would instead let any
+    // startScan() from the recovery ladder start a burst immediately,
+    // reintroducing exactly the rapid churn the gate exists to stop.
 }
