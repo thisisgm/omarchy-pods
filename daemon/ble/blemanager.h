@@ -89,7 +89,10 @@ signals:
     void deviceFound(const BleInfo &device);
 
 private:
-    void beginBurst();
+    // fromCycleTick: the repeating cycle is one-per-period by construction and
+    // needs no elapsed-time gate; caller-initiated starts do, and are held to a
+    // full period since the last burst.
+    void beginBurst(bool fromCycleTick);
 
     // Default-init so a partial construction (or a refactor that
     // skips the explicit ctor body) doesn't leave a dangling pointer

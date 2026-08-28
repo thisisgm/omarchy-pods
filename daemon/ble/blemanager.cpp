@@ -115,7 +115,7 @@ BleManager::BleManager(QObject *parent) : QObject(parent)
     // whole period past the hold-off it was meant to follow.
     cycleTimer->setTimerType(Qt::PreciseTimer);
     cycleTimer->setInterval(scanBurstMs + scanIdleMs);
-    connect(cycleTimer, &QTimer::timeout, this, &BleManager::beginBurst);
+    connect(cycleTimer, &QTimer::timeout, this, [this]() { beginBurst(true); });
 
     burstTimer = new QTimer(this);
     burstTimer->setSingleShot(true);
@@ -138,7 +138,7 @@ void BleManager::startScan()
     scanRequested = true;
     if (!cycleTimer->isActive())
         cycleTimer->start();
-    beginBurst();
+    beginBurst(false);
 }
 
 void BleManager::stopScan()
@@ -175,25 +175,30 @@ bool BleManager::isScanning() const
 // callers: however often startScan() is invoked, a burst begins at most
 // once per cycle period. lastBurstStartMs gates the stop/start churn of
 // control-link recovery, which would otherwise chain bursts back to back.
-void BleManager::beginBurst()
+void BleManager::beginBurst(bool fromCycleTick)
 {
     if (!scanRequested)
         return;
 
-    // Gate on the idle span, not the whole period: a full-period gate would
-    // reject the very cycle tick it exists to admit, silently halving the
-    // duty cycle if a tick arrives even marginally early.
     const qint64 nowMs = QDeadlineTimer::current().deadline();
     if (nowMs < holdOffUntilMs)
         return; // the cycle clock keeps ticking; the first burst lands after the hold-off
-    if (lastBurstStartMs >= 0 && nowMs - lastBurstStartMs < scanIdleMs)
+
+    // Only caller-initiated starts are gated, and on the full period so a
+    // burst is always followed by scanIdleMs of dark radio. The cycle tick is
+    // exempt: it is already one-per-period, and gating it on elapsed time
+    // makes the duty cycle hostage to timer jitter — a tick arriving a
+    // millisecond early would be dropped and halve the scan rate.
+    if (!fromCycleTick && lastBurstStartMs >= 0
+        && nowMs - lastBurstStartMs < scanBurstMs + scanIdleMs)
         return;
 
-    // Back to the standard cadence after a hold-off re-phased the cycle.
-    if (cycleTimer->interval() != scanBurstMs + scanIdleMs)
-        cycleTimer->setInterval(scanBurstMs + scanIdleMs);
-
     lastBurstStartMs = nowMs;
+    // Re-phase the cycle onto this burst, whichever path started it: the next
+    // tick is then a full period away, and a hold-off's shortened interval is
+    // restored here.
+    cycleTimer->setInterval(scanBurstMs + scanIdleMs);
+    cycleTimer->start();
     discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
     burstTimer->start();
 }
