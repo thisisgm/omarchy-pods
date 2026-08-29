@@ -16,6 +16,11 @@ private slots:
     void returnsEmptyWhenNothingQualifies();
     void readsTheCodecOutOfAProfileDescription();
     void readsTheCodecOutOfTheProfileNameToo();
+    void aPreferredCodecOutranksTheBitrateWinner();
+    void aPreferredCodecIsMatchedCaseInsensitively();
+    void anUnmatchedPreferredCodecFallsBackToTheRanking();
+    void aPreferredCodecNeverReachesAHeadsetOrDeadProfile();
+    void aPreferredCodecTheRankingCannotReachIsStillHonoured();
 };
 
 static QVector<ProfileCandidate> airPodsCard()
@@ -153,6 +158,63 @@ void TestProfileChoice::readsTheCodecOutOfTheProfileNameToo()
         {"a2dp-sink-sbc_xq", "Reproduccion de alta fidelidad (A2DP Sink)", 131, true, 1, 0},
     };
     QCOMPARE(bestPlaybackProfile(translated), QString("a2dp-sink-sbc_xq"));
+}
+
+void TestProfileChoice::aPreferredCodecOutranksTheBitrateWinner()
+{
+    // Naming AAC has to beat the ranking's SBC-XQ, or the setting only confirms its own pick.
+    QCOMPARE(bestPlaybackProfile(airPodsCard()), QString("a2dp-sink-sbc_xq"));
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "AAC"), QString("a2dp-sink"));
+
+    // And the other direction, so the test cannot pass by always returning the AAC row.
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "SBC"), QString("a2dp-sink-sbc"));
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "SBC-XQ"), QString("a2dp-sink-sbc_xq"));
+}
+
+void TestProfileChoice::aPreferredCodecIsMatchedCaseInsensitively()
+{
+    // The value comes from a hand-edited settings file, so case is not the user's problem.
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "aac"), QString("a2dp-sink"));
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "sbc-xq"), QString("a2dp-sink-sbc_xq"));
+}
+
+void TestProfileChoice::anUnmatchedPreferredCodecFallsBackToTheRanking()
+{
+    // A typo, or a codec this card does not offer, must not silence playback.
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "LDAC"), QString("a2dp-sink-sbc_xq"));
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "AAAC"), QString("a2dp-sink-sbc_xq"));
+
+    // An empty preference is the default and must leave the ranking untouched.
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), QString()), QString("a2dp-sink-sbc_xq"));
+}
+
+void TestProfileChoice::aPreferredCodecNeverReachesAHeadsetOrDeadProfile()
+{
+    // MSBC exists here only on a profile carrying a source, so naming it must not reach it.
+    QCOMPARE(bestPlaybackProfile(airPodsCard(), "MSBC"), QString("a2dp-sink-sbc_xq"));
+
+    // An unavailable profile is not selectable however explicitly it is named.
+    QVector<ProfileCandidate> aacUnavailable = {
+        {"a2dp-sink", "High Fidelity Playback (A2DP Sink, codec AAC)", 133, false, 1, 0},
+        {"a2dp-sink-sbc", "High Fidelity Playback (A2DP Sink, codec SBC)", 132, true, 1, 0},
+    };
+    QCOMPARE(bestPlaybackProfile(aacUnavailable, "AAC"), QString("a2dp-sink-sbc"));
+}
+
+void TestProfileChoice::aPreferredCodecTheRankingCannotReachIsStillHonoured()
+{
+    // The ranking scores an unknown codec zero and can never pick it, so naming it is the only way.
+    QVector<ProfileCandidate> ldacCard = {
+        {"a2dp-sink-sbc_xq", "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", 131, true, 1, 0},
+        {"a2dp-sink-ldac", "High Fidelity Playback (A2DP Sink, codec LDAC)", 140, true, 1, 0},
+        {"a2dp-sink", "High Fidelity Playback (A2DP Sink, codec AAC)", 133, true, 1, 0},
+    };
+    QCOMPARE(bestPlaybackProfile(ldacCard), QString("a2dp-sink-sbc_xq"));
+    QCOMPARE(bestPlaybackProfile(ldacCard, "LDAC"), QString("a2dp-sink-ldac"));
+    QCOMPARE(bestPlaybackProfile(ldacCard, "ldac"), QString("a2dp-sink-ldac"));
+
+    // The same card must still fall back for a codec it does not carry at all.
+    QCOMPARE(bestPlaybackProfile(ldacCard, "APTX"), QString("a2dp-sink-sbc_xq"));
 }
 
 QTEST_GUILESS_MAIN(TestProfileChoice)

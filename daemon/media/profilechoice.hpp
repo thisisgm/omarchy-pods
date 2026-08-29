@@ -61,21 +61,52 @@ inline QString profileDescription(const QVector<ProfileCandidate> &candidates, c
     return QString();
 }
 
-// A profile carrying a source is the headset mic path, never the playback one.
-inline QString bestPlaybackProfile(const QVector<ProfileCandidate> &candidates)
+// A playback profile is one that carries a sink and no source; a source means the headset mic path.
+inline bool isPlaybackCandidate(const ProfileCandidate &c)
 {
+    return c.available && c.sinks > 0 && c.sources == 0;
+}
+
+// The name survives a translated locale, so it is tried first and the description backs it up.
+inline QString codecOf(const ProfileCandidate &c)
+{
+    const QString fromName = codecFromProfileName(c.name);
+    return codecBitrateKbps(fromName) > 0 ? fromName : codecFromDescription(c.description);
+}
+
+// Empty means no preference, which leaves bestPlaybackProfile's ranking in charge.
+inline QString preferredPlaybackProfile(const QVector<ProfileCandidate> &candidates,
+                                        const QString &preferredCodec)
+{
+    if (preferredCodec.isEmpty()) {
+        return QString();
+    }
+    for (const ProfileCandidate &c : candidates) {
+        if (isPlaybackCandidate(c) && codecOf(c).compare(preferredCodec, Qt::CaseInsensitive) == 0) {
+            return c.name;
+        }
+    }
+    // Empty lets the caller fall back to the ranking, and log which codec it could not honour.
+    return QString();
+}
+
+// A profile carrying a source is the headset mic path, never the playback one.
+inline QString bestPlaybackProfile(const QVector<ProfileCandidate> &candidates,
+                                   const QString &preferredCodec = QString())
+{
+    const QString preferred = preferredPlaybackProfile(candidates, preferredCodec);
+    if (!preferred.isEmpty()) {
+        return preferred;
+    }
+
     QString best;
     int bestBitrate = -1;
     int bestPriority = -1;
     for (const ProfileCandidate &c : candidates) {
-        if (!c.available || c.sinks == 0 || c.sources > 0) {
+        if (!isPlaybackCandidate(c)) {
             continue;
         }
-        // The name survives a translated locale, so it is tried first and the description backs it up.
-        int bitrate = codecBitrateKbps(codecFromProfileName(c.name));
-        if (bitrate == 0) {
-            bitrate = codecBitrateKbps(codecFromDescription(c.description));
-        }
+        int bitrate = codecBitrateKbps(codecOf(c));
         if (bitrate > bestBitrate || (bitrate == bestBitrate && c.priority > bestPriority)) {
             bestBitrate = bitrate;
             bestPriority = c.priority;

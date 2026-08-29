@@ -110,6 +110,23 @@ which is SBC-XQ at 453 kbps ahead of SBC at 328 and AAC at 256. That is the
 default, and it is re-applied every time the daemon activates the card, because
 PipeWire's own profile priority puts AAC first and would otherwise win.
 
+Bitrate is not the whole story, and on AirPods it can be the wrong story. AAC is what the
+hardware decodes natively and what macOS sends, and SBC-XQ at a higher bitrate is not
+automatically the better of the two. If SBC-XQ sounds thin to you, name the codec you want
+under `[audio]` in `~/.config/AirPodsTrayApp/AirPodsTrayApp.conf`:
+
+```ini
+[audio]
+preferredCodec=AAC
+```
+
+Any codec the card lists as a playback profile, matched case-insensitively, so `AAC`,
+`SBC-XQ` or `SBC` here. Restart the daemon to apply it. The named codec wins on every
+connect, cold ones included. Leave it unset, or name one the card does not offer, and the
+bitrate ranking above stands; an unmet preference is logged with the codec that could not
+be honoured. A profile that is already active is still left alone, so changing the codec by
+hand with `pactl set-card-profile` keeps working.
+
 Selecting the AirPods as a **microphone** gives that up. Over the standard
 Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
 the only profiles exposing a source are `headset-head-unit` at 16 kHz mSBC and

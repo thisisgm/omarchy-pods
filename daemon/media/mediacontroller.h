@@ -40,6 +40,9 @@ public:
   void removeAudioOutputDevice();
   void setConnectedDeviceMacAddress(const QString &macAddress);
   bool isA2dpProfileAvailable();
+
+  // Empty keeps the bitrate ranking; a codec name ("AAC", "SBC-XQ", "SBC") pins that profile.
+  void setPreferredCodec(const QString &codec);
   QString getPreferredA2dpProfile();
   QString getActiveProfile();
   bool restartWirePlumber();
@@ -70,6 +73,7 @@ private:
   PlayerStatusWatcher *playerStatusWatcher = nullptr;
   PulseAudioController *m_pulseAudio = nullptr;
   QString m_cachedA2dpProfile;
+  QString m_preferredCodec;
   quint64 m_earDetectionGeneration = 0;
   bool m_earOutPending = false;
   // A queued retry compares its captured generation against this, so a superseded chain stops.

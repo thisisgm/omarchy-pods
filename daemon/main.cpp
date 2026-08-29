@@ -108,6 +108,7 @@ public:
 
         // Initialize MediaController and connect signals
         mediaController = new MediaController(this);
+        mediaController->setPreferredCodec(loadPreferredCodec());
         connect(mediaController, &MediaController::mediaStateChanged, this, &AirPodsTrayApp::handleMediaStateChange);
         mediaController->followMediaChanges();
 
@@ -679,6 +680,9 @@ public slots:
 
     int loadEarDetectionSettings() { return m_settings->value("earDetection/setting", MediaController::EarDetectionBehavior::PauseWhenOneRemoved).toInt(); }
     void saveEarDetectionSettings() { m_settings->setValue("earDetection/setting", mediaController->getEarDetectionBehavior()); }
+
+    // Empty is the default: the bitrate ranking in profilechoice.hpp stands unless a codec is named.
+    QString loadPreferredCodec() const { return m_settings->value("audio/preferredCodec", QString()).toString(); }
 
     bool loadNotificationsEnabled() const { return m_settings->value("notifications/enabled", true).toBool(); }
     void saveNotificationsEnabled(bool enabled) { m_settings->setValue("notifications/enabled", enabled); }
