@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QBluetoothDeviceDiscoveryAgent>
+#include <QBluetoothLocalDevice>
 #include <QMap>
 #include <QString>
 #include <QDateTime>
@@ -79,6 +80,7 @@ private slots:
     void onDeviceDiscovered(const QBluetoothDeviceInfo &info);
     void onScanFinished();
     void onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error);
+    void onHostModeChanged(QBluetoothLocalDevice::HostMode mode);
     void retryScan();
 
 signals:
@@ -93,6 +95,7 @@ private:
     // happens in BleManager::BleManager() via parented `new`.
     QBluetoothDeviceDiscoveryAgent *discoveryAgent = nullptr;
     QTimer *retryTimer = nullptr;
+    QBluetoothLocalDevice *localDevice = nullptr;
     BleScanRetry::Ladder retryLadder;
     // What the caller asked for, not what the radio does. A scan that waits for a retry stays wanted.
     bool scanWanted = false;

@@ -2,6 +2,7 @@
 #include <QBluetoothAddress>
 #include <QBluetoothDeviceDiscoveryAgent>
 #include <QBluetoothDeviceInfo>
+#include <QBluetoothLocalDevice>
 #include <QTimer>
 
 #include "../ble/blemanager.h"
@@ -80,7 +81,15 @@ static void seeAdvertisement(BleManager &manager)
                                     advertisement(QByteArray::fromHex(airPodsFrameHex))));
 }
 
-// discoveryAgent is the only other direct child, and it is not a QTimer.
+// HostConnectable is the mode BlueZ reports after the adapter has power again.
+static void powerAdapterOn(BleManager &manager)
+{
+    QMetaObject::invokeMethod(&manager, "onHostModeChanged", Qt::DirectConnection,
+                              Q_ARG(QBluetoothLocalDevice::HostMode,
+                                    QBluetoothLocalDevice::HostConnectable));
+}
+
+// discoveryAgent and localDevice are the only other direct children, and neither is a QTimer.
 static QTimer *retryTimerOf(BleManager &manager)
 {
     return manager.findChild<QTimer *>(QString(), Qt::FindDirectChildrenOnly);
@@ -99,6 +108,7 @@ private slots:
     void scanErrorArmsARetryAndKeepsTheIntent();
     void advertisementResetsTheRetryLadder();
     void stoppedScanIsNotRestartedByAFailure();
+    void adapterPowerOnRestartsAWantedScan();
 };
 
 void TestBleManager::unparseableFrameIsDropped_data()
@@ -223,6 +233,27 @@ void TestBleManager::stoppedScanIsNotRestartedByAFailure()
 
     failScan(manager);
     QVERIFY(!retry->isActive());
+    QVERIFY(!manager.isScanning());
+}
+
+// The adapter drops a live scan with no signal, so the power state must start it again.
+void TestBleManager::adapterPowerOnRestartsAWantedScan()
+{
+    BleManager manager;
+    QTimer *retry = retryTimerOf(manager);
+    QVERIFY(retry);
+
+    manager.startScan();
+    seeAdvertisement(manager);
+    failScan(manager);
+    QVERIFY(retry->isActive());
+
+    powerAdapterOn(manager);
+    QVERIFY(manager.isScanning());
+    QVERIFY(!retry->isActive());
+
+    manager.stopScan();
+    powerAdapterOn(manager);
     QVERIFY(!manager.isScanning());
 }
 
