@@ -1,8 +1,11 @@
 #include <QtTest>
 #include <QBluetoothAddress>
+#include <QBluetoothDeviceDiscoveryAgent>
 #include <QBluetoothDeviceInfo>
+#include <QTimer>
 
 #include "../ble/blemanager.h"
+#include "../ble/blescanretry.hpp"
 
 // main.cpp defines the Q_LOGGING_CATEGORY symbol, but tests don't link main.cpp.
 Q_LOGGING_CATEGORY(openpods, "openpods.test", QtWarningMsg)
@@ -61,6 +64,28 @@ static int parseFrame(const QByteArray &frame, BleInfo *emitted)
     return emissions;
 }
 
+// PoweredOffError is the error a cold start sees when the daemon starts before the adapter.
+static void failScan(BleManager &manager)
+{
+    QMetaObject::invokeMethod(&manager, "onErrorOccurred", Qt::DirectConnection,
+                              Q_ARG(QBluetoothDeviceDiscoveryAgent::Error,
+                                    QBluetoothDeviceDiscoveryAgent::PoweredOffError));
+}
+
+// start() can fail at once on a box with no adapter, so reset the count with an advertisement first.
+static void seeAdvertisement(BleManager &manager)
+{
+    QMetaObject::invokeMethod(&manager, "onDeviceDiscovered", Qt::DirectConnection,
+                              Q_ARG(QBluetoothDeviceInfo,
+                                    advertisement(QByteArray::fromHex(airPodsFrameHex))));
+}
+
+// discoveryAgent is the only other direct child, and it is not a QTimer.
+static QTimer *retryTimerOf(BleManager &manager)
+{
+    return manager.findChild<QTimer *>(QString(), Qt::FindDirectChildrenOnly);
+}
+
 class TestBleManager : public QObject
 {
     Q_OBJECT
@@ -70,6 +95,10 @@ private slots:
     void unparseableFrameIsDropped();
     void realAirPodsFrameIsParsed();
     void podsBatteryKeepsLeftAndRightApart();
+    void retryDelayDoublesAndCaps();
+    void scanErrorArmsARetryAndKeepsTheIntent();
+    void advertisementResetsTheRetryLadder();
+    void stoppedScanIsNotRestartedByAFailure();
 };
 
 void TestBleManager::unparseableFrameIsDropped_data()
@@ -116,6 +145,85 @@ void TestBleManager::podsBatteryKeepsLeftAndRightApart()
     QCOMPARE(parseFrame(withRightPodPrimary(unequalPods), &parsed), 1);
     QCOMPARE(parsed.leftPodBattery, 80);
     QCOMPARE(parsed.rightPodBattery, 20);
+}
+
+void TestBleManager::retryDelayDoublesAndCaps()
+{
+    QCOMPARE(BleScanRetry::delayMs(1), 1000);
+    QCOMPARE(BleScanRetry::delayMs(2), 2000);
+    QCOMPARE(BleScanRetry::delayMs(BleScanRetry::maxDoublings), 32000);
+    QCOMPARE(BleScanRetry::delayMs(BleScanRetry::maxDoublings + 5), 32000);
+    // An attempt of zero still gets the first delay.
+    QCOMPARE(BleScanRetry::delayMs(0), 1000);
+
+    BleScanRetry::Ladder ladder;
+    QCOMPARE(ladder.nextDelayMs(), 1000);
+    QCOMPARE(ladder.nextDelayMs(), 2000);
+    QCOMPARE(ladder.attempts(), 2);
+    ladder.reset();
+    QCOMPARE(ladder.nextDelayMs(), 1000);
+}
+
+// The cold start in issue 24. The adapter is down, the scan fails, and nothing starts it again.
+void TestBleManager::scanErrorArmsARetryAndKeepsTheIntent()
+{
+    BleManager manager;
+
+    manager.startScan();
+    seeAdvertisement(manager);
+    failScan(manager);
+
+    // The defect. One error stopped the scan for the life of the process.
+    QVERIFY(manager.isScanning());
+
+    QTimer *retry = retryTimerOf(manager);
+    QVERIFY(retry);
+    QVERIFY(retry->isActive());
+    QCOMPARE(retry->interval(), BleScanRetry::delayMs(1));
+
+    manager.stopScan();
+}
+
+// Each connect and disconnect starts the scan again, so a new failure must not keep the old delay.
+void TestBleManager::advertisementResetsTheRetryLadder()
+{
+    BleManager manager;
+    QTimer *retry = retryTimerOf(manager);
+    QVERIFY(retry);
+
+    manager.startScan();
+    seeAdvertisement(manager);
+    failScan(manager);
+    failScan(manager);
+    QCOMPARE(retry->interval(), BleScanRetry::delayMs(2));
+
+    seeAdvertisement(manager);
+    failScan(manager);
+    QCOMPARE(retry->interval(), BleScanRetry::delayMs(1));
+
+    manager.stopScan();
+}
+
+// The connected gate and the sleep gate stop the scan on purpose. A retry must not undo that.
+void TestBleManager::stoppedScanIsNotRestartedByAFailure()
+{
+    BleManager manager;
+    QTimer *retry = retryTimerOf(manager);
+    QVERIFY(retry);
+
+    manager.startScan();
+    QVERIFY(manager.isScanning());
+    seeAdvertisement(manager);
+    failScan(manager);
+    QVERIFY(retry->isActive());
+
+    manager.stopScan();
+    QVERIFY(!retry->isActive());
+    QVERIFY(!manager.isScanning());
+
+    failScan(manager);
+    QVERIFY(!retry->isActive());
+    QVERIFY(!manager.isScanning());
 }
 
 QTEST_GUILESS_MAIN(TestBleManager)

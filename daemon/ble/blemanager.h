@@ -6,6 +6,7 @@
 #include <QMap>
 #include <QString>
 #include <QDateTime>
+#include "blescanretry.hpp"
 #include "enums.h"
 
 class QTimer;
@@ -78,16 +79,24 @@ private slots:
     void onDeviceDiscovered(const QBluetoothDeviceInfo &info);
     void onScanFinished();
     void onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error);
+    void retryScan();
 
 signals:
     void deviceFound(const BleInfo &device);
 
 private:
+    void noteScanAlive();
+
     // Default-init so a partial construction (or a refactor that
     // skips the explicit ctor body) doesn't leave a dangling pointer
     // that start/stop/isScan would dereference. Real assignment
     // happens in BleManager::BleManager() via parented `new`.
     QBluetoothDeviceDiscoveryAgent *discoveryAgent = nullptr;
+    QTimer *retryTimer = nullptr;
+    BleScanRetry::Ladder retryLadder;
+    // What the caller asked for, not what the radio does. A scan that waits for a retry stays wanted.
+    bool scanWanted = false;
+    QBluetoothDeviceDiscoveryAgent::Error lastScanError = QBluetoothDeviceDiscoveryAgent::NoError;
 };
 
 #endif // BLEMANAGER_H
