@@ -48,6 +48,7 @@
 #include "QRCodeImageProvider.hpp"
 #include "systemsleepmonitor.hpp"
 #include "controlreconnect.hpp"
+#include "scanduty.hpp"
 
 using namespace AirpodsTrayApp::Enums;
 
@@ -707,7 +708,8 @@ public slots:
     }
     void onSystemWakingUp()
     {
-        LOG_INFO("System wake-up; deferring BLE rediscovery 2s for BlueZ to settle");
+        LOG_INFO("System wake-up; deferring BLE rediscovery " << ScanDuty::resumeSettleMs
+                 << "ms for BlueZ and any reconnecting HID device to settle");
 
         // BlueZ + the kernel BT controller often need ~1-3s after resume
         // before hci0 is responsive again. Firing scan + GetManagedObjects
@@ -716,7 +718,10 @@ public slots:
         // and keep m_isSuspending true until the grace window closes so
         // the disconnect notifications that BlueZ fires during resume
         // don't surface as user-visible "AirPods Disconnected" toasts.
-        QTimer::singleShot(2000, this, [this]() {
+        // The wait also covers bonded BLE HID devices, which re-associate in
+        // the first seconds after the controller resets and lose the race
+        // against a scan that starts while they are still advertising.
+        QTimer::singleShot(ScanDuty::resumeSettleMs, this, [this]() {
             // Suspend stopped discovery on every controller, so resume restarts it and the gate below re-applies.
             m_bleManager->startScan();
 
