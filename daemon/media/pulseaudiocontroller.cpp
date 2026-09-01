@@ -5,10 +5,83 @@
 #include "../snaptogrid.hpp"
 #include <QElapsedTimer>
 #include <QThread>
+#include <algorithm>
+
+namespace
+{
+// Doubling from half a second, capped so a server that stays down keeps polling rather than sleeping through its return.
+constexpr int reconnectBaseDelayMs = 500;
+constexpr int reconnectMaxDoublings = 5;
+
+// Matches the cap in initialize(), so a reconnect gives up on a wedged server as fast as a cold start does.
+constexpr int reconnectReadyTimeoutMs = 5000;
+
+int reconnectDelayMs(int attempt)
+{
+    const int boundedAttempt = std::clamp(attempt, 1, reconnectMaxDoublings);
+    return reconnectBaseDelayMs * (1 << (boundedAttempt - 1));
+}
+
+// pa_threaded_mainloop_wait() returns only once something signals the mainloop, and the
+// only thing signalling ours is a context state change. A server that accepts the socket
+// and then stalls never produces one, so a bare wait parks the caller forever and the
+// deadline below never gets re-checked. Arming a mainloop time event guarantees the one
+// wakeup the loop needs to notice it has run out of time.
+class MainloopWakeup
+{
+public:
+    MainloopWakeup(pa_threaded_mainloop *mainloop, int timeoutMs)
+        : m_api(pa_threaded_mainloop_get_api(mainloop))
+    {
+        struct timeval tv;
+        pa_gettimeofday(&tv);
+        pa_timeval_add(&tv, static_cast<pa_usec_t>(timeoutMs) * PA_USEC_PER_MSEC);
+        m_event = m_api->time_new(m_api, &tv, &MainloopWakeup::fire, mainloop);
+    }
+
+    // Must run with the mainloop lock still held, which is why the readiness wait is its
+    // own function: every caller unlocks after this goes out of scope, never before.
+    ~MainloopWakeup()
+    {
+        if (m_event) m_api->time_free(m_event);
+    }
+
+    MainloopWakeup(const MainloopWakeup &) = delete;
+    MainloopWakeup &operator=(const MainloopWakeup &) = delete;
+
+private:
+    static void fire(pa_mainloop_api *, pa_time_event *, const struct timeval *, void *userdata)
+    {
+        pa_threaded_mainloop_signal(static_cast<pa_threaded_mainloop*>(userdata), 0);
+    }
+
+    pa_mainloop_api *m_api = nullptr;
+    pa_time_event *m_event = nullptr;
+};
+
+enum class ContextReadiness { Ready, Failed, TimedOut };
+
+// Call with the mainloop lock held; returns with it still held.
+ContextReadiness waitForContextReady(pa_threaded_mainloop *mainloop, pa_context *context, int timeoutMs)
+{
+    MainloopWakeup wakeup(mainloop, timeoutMs);
+
+    QElapsedTimer timer; timer.start();
+    while (pa_context_get_state(context) != PA_CONTEXT_READY)
+    {
+        if (!PA_CONTEXT_IS_GOOD(pa_context_get_state(context))) return ContextReadiness::Failed;
+        if (timer.elapsed() > timeoutMs) return ContextReadiness::TimedOut;
+        pa_threaded_mainloop_wait(mainloop);
+    }
+    return ContextReadiness::Ready;
+}
+}
 
 PulseAudioController::PulseAudioController(QObject *parent)
-    : QObject(parent)
+    : QObject(parent), m_reconnectTimer(new QTimer(this))
 {
+    m_reconnectTimer->setSingleShot(true);
+    connect(m_reconnectTimer, &QTimer::timeout, this, &PulseAudioController::attemptReconnect);
 }
 
 PulseAudioController::~PulseAudioController()
@@ -66,24 +139,20 @@ bool PulseAudioController::initialize()
     }
 
     // Wait for context to be ready, with a hard cap so a broken daemon
-    // can't freeze startup. pa_threaded_mainloop_wait drops the lock and
-    // wakes on the next signal; cap to ~5s by counting iterations.
-    QElapsedTimer timer; timer.start();
-    constexpr qint64 kInitTimeoutMs = 5000;
-    while (pa_context_get_state(m_context) != PA_CONTEXT_READY)
+    // can't freeze startup.
+    constexpr int kInitTimeoutMs = 5000;
+    switch (waitForContextReady(m_mainloop, m_context, kInitTimeoutMs))
     {
-        if (!PA_CONTEXT_IS_GOOD(pa_context_get_state(m_context)))
-        {
-            LOG_ERROR("PulseAudio context failed");
-            pa_threaded_mainloop_unlock(m_mainloop);
-            return false;
-        }
-        if (timer.elapsed() > kInitTimeoutMs) {
-            LOG_ERROR("PulseAudio context did not become ready in 5s");
-            pa_threaded_mainloop_unlock(m_mainloop);
-            return false;
-        }
-        pa_threaded_mainloop_wait(m_mainloop);
+    case ContextReadiness::Ready:
+        break;
+    case ContextReadiness::Failed:
+        LOG_ERROR("PulseAudio context failed");
+        pa_threaded_mainloop_unlock(m_mainloop);
+        return false;
+    case ContextReadiness::TimedOut:
+        LOG_ERROR("PulseAudio context did not become ready in 5s");
+        pa_threaded_mainloop_unlock(m_mainloop);
+        return false;
     }
 
     // Register sink-event subscription. Fires for every sink change
@@ -97,8 +166,10 @@ bool PulseAudioController::initialize()
         m_context, PA_SUBSCRIPTION_MASK_SINK, nullptr, nullptr);
     if (subOp) pa_operation_unref(subOp);
 
-    pa_threaded_mainloop_unlock(m_mainloop);
+    // Set under the lock: libpulse dispatches state callbacks with it held, so a context
+    // that dies here cannot have its m_initialized = false clobbered by this assignment.
     m_initialized = true;
+    pa_threaded_mainloop_unlock(m_mainloop);
     LOG_INFO("PulseAudio controller initialized");
     return true;
 }
@@ -109,9 +180,91 @@ void PulseAudioController::contextStateCallback(pa_context *c, void *userdata)
     if (!controller || !controller->m_mainloop) return;
     const pa_context_state_t st = pa_context_get_state(c);
     if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) {
-        LOG_WARN("PulseAudio context state changed to " << static_cast<int>(st));
+        LOG_WARN("PulseAudio context state changed to " << static_cast<int>(st)
+                 << ", queries will fail until the connection is rebuilt");
+        // Clearing this first makes every query fail fast instead of running against a context libpulse will never revive.
+        controller->m_initialized = false;
+        // This callback runs on the PA mainloop thread holding its lock, so the rebuild has to happen on the Qt thread.
+        QMetaObject::invokeMethod(controller, [controller]() { controller->scheduleReconnect(); },
+                                  Qt::QueuedConnection);
     }
     pa_threaded_mainloop_signal(controller->m_mainloop, 0);
+}
+
+void PulseAudioController::scheduleReconnect()
+{
+    if (m_initialized || !m_mainloop) return;
+    // A pending attempt already owns the ladder, and restarting it here would reset the backoff on every state change.
+    if (m_reconnectTimer->isActive()) return;
+
+    ++m_reconnectAttempts;
+    const int delay = reconnectDelayMs(m_reconnectAttempts);
+    LOG_INFO("Reconnecting to PulseAudio in " << delay << "ms (attempt " << m_reconnectAttempts << ")");
+    m_reconnectTimer->start(delay);
+}
+
+void PulseAudioController::attemptReconnect()
+{
+    if (m_initialized || !m_mainloop) return;
+
+    pa_threaded_mainloop_lock(m_mainloop);
+
+    if (m_context) {
+        pa_context_set_state_callback(m_context, nullptr, nullptr);
+        pa_context_set_subscribe_callback(m_context, nullptr, nullptr);
+        pa_context_disconnect(m_context);
+        pa_context_unref(m_context);
+        m_context = nullptr;
+    }
+
+    pa_mainloop_api *api = pa_threaded_mainloop_get_api(m_mainloop);
+    m_context = pa_context_new(api, "OpenPods");
+    if (!m_context) {
+        pa_threaded_mainloop_unlock(m_mainloop);
+        LOG_ERROR("Failed to create PulseAudio context while reconnecting");
+        scheduleReconnect();
+        return;
+    }
+
+    pa_context_set_state_callback(m_context, contextStateCallback, this);
+
+    if (pa_context_connect(m_context, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+        pa_threaded_mainloop_unlock(m_mainloop);
+        LOG_ERROR("Failed to connect to PulseAudio while reconnecting");
+        scheduleReconnect();
+        return;
+    }
+
+    switch (waitForContextReady(m_mainloop, m_context, reconnectReadyTimeoutMs))
+    {
+    case ContextReadiness::Ready:
+        break;
+    case ContextReadiness::Failed:
+        pa_threaded_mainloop_unlock(m_mainloop);
+        LOG_ERROR("PulseAudio context failed while reconnecting");
+        scheduleReconnect();
+        return;
+    case ContextReadiness::TimedOut:
+        pa_threaded_mainloop_unlock(m_mainloop);
+        LOG_ERROR("PulseAudio context did not become ready in 5s while reconnecting");
+        scheduleReconnect();
+        return;
+    }
+
+    // The subscription lives on the context, so the volume snap stays dead until it is re-armed on the new one.
+    pa_context_set_subscribe_callback(m_context, &PulseAudioController::subscribeCallback, this);
+    pa_operation *subOp = pa_context_subscribe(
+        m_context, PA_SUBSCRIPTION_MASK_SINK, nullptr, nullptr);
+    if (subOp) pa_operation_unref(subOp);
+
+    // Both set under the lock, for the same reason as in initialize(): releasing first
+    // leaves a window where a dying context queues scheduleReconnect(), this assignment
+    // then re-marks the controller initialized, and the queued call bails on its guard --
+    // stranding a dead context with no retry pending.
+    m_initialized = true;
+    m_reconnectAttempts = 0;
+    pa_threaded_mainloop_unlock(m_mainloop);
+    LOG_INFO("PulseAudio connection restored");
 }
 
 QString PulseAudioController::getDefaultSink()
