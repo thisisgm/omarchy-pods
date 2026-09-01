@@ -7,6 +7,7 @@
 #include <QString>
 #include <QDateTime>
 #include "enums.h"
+#include "../scanduty.hpp"
 
 class QTimer;
 
@@ -83,11 +84,15 @@ signals:
     void deviceFound(const BleInfo &device);
 
 private:
+    void beginWindow();
+
     // Default-init so a partial construction (or a refactor that
     // skips the explicit ctor body) doesn't leave a dangling pointer
     // that start/stop/isScan would dereference. Real assignment
     // happens in BleManager::BleManager() via parented `new`.
     QBluetoothDeviceDiscoveryAgent *discoveryAgent = nullptr;
+    QTimer *gapTimer = nullptr;
+    ScanDuty::Cycle duty;
 };
 
 #endif // BLEMANAGER_H

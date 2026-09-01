@@ -91,7 +91,13 @@ QString getConnectionStateName(BleInfo::ConnectionState state)
 BleManager::BleManager(QObject *parent) : QObject(parent)
 {
     discoveryAgent = new QBluetoothDeviceDiscoveryAgent(this);
-    discoveryAgent->setLowEnergyDiscoveryTimeout(0); // Continuous scanning
+
+    gapTimer = new QTimer(this);
+    gapTimer->setSingleShot(true);
+    connect(gapTimer, &QTimer::timeout, this, [this]() {
+        if (duty.gapFinished())
+            beginWindow();
+    });
 
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered,
             this, &BleManager::onDeviceDiscovered);
@@ -110,21 +116,36 @@ BleManager::~BleManager()
     // redundant and ran before Qt's own child cleanup pass. Now empty.
 }
 
+void BleManager::beginWindow()
+{
+    discoveryAgent->setLowEnergyDiscoveryTimeout(ScanDuty::windowMs);
+    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+}
+
 void BleManager::startScan()
 {
+    // Several callers ask for a scan that is already running, and restarting mid-gap would
+    // take back the radio this cycle just handed to whatever is trying to reconnect.
+    if (duty.active())
+        return;
+
     LOG_DEBUG("Starting BLE scan...");
-    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+    duty.start();
+    beginWindow();
 }
 
 void BleManager::stopScan()
 {
     LOG_DEBUG("Stopping BLE scan...");
+    duty.stop();
+    gapTimer->stop();
     discoveryAgent->stop();
 }
 
+// The gap is still a scan the caller asked for, so callers gating on this must not see it flicker.
 bool BleManager::isScanning() const
 {
-    return discoveryAgent->isActive();
+    return duty.active();
 }
 
 void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
@@ -228,14 +249,19 @@ void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
 
 void BleManager::onScanFinished()
 {
-    if (discoveryAgent->isActive())
+    if (duty.windowFinished())
     {
-        discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+        gapTimer->start(ScanDuty::gapMs);
     }
 }
 
+// A failed window ends the window, not the cycle. Stopping for good was survivable when one
+// scan was started per connect cycle, and is not when a window starts every few seconds.
 void BleManager::onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error)
 {
-    LOG_ERROR("BLE scan error occurred:" << error);
-    stopScan();
+    LOG_ERROR("BLE scan error occurred, retrying after the gap:" << error);
+    if (duty.windowFinished())
+    {
+        gapTimer->start(ScanDuty::gapMs);
+    }
 }

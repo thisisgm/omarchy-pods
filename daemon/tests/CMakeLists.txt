@@ -77,6 +77,11 @@ openpods_add_test(tst_controlreconnect
     ../controlreconnect.hpp
 )
 
+openpods_add_test(tst_scanduty
+    tst_scanduty.cpp
+    ../scanduty.hpp
+)
+
 openpods_add_test(tst_snaptogrid
     tst_snaptogrid.cpp
     ../snaptogrid.hpp
