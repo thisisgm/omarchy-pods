@@ -255,8 +255,13 @@ void BleManager::onScanFinished()
     }
 }
 
+// A failed window ends the window, not the cycle. Stopping for good was survivable when one
+// scan was started per connect cycle, and is not when a window starts every few seconds.
 void BleManager::onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error)
 {
-    LOG_ERROR("BLE scan error occurred:" << error);
-    stopScan();
+    LOG_ERROR("BLE scan error occurred, retrying after the gap:" << error);
+    if (duty.windowFinished())
+    {
+        gapTimer->start(ScanDuty::gapMs);
+    }
 }
