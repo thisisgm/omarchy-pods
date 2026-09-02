@@ -49,6 +49,7 @@ public:
 
   void play();
   void pause();
+  void clearPausedServices();
   MediaState getCurrentMediaState() const;
 
 Q_SIGNALS:

@@ -49,6 +49,17 @@ void BluetoothMonitor::registerDBusService()
     {
         LOG_WARN("Failed to connect to D-Bus PropertiesChanged signal");
     }
+
+    if (!m_dbus.connect(
+            QString(),
+            QString(),
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesAdded",
+            this,
+            SLOT(onInterfacesAdded(QDBusMessage))))
+    {
+        LOG_WARN("Failed to connect to D-Bus InterfacesAdded signal");
+    }
 }
 
 bool BluetoothMonitor::isAirPodsDevice(const QString &devicePath)
@@ -182,7 +193,11 @@ void BluetoothMonitor::onPropertiesChanged(const QDBusMessage &message)
 
     // PropertiesChanged signature: (string interface, dict changed, array invalidated)
     const QVariantMap changedProps = qdbus_cast<QVariantMap>(args.at(1));
-    if (!changedProps.contains("Connected")) {
+    const bool hasConnected = changedProps.contains("Connected");
+    const bool hasUUIDs = changedProps.contains("UUIDs");
+    const bool hasServicesResolved = changedProps.contains("ServicesResolved");
+
+    if (!hasConnected && !hasUUIDs && !hasServicesResolved) {
         return;
     }
 
@@ -198,13 +213,85 @@ void BluetoothMonitor::onPropertiesChanged(const QDBusMessage &message)
 
     const QString macAddress = addrReply.value().toString();
     const QString deviceName = getDeviceName(path);
-    const bool connected = changedProps["Connected"].toBool();
 
-    if (connected) {
+    bool isConnected = false;
+    if (hasConnected) {
+        isConnected = changedProps["Connected"].toBool();
+    } else {
+        QDBusReply<QVariant> connReply = deviceInterface.call("Get", "org.bluez.Device1", "Connected");
+        if (connReply.isValid()) {
+            isConnected = connReply.value().toBool();
+        }
+    }
+
+    if (isConnected) {
         emit deviceConnected(macAddress, deviceName);
         LOG_DEBUG("AirPods device connected:" << macAddress << " Name:" << deviceName);
-    } else {
+    } else if (hasConnected) {
         emit deviceDisconnected(macAddress, deviceName);
         LOG_DEBUG("AirPods device disconnected:" << macAddress << " Name:" << deviceName);
     }
+}
+
+void BluetoothMonitor::onInterfacesAdded(const QDBusMessage &message)
+{
+    const QList<QVariant> args = message.arguments();
+    if (args.size() < 2) return;
+
+    const QDBusObjectPath objectPath = qdbus_cast<QDBusObjectPath>(args.at(0));
+    const QString path = objectPath.path();
+    if (!path.startsWith("/org/bluez/")) return;
+
+    const QDBusArgument arg = args.at(1).value<QDBusArgument>();
+    QMap<QString, QVariantMap> interfaces;
+    arg >> interfaces;
+
+    if (!interfaces.contains("org.bluez.Device1")) return;
+
+    const QVariantMap &deviceProps = interfaces.value("org.bluez.Device1");
+    const QStringList uuids = deviceProps.value("UUIDs").toStringList();
+    if (!uuids.contains("74ec2172-0bad-4d01-8f77-997b2be0722a")) {
+        if (!isAirPodsDevice(path)) return;
+    }
+
+    if (deviceProps.value("Connected").toBool()) {
+        const QString macAddress = deviceProps.value("Address").toString();
+        const QString deviceName = deviceProps.value("Name").toString();
+        emit deviceConnected(macAddress, deviceName);
+        LOG_DEBUG("AirPods device added & connected: " << macAddress << " Name: " << deviceName);
+    }
+}
+
+QString BluetoothMonitor::findPairedAirPodsAddress()
+{
+    if (!m_dbus.isConnected()) return QString();
+
+    QDBusMessage request = QDBusMessage::createMethodCall(
+        "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
+    QDBusMessage reply = m_dbus.call(request, QDBus::Block, sweepTimeoutMs);
+    if (reply.type() == QDBusMessage::ErrorMessage || reply.arguments().isEmpty()) return QString();
+
+    QVariant firstArg = reply.arguments().constFirst();
+    QDBusArgument arg = firstArg.value<QDBusArgument>();
+    ManagedObjectList managedObjects;
+    arg >> managedObjects;
+
+    for (auto it = managedObjects.constBegin(); it != managedObjects.constEnd(); ++it)
+    {
+        const QMap<QString, QVariantMap> &interfaces = it.value();
+        if (!interfaces.contains("org.bluez.Device1")) continue;
+
+        const QVariantMap &deviceProps = interfaces.value("org.bluez.Device1");
+        if (!deviceProps.contains("UUIDs") || !deviceProps.contains("Address") ||
+            !deviceProps.value("Paired").toBool())
+        {
+            continue;
+        }
+
+        const QStringList uuids = deviceProps["UUIDs"].toStringList();
+        if (uuids.contains("74ec2172-0bad-4d01-8f77-997b2be0722a")) {
+            return deviceProps["Address"].toString();
+        }
+    }
+    return QString();
 }

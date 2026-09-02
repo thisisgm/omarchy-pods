@@ -28,6 +28,8 @@ public:
 
     bool initialize();
     QString getDefaultSink();
+    QString getSinkForDevice(const QString &macAddress);
+    bool setDefaultSink(const QString &sinkName);
     int getSinkVolume(const QString &sinkName);
     bool setSinkVolume(const QString &sinkName, int volumePercent);
 

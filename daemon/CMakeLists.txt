@@ -4,7 +4,7 @@ project(linux VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Widgets Bluetooth DBus LinguistTools)
+find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Widgets Bluetooth DBus OPTIONAL_COMPONENTS LinguistTools)
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PULSEAUDIO REQUIRED libpulse)
@@ -110,19 +110,15 @@ install(FILES librepods.service
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/systemd/user")
 
 # Translation support
-qt_add_translations(librepods
-    TS_FILES ${TS_FILES}
-    QM_FILES_OUTPUT_VARIABLE QM_FILES
-)
+if(Qt6LinguistTools_FOUND)
+    qt_add_translations(librepods
+        TS_FILES ${TS_FILES}
+        QM_FILES_OUTPUT_VARIABLE QM_FILES
+    )
 
-# Install translation files. Destination flipped to `openpods/translations`
-# in iter-62 to match the OpenPods rebrand. The runtime loader in
-# main.cpp scans both `openpods/translations` and `librepods/translations`
-# directories and tries both `openpods_<locale>` and `librepods_<locale>`
-# basenames, so existing AUR/system installs under the legacy path keep
-# working until the next package rebuild.
-install(FILES ${QM_FILES}
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/openpods/translations")
+    install(FILES ${QM_FILES}
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/openpods/translations")
+endif()
 
 # CTest defines BUILD_TESTING and defaults it ON, so without this include the suite never builds.
 include(CTest)
