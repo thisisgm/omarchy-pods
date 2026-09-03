@@ -233,6 +233,20 @@ opening anything.
 | Hide when disconnected | on | Leaves the bar entirely rather than sitting there with nothing to say. |
 | Path to librepods-ctl | empty | Leave empty to find it on `PATH`. |
 
+The daemon has one setting of its own, in `~/.config/AirPodsTrayApp/AirPodsTrayApp.conf`:
+
+```ini
+[bluetooth]
+idleScan=false
+```
+
+While the pods are disconnected the daemon normally keeps a BLE discovery session open
+to read battery, lid and ear state from their advertisements. On Linux an open discovery
+session stops other bonded LE devices from reconnecting, so a keyboard or mouse can stay
+dead until the pods connect. Set `idleScan=false` to give that up: everything works as
+before while the pods are connected, and the panel shows no battery while they are not.
+Restart `librepods.service` after changing it.
+
 ## Tests
 
 `Model.js` holds the parsing and formatting, with no QML imports, so it runs
