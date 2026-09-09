@@ -86,15 +86,13 @@ bool PulseAudioController::initialize()
         pa_threaded_mainloop_wait(m_mainloop);
     }
 
-    // Register sink-event subscription. Fires for every sink change
-    // including AVRCP AbsoluteVolume writes from the AirPods stem.
-    // snapSinkInfoCallback (invoked indirectly by subscribeCallback)
-    // does the actual 5%-grid snap when m_snapSinkName is set.
-    // Subscribe-mask covers SINK events only; we don't care about
-    // sink-input / source / card / etc. for the snap path.
+    // Register sink and sink-input subscriptions. SINK events handle
+    // AVRCP volume snap; SINK_INPUT events handle PipeWire playback stream detection.
     pa_context_set_subscribe_callback(m_context, &PulseAudioController::subscribeCallback, this);
     pa_operation *subOp = pa_context_subscribe(
-        m_context, PA_SUBSCRIPTION_MASK_SINK, nullptr, nullptr);
+        m_context,
+        static_cast<pa_subscription_mask_t>(PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SINK_INPUT),
+        nullptr, nullptr);
     if (subOp) pa_operation_unref(subOp);
 
     pa_threaded_mainloop_unlock(m_mainloop);
@@ -293,26 +291,27 @@ void PulseAudioController::subscribeCallback(pa_context *c,
                                              uint32_t idx, void *userdata)
 {
     PulseAudioController *self = static_cast<PulseAudioController*>(userdata);
-    if (!self || self->m_snapSinkName.isEmpty()) return;
+    if (!self) return;
 
-    // Only handle sink-change events; new/remove fire on hotplug
-    // and don't carry the volume we care about. PA delivers
-    // facility + event-type in a packed type field — mask out the
-    // top bits to recover the event.
     const auto facility = static_cast<pa_subscription_event_type_t>(
         type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK);
     const auto event = static_cast<pa_subscription_event_type_t>(
         type & PA_SUBSCRIPTION_EVENT_TYPE_MASK);
-    if (facility != PA_SUBSCRIPTION_EVENT_SINK) return;
-    if (event != PA_SUBSCRIPTION_EVENT_CHANGE) return;
 
-    // Get the new sink-info to read volume. Callback recurses into
-    // snapSinkInfoCallback which does the actual snap. We're on the
-    // PA mainloop thread so DO NOT take the lock — already held by
-    // the dispatcher.
-    pa_operation *op = pa_context_get_sink_info_by_index(
-        c, idx, &PulseAudioController::snapSinkInfoCallback, self);
-    if (op) pa_operation_unref(op);
+    if (facility == PA_SUBSCRIPTION_EVENT_SINK && event == PA_SUBSCRIPTION_EVENT_CHANGE) {
+        if (!self->m_snapSinkName.isEmpty()) {
+            // Get the new sink-info to read volume. Callback recurses into
+            // snapSinkInfoCallback which does the actual snap. We're on the
+            // PA mainloop thread so DO NOT take the lock — already held by
+            // the dispatcher.
+            pa_operation *op = pa_context_get_sink_info_by_index(
+                c, idx, &PulseAudioController::snapSinkInfoCallback, self);
+            if (op) pa_operation_unref(op);
+        }
+    } else if (facility == PA_SUBSCRIPTION_EVENT_SINK_INPUT) {
+        // Stream added, changed (corked/mute/volume), or removed
+        QMetaObject::invokeMethod(self, &PulseAudioController::checkPlaybackStreams, Qt::QueuedConnection);
+    }
 }
 
 void PulseAudioController::snapSinkInfoCallback(pa_context *c,
@@ -673,3 +672,66 @@ bool PulseAudioController::waitForOperation(pa_operation *op)
 
     return pa_operation_get_state(op) == PA_OPERATION_DONE;
 }
+
+StreamCounts PulseAudioController::getPlaybackStreamCounts()
+{
+    if (!m_initialized) return StreamCounts{};
+
+    struct CallbackData {
+        StreamCounts counts;
+        bool failed = false;
+        pa_threaded_mainloop *mainloop = nullptr;
+    } data;
+    data.mainloop = m_mainloop;
+
+    auto callback = [](pa_context *, const pa_sink_input_info *info, int eol, void *userdata) {
+        CallbackData *d = static_cast<CallbackData*>(userdata);
+        if (eol != 0) {
+            if (eol < 0) d->failed = true;
+            pa_threaded_mainloop_signal(d->mainloop, 0);
+            return;
+        }
+        if (!info) return;
+
+        bool corked = (info->corked != 0);
+        if (info->proplist) {
+            const char *corkProp = pa_proplist_gets(info->proplist, "pulse.corked");
+            if (corkProp && strcmp(corkProp, "true") == 0) {
+                corked = true;
+            }
+        }
+        bool muted = (info->mute != 0);
+        QString role;
+        if (info->proplist) {
+            const char *r = pa_proplist_gets(info->proplist, PA_PROP_MEDIA_ROLE);
+            if (r) role = QString::fromUtf8(r);
+        }
+
+        auto cat = classifyStream(corked, muted, role);
+        if (cat == StreamPlaybackCategory::ActivePlayback) {
+            d->counts.active++;
+            d->counts.total++;
+        } else if (cat == StreamPlaybackCategory::CorkedPlayback) {
+            d->counts.corked++;
+            d->counts.total++;
+        }
+    };
+
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_get_sink_input_info_list(m_context, callback, &data);
+    const bool ok = (op != nullptr && waitForOperation(op));
+    if (op) pa_operation_unref(op);
+    pa_threaded_mainloop_unlock(m_mainloop);
+
+    if (!ok || data.failed) {
+        return StreamCounts{};
+    }
+    return data.counts;
+}
+
+void PulseAudioController::checkPlaybackStreams()
+{
+    StreamCounts counts = getPlaybackStreamCounts();
+    emit playbackStreamsChanged(counts.active, counts.corked);
+}
+

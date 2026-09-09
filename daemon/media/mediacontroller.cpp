@@ -5,6 +5,7 @@
 #include "eardetection.hpp"
 #include "playerstatuswatcher.h"
 #include "pulseaudiocontroller.h"
+#include "streammatch.hpp"
 #include "snaptogrid.hpp"
 
 #include <QDebug>
@@ -24,6 +25,29 @@ MediaController::MediaController(QObject *parent) : QObject(parent) {
   {
     LOG_ERROR("Failed to initialize PulseAudio controller");
   }
+
+  m_streamStartDebounceTimer = new QTimer(this);
+  m_streamStartDebounceTimer->setSingleShot(true);
+  connect(m_streamStartDebounceTimer, &QTimer::timeout, this, [this]() {
+    if (m_lastStreamActiveCount > 0) {
+      m_streamPlaybackActive = true;
+      m_streamExplicitlyPaused = false;
+      updateCombinedMediaState();
+    }
+  });
+
+  m_streamStopDebounceTimer = new QTimer(this);
+  m_streamStopDebounceTimer->setSingleShot(true);
+  connect(m_streamStopDebounceTimer, &QTimer::timeout, this, [this]() {
+    if (m_lastStreamActiveCount == 0) {
+      m_streamPlaybackActive = false;
+      m_streamExplicitlyPaused = false;
+      updateCombinedMediaState();
+    }
+  });
+
+  connect(m_pulseAudio, &PulseAudioController::playbackStreamsChanged,
+          this, &MediaController::onPlaybackStreamsChanged);
 }
 
 void MediaController::handleEarDetection(EarDetection *earDetection)
@@ -136,10 +160,11 @@ void MediaController::followMediaChanges() {
   connect(playerStatusWatcher, &PlayerStatusWatcher::playbackStatusChanged,
           this, [this](const QString &status)
           {
-            LOG_DEBUG("Playback status changed: " << status);
-            MediaState state = mediaStateFromPlayerctlOutput(status);
-            emit mediaStateChanged(state);
+            LOG_DEBUG("MPRIS playback status changed: " << status);
+            m_mprisMediaState = mediaStateFromPlayerctlOutput(status);
+            updateCombinedMediaState();
           });
+  m_pulseAudio->checkPlaybackStreams();
 }
 
 bool MediaController::isActiveOutputDeviceAirPods() {
@@ -406,7 +431,63 @@ MediaController::MediaState MediaController::mediaStateFromPlayerctlOutput(
 
 MediaController::MediaState MediaController::getCurrentMediaState() const
 {
-  return mediaStateFromPlayerctlOutput(PlayerStatusWatcher::getCurrentPlaybackStatus(""));
+  MediaState mpris = mediaStateFromPlayerctlOutput(PlayerStatusWatcher::getCurrentPlaybackStatus(""));
+  CombinedMediaState combined = computeCombinedMediaState(
+      static_cast<CombinedMediaState>(mpris),
+      m_streamPlaybackActive,
+      m_streamExplicitlyPaused);
+  return static_cast<MediaState>(combined);
+}
+
+void MediaController::onPlaybackStreamsChanged(int activeStreams, int corkedStreams)
+{
+  LOG_DEBUG("Playback streams changed: active=" << activeStreams << " corked=" << corkedStreams);
+  m_lastStreamActiveCount = activeStreams;
+  m_lastStreamCorkedCount = corkedStreams;
+
+  if (activeStreams > 0) {
+    m_streamStopDebounceTimer->stop();
+    m_streamExplicitlyPaused = false;
+    if (!m_streamPlaybackActive) {
+      if (!m_streamStartDebounceTimer->isActive()) {
+        m_streamStartDebounceTimer->start(150);
+      }
+    }
+  } else {
+    m_streamStartDebounceTimer->stop();
+    if (corkedStreams > 0) {
+      // Explicit pause (e.g. YouTube embedded in Slack was paused):
+      // transition immediately so quick pause -> play creates a new handoff request
+      m_streamStopDebounceTimer->stop();
+      m_streamPlaybackActive = false;
+      m_streamExplicitlyPaused = true;
+      updateCombinedMediaState();
+    } else {
+      // Stream disappearance (e.g. temporary routing transition between sinks):
+      // debounce stop so we don't send premature RELEASE while PipeWire moves streams
+      if (m_streamPlaybackActive && !m_streamStopDebounceTimer->isActive()) {
+        m_streamStopDebounceTimer->start(1000);
+      }
+    }
+  }
+}
+
+void MediaController::updateCombinedMediaState()
+{
+  CombinedMediaState combined = computeCombinedMediaState(
+      static_cast<CombinedMediaState>(m_mprisMediaState),
+      m_streamPlaybackActive,
+      m_streamExplicitlyPaused);
+  MediaState newState = static_cast<MediaState>(combined);
+
+  if (newState != m_currentCombinedState) {
+    LOG_INFO("Combined media state: " << (newState == Playing ? "Playing" : newState == Paused ? "Paused" : "Stopped")
+             << " (MPRIS=" << (m_mprisMediaState == Playing ? "Playing" : m_mprisMediaState == Paused ? "Paused" : "Stopped")
+             << ", StreamActive=" << m_streamPlaybackActive
+             << ", StreamPaused=" << m_streamExplicitlyPaused << ")");
+    m_currentCombinedState = newState;
+    emit mediaStateChanged(newState);
+  }
 }
 
 QStringList MediaController::getPlayingMediaPlayers()

@@ -7,6 +7,7 @@
 
 #include "capturematch.hpp"
 #include "profilechoice.hpp"
+#include "streammatch.hpp"
 
 class PulseAudioController : public QObject
 {
@@ -59,6 +60,13 @@ public:
     CaptureState captureState(const QString &macAddress);
     // Every profile this card reports, for the pure choice in profilechoice.hpp.
     QVector<ProfileCandidate> getCardProfiles(const QString &cardName);
+
+    // Active/corked sink inputs for PipeWire stream detection
+    StreamCounts getPlaybackStreamCounts();
+    Q_INVOKABLE void checkPlaybackStreams();
+
+Q_SIGNALS:
+    void playbackStreamsChanged(int activeStreams, int corkedStreams);
 
 private:
     pa_threaded_mainloop *m_mainloop = nullptr;

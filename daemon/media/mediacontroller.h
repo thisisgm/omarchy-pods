@@ -8,6 +8,7 @@ class QProcess;
 class EarDetection;
 class PlayerStatusWatcher;
 class QDBusInterface;
+class QTimer;
 
 class MediaController : public QObject
 {
@@ -62,6 +63,8 @@ private:
   // Only the retry chain calls this, so the one-restart flag below cannot be read outside a chain.
   bool activateA2dpProfile();
   void attemptA2dpActivation(const QString &macAddress, quint64 generation, int attempt, int unanswered = 0);
+  void onPlaybackStreamsChanged(int activeStreams, int corkedStreams);
+  void updateCombinedMediaState();
 
   QStringList pausedByAppServices;
   int initialVolume = -1;
@@ -76,6 +79,16 @@ private:
   // A queued retry compares its captured generation against this, so a superseded chain stops.
   quint64 m_a2dpRetryGeneration = 0;
   bool m_wirePlumberRestartedThisChain = false;
+
+  // PipeWire playback stream detection state
+  QTimer *m_streamStartDebounceTimer = nullptr;
+  QTimer *m_streamStopDebounceTimer = nullptr;
+  int m_lastStreamActiveCount = 0;
+  int m_lastStreamCorkedCount = 0;
+  bool m_streamPlaybackActive = false;
+  bool m_streamExplicitlyPaused = false;
+  MediaState m_mprisMediaState = Stopped;
+  MediaState m_currentCombinedState = Stopped;
 };
 
 #endif // MEDIACONTROLLER_H
