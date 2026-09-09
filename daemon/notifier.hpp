@@ -25,7 +25,7 @@ public:
     }
 
     // Without omarchy on PATH the tray takes over through fallbackRequested, and headless has no listener.
-    void notify(const QString &title, const QString &message)
+    void notify(const QString &title, const QString &message, const QString &appName = QString())
     {
         if (!m_enabled) {
             return;
@@ -35,8 +35,9 @@ public:
             emit fallbackRequested(title, message);
             return;
         }
+        const QString resolvedAppName = appName.isEmpty() ? QStringLiteral("AirPods") : appName;
         QProcess::startDetached(omarchy, {QStringLiteral("notification"), QStringLiteral("send"),
-                                          QStringLiteral("--app-name"), QStringLiteral("AirPods"),
+                                          QStringLiteral("--app-name"), resolvedAppName,
                                           QStringLiteral("-g"), QStringLiteral("\uF025"),
                                           title, message});
     }

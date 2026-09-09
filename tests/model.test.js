@@ -137,6 +137,10 @@ check("a Pro 3 loses Off and keeps Adaptive", modesFor(good),
 check("a Max 2 gets all four", modesFor(max2),
   [Model.NOISE_OFF, Model.NOISE_TRANSPARENCY, Model.NOISE_ADAPTIVE, Model.NOISE_ANC])
 
+const powerbeats = Model.parseStatus('{"connected":true,"is_headset":false,"is_pro_series":false,"model_int":13,"model_name":"Powerbeats Pro","device_name":"Powerbeats Pro","noise_mode":-1,"schema_version":1}')
+check("Powerbeats Pro is flagged isBeats", powerbeats.isBeats, true)
+check("Powerbeats Pro is flagged isPowerbeats", powerbeats.isPowerbeats, true)
+
 if (failures > 0) {
   console.log(failures + " failed")
   Deno.exit(1)

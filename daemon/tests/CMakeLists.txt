@@ -39,6 +39,11 @@ openpods_add_test(tst_profilechoice
     ../media/profilechoice.hpp
 )
 
+openpods_add_test(tst_streammatch
+    tst_streammatch.cpp
+    ../media/streammatch.hpp
+)
+
 openpods_add_test(tst_logger
     tst_logger.cpp
     ../logger.h

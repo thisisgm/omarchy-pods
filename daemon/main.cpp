@@ -16,12 +16,14 @@
 #include <fcntl.h>
 #include <memory>
 #include <unistd.h>
+#include <algorithm>
 #include <QBluetoothLocalDevice>
 #include <QBluetoothSocket>
 #include <QQuickWindow>
 #include <QLoggingCategory>
 #include <QThread>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QTranslator>
@@ -139,12 +141,16 @@ public:
         CrossDevice.isEnabled = loadCrossDeviceEnabled();
         setEarDetectionBehavior(loadEarDetectionSettings());
         setRetryAttempts(loadRetryAttempts());
-        // Restore persisted PhoneMAC into the process env BEFORE
-        // connectToPhone() reads it. setPhoneMac persists to QSettings
-        // (iter-bugfix) so user doesn't have to re-enter on every
-        // restart. If the saved value is invalid (manually edited
-        // settings file), setPhoneMac surfaces the validation error.
         if (m_settings) {
+            m_deviceInfo->loadFromSettings(*m_settings);
+            if (!m_deviceInfo->bluetoothAddress().isEmpty()) {
+                m_lastAirPodsAddress = m_deviceInfo->bluetoothAddress();
+            }
+            // Restore persisted PhoneMAC into the process env BEFORE
+            // connectToPhone() reads it. setPhoneMac persists to QSettings
+            // (iter-bugfix) so user doesn't have to re-enter on every
+            // restart. If the saved value is invalid (manually edited
+            // settings file), setPhoneMac surfaces the validation error.
             const QString savedMac = m_settings->value(QStringLiteral("phoneMac"), QString()).toString();
             if (!savedMac.isEmpty()) {
                 setPhoneMac(savedMac);
@@ -271,6 +277,39 @@ private:
         LOG_INFO("Disconnecting device at " << devicePath);
     }
 
+    QString getAirPodsAddress() {
+        if (monitor) {
+            QString pairedAddr = monitor->findPairedAirPodsAddress();
+            if (!pairedAddr.isEmpty()) {
+                if (m_lastAirPodsAddress != pairedAddr) {
+                    m_lastAirPodsAddress = pairedAddr;
+                    if (m_deviceInfo) {
+                        m_deviceInfo->setBluetoothAddress(pairedAddr);
+                        if (m_settings) {
+                            m_deviceInfo->saveToSettings(*m_settings);
+                        }
+                    }
+                }
+                return pairedAddr;
+            }
+        }
+        if (m_deviceInfo && !m_deviceInfo->bluetoothAddress().isEmpty()) {
+            return m_deviceInfo->bluetoothAddress();
+        }
+        if (!m_lastAirPodsAddress.isEmpty()) {
+            return m_lastAirPodsAddress;
+        }
+        return QString();
+    }
+
+    QByteArray getLocalReversedMac() {
+        QBluetoothLocalDevice localDevice;
+        QBluetoothAddress localAddr = localDevice.address();
+        QByteArray mac = QByteArray::fromHex(localAddr.toString().replace(":", "").toLatin1());
+        std::reverse(mac.begin(), mac.end());
+        return mac;
+    }
+
 public slots:
     // Apple-style Disconnect / Connect controls. Wrap `bluetoothctl`
     // with the saved BD_ADDR. Async QProcess + deleteLater so the Qt
@@ -279,11 +318,11 @@ public slots:
     // done). The connect path also triggers the existing
     // bluezDeviceConnected handler, which re-runs the AAP handshake.
     void disconnectAirPods() {
-        if (!m_deviceInfo || m_deviceInfo->bluetoothAddress().isEmpty()) {
+        const QString addr = getAirPodsAddress();
+        if (addr.isEmpty()) {
             LOG_WARN("disconnectAirPods: no current address to disconnect");
             return;
         }
-        const QString addr = m_deviceInfo->bluetoothAddress();
         LOG_INFO("disconnectAirPods: " << addr);
         ++m_disconnectCallsTotal;
         auto *proc = new QProcess(this);
@@ -306,11 +345,11 @@ public slots:
     }
 
     void connectAirPods() {
-        if (!m_deviceInfo || m_deviceInfo->bluetoothAddress().isEmpty()) {
+        const QString addr = getAirPodsAddress();
+        if (addr.isEmpty()) {
             LOG_WARN("connectAirPods: no current address to connect");
             return;
         }
-        const QString addr = m_deviceInfo->bluetoothAddress();
         LOG_INFO("connectAirPods: " << addr);
         ++m_connectCallsTotal;
         auto *proc = new QProcess(this);
@@ -371,6 +410,22 @@ public slots:
 
     void setNoiseControlMode(NoiseControlMode mode)
     {
+        if (!m_deviceInfo) {
+            LOG_WARN("setNoiseControlMode: m_deviceInfo not ready");
+            return;
+        }
+        if (!supportsNoiseControl(m_deviceInfo->model())) {
+            LOG_WARN("Device does not support noise control, skipping packet");
+            return;
+        }
+        if (mode == NoiseControlMode::Adaptive && !supportsAdaptiveAudio(m_deviceInfo->model())) {
+            LOG_WARN("Device does not support Adaptive mode, skipping packet");
+            return;
+        }
+        if (mode == NoiseControlMode::Off && !supportsNoiseOff(m_deviceInfo->model())) {
+            LOG_WARN("Device does not support Off mode, skipping packet");
+            return;
+        }
         if (m_deviceInfo->noiseControlMode() == mode)
         {
             LOG_DEBUG("Noise control mode is already set to: " << static_cast<int>(mode));
@@ -422,9 +477,32 @@ public slots:
         {
             const auto fire = s.latch->evaluate(s.level, s.available, s.charging);
             if (fire) {
+                QString name;
+                if (m_deviceInfo && !m_deviceInfo->deviceName().isEmpty()) {
+                    name = m_deviceInfo->deviceName();
+                } else if (m_deviceInfo && m_deviceInfo->model() != AirPodsModel::Unknown) {
+                    name = modelDisplayName(m_deviceInfo->model());
+                } else {
+                    name = tr("AirPods");
+                }
+                QString unitType;
+                if (m_deviceInfo && m_deviceInfo->model() == AirPodsModel::PowerbeatsPro) {
+                    unitType = (s.label == QLatin1String("Case")) ? tr("Case") : tr("Earbud");
+                } else if (m_deviceInfo && isModelHeadset(m_deviceInfo->model())) {
+                    unitType = tr("Headphone");
+                } else {
+                    unitType = (s.label == QLatin1String("Case")) ? tr("Case") : tr("AirPod");
+                }
+                QString labelText;
+                if (s.label == QLatin1String("Case")) {
+                    labelText = tr("%1 Case Low Battery").arg(name);
+                } else {
+                    labelText = tr("%1 %2 Low Battery").arg(QString::fromLatin1(s.label), unitType);
+                }
                 m_notifier->notify(
-                    tr("%1 AirPod Low Battery").arg(QString::fromLatin1(s.label)),
-                    tr("%1% remaining").arg(*fire));
+                    labelText,
+                    tr("%1% remaining").arg(*fire),
+                    name);
             }
         }
     }
@@ -442,8 +520,20 @@ public slots:
             LOG_ERROR("Cannot cycle noise control mode: device info not ready");
             return;
         }
+        if (!supportsNoiseControl(m_deviceInfo->model()))
+        {
+            LOG_DEBUG("Cannot cycle noise control mode: device does not support noise control");
+            return;
+        }
         const int current = static_cast<int>(m_deviceInfo->noiseControlMode());
-        const int next = (current + 1) % (static_cast<int>(NoiseControlMode::Adaptive) + 1);
+        int next = current;
+        for (int i = 0; i < 4; ++i) {
+            next = (next + 1) % 4;
+            auto mode = static_cast<NoiseControlMode>(next);
+            if (mode == NoiseControlMode::Off && !supportsNoiseOff(m_deviceInfo->model())) continue;
+            if (mode == NoiseControlMode::Adaptive && !supportsAdaptiveAudio(m_deviceInfo->model())) continue;
+            break;
+        }
         setNoiseControlModeInt(next);
     }
 
@@ -827,6 +917,10 @@ private slots:
         LOG_INFO("Device disconnected: " << address.toString());
         // A retry still in flight would reactivate a profile for the device that just went away.
         mediaController->cancelPendingA2dpActivation();
+        if (mediaController && mediaController->getCurrentMediaState() == MediaController::MediaState::Playing) {
+            LOG_INFO("AirPods disconnected while playing: pausing Linux media");
+            mediaController->pause();
+        }
         if (socket)
         {
             LOG_WARN("Socket is still open, closing it");
@@ -857,6 +951,15 @@ private slots:
             LOG_DEBUG("AIRPODS_DISCONNECTED packet written: " << AirPodsPackets::Connection::AIRPODS_DISCONNECTED.toHex());
         }
 
+        QString name = m_lastAirPodsName;
+        if (name.isEmpty() && m_deviceInfo && !m_deviceInfo->deviceName().isEmpty()) {
+            name = m_deviceInfo->deviceName();
+        } else if (name.isEmpty() && m_deviceInfo && m_deviceInfo->model() != AirPodsModel::Unknown) {
+            name = modelDisplayName(m_deviceInfo->model());
+        } else if (name.isEmpty()) {
+            name = tr("AirPods");
+        }
+
         // Clear the device name and model
         m_deviceInfo->reset();
         m_bleManager->startScan();
@@ -868,8 +971,9 @@ private slots:
         // the lid. Tray icon still resets so visual state is accurate.
         if (!m_isSuspending) {
             m_notifier->notify(
-                tr("AirPods Disconnected"),
-                tr("Your AirPods have been disconnected"));
+                tr("%1 Disconnected").arg(name),
+                tr("Your %1 has been disconnected").arg(name),
+                name);
         }
         if (trayManager) {
             trayManager->resetTrayIcon();
@@ -880,9 +984,18 @@ private slots:
     {
         if (!address.isEmpty()) {
             m_lastAirPodsAddress = address;
+            if (m_deviceInfo) {
+                m_deviceInfo->setBluetoothAddress(address);
+                if (m_settings) {
+                    m_deviceInfo->saveToSettings(*m_settings);
+                }
+            }
         }
         if (!name.isEmpty()) {
             m_lastAirPodsName = name;
+            if (m_deviceInfo) {
+                m_deviceInfo->setDeviceName(name);
+            }
         }
     }
 
@@ -910,28 +1023,25 @@ private slots:
         }
     }
 
-    // Gated on the last probe answer, so pods that are merely away cannot restart the ladder every tick.
     void checkControlLinkWatchdog()
     {
-        if (ControlReconnect::shouldRescanFromWatchdog(
-                areAirpodsConnected(), m_controlRecovery.isActive(), m_isSuspending,
-                !m_lastAirPodsAddress.isEmpty())) {
-            if (monitor->checkAlreadyConnectedDevices()) {
-                LOG_INFO("Control link watchdog: swept up AirPods that no BlueZ signal announced");
-            }
+        if (areAirpodsConnected() || m_controlRecovery.isActive() || m_isSuspending) {
             return;
         }
 
-        if (!ControlReconnect::shouldRetryFromWatchdog(
+        if (ControlReconnect::shouldRetryFromWatchdog(
                 areAirpodsConnected(), m_controlRecovery.isActive(), m_isSuspending,
                 !m_lastAirPodsAddress.isEmpty(), m_bluezReportedConnected)) {
+            LOG_INFO("Control link watchdog: last BlueZ probe said connected, retrying "
+                     << m_lastAirPodsAddress);
+            scheduleControlReconnect(m_lastAirPodsAddress, m_lastAirPodsName,
+                                     QStringLiteral("watchdog recheck"));
             return;
         }
 
-        LOG_INFO("Control link watchdog: last BlueZ probe said connected, retrying "
-                 << m_lastAirPodsAddress);
-        scheduleControlReconnect(m_lastAirPodsAddress, m_lastAirPodsName,
-                                 QStringLiteral("watchdog recheck"));
+        if (monitor->checkAlreadyConnectedDevices()) {
+            LOG_INFO("Control link watchdog: swept up AirPods that no BlueZ signal announced");
+        }
     }
 
     void attemptControlReconnect()
@@ -1273,6 +1383,17 @@ private slots:
                     writePacketToSocket(AirPodsPackets::Connection::REQUEST_NOTIFICATIONS, "Request notifications packet written: ");
                 }
             });
+
+            if (mediaController && mediaController->getCurrentMediaState() == MediaController::MediaState::Playing) {
+                LOG_INFO("Media is playing on connect: sending Apple Handoff CLAIM");
+                m_lastClaimTimer.restart();
+                writePacketToSocket(AirPodsPackets::OwnsConnection::CLAIM, "Sent Apple Handoff CLAIM packet: ");
+                QString addr = getAirPodsAddress();
+                if (!addr.isEmpty()) {
+                    QString sinkMac = addr;
+                    mediaController->activateA2dpProfileWithRetry(sinkMac.replace(":", "_"));
+                }
+            }
         }
         // Magic Cloud Keys Response
         else if (data.startsWith(AirPodsPackets::MagicPairing::MAGIC_CLOUD_KEYS_HEADER))
@@ -1352,6 +1473,80 @@ private slots:
             {
                 m_deviceInfo->setOneBudANCMode(value.value());
                 LOG_DEBUG("One Bud ANC mode received: " << m_deviceInfo->oneBudANCMode());
+            }
+        }
+        // Audio Source Notification (Apple Handoff active source)
+        else if (data.startsWith(AirPodsPackets::Parse::AUDIO_SOURCE))
+        {
+            auto info = AirPodsPackets::AudioSource::parse(data);
+            if (info.isValid)
+            {
+                QByteArray localMac = getLocalReversedMac();
+                bool isOtherDevice = (info.deviceMac != localMac);
+
+                QString typeStr = (info.type == AirPodsPackets::AudioSource::NONE) ? "NONE" :
+                                 (info.type == AirPodsPackets::AudioSource::CALL) ? "CALL" : "MEDIA";
+                LOG_INFO("Audio source update: device=" << info.deviceMac.toHex() << " type=" << typeStr
+                         << " otherDevice=" << isOtherDevice);
+
+                if (isOtherDevice)
+                {
+                    bool isNewInterruption = false;
+
+                    if (info.type == AirPodsPackets::AudioSource::CALL)
+                    {
+                        // Phone call on another device ALWAYS interrupts Linux media
+                        isNewInterruption = true;
+                    }
+                    else if (info.type == AirPodsPackets::AudioSource::MEDIA)
+                    {
+                        // Another device newly started playback (NONE -> MEDIA transition)
+                        // and we didn't just initiate a claim ourselves in the last 4 seconds
+                        bool recentlyClaimed = (m_lastClaimTimer.isValid() && m_lastClaimTimer.elapsed() < 4000);
+                        if (!recentlyClaimed && m_lastOtherDeviceSourceType == AirPodsPackets::AudioSource::NONE)
+                        {
+                            isNewInterruption = true;
+                        }
+                    }
+
+                    m_lastOtherDeviceSourceType = info.type;
+
+                    if (isNewInterruption)
+                    {
+                        if (mediaController && mediaController->getCurrentMediaState() == MediaController::MediaState::Playing)
+                        {
+                            LOG_INFO("AirPods audio interrupted by other device (" << typeStr << "): pausing Linux playback");
+                            mediaController->pause();
+                            m_interruptedByOtherDevice = true;
+                        }
+                    }
+                    else if (info.type == AirPodsPackets::AudioSource::NONE)
+                    {
+                        if (m_interruptedByOtherDevice)
+                        {
+                            LOG_INFO("Other device released AirPods audio: reclaiming and resuming playback");
+                            m_interruptedByOtherDevice = false;
+                            if (socket && socket->isOpen()) {
+                                m_lastClaimTimer.restart();
+                                writePacketToSocket(AirPodsPackets::OwnsConnection::CLAIM, "Sent Apple Handoff CLAIM packet on release: ");
+                                QString addr = getAirPodsAddress();
+                                if (!addr.isEmpty()) {
+                                    QString sinkMac = addr;
+                                    mediaController->activateA2dpProfileWithRetry(sinkMac.replace(":", "_"));
+                                }
+                                mediaController->play();
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    if (info.type == AirPodsPackets::AudioSource::MEDIA)
+                    {
+                        m_lastOtherDeviceSourceType = AirPodsPackets::AudioSource::NONE;
+                        m_interruptedByOtherDevice = false;
+                    }
+                }
             }
         }
         else
@@ -1520,13 +1715,33 @@ private slots:
 
 public:
     void handleMediaStateChange(MediaController::MediaState state) {
-        // Grabbing the pods off whatever holds them is the cross-device feature, not a
-        // side effect of local playback: without this gate the box fights Apple's own
-        // automatic switching and the pods flap between here and the other device.
-        if (state == MediaController::MediaState::Playing && CrossDevice.isEnabled) {
-            LOG_INFO("Media started playing, taking over audio for cross-device");
-            sendDisconnectRequestToAndroid();
-            connectToAirPods(true);
+        if (state == MediaController::MediaState::Playing) {
+            m_lastClaimTimer.restart();
+            m_interruptedByOtherDevice = false;
+            if (mediaController) {
+                mediaController->clearPausedServices();
+            }
+            QString addr = getAirPodsAddress();
+            if (socket && socket->isOpen()) {
+                LOG_INFO("Media started playing on Linux: sending Apple Handoff CLAIM");
+                writePacketToSocket(AirPodsPackets::OwnsConnection::CLAIM, "Sent Apple Handoff CLAIM packet: ");
+                if (!addr.isEmpty() && mediaController && !mediaController->isActiveOutputDeviceAirPods()) {
+                    QString sinkMac = addr;
+                    mediaController->activateA2dpProfileWithRetry(sinkMac.replace(":", "_"));
+                }
+            } else {
+                LOG_INFO("Media started playing on Linux and AirPods not connected: initiating handoff connection");
+                connectAirPods();
+            }
+            if (CrossDevice.isEnabled) {
+                sendDisconnectRequestToAndroid();
+                connectToAirPods(true);
+            }
+        } else if (state == MediaController::MediaState::Paused || state == MediaController::MediaState::Stopped) {
+            LOG_DEBUG("Media playback paused/stopped on Linux");
+            if (socket && socket->isOpen()) {
+                writePacketToSocket(AirPodsPackets::OwnsConnection::RELEASE, "Sent Apple Handoff RELEASE packet: ");
+            }
         }
     }
 
@@ -1555,6 +1770,7 @@ public:
             return;
         }
 
+        QString addr = getAirPodsAddress();
         if (force) {
             LOG_INFO("Forcing connection to AirPods");
             // Async: don't block UI on bluetoothctl. Once it finishes, walk
@@ -1574,7 +1790,7 @@ public:
                             }
                         }
                     });
-            proc->start("bluetoothctl", QStringList() << "connect" << m_deviceInfo->bluetoothAddress());
+            proc->start("bluetoothctl", QStringList() << "connect" << addr);
             return;
         }
         QBluetoothLocalDevice localDevice;
@@ -1594,6 +1810,11 @@ public:
         connectToPhone();
 
         m_deviceInfo->loadFromSettings(*m_settings);
+        if (!m_deviceInfo->bluetoothAddress().isEmpty()) {
+            m_lastAirPodsAddress = m_deviceInfo->bluetoothAddress();
+        } else {
+            getAirPodsAddress();
+        }
         // Unreachable with the pods already connected: the constructor returns before this.
         m_bleManager->startScan();
     }
@@ -1648,6 +1869,9 @@ private:
     bool m_disconnectFinalized = false;
     QString m_lastAirPodsAddress;
     QString m_lastAirPodsName;
+    bool m_interruptedByOtherDevice = false;
+    QElapsedTimer m_lastClaimTimer;
+    AirPodsPackets::AudioSource::Type m_lastOtherDeviceSourceType = AirPodsPackets::AudioSource::NONE;
 
     // Reliability counters — process-lifetime totals, logged on quit.
     // Exposed to QML readers via the public getters below.
