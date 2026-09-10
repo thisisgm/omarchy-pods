@@ -8,7 +8,7 @@ Item {
 
   property real iconSize: 16
   property color color: Color.foreground
-  // One of "buds", "pro" or "max"; anything else draws the plain buds.
+  // One of "buds", "pro", "max" or "powerbeats"; anything else draws the plain buds.
   property string variant: "buds"
 
   implicitWidth: iconSize
@@ -16,17 +16,19 @@ Item {
 
   readonly property bool isPro: variant === "pro"
   readonly property bool isMax: variant === "max"
+  readonly property bool isPowerbeats: variant === "powerbeats"
 
   // Apple's artboards sit the outline low, so the glyph is fitted to its ink box instead: x, y, width, height in artboard units.
-  readonly property var ink: isPro ? [0.25, 26.25, 37.5, 25.75]
+  readonly property var ink: isPowerbeats ? [2, 4, 60, 42]
+    : isPro ? [0.25, 26.25, 37.5, 25.75]
     : isMax ? [0, 12, 34, 38]
     : [10.5, 26.5, 35, 25.5]
 
   readonly property real fit: iconSize / Math.max(ink[2], ink[3])
 
   Shape {
-    width: root.isPro ? 38 : root.isMax ? 34 : 56
-    height: root.isPro ? 56 : root.isMax ? 54 : 56
+    width: root.isPowerbeats ? 64 : root.isPro ? 38 : root.isMax ? 34 : 56
+    height: root.isPowerbeats ? 48 : root.isPro ? 56 : root.isMax ? 54 : 56
     // Ink origin to zero, then scale about zero, then centre: applied in list order.
     transform: [
       Translate { x: -root.ink[0]; y: -root.ink[1] },
@@ -49,9 +51,21 @@ Item {
       strokeWidth: -1
       // SVG fills non-zero, and the ear-tip holes are wound against their outline.
       fillRule: ShapePath.WindingFill
-      PathSvg { path: root.isPro ? root.proPath : root.isMax ? root.maxPath : root.budsPath }
+      PathSvg { path: root.isPowerbeats ? root.powerbeatsBodyPath : root.isPro ? root.proPath : root.isMax ? root.maxPath : root.budsPath }
+    }
+
+    ShapePath {
+      fillColor: "transparent"
+      strokeColor: root.isPowerbeats ? root.color : "transparent"
+      strokeWidth: root.isPowerbeats ? 4 : -1
+      capStyle: ShapePath.RoundCap
+      joinStyle: ShapePath.RoundJoin
+      PathSvg { path: root.isPowerbeats ? root.powerbeatsHookPath : "" }
     }
   }
+
+  readonly property string powerbeatsBodyPath: "M15 27C10 27 7 31 8 36C9 42 16 46 23 45C29 44 32 40 30 35C28 30 21 27 15 27ZM49 27C54 27 57 31 56 36C55 42 48 46 41 45C35 44 32 40 34 35C36 30 43 27 49 27Z"
+  readonly property string powerbeatsHookPath: "M28 32C26 18 20 6 11 5C3 4 0 11 3 19C6 27 13 32 22 33M36 32C38 18 44 6 53 5C61 4 64 11 61 19C58 27 51 32 42 33"
 
   // Outlines from the chapter nav on apple.com/airpods, one compound path each.
   readonly property string budsPath: "m19.0472 41.6014c1.6961-.5435 2.9684-1.3377 3.919-2.056v10.4647c0 .9404-.6801 1.9622-1.8118 1.9622-.2141 0-.1549.0113-.3796.0174-.775.0211-1.1255.0034-1.5764.0034-.9556 0-1.7321-1.0078-1.7321-1.9777 0 0-.0016-7.9666 0-8.0062.4363-.0114.8535-.1424 1.2629-.331.1063-.0298.2115-.0428.3179-.0768zm18.0461.0339c-.0471-.0142-.0937-.019-.1409-.0341-1.7379-.5568-3.0299-1.3768-3.9874-2.1087v10.5175c0 .9404.6801 1.9622 1.8118 1.9622.2141 0 .1549.0113.3796.0174.775.0211 1.1255.0034 1.5764.0034.9556 0 1.7321-1.0078 1.7321-1.9777 0 0 .0016-7.9666 0-8.0062-.4745-.0125-.9279-.1561-1.3716-.3739zm-12.5212-12.5755c.9158 1.1893 1.5012 2.3614 1.3384 4.244-.1558 1.8013-1.3522 3.5998-2.239 4.3652-.9412.8124-2.4403 2.1826-4.929 2.9799-.7896.2527-1.5126.3544-2.1636.3544-2.2127 0-3.5976-1.174-3.9654-1.5866-1.0698-1.2002-1.8559-3.7706-1.9491-5.3096-.1656-2.7333 3.1243-5.1079 4.5956-6.0765 1.8171-1.1962 3.7536-1.4531 4.7993-1.4531.0432 0 .0848.0004.1248.0012.8009.0165 2.6014.1611 4.3879 2.481zm-10.8064 6.4711c-.6333-1.8826-1.3741-2.6064-1.6801-2.0209-.407.7787.085 4.116 1.5193 5.1174.478.3337.9317-.8051.1608-3.0966zm5.6478-2.6104-.0461-.0631c-.2833-.3875-.8322-.4728-1.2197-.1895l-.8845.5593c-.3875.2833-.4728.8321-.1895 1.2196l.0461.0631c.2833.3875.8322.4728 1.2197.1895l.8845-.5593c.3875-.2833.4728-.8321.1895-1.2196zm25.9221 1.1866c-.0932 1.5389-.8792 4.1094-1.949 5.3096-.3679.4126-1.7527 1.5866-3.9654 1.5866-.6511 0-1.374-.1017-2.1636-.3544-2.4887-.7974-3.9878-2.1675-4.929-2.9799-.8867-.7654-2.0832-2.564-2.239-4.3652-.1628-1.8826.4225-3.0547 1.3384-4.244 1.7866-2.3199 3.587-2.4645 4.388-2.481.04-.0008.0816-.0012.1248-.0012 1.0457 0 2.9822.2568 4.7993 1.4531 1.4714.9686 4.7612 3.3433 4.5956 6.0765zm-6.5988-.8799-.8845-.5593c-.3875-.2833-.9363-.198-1.2197.1895l-.0461.0631c-.2833.3875-.1981.9363.1895 1.2196l.8845.5593c.3875.2833.9363.1981 1.2197-.1895l.0461-.0631c.2833-.3875.198-.9363-.1895-1.2196zm5.1776.2828c-.306-.5855-1.0468.1383-1.6801 2.0209-.7709 2.2914-.3172 3.4302.1608 3.0966 1.4344-1.0014 1.9263-4.3387 1.5193-5.1174z"
