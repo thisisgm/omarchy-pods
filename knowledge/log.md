@@ -61,3 +61,11 @@ than quietly rewritten.
 - Two claims that looked like defects and were not, both settled on the box: the
   daemon does remove `status.json` when systemd stops it, and a `FileView` does
   pick up a file created after the shell started.
+
+## 2026-09-10
+
+- `airpods-pro-3-has-no-off-mode` renamed to `airpods-pro-3-off-mode` and
+  rewritten. A Pro 3 on current firmware accepts the Off packet and reports
+  `noise_mode` 0 back, reversing the 2026-08-16 reading. The model rule in
+  `supportsNoiseOff` that hid the row is gone, and `tst_enums` pins the new
+  behaviour.

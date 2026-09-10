@@ -228,6 +228,12 @@ private slots:
         }
     }
 
+    // Measured on an AirPods Pro 3 (A3064): the Off packet applies and the pods report noise_mode 0 back.
+    void supportsNoiseOff_holdsForPro3()
+    {
+        QVERIFY(supportsNoiseOff(AirPodsModel::AirPodsPro3));
+    }
+
 private:
     QString m_assetsDir;
 };
