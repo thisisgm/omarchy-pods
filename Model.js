@@ -193,9 +193,10 @@ function earDetectionVerb(behavior) {
   return verbs[behavior]
 }
 
-function earDetectionName(behavior) {
-  if (behavior === EAR_PAUSE_ONE_OUT) return "Pause when one is out"
-  if (behavior === EAR_PAUSE_BOTH_OUT) return "Pause when both are out"
+// A headset has no pods to take out, so the same daemon rules get named for a thing worn on the head.
+function earDetectionName(behavior, isHeadset) {
+  if (behavior === EAR_PAUSE_ONE_OUT) return isHeadset ? "Pause when either side is off" : "Pause when one is out"
+  if (behavior === EAR_PAUSE_BOTH_OUT) return isHeadset ? "Pause when taken off" : "Pause when both are out"
   if (behavior === EAR_DISABLED) return "Never pause"
   return "Unknown"
 }

@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS }"
+  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, earDetectionName, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS }"
 )()
 
 let failures = 0
@@ -68,6 +68,12 @@ check("noise verb for an unknown mode is empty", Model.noiseModeVerb(Model.NOISE
 check("noise verb past the end is empty", Model.noiseModeVerb(4), "")
 check("ear verb for never pause", Model.earDetectionVerb(2), "ear:off")
 check("ear verb past the end is empty", Model.earDetectionVerb(3), "")
+
+// Ear detection labels, which are the only thing a headset changes about this row.
+check("earbuds name the pods", Model.earDetectionName(Model.EAR_PAUSE_ONE_OUT, false), "Pause when one is out")
+check("a headset never mentions pods", Model.earDetectionName(Model.EAR_PAUSE_ONE_OUT, true), "Pause when either side is off")
+check("a headset reads both-out as taken off", Model.earDetectionName(Model.EAR_PAUSE_BOTH_OUT, true), "Pause when taken off")
+check("never pause reads the same either way", Model.earDetectionName(Model.EAR_DISABLED, true), "Never pause")
 
 // Meter and label edges.
 check("an unknown level draws an empty track", Model.levelFraction(Model.LEVEL_UNKNOWN), 0)

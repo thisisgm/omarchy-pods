@@ -351,7 +351,7 @@ Panel {
               width: parent.width
               rowName: "ear"
               label: "Ear detection"
-              value: Model.earDetectionName(pods.earDetectionBehavior)
+              value: Model.earDetectionName(pods.earDetectionBehavior, pods.isHeadset)
             }
           }
 
