@@ -56,6 +56,8 @@ bool BluetoothMonitor::isAirPodsDevice(const QString &devicePath)
     QDBusInterface deviceInterface("org.bluez", devicePath, "org.freedesktop.DBus.Properties", m_dbus);
     QDBusReply<QVariant> uuidsReply = deviceInterface.call("Get", "org.bluez.Device1", "UUIDs");
     if (!uuidsReply.isValid()) {
+        LOG_WARN("BlueZ UUID query failed for " << devicePath << ": "
+                                                << uuidsReply.error().message());
         return false;
     }
     QStringList uuids = uuidsReply.value().toStringList();
@@ -72,14 +74,33 @@ QString BluetoothMonitor::getDeviceName(const QString &devicePath)
     return "Unknown";
 }
 
-bool BluetoothMonitor::checkAlreadyConnectedDevices()
+void BluetoothMonitor::checkAlreadyConnectedDevices(const QString &logOnFound)
 {
+    // A blocking call would stall the event loop for the whole timeout against a wedged
+    // bluetoothd, and the watchdog repeats this every 30 s while the control link is down.
+    if (m_sweepInFlight) {
+        return;
+    }
+
     // QDBusInterface introspects the remote object from its constructor on the default 25 s
     // timeout, so setTimeout on the interface cannot bound this. Build the call directly.
     QDBusMessage request = QDBusMessage::createMethodCall(
         "org.bluez", "/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects");
-    QDBusMessage reply = m_dbus.call(request, QDBus::Block, sweepTimeoutMs);
+    auto *watcher = new QDBusPendingCallWatcher(m_dbus.asyncCall(request, sweepTimeoutMs), this);
+    m_sweepInFlight = true;
 
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [this, logOnFound](QDBusPendingCallWatcher *call) {
+                m_sweepInFlight = false;
+                call->deleteLater();
+                if (consumeSweepReply(call->reply()) && !logOnFound.isEmpty()) {
+                    LOG_INFO(qUtf8Printable(logOnFound));
+                }
+            });
+}
+
+bool BluetoothMonitor::consumeSweepReply(const QDBusMessage &reply)
+{
     if (reply.type() == QDBusMessage::ErrorMessage)
     {
         // Keyed on the name as well, since an error reply carrying no string reads empty.
@@ -193,6 +214,7 @@ void BluetoothMonitor::onPropertiesChanged(const QDBusMessage &message)
     QDBusInterface deviceInterface("org.bluez", path, "org.freedesktop.DBus.Properties", m_dbus);
     QDBusReply<QVariant> addrReply = deviceInterface.call("Get", "org.bluez.Device1", "Address");
     if (!addrReply.isValid()) {
+        LOG_WARN("BlueZ Address query failed for " << path << ": " << addrReply.error().message());
         return;
     }
 

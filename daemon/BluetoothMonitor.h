@@ -15,7 +15,8 @@ public:
     explicit BluetoothMonitor(QObject *parent = nullptr);
     ~BluetoothMonitor() override;
 
-    bool checkAlreadyConnectedDevices();
+    // Logs logOnFound when the sweep adopts something, so each caller names its own reason.
+    void checkAlreadyConnectedDevices(const QString &logOnFound = QString());
     void probeDeviceConnected(const QString &macAddress, quint64 requestId);
 
 signals:
@@ -34,9 +35,12 @@ private:
     QDBusConnection m_dbus;
     // The watchdog repeats the sweep, so only a change of error is worth logging again.
     QString m_lastSweepError;
+    // One sweep at a time, since the watchdog fires again every 30 s while the link is down.
+    bool m_sweepInFlight = false;
     void registerDBusService();
     bool isAirPodsDevice(const QString &devicePath);
     QString getDeviceName(const QString &devicePath);
+    bool consumeSweepReply(const QDBusMessage &reply);
 };
 
 #endif // BLUETOOTHMONITOR_H

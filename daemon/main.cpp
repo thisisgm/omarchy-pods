@@ -910,28 +910,25 @@ private slots:
         }
     }
 
-    // Gated on the last probe answer, so pods that are merely away cannot restart the ladder every tick.
+    // The ladder is retried only on the last probe answer, so pods merely away cannot restart it.
     void checkControlLinkWatchdog()
     {
-        if (ControlReconnect::shouldRescanFromWatchdog(
-                areAirpodsConnected(), m_controlRecovery.isActive(), m_isSuspending,
-                !m_lastAirPodsAddress.isEmpty())) {
-            if (monitor->checkAlreadyConnectedDevices()) {
-                LOG_INFO("Control link watchdog: swept up AirPods that no BlueZ signal announced");
-            }
-            return;
-        }
-
-        if (!ControlReconnect::shouldRetryFromWatchdog(
+        if (ControlReconnect::shouldRetryFromWatchdog(
                 areAirpodsConnected(), m_controlRecovery.isActive(), m_isSuspending,
                 !m_lastAirPodsAddress.isEmpty(), m_bluezReportedConnected)) {
+            LOG_INFO("Control link watchdog: last BlueZ probe said connected, retrying "
+                     << m_lastAirPodsAddress);
+            scheduleControlReconnect(m_lastAirPodsAddress, m_lastAirPodsName,
+                                     QStringLiteral("watchdog recheck"));
             return;
         }
 
-        LOG_INFO("Control link watchdog: last BlueZ probe said connected, retrying "
-                 << m_lastAirPodsAddress);
-        scheduleControlReconnect(m_lastAirPodsAddress, m_lastAirPodsName,
-                                 QStringLiteral("watchdog recheck"));
+        // A pair BlueZ already holds emits no transition here, so only a sweep can find it.
+        if (ControlReconnect::shouldRescanFromWatchdog(
+                areAirpodsConnected(), m_controlRecovery.isActive(), m_isSuspending)) {
+            monitor->checkAlreadyConnectedDevices(
+                QStringLiteral("Control link watchdog: swept up AirPods that no BlueZ signal announced"));
+        }
     }
 
     void attemptControlReconnect()

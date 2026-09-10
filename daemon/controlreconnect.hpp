@@ -37,12 +37,12 @@ inline bool shouldRetryFromWatchdog(bool controlSocketConnected, bool recoveryAc
            && haveAddress && bluezReportedConnected;
 }
 
-// A cold start before BlueZ has an adapter learns no address, and BlueZ emits no Connected
-// transition for a device whose object is created already connected, so nothing else fires.
+// BlueZ emits no Connected transition for a device whose object is created already connected
+// (cold start before the adapter, an adapter power cycle, a second pair), so an idle daemon polls.
 inline bool shouldRescanFromWatchdog(bool controlSocketConnected, bool recoveryActive,
-                                     bool suspending, bool haveAddress)
+                                     bool suspending)
 {
-    return !controlSocketConnected && !recoveryActive && !suspending && !haveAddress;
+    return !controlSocketConnected && !recoveryActive && !suspending;
 }
 
 inline int delayMs(int attempt, int jitterMs)
