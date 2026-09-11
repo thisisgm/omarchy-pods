@@ -13,6 +13,7 @@ Item {
   property string deviceName: ""
   property string modelName: ""
   property bool isProSeries: false
+  property bool isPowerbeats: false
   property bool isHeadset: false
   property bool supportsNoiseOff: true
   property bool supportsNoiseControl: true
@@ -98,6 +99,7 @@ Item {
     deviceName = status.deviceName
     modelName = status.modelName
     isProSeries = status.isProSeries
+    isPowerbeats = status.isPowerbeats
     isHeadset = status.isHeadset
     supportsNoiseOff = status.supportsNoiseOff
     supportsNoiseControl = status.supportsNoiseControl

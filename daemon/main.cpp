@@ -1750,6 +1750,7 @@ public:
         status.insert("model_name", d ? modelDisplayName(d->model()) : QString());
         status.insert("model_int", d ? static_cast<int>(d->model()) : 0);
         status.insert("is_pro_series", d ? isProSeriesAirPods(d->model()) : false);
+        status.insert("is_powerbeats", d ? isPowerbeats(d->model()) : false);
         // The panel needs the shape before any battery packet has arrived.
         status.insert("is_headset", d ? isModelHeadset(d->model()) : false);
         status.insert("supports_noise_off", d ? supportsNoiseOff(d->model()) : true);

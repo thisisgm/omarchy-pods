@@ -5,7 +5,7 @@
   "version": "1.3.6",
   "author": "GM",
   "license": "MIT",
-  "description": "AirPods in the Omarchy bar: per-pod and case battery, listening mode, adaptive noise level, conversation awareness, one-bud ANC and ear detection.",
+  "description": "AirPods and Powerbeats Pro in the Omarchy bar: per-pod and case battery, listening mode, adaptive noise level, conversation awareness, one-bud ANC and ear detection.",
   "kinds": [
     "bar-widget"
   ],
@@ -26,7 +26,7 @@
       {
         "key": "hideWhenDisconnected",
         "type": "boolean",
-        "label": "Hide the icon when no AirPods are connected",
+        "label": "Hide the icon when no supported earbuds are connected",
         "defaultValue": true
       },
       {
