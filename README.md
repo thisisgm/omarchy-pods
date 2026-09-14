@@ -261,6 +261,7 @@ a modified copy of his work, and this panel is a display for it.
 ## Support
 
 If this saved you an afternoon, you can
+[sponsor me on GitHub](https://github.com/sponsors/thisisgm) or
 [buy me a coffee](https://buymeacoffee.com/thisisgm).
 
 ## Licence
