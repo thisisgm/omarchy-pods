@@ -17,6 +17,11 @@
 
 // Long enough to outlast an ANC or transparency reconfigure, short enough not to strand playback.
 static constexpr int bothPodsOutSettleMs = 1200;
+// A pod that drops out and returns inside this window was never really removed: AirPods
+// misreport a single pod during ANC changes, a reseat, or a brush against the stem. Pausing
+// on that flap tears a playing stream down and puts it back a beat later, which some players
+// never recover from, so the removal has to hold for this long before it counts.
+static constexpr int podOutSettleMs = 1200;
 
 MediaController::MediaController(QObject *parent) : QObject(parent) {
   m_pulseAudio = new PulseAudioController(this);
@@ -100,9 +105,41 @@ void MediaController::handleEarDetection(EarDetection *earDetection)
   {
     if (getCurrentMediaState() == Playing)
     {
-      LOG_DEBUG("Pausing playback for ear detection");
-      pause();
+      // Keep the first deadline, so a pod reported out repeatedly cannot defer the pause forever.
+      if (!m_podOutPending)
+      {
+        m_podOutPending = true;
+        QTimer::singleShot(podOutSettleMs, this, [this, earDetection]() {
+          m_podOutPending = false;
+          if (earDetectionBehavior == Disabled)
+            return;
+
+          // Re-read rather than trust the report that armed this: a pod back in the ear
+          // by now means the removal was a flap, and pausing would be wrong.
+          const bool primaryStillIn = earDetection->isPrimaryInEar();
+          const bool secondaryStillIn = earDetection->isSecondaryInEar();
+          const bool stillRemoved = (earDetectionBehavior == PauseWhenOneRemoved)
+                                        ? (!primaryStillIn || !secondaryStillIn)
+                                        : (!primaryStillIn && !secondaryStillIn);
+          if (!stillRemoved)
+          {
+            LOG_DEBUG("Pod returned within the settle window, not pausing");
+            return;
+          }
+
+          if (!isActiveOutputDeviceAirPods() || getCurrentMediaState() != Playing)
+            return;
+
+          LOG_DEBUG("Pausing playback for ear detection");
+          pause();
+        });
+      }
     }
+  }
+  else if (shouldResume)
+  {
+    // Both pods are back, so a pause still waiting on its deadline has nothing left to act on.
+    m_podOutPending = false;
   }
 
   // Then handle device profile switching, with both pods out already returned above

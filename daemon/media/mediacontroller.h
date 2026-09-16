@@ -72,6 +72,9 @@ private:
   QString m_cachedA2dpProfile;
   quint64 m_earDetectionGeneration = 0;
   bool m_earOutPending = false;
+  // Same idea as m_earOutPending, for the single-pod path: one deadline per removal,
+  // so a pod reported out every few packets cannot defer the pause forever.
+  bool m_podOutPending = false;
   // A queued retry compares its captured generation against this, so a superseded chain stops.
   quint64 m_a2dpRetryGeneration = 0;
   bool m_wirePlumberRestartedThisChain = false;
