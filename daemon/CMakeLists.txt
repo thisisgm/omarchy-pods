@@ -46,6 +46,7 @@ qt_add_executable(librepods
     media/playerstatuswatcher.h
     systemsleepmonitor.hpp
     controlreconnect.hpp
+    scanduty.hpp
 )
 
 set_source_files_properties(Theme.qml PROPERTIES
