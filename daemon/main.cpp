@@ -1216,6 +1216,14 @@ private slots:
                 });
 
         localSocket->connectToService(device.address(), QBluetoothUuid("74ec2172-0bad-4d01-8f77-997b2be0722a"));
+        // Recovery can land on another pair, and the old pair's battery and ear state would read as this one's.
+        const QString previousAddress = m_deviceInfo->bluetoothAddress();
+        if (!previousAddress.isEmpty()
+            && previousAddress.compare(device.address().toString(), Qt::CaseInsensitive) != 0) {
+            LOG_INFO("Control link moved from " << previousAddress << " to "
+                     << device.address().toString() << ", clearing the previous pair's state");
+            m_deviceInfo->reset();
+        }
         m_deviceInfo->setBluetoothAddress(device.address().toString());
         notifyAndroidDevice();
     }
