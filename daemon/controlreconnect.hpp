@@ -28,6 +28,12 @@ inline constexpr int connectedAttemptLimit = 10;
 // BlueZ can settle into Device1::Connected without emitting another transition, so an exhausted session needs a poll to notice.
 inline constexpr int watchdogIntervalMs = 30000;
 
+// A healthy link reports battery within two seconds of the handshake, so five is past the notification retry.
+inline constexpr int statusWaitMs = 5000;
+
+// Three re-sent handshakes is twenty seconds of silence, long past any link that was going to answer.
+inline constexpr int statusHandshakeResendLimit = 3;
+
 // The watchdog is only for a control link that died while BlueZ kept the device; every other state must stay silent.
 inline bool shouldRetryFromWatchdog(bool controlSocketConnected, bool recoveryActive,
                                     bool suspending, bool haveAddress,

@@ -21,6 +21,7 @@
 #include <QQuickWindow>
 #include <QLoggingCategory>
 #include <QThread>
+#include <QPointer>
 #include <QTimer>
 #include <QProcess>
 #include <QRegularExpression>
@@ -791,6 +792,31 @@ private slots:
         writePacketToSocket(AirPodsPackets::Connection::HANDSHAKE, "Handshake packet written: ");
     }
 
+    // A link that never reports battery or ear state leaves the bar stale and ear detection dead, and nothing else retries it.
+    void armControlStatusWatchdog()
+    {
+        QTimer::singleShot(ControlReconnect::statusWaitMs, this,
+                           [this, armedFor = QPointer<QBluetoothSocket>(socket)]() {
+            // A replacement socket arms its own watchdog.
+            if (!armedFor || armedFor != socket || m_controlStatusSeen) {
+                return;
+            }
+            const QString address = m_deviceInfo->bluetoothAddress();
+            if (!ControlReconnect::hasAttemptRemaining(m_handshakesResent,
+                                                       ControlReconnect::statusHandshakeResendLimit)) {
+                LOG_ERROR("AirPods " << address << " sent no battery or ear status after "
+                          << (m_handshakesResent + 1) << " handshakes, restart librepods to recover");
+                return;
+            }
+            ++m_handshakesResent;
+            LOG_WARN("AirPods " << address << " sent no battery or ear status "
+                     << ControlReconnect::statusWaitMs << "ms after the handshake, re-sending it ("
+                     << m_handshakesResent << "/" << ControlReconnect::statusHandshakeResendLimit << ")");
+            writePacketToSocket(AirPodsPackets::Connection::HANDSHAKE, "Handshake packet written: ");
+            armControlStatusWatchdog();
+        });
+    }
+
     void bluezDeviceConnected(const QString &address, const QString &name)
     {
         rememberAirPodsDevice(address, name);
@@ -1146,7 +1172,10 @@ private slots:
             QByteArray data = localSocket->readAll();
             QMetaObject::invokeMethod(this, "parseData", Qt::QueuedConnection, Q_ARG(QByteArray, data));
             QMetaObject::invokeMethod(this, "relayPacketToPhone", Qt::QueuedConnection, Q_ARG(QByteArray, data)); });
+            m_controlStatusSeen = false;
+            m_handshakesResent = 0;
             sendHandshake();
+            armControlStatusWatchdog();
         };
 
         // Error handler with retry. Per-device member instead of static so
@@ -1277,7 +1306,7 @@ private slots:
             writePacketToSocket(AirPodsPackets::Connection::REQUEST_NOTIFICATIONS, "Request notifications packet written: ");
 
             QTimer::singleShot(2000, this, [this]() {
-                if (m_deviceInfo->batteryStatus().isEmpty()) {
+                if (!m_controlStatusSeen) {
                     writePacketToSocket(AirPodsPackets::Connection::REQUEST_NOTIFICATIONS, "Request notifications packet written: ");
                 }
             });
@@ -1324,12 +1353,14 @@ private slots:
         // Ear Detection
         else if (data.size() == 8 && data.startsWith(AirPodsPackets::Parse::EAR_DETECTION))
         {
+            m_controlStatusSeen = true;
             m_deviceInfo->getEarDetection()->parseData(data);
             mediaController->handleEarDetection(m_deviceInfo->getEarDetection());
         }
         // Battery Status
         else if ((data.size() == 22 || data.size() == 12) && data.startsWith(AirPodsPackets::Parse::BATTERY_STATUS))
         {
+            m_controlStatusSeen = true;
             m_deviceInfo->getBattery()->parsePacket(data);
             m_deviceInfo->updateBatteryStatus();
             LOG_INFO("Battery status: " << m_deviceInfo->batteryStatus());
@@ -1647,6 +1678,9 @@ private:
     QTimer *m_controlWatchdogTimer = nullptr;
     // Last answer BlueZ gave about this device, which is what separates a dead link from absent pods.
     bool m_bluezReportedConnected = false;
+    // Recovery keeps the previous link's DeviceInfo, so only a report on the current socket proves it is talking.
+    bool m_controlStatusSeen = false;
+    int m_handshakesResent = 0;
     QSettings *m_settings;
     AutoStartManager *m_autoStartManager;
     int m_retryAttempts = 3;
