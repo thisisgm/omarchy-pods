@@ -176,7 +176,7 @@ public:
                     LOG_INFO("A2DP profile activation attempted for AirPods found on startup");
                     mediaController->activateA2dpProfileWithRetry(formattedAddress);
                 });
-                return;
+                break;
             }
         }
 
@@ -1594,7 +1594,6 @@ public:
         connectToPhone();
 
         m_deviceInfo->loadFromSettings(*m_settings);
-        // Unreachable with the pods already connected: the constructor returns before this.
         m_bleManager->startScan();
     }
 
