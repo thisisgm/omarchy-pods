@@ -30,6 +30,8 @@ int main(int argc, char *argv[]) {
                             << "  ca:off              Disable Conversation Awareness\n"
                             << "  disconnect          bluetoothctl disconnect on the paired AirPods\n"
                             << "  connect             bluetoothctl connect on the paired AirPods\n"
+                            << "  media-connect:on    Enable Chrome/Chromium/Spotify-triggered connections (default)\n"
+                            << "  media-connect:off   Disable playback-triggered connections\n"
                             << "  adaptive:N          Set Adaptive Noise level 0-100 (Pro2/Pro3, only while noise_mode=Adaptive)\n"
                             << "  onebud:on           Enable One-Bud ANC (Pro2+: keep ANC active with only one pod in)\n"
                             << "  onebud:off          Disable One-Bud ANC\n";
