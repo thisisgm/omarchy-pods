@@ -96,16 +96,53 @@ inline bool isPlaybackProfile(const QVector<ProfileCandidate> &candidates, const
     return false;
 }
 
-// Empty means leave the card as it is. A live codec switch can go unanswered by the AirPods
-// for the 25s D-Bus timeout, and WirePlumber then keeps the profile with no sink behind it.
-inline QString profileToActivate(const QVector<ProfileCandidate> &candidates, const QString &active,
-                                 const QString &lastPlayback)
+// SBC-XQ is SBC at a higher bitpool, so both belong to the SBC family.
+inline QString codecFamily(const ProfileCandidate &c)
+{
+    QString codec = codecFromProfileName(c.name);
+    if (codecBitrateKbps(codec) == 0) {
+        codec = codecFromDescription(c.description);
+    }
+    return codec.startsWith("SBC") ? QStringLiteral("SBC") : codec;
+}
+
+// Sample input: MediaTransport1.Codec, the A2DP codec id from the Bluetooth assigned numbers.
+inline QString codecFamilyFromA2dpId(int id)
+{
+    if (id == 0x00) return QStringLiteral("SBC");
+    if (id == 0x02) return QStringLiteral("AAC");
+    return QString();
+}
+
+struct ProfileDecision {
+    enum Action { Keep, Wait, Activate };
+    Action action;
+    QString profile;
+};
+
+// Asks only for the codec the link already carries: the AirPods can leave a codec switch
+// unanswered for the 25s D-Bus timeout, and WirePlumber then keeps the profile with no sink.
+inline ProfileDecision decideProfile(const QVector<ProfileCandidate> &candidates, const QString &active,
+                                     const QString &linkCodec)
 {
     if (isPlaybackProfile(candidates, active)) {
-        return QString();
+        return {ProfileDecision::Keep, active};
     }
-    if (isPlaybackProfile(candidates, lastPlayback)) {
-        return lastPlayback;
+    if (linkCodec.isEmpty()) {
+        return {ProfileDecision::Wait, QString()};
     }
-    return bestPlaybackProfile(candidates);
+    QVector<ProfileCandidate> sameCodec;
+    for (const ProfileCandidate &c : candidates) {
+        if (codecFamily(c) == linkCodec) {
+            sameCodec.append(c);
+        }
+    }
+    QString profile = bestPlaybackProfile(sameCodec);
+    if (profile.isEmpty()) {
+        profile = bestPlaybackProfile(candidates);
+    }
+    if (profile.isEmpty()) {
+        return {ProfileDecision::Wait, QString()};
+    }
+    return {ProfileDecision::Activate, profile};
 }

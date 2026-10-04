@@ -6,12 +6,15 @@
 #include "playerstatuswatcher.h"
 #include "pulseaudiocontroller.h"
 #include "snaptogrid.hpp"
+#include "../BluetoothMonitor.h"
 
 #include <QDebug>
 #include <QProcess>
 #include <QThread>
 #include <QRegularExpression>
 #include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusInterface>
 #include <QDBusConnectionInterface>
 #include <QTimer>
 
@@ -268,24 +271,23 @@ bool MediaController::activateA2dpProfile() {
 
   const QVector<ProfileCandidate> profiles = m_pulseAudio->getCardProfiles(m_deviceOutputName);
   const QString activeProfile = m_pulseAudio->getActiveCardProfile(m_deviceOutputName);
-  const QString preferredProfile = profileToActivate(profiles, activeProfile, m_lastPlaybackProfile);
-  if (preferredProfile.isEmpty()) {
-    if (!isPlaybackProfile(profiles, activeProfile)) {
-      LOG_ERROR("No suitable A2DP profile found");
-      return false;
-    }
+  const QString codec = linkCodec();
+  const ProfileDecision decision = decideProfile(profiles, activeProfile, codec);
+  if (decision.action == ProfileDecision::Keep) {
     LOG_INFO("A2DP already active on " << activeProfile << " ("
              << profileDescription(profiles, activeProfile) << "), keeping the codec the link negotiated");
-    m_lastPlaybackProfile = activeProfile;
+  } else if (decision.action == ProfileDecision::Wait) {
+    // The retry chain comes back in 1.5s, by when WirePlumber or BlueZ has usually settled the codec.
+    LOG_INFO("No A2DP codec on the link yet, waiting before choosing a profile");
+    return false;
   } else {
-    LOG_INFO("Activating output profile: " << preferredProfile << " ("
-             << profileDescription(profiles, preferredProfile) << ")");
-    if (!m_pulseAudio->setCardProfile(m_deviceOutputName, preferredProfile)) {
-      LOG_ERROR("Failed to activate profile: " << preferredProfile);
+    LOG_INFO("Activating output profile: " << decision.profile << " ("
+             << profileDescription(profiles, decision.profile) << ") for link codec " << codec);
+    if (!m_pulseAudio->setCardProfile(m_deviceOutputName, decision.profile)) {
+      LOG_ERROR("Failed to activate profile: " << decision.profile);
       return false;
     }
-    LOG_INFO("Profile activated: " << preferredProfile);
-    m_lastPlaybackProfile = preferredProfile;
+    LOG_INFO("Profile activated: " << decision.profile);
   }
 
   // AirPods stem swipes write 1/15 steps over AVRCP, so snap them onto the 5% grid.
@@ -295,6 +297,27 @@ bool MediaController::activateA2dpProfile() {
   }
 
   return true;
+}
+
+// Empty while BlueZ has no A2DP transport for the device. Only A2DP transports sit under a sepN path.
+QString MediaController::linkCodec() const {
+  QDBusInterface objectManager("org.bluez", "/", "org.freedesktop.DBus.ObjectManager",
+                               QDBusConnection::systemBus());
+  const QDBusMessage reply = objectManager.call("GetManagedObjects");
+  if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty()) {
+    return QString();
+  }
+  ManagedObjectList objects;
+  reply.arguments().constFirst().value<QDBusArgument>() >> objects;
+  const QString prefix = "/dev_" + QString(connectedDeviceMacAddress).replace(':', '_') + "/sep";
+  for (auto it = objects.constBegin(); it != objects.constEnd(); ++it) {
+    if (!it.key().path().contains(prefix)) continue;
+    const QVariantMap transport = it.value().value("org.bluez.MediaTransport1");
+    if (transport.contains("Codec")) {
+      return codecFamilyFromA2dpId(transport.value("Codec").toInt());
+    }
+  }
+  return QString();
 }
 
 void MediaController::activateA2dpProfileWithRetry(const QString &macAddress) {
@@ -375,12 +398,8 @@ void MediaController::removeAudioOutputDevice() {
   }
 
   // Ear detection fires on every packet, so without this the card is re-released every few seconds.
-  const QString activeProfile = m_pulseAudio->getActiveCardProfile(m_deviceOutputName);
-  if (activeProfile == QStringLiteral("off")) {
+  if (m_pulseAudio->getActiveCardProfile(m_deviceOutputName) == QStringLiteral("off")) {
     return;
-  }
-  if (isPlaybackProfile(m_pulseAudio->getCardProfiles(m_deviceOutputName), activeProfile)) {
-    m_lastPlaybackProfile = activeProfile;
   }
 
   LOG_INFO("Removing AirPods as audio output device");
@@ -390,9 +409,6 @@ void MediaController::removeAudioOutputDevice() {
 }
 
 void MediaController::setConnectedDeviceMacAddress(const QString &macAddress) {
-  if (macAddress != connectedDeviceMacAddress) {
-    m_lastPlaybackProfile.clear();
-  }
   connectedDeviceMacAddress = macAddress;
   m_deviceOutputName = getAudioDeviceName();
   m_cachedA2dpProfile.clear();

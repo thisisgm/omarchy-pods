@@ -16,8 +16,10 @@ private slots:
     void returnsEmptyWhenNothingQualifies();
     void readsTheCodecOutOfAProfileDescription();
     void readsTheCodecOutOfTheProfileNameToo();
-    void keepsTheCodecTheLinkNegotiated();
-    void restoresTheProfileItWasParkedFrom();
+    void keepsAPlaybackProfileAlreadyActive();
+    void picksTheProfileForTheCodecTheLinkCarries();
+    void waitsWhileTheLinkHasNoCodec();
+    void readsTheA2dpCodecId();
 };
 
 static QVector<ProfileCandidate> airPodsCard()
@@ -157,22 +159,36 @@ void TestProfileChoice::readsTheCodecOutOfTheProfileNameToo()
     QCOMPARE(bestPlaybackProfile(translated), QString("a2dp-sink-sbc_xq"));
 }
 
-void TestProfileChoice::keepsTheCodecTheLinkNegotiated()
+void TestProfileChoice::keepsAPlaybackProfileAlreadyActive()
 {
     // A live AAC to SBC switch right after connect went unanswered for 25s in 15 of 69 connects and wedged the sink.
-    QVERIFY(profileToActivate(airPodsCard(), "a2dp-sink", QString()).isEmpty());
-    QVERIFY(profileToActivate(airPodsCard(), "a2dp-sink-sbc", "a2dp-sink").isEmpty());
+    QCOMPARE(decideProfile(airPodsCard(), "a2dp-sink", "AAC").action, ProfileDecision::Keep);
+    QCOMPARE(decideProfile(airPodsCard(), "a2dp-sink-sbc", "SBC").action, ProfileDecision::Keep);
 }
 
-void TestProfileChoice::restoresTheProfileItWasParkedFrom()
+void TestProfileChoice::picksTheProfileForTheCodecTheLinkCarries()
 {
-    // Coming back from `off` on another codec is a codec switch too.
-    QCOMPARE(profileToActivate(airPodsCard(), "off", "a2dp-sink"), QString("a2dp-sink"));
-    // A headset profile is not playback, so it is replaced like `off` is.
-    QCOMPARE(profileToActivate(airPodsCard(), "headset-head-unit", "a2dp-sink"), QString("a2dp-sink"));
-    // With nothing remembered, or a remembered profile the card no longer offers, the highest bitrate wins.
-    QCOMPARE(profileToActivate(airPodsCard(), "off", QString()), QString("a2dp-sink-sbc_xq"));
-    QCOMPARE(profileToActivate(airPodsCard(), "off", "a2dp-sink-gone"), QString("a2dp-sink-sbc_xq"));
+    // 2026-10-04: the card was still `off` 0.5s after connect, and the bitrate rule asked an AAC link for SBC.
+    const ProfileDecision aac = decideProfile(airPodsCard(), "off", "AAC");
+    QCOMPARE(aac.action, ProfileDecision::Activate);
+    QCOMPARE(aac.profile, QString("a2dp-sink"));
+    // An SBC link takes the best SBC profile, SBC-XQ included.
+    QCOMPARE(decideProfile(airPodsCard(), "off", "SBC").profile, QString("a2dp-sink-sbc_xq"));
+    QCOMPARE(decideProfile(airPodsCard(), "headset-head-unit", "AAC").profile, QString("a2dp-sink"));
+    // A codec the card has no profile for falls back to the highest bitrate.
+    QCOMPARE(decideProfile(airPodsCard(), "off", "LDAC").profile, QString("a2dp-sink-sbc_xq"));
+}
+
+void TestProfileChoice::waitsWhileTheLinkHasNoCodec()
+{
+    QCOMPARE(decideProfile(airPodsCard(), "off", QString()).action, ProfileDecision::Wait);
+}
+
+void TestProfileChoice::readsTheA2dpCodecId()
+{
+    QCOMPARE(codecFamilyFromA2dpId(0x00), QString("SBC"));
+    QCOMPARE(codecFamilyFromA2dpId(0x02), QString("AAC"));
+    QVERIFY(codecFamilyFromA2dpId(0xff).isEmpty());
 }
 
 QTEST_GUILESS_MAIN(TestProfileChoice)
