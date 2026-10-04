@@ -915,7 +915,7 @@ private slots:
     {
         if (ControlReconnect::shouldRescanFromWatchdog(
                 areAirpodsConnected(), m_controlRecovery.isActive(), m_isSuspending,
-                !m_lastAirPodsAddress.isEmpty())) {
+                !m_lastAirPodsAddress.isEmpty(), m_disconnectFinalized)) {
             if (monitor->checkAlreadyConnectedDevices()) {
                 LOG_INFO("Control link watchdog: swept up AirPods that no BlueZ signal announced");
             }

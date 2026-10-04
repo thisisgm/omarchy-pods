@@ -39,10 +39,12 @@ inline bool shouldRetryFromWatchdog(bool controlSocketConnected, bool recoveryAc
 
 // A cold start before BlueZ has an adapter learns no address, and BlueZ emits no Connected
 // transition for a device whose object is created already connected, so nothing else fires.
+// A re-paired device raises Connected before its UUIDs mark it as AirPods, so a finalized one needs the sweep too.
 inline bool shouldRescanFromWatchdog(bool controlSocketConnected, bool recoveryActive,
-                                     bool suspending, bool haveAddress)
+                                     bool suspending, bool haveAddress, bool disconnectFinalized)
 {
-    return !controlSocketConnected && !recoveryActive && !suspending && !haveAddress;
+    return !controlSocketConnected && !recoveryActive && !suspending
+           && (!haveAddress || disconnectFinalized);
 }
 
 inline int delayMs(int attempt, int jitterMs)
