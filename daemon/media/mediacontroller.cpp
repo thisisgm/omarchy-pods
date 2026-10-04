@@ -266,23 +266,26 @@ bool MediaController::activateA2dpProfile() {
     }
   }
 
-  QString preferredProfile = getPreferredA2dpProfile();
-  if (preferredProfile.isEmpty()) {
-    LOG_ERROR("No suitable A2DP profile found");
-    return false;
-  }
-
-  // Re-applying the profile already in place tears the live sink down under a playing stream.
+  const QVector<ProfileCandidate> profiles = m_pulseAudio->getCardProfiles(m_deviceOutputName);
   const QString activeProfile = m_pulseAudio->getActiveCardProfile(m_deviceOutputName);
-  if (activeProfile == preferredProfile) {
-    LOG_INFO("Best profile already active: " << activeProfile);
+  const QString preferredProfile = profileToActivate(profiles, activeProfile, m_lastPlaybackProfile);
+  if (preferredProfile.isEmpty()) {
+    if (!isPlaybackProfile(profiles, activeProfile)) {
+      LOG_ERROR("No suitable A2DP profile found");
+      return false;
+    }
+    LOG_INFO("A2DP already active on " << activeProfile << " ("
+             << profileDescription(profiles, activeProfile) << "), keeping the codec the link negotiated");
+    m_lastPlaybackProfile = activeProfile;
   } else {
-    LOG_INFO("Activating best output profile: " << preferredProfile);
+    LOG_INFO("Activating output profile: " << preferredProfile << " ("
+             << profileDescription(profiles, preferredProfile) << ")");
     if (!m_pulseAudio->setCardProfile(m_deviceOutputName, preferredProfile)) {
       LOG_ERROR("Failed to activate profile: " << preferredProfile);
       return false;
     }
     LOG_INFO("Profile activated: " << preferredProfile);
+    m_lastPlaybackProfile = preferredProfile;
   }
 
   // AirPods stem swipes write 1/15 steps over AVRCP, so snap them onto the 5% grid.
@@ -372,8 +375,12 @@ void MediaController::removeAudioOutputDevice() {
   }
 
   // Ear detection fires on every packet, so without this the card is re-released every few seconds.
-  if (m_pulseAudio->getActiveCardProfile(m_deviceOutputName) == QStringLiteral("off")) {
+  const QString activeProfile = m_pulseAudio->getActiveCardProfile(m_deviceOutputName);
+  if (activeProfile == QStringLiteral("off")) {
     return;
+  }
+  if (isPlaybackProfile(m_pulseAudio->getCardProfiles(m_deviceOutputName), activeProfile)) {
+    m_lastPlaybackProfile = activeProfile;
   }
 
   LOG_INFO("Removing AirPods as audio output device");
@@ -383,6 +390,9 @@ void MediaController::removeAudioOutputDevice() {
 }
 
 void MediaController::setConnectedDeviceMacAddress(const QString &macAddress) {
+  if (macAddress != connectedDeviceMacAddress) {
+    m_lastPlaybackProfile.clear();
+  }
   connectedDeviceMacAddress = macAddress;
   m_deviceOutputName = getAudioDeviceName();
   m_cachedA2dpProfile.clear();

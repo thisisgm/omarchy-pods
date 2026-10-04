@@ -70,6 +70,8 @@ private:
   PlayerStatusWatcher *playerStatusWatcher = nullptr;
   PulseAudioController *m_pulseAudio = nullptr;
   QString m_cachedA2dpProfile;
+  // The playback profile last seen live, so a return from `off` keeps the codec. Cleared on a new device.
+  QString m_lastPlaybackProfile;
   quint64 m_earDetectionGeneration = 0;
   bool m_earOutPending = false;
   // A queued retry compares its captured generation against this, so a superseded chain stops.

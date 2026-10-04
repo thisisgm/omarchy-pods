@@ -84,3 +84,28 @@ inline QString bestPlaybackProfile(const QVector<ProfileCandidate> &candidates)
     }
     return best;
 }
+
+// True when the card lists this name as a profile that plays without a microphone.
+inline bool isPlaybackProfile(const QVector<ProfileCandidate> &candidates, const QString &name)
+{
+    for (const ProfileCandidate &c : candidates) {
+        if (c.name == name) {
+            return c.available && c.sinks > 0 && c.sources == 0;
+        }
+    }
+    return false;
+}
+
+// Empty means leave the card as it is. A live codec switch can go unanswered by the AirPods
+// for the 25s D-Bus timeout, and WirePlumber then keeps the profile with no sink behind it.
+inline QString profileToActivate(const QVector<ProfileCandidate> &candidates, const QString &active,
+                                 const QString &lastPlayback)
+{
+    if (isPlaybackProfile(candidates, active)) {
+        return QString();
+    }
+    if (isPlaybackProfile(candidates, lastPlayback)) {
+        return lastPlayback;
+    }
+    return bestPlaybackProfile(candidates);
+}
