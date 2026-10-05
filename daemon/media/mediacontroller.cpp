@@ -277,12 +277,11 @@ bool MediaController::activateA2dpProfile() {
     LOG_INFO("A2DP already active on " << activeProfile << " ("
              << profileDescription(profiles, activeProfile) << "), keeping the codec the link negotiated");
   } else if (decision.action == ProfileDecision::Wait) {
-    // The retry chain comes back in 1.5s, by when WirePlumber or BlueZ has usually settled the codec.
-    LOG_INFO("No A2DP codec on the link yet, waiting before choosing a profile");
+    LOG_WARN("No A2DP playback profile on the card yet");
     return false;
   } else {
     LOG_INFO("Activating output profile: " << decision.profile << " ("
-             << profileDescription(profiles, decision.profile) << ") for link codec " << codec);
+             << profileDescription(profiles, decision.profile) << ") for link codec " << (codec.isEmpty() ? QStringLiteral("none yet") : codec));
     if (!m_pulseAudio->setCardProfile(m_deviceOutputName, decision.profile)) {
       LOG_ERROR("Failed to activate profile: " << decision.profile);
       return false;

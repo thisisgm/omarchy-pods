@@ -18,7 +18,7 @@ private slots:
     void readsTheCodecOutOfTheProfileNameToo();
     void keepsAPlaybackProfileAlreadyActive();
     void picksTheProfileForTheCodecTheLinkCarries();
-    void waitsWhileTheLinkHasNoCodec();
+    void takesPipeWiresChoiceBeforeTheLinkHasACodec();
     void readsTheA2dpCodecId();
 };
 
@@ -179,9 +179,17 @@ void TestProfileChoice::picksTheProfileForTheCodecTheLinkCarries()
     QCOMPARE(decideProfile(airPodsCard(), "off", "LDAC").profile, QString("a2dp-sink-sbc_xq"));
 }
 
-void TestProfileChoice::waitsWhileTheLinkHasNoCodec()
+void TestProfileChoice::takesPipeWiresChoiceBeforeTheLinkHasACodec()
 {
-    QCOMPARE(decideProfile(airPodsCard(), "off", QString()).action, ProfileDecision::Wait);
+    // 2026-10-05: waiting here left a fresh pair on `off` for good, since BlueZ makes no transport until a profile is chosen.
+    const ProfileDecision first = decideProfile(airPodsCard(), "off", QString());
+    QCOMPARE(first.action, ProfileDecision::Activate);
+    QCOMPARE(first.profile, QString("a2dp-sink"));
+    QVector<ProfileCandidate> headsetOnly = {
+        {"off", "Off", 0, true, 0, 0},
+        {"headset-head-unit", "Headset Head Unit (HSP/HFP, codec MSBC)", 6, true, 1, 1},
+    };
+    QCOMPARE(decideProfile(headsetOnly, "off", QString()).action, ProfileDecision::Wait);
 }
 
 void TestProfileChoice::readsTheA2dpCodecId()

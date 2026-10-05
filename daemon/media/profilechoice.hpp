@@ -129,7 +129,20 @@ inline ProfileDecision decideProfile(const QVector<ProfileCandidate> &candidates
         return {ProfileDecision::Keep, active};
     }
     if (linkCodec.isEmpty()) {
-        return {ProfileDecision::Wait, QString()};
+        // No transport yet, so this is the first configuration, not a switch. Take the profile
+        // WirePlumber would pick itself, so the two cannot race to different codecs.
+        QString first;
+        int firstPriority = -1;
+        for (const ProfileCandidate &c : candidates) {
+            if (isPlaybackProfile(candidates, c.name) && c.priority > firstPriority) {
+                firstPriority = c.priority;
+                first = c.name;
+            }
+        }
+        if (first.isEmpty()) {
+            return {ProfileDecision::Wait, QString()};
+        }
+        return {ProfileDecision::Activate, first};
     }
     QVector<ProfileCandidate> sameCodec;
     for (const ProfileCandidate &c : candidates) {
