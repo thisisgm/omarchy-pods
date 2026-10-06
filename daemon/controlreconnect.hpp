@@ -136,4 +136,23 @@ private:
     bool m_restoreBleScan = false;
     std::uint64_t m_generation = 0;
 };
+
+// Recovery re-arms the teardown after every failed ladder, but only a control link that came up has a disconnect to announce.
+class DisconnectToast
+{
+public:
+    void controlLinkUp() { m_pending = true; }
+
+    bool takeOnFinalize(bool suspending)
+    {
+        if (!m_pending || suspending) {
+            return false;
+        }
+        m_pending = false;
+        return true;
+    }
+
+private:
+    bool m_pending = false;
+};
 }

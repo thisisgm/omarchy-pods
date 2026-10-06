@@ -185,6 +185,29 @@ private slots:
         QVERIFY(!session.acceptsProbe(firstProbe));
         QVERIFY(session.acceptsProbe(secondProbe));
     }
+
+    void aRefusedControlLinkAnnouncesNothing()
+    {
+        ControlReconnect::DisconnectToast toast;
+        QVERIFY(!toast.takeOnFinalize(false));
+        QVERIFY(!toast.takeOnFinalize(false));
+    }
+
+    void aDroppedControlLinkAnnouncesOnce()
+    {
+        ControlReconnect::DisconnectToast toast;
+        toast.controlLinkUp();
+        QVERIFY(toast.takeOnFinalize(false));
+        QVERIFY(!toast.takeOnFinalize(false));
+    }
+
+    void aToastSkippedForSuspendStaysPending()
+    {
+        ControlReconnect::DisconnectToast toast;
+        toast.controlLinkUp();
+        QVERIFY(!toast.takeOnFinalize(true));
+        QVERIFY(toast.takeOnFinalize(false));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestControlReconnect)
