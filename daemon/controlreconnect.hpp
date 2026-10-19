@@ -45,6 +45,12 @@ inline bool shouldRescanFromWatchdog(bool controlSocketConnected, bool recoveryA
     return !controlSocketConnected && !recoveryActive && !suspending && !haveAddress;
 }
 
+// Audio keeps playing while BlueZ holds the link, so a refused control socket alone is not a disconnect to announce.
+inline bool shouldAnnounceDisconnect(bool suspending, bool bluezStillConnected)
+{
+    return !suspending && !bluezStillConnected;
+}
+
 inline int delayMs(int attempt, int jitterMs)
 {
     const int boundedAttempt = std::clamp(attempt, 1, maxDoublings);

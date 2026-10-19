@@ -841,7 +841,7 @@ private slots:
                                  QStringLiteral("BlueZ disconnect event"));
     }
 
-    void finalizeDeviceDisconnected(const QString &address)
+    void finalizeDeviceDisconnected(const QString &address, bool bluezStillConnected = false)
     {
         if (m_disconnectFinalized) {
             return;
@@ -866,7 +866,7 @@ private slots:
         // fires PropertiesChanged Connected=false on suspend and the user
         // doesn't want to see "AirPods Disconnected" every time they close
         // the lid. Tray icon still resets so visual state is accurate.
-        if (!m_isSuspending) {
+        if (ControlReconnect::shouldAnnounceDisconnect(m_isSuspending, bluezStillConnected)) {
             m_notifier->notify(
                 tr("AirPods Disconnected"),
                 tr("Your AirPods have been disconnected"));
@@ -1003,7 +1003,7 @@ private slots:
             LOG_INFO("AirPods stayed disconnected through control recovery, finalizing "
                      << m_lastAirPodsAddress);
         }
-        finalizeDeviceDisconnected(m_lastAirPodsAddress);
+        finalizeDeviceDisconnected(m_lastAirPodsAddress, deviceStillConnected);
     }
 
     void finishControlRecovery()
