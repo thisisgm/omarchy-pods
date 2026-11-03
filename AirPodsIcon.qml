@@ -1,13 +1,14 @@
 import QtQuick
 import QtQuick.Shapes
 import qs.Commons
+import qs.Commons as Commons
 
 // The mark is whichever AirPods the daemon reports, drawn from Apple's own product outlines.
 Item {
   id: root
 
   property real iconSize: 16
-  property color color: Color.foreground
+  property color color: Commons.Color.foreground
   // One of "buds", "pro" or "max"; anything else draws the plain buds.
   property string variant: "buds"
 
