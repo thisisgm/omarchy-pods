@@ -200,6 +200,12 @@ to run before the plugin directory goes.
 owner only and both go with the plugin. `~/.local/state/librepods/status.json` is the
 published status line the panel reads, and it goes too.
 
+For a temporary removal before reinstalling, you can explicitly keep the daemon's
+saved credentials and preferences: replace the `rm -rf` line above with
+`rm -rf ~/.local/state/librepods`. This leaves `~/.config/AirPodsTrayApp` in place,
+including its pairing secrets, so keep it private and delete it when no longer
+needed. Keeping or deleting this directory does not change BlueZ pairing.
+
 ## Keyboard
 
 | Key | Action |
