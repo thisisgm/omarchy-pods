@@ -133,6 +133,47 @@ private:
     }
 
 private slots:
+    void encryptedUnknown_doesNotInventAvailableBatteries()
+    {
+        Battery b;
+        QVERIFY(b.parseEncryptedPacket(payload(0x7F, 0xFF, 0x7F), true, true, false));
+        QVERIFY(!b.isLeftPodAvailable());
+        QVERIFY(!b.isRightPodAvailable());
+        QVERIFY(!b.isCaseAvailable());
+    }
+
+    void encryptedUnknown_preservesPreviousLevelsAndCharging()
+    {
+        Battery b;
+        QVERIFY(b.parseEncryptedPacket(payload(0x80 | 80, 75, 0x80 | 60), true, true, false));
+        QVERIFY(b.parseEncryptedPacket(payload(0x7F, 0xFF, 0x7F), true, true, false));
+        QCOMPARE(b.getLeftPodLevel(), quint8(80));
+        QCOMPARE(b.getRightPodLevel(), quint8(75));
+        QCOMPARE(b.getCaseLevel(), quint8(60));
+        QVERIFY(b.isLeftPodCharging());
+        QVERIFY(!b.isRightPodCharging());
+        QVERIFY(b.isCaseCharging());
+    }
+
+    void encryptedOutOfRange_doesNotPublishInvalidPodLevels()
+    {
+        Battery b;
+        QVERIFY(b.parseEncryptedPacket(payload(101, 126, 101), true, true, false));
+        QVERIFY(!b.isLeftPodAvailable());
+        QVERIFY(!b.isRightPodAvailable());
+        QVERIFY(!b.isCaseAvailable());
+    }
+
+    void encryptedMixedUnknown_keepsValidFlippedPod()
+    {
+        Battery b;
+        QVERIFY(b.parseEncryptedPacket(payload(0x80, 0x7F, 0x7F), false, false, false));
+        QVERIFY(!b.isLeftPodAvailable());
+        QVERIFY(b.isRightPodAvailable());
+        QCOMPARE(b.getRightPodLevel(), quint8(0));
+        QVERIFY(b.isRightPodCharging());
+    }
+
     void encryptedCaseZero_isUnknownWhileNothingIsDockedToReadIt()
     {
         Battery b;
