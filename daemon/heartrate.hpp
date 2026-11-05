@@ -33,7 +33,7 @@ namespace HeartRate
     }
 
     // seq is field 1 of the message; the buds accept any value but expect it to change.
-    inline QByteArray streamPacket(quint8 service, quint32 seq, bool on)
+    inline QByteArray streamPacket(quint8 service, quint32 seq, bool on, quint32 intervalUs = INTERVAL_US)
     {
         QByteArray body;
         body.append('\x08');
@@ -41,7 +41,7 @@ namespace HeartRate
         body.append(QByteArray::fromHex("420b08"));
         body.append(static_cast<char>(service));
         body.append(QByteArray::fromHex("10021a0501"));
-        const quint32 interval = on ? INTERVAL_US : 0;
+        const quint32 interval = on ? intervalUs : 0;
         for (int i = 0; i < 4; ++i)
             body.append(static_cast<char>((interval >> (8 * i)) & 0xff));
 

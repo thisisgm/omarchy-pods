@@ -34,6 +34,7 @@
 #include "airpods_packets.h"
 #include "controlsocket.hpp"
 #include "heartrate.hpp"
+#include "motion.hpp"
 #include "logger.h"
 #include "media/mediacontroller.h"
 #include "trayiconmanager.h"
@@ -351,6 +352,63 @@ public slots:
         m_heartRatePublished = false;
         m_heartRateStreaming = false;
         m_heartRateSample.reset();
+        resetMotion();
+    }
+
+    bool motionAvailable() const { return m_motionPublished; }
+
+    // The stream follows its watchers: the first starts service 16, the last leaving stops it.
+    void addMotionWatcher(QLocalSocket *watcher) {
+        m_motionWatchers.append(watcher);
+        connect(watcher, &QLocalSocket::disconnected, this, [this, watcher]() {
+            m_motionWatchers.removeAll(watcher);
+            if (m_motionWatchers.isEmpty()) {
+                stopMotion();
+            }
+        });
+        if (!m_motionStreaming) {
+            startMotion();
+        }
+    }
+
+    void startMotion() {
+        if (!writePacketToSocket(HeartRate::streamPacket(Motion::SERVICE, ++m_sensorSeq, true, Motion::INTERVAL_US),
+                                 "Motion start: ")) {
+            return;
+        }
+        m_motionStreaming = true;
+    }
+
+    void stopMotion() {
+        if (!m_motionStreaming) {
+            return;
+        }
+        writePacketToSocket(HeartRate::streamPacket(Motion::SERVICE, ++m_sensorSeq, false), "Motion stop: ");
+        m_motionStreaming = false;
+    }
+
+    // The control link going takes its watchers with it, so a shell sees the stream end.
+    void resetMotion() {
+        m_motionPublished = false;
+        m_motionStreaming = false;
+        const auto watchers = m_motionWatchers;
+        m_motionWatchers.clear();
+        for (QLocalSocket *watcher : watchers) {
+            watcher->disconnectFromServer();
+        }
+    }
+
+    void publishMotion(const Motion::Sample &s) {
+        const QByteArray line = QByteArray("{\"q\":[") + QByteArray::number(s.w, 'g', 6) + ','
+            + QByteArray::number(s.x, 'g', 6) + ',' + QByteArray::number(s.y, 'g', 6) + ','
+            + QByteArray::number(s.z, 'g', 6) + "],\"g\":[" + QByteArray::number(s.gravity[0]) + ','
+            + QByteArray::number(s.gravity[1]) + ',' + QByteArray::number(s.gravity[2]) + "],\"gyro\":["
+            + QByteArray::number(s.gyro[0]) + ',' + QByteArray::number(s.gyro[1]) + ','
+            + QByteArray::number(s.gyro[2]) + "],\"t\":" + QByteArray::number(QDateTime::currentMSecsSinceEpoch())
+            + "}\n";
+        for (QLocalSocket *watcher : std::as_const(m_motionWatchers)) {
+            watcher->write(line);
+        }
     }
 
     void connectAirPods() {
@@ -1314,6 +1372,13 @@ private slots:
                 startHeartRate();
             }
         }
+        if (data.contains(Motion::SERVICE_DESCRIPTOR)) {
+            m_motionPublished = true;
+        }
+        if (auto motion = Motion::parseMotion(data)) {
+            publishMotion(*motion);
+            return;
+        }
         if (auto sample = HeartRate::parseSample(data)) {
             m_heartRateSample = sample;
             m_heartRateSampledAt = QDateTime::currentMSecsSinceEpoch();
@@ -1384,6 +1449,9 @@ private slots:
             // Upstream librepods (PR 811) found the buds drop the stream when taken out.
             if (m_heartRateStreaming && m_deviceInfo->getEarDetection()->oneOrMorePodsInEar()) {
                 startHeartRate();
+            }
+            if (m_motionStreaming && m_deviceInfo->getEarDetection()->oneOrMorePodsInEar()) {
+                startMotion();
             }
         }
         // Battery Status
@@ -1721,6 +1789,9 @@ private:
     bool m_heartRateStreaming = false;
     std::optional<HeartRate::Sample> m_heartRateSample;
     qint64 m_heartRateSampledAt = 0;
+    bool m_motionPublished = false;
+    bool m_motionStreaming = false;
+    QList<QLocalSocket *> m_motionWatchers;
     quint32 m_sensorSeq = 0;
 
     // Reliability counters — process-lifetime totals, logged on quit.
@@ -1851,6 +1922,10 @@ public:
         heartRate.insert("settled", m_heartRateSample && m_heartRateSample->settled);
         heartRate.insert("sampled_at_ms", m_heartRateSample ? m_heartRateSampledAt : 0);
         status.insert("heart_rate", heartRate);
+        QJsonObject motion;
+        motion.insert("available", m_motionPublished);
+        motion.insert("streaming", m_motionStreaming);
+        status.insert("motion", motion);
         return status;
     }
 
@@ -2192,6 +2267,16 @@ int main(int argc, char *argv[]) {
                 trayAppPtr->disconnectAirPods();
             } else if (msg == "connect") {
                 trayAppPtr->connectAirPods();
+            } else if (msg == "motion:watch") {
+                // The one verb that keeps its connection: it streams a line per sample until the client leaves.
+                if (!trayAppPtr->motionAvailable()) {
+                    clientSocket->write("error: the connected AirPods do not publish head motion\n");
+                    clientSocket->flush();
+                    clientSocket->disconnectFromServer();
+                    return;
+                }
+                trayAppPtr->addMotionWatcher(clientSocket);
+                return;
             } else if (msg == "heartrate:on") {
                 trayAppPtr->setHeartRate(true);
             } else if (msg == "heartrate:off") {

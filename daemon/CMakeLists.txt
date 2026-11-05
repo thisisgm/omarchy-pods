@@ -48,6 +48,7 @@ qt_add_executable(librepods
     controlreconnect.hpp
     controlsocket.hpp
     heartrate.hpp
+    motion.hpp
 )
 
 set_source_files_properties(Theme.qml PROPERTIES

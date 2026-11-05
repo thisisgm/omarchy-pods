@@ -34,7 +34,8 @@ int main(int argc, char *argv[]) {
                             << "  onebud:on           Enable One-Bud ANC (Pro2+: keep ANC active with only one pod in)\n"
                             << "  onebud:off          Disable One-Bud ANC\n"
                             << "  heartrate:on        Stream heart rate (Pro 3; reconnects once if the AirPods have not listed it)\n"
-                            << "  heartrate:off       Stop the heart rate stream\n";
+                            << "  heartrate:off       Stop the heart rate stream\n"
+                            << "  motion:watch        Print head motion as one JSON line per sample (Pro 3) until interrupted\n";
         return 1;
     }
 
@@ -65,6 +66,23 @@ int main(int argc, char *argv[]) {
     // tore the socket down, silently dropping the command. 500ms gives
     // headroom without making the CLI feel laggy.
     socket.waitForBytesWritten(500);
+
+    if (cmd == "motion:watch") {
+        // Streams until the daemon hangs up or the caller interrupts; an error reply is the daemon's last word.
+        int exitCode = 0;
+        QObject::connect(&socket, &QLocalSocket::readyRead, &socket, [&]() {
+            const QByteArray lines = socket.readAll();
+            if (lines.startsWith("error:")) {
+                QTextStream(stderr) << QString::fromUtf8(lines);
+                exitCode = 1;
+                return;
+            }
+            QTextStream(stdout) << QString::fromUtf8(lines);
+            QTextStream(stdout).flush();
+        });
+        QObject::connect(&socket, &QLocalSocket::disconnected, &app, [&]() { app.exit(exitCode); });
+        return app.exec();
+    }
 
     if (wantsReply) {
         // Daemon writes one JSON line then half-closes. Wait briefly

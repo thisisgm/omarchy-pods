@@ -159,3 +159,10 @@ openpods_add_test(tst_heartrate
     ../heartrate.hpp
     ../BasicControlCommand.hpp
 )
+
+openpods_add_test(tst_motion
+    tst_motion.cpp
+    ../motion.hpp
+    ../heartrate.hpp
+    ../BasicControlCommand.hpp
+)
