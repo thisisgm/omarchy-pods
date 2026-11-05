@@ -355,8 +355,6 @@ public slots:
         resetMotion();
     }
 
-    bool motionAvailable() const { return m_motionPublished; }
-
     // The stream follows its watchers: the first starts service 16, the last leaving stops it.
     void addMotionWatcher(QLocalSocket *watcher) {
         m_motionWatchers.append(watcher);
@@ -368,6 +366,30 @@ public slots:
         });
         if (!m_motionStreaming) {
             startMotion();
+        }
+        if (!m_motionStreaming) {
+            failMotionWatchers("error: the AirPods control link is down\n");
+            return;
+        }
+        // A link that was up before this daemon started never listed its services, and the buds
+        // stream service 16 regardless, so the first frame is what proves it there.
+        if (!m_motionPublished) {
+            QTimer::singleShot(3000, this, [this]() {
+                if (!m_motionPublished) {
+                    failMotionWatchers("error: the connected AirPods do not stream head motion\n");
+                }
+            });
+        }
+    }
+
+    void failMotionWatchers(const QByteArray &reason) {
+        const auto watchers = m_motionWatchers;
+        m_motionWatchers.clear();
+        stopMotion();
+        for (QLocalSocket *watcher : watchers) {
+            watcher->write(reason);
+            watcher->flush();
+            watcher->disconnectFromServer();
         }
     }
 
@@ -1376,6 +1398,7 @@ private slots:
             m_motionPublished = true;
         }
         if (auto motion = Motion::parseMotion(data)) {
+            m_motionPublished = true;
             publishMotion(*motion);
             return;
         }
@@ -2269,12 +2292,6 @@ int main(int argc, char *argv[]) {
                 trayAppPtr->connectAirPods();
             } else if (msg == "motion:watch") {
                 // The one verb that keeps its connection: it streams a line per sample until the client leaves.
-                if (!trayAppPtr->motionAvailable()) {
-                    clientSocket->write("error: the connected AirPods do not publish head motion\n");
-                    clientSocket->flush();
-                    clientSocket->disconnectFromServer();
-                    return;
-                }
                 trayAppPtr->addMotionWatcher(clientSocket);
                 return;
             } else if (msg == "heartrate:on") {
