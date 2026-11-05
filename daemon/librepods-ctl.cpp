@@ -32,7 +32,9 @@ int main(int argc, char *argv[]) {
                             << "  connect             bluetoothctl connect on the paired AirPods\n"
                             << "  adaptive:N          Set Adaptive Noise level 0-100 (Pro2/Pro3, only while noise_mode=Adaptive)\n"
                             << "  onebud:on           Enable One-Bud ANC (Pro2+: keep ANC active with only one pod in)\n"
-                            << "  onebud:off          Disable One-Bud ANC\n";
+                            << "  onebud:off          Disable One-Bud ANC\n"
+                            << "  heartrate:on        Stream heart rate (Pro 3; reconnects once if the AirPods have not listed it)\n"
+                            << "  heartrate:off       Stop the heart rate stream\n";
         return 1;
     }
 
