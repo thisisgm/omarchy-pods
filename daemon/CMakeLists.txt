@@ -38,6 +38,8 @@ qt_add_executable(librepods
     ble/bleutils.h
     ble/blemanager.cpp
     ble/blemanager.h
+    ble/advertisementmonitor.cpp
+    ble/advertisementmonitor.h
     thirdparty/QR-Code-generator/qrcodegen.cpp
     thirdparty/QR-Code-generator/qrcodegen.hpp
     QRCodeImageProvider.hpp
