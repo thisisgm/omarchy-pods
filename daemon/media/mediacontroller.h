@@ -8,6 +8,7 @@ class QProcess;
 class EarDetection;
 class PlayerStatusWatcher;
 class QDBusInterface;
+class ConversationVolume;
 
 class MediaController : public QObject
 {
@@ -35,6 +36,7 @@ public:
   void followMediaChanges();
   bool isActiveOutputDeviceAirPods();
   void handleConversationalAwareness(const QByteArray &data);
+  void resetConversationVolume();
   void activateA2dpProfileWithRetry(const QString &macAddress);
   void cancelPendingA2dpActivation();
   void removeAudioOutputDevice();
@@ -63,7 +65,7 @@ private:
   void attemptA2dpActivation(const QString &macAddress, quint64 generation, int attempt, int unanswered = 0);
 
   QStringList pausedByAppServices;
-  int initialVolume = -1;
+  ConversationVolume *m_conversationVolume = nullptr;
   QString connectedDeviceMacAddress;
   EarDetectionBehavior earDetectionBehavior = PauseWhenOneRemoved;
   QString m_deviceOutputName;

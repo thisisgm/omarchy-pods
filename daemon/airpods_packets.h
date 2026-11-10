@@ -95,6 +95,27 @@ namespace AirPodsPackets
         static const QByteArray HEADER = Type::HEADER;
         static const QByteArray DATA_HEADER = QByteArray::fromHex("040004004B00020001");
         inline std::optional<bool> parseState(const QByteArray &data) { return Type::parseState(data); }
+
+        // Sample: 04 00 04 00 4B 00 02 00 01 02, conversation level 2.
+        inline std::optional<bool> parseSpeaking(const QByteArray &data)
+        {
+            if (data.size() != 10 || !data.startsWith(DATA_HEADER))
+                return std::nullopt;
+
+            switch (static_cast<quint8>(data[9]))
+            {
+            case 0x01:
+            case 0x02:
+                return true;
+            case 0x06:
+            case 0x08:
+            case 0x09:
+                return false;
+            default:
+                // Intermediate and unknown levels must not restore the volume.
+                return std::nullopt;
+            }
+        }
     }
 
     // Hearing Assist
