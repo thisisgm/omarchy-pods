@@ -10,10 +10,12 @@
 #include <QPalette>
 #include <QJsonObject>
 #include <QJsonDocument>
+#include <QDateTime>
 #include <QSocketNotifier>
 #include <QQmlContext>
 #include <csignal>
 #include <fcntl.h>
+#include <functional>
 #include <memory>
 #include <unistd.h>
 #include <QBluetoothLocalDevice>
@@ -30,6 +32,8 @@
 #include <QStandardPaths>
 
 #include "airpods_packets.h"
+#include "controlsocket.hpp"
+#include "heartrate.hpp"
 #include "logger.h"
 #include "media/mediacontroller.h"
 #include "trayiconmanager.h"
@@ -207,7 +211,7 @@ public:
 
         // Use deleteLater so any queued signal already in flight finishes
         // dispatching before the QObject vanishes. A bare `delete` here
-        // races with the QBluetoothSocket's own emit chain.
+        // races with the socket's own emit chain.
         if (socket) {
             socket->disconnect(this);
             socket->deleteLater();
@@ -220,7 +224,7 @@ public:
         }
     }
 
-    bool areAirpodsConnected() const { return socket && socket->isOpen() && socket->state() == QBluetoothSocket::SocketState::ConnectedState; }
+    bool areAirpodsConnected() const { return socket && socket->isConnected(); }
     int earDetectionBehavior() const { return mediaController->getEarDetectionBehavior(); }
     bool crossDeviceEnabled() const { return CrossDevice.isEnabled; }
     AutoStartManager *autoStartManager() const { return m_autoStartManager; }
@@ -278,7 +282,7 @@ public slots:
     // the daemon hasn't learned an address yet (initial pairing not
     // done). The connect path also triggers the existing
     // bluezDeviceConnected handler, which re-runs the AAP handshake.
-    void disconnectAirPods() {
+    void disconnectAirPods(std::function<void()> then = {}) {
         if (!m_deviceInfo || m_deviceInfo->bluetoothAddress().isEmpty()) {
             LOG_WARN("disconnectAirPods: no current address to disconnect");
             return;
@@ -288,7 +292,7 @@ public slots:
         ++m_disconnectCallsTotal;
         auto *proc = new QProcess(this);
         connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                proc, [this, proc, addr](int code, QProcess::ExitStatus) {
+                proc, [this, proc, addr, then](int code, QProcess::ExitStatus) {
                     // INFO only on failure so journald isn't spammed
                     // with one success line per disconnect; the per-IPC
                     // disconnectAirPods entry above already records
@@ -301,8 +305,52 @@ public slots:
                         LOG_DEBUG("bluetoothctl disconnect " << addr << " ok");
                     }
                     proc->deleteLater();
+                    if (then)
+                        then();
                 });
         proc->start("bluetoothctl", QStringList() << "disconnect" << addr);
+    }
+
+    void setHeartRate(bool on) {
+        m_heartRateWanted = on;
+        if (!on) {
+            stopHeartRate();
+            return;
+        }
+        if (m_heartRatePublished) {
+            startHeartRate();
+            return;
+        }
+        if (!areAirpodsConnected()) {
+            return;
+        }
+        // The buds list the service only as the ACL comes up, so a link that is already up has to go once.
+        LOG_INFO("Heart rate: reconnecting so the AirPods publish the service");
+        disconnectAirPods([this]() { connectAirPods(); });
+    }
+
+    void startHeartRate() {
+        if (!writePacketToSocket(HeartRate::SENSOR_ON, "Heart rate sensor on: ")) {
+            return;
+        }
+        writePacketToSocket(HeartRate::streamPacket(HeartRate::SERVICE, ++m_sensorSeq, true), "Heart rate start: ");
+        m_heartRateStreaming = true;
+    }
+
+    void stopHeartRate() {
+        if (!m_heartRateStreaming) {
+            return;
+        }
+        writePacketToSocket(HeartRate::streamPacket(HeartRate::SERVICE, ++m_sensorSeq, false), "Heart rate stop: ");
+        writePacketToSocket(HeartRate::SENSOR_OFF, "Heart rate sensor off: ");
+        m_heartRateStreaming = false;
+        m_heartRateSample.reset();
+    }
+
+    void resetHeartRate() {
+        m_heartRatePublished = false;
+        m_heartRateStreaming = false;
+        m_heartRateSample.reset();
     }
 
     void connectAirPods() {
@@ -502,7 +550,7 @@ public slots:
 
     void initiateMagicPairing()
     {
-        if (!socket || !socket->isOpen())
+        if (!socket || !socket->isConnected())
         {
             LOG_ERROR("Socket nicht offen, Magic Pairing kann nicht gestartet werden");
             return;
@@ -646,7 +694,7 @@ public slots:
 
     bool writePacketToSocket(const QByteArray &packet, const QString &logMessage)
     {
-        if (socket && socket->isOpen())
+        if (socket && socket->isConnected())
         {
             socket->write(packet);
             LOG_DEBUG(logMessage << packet.toHex());
@@ -1109,7 +1157,7 @@ private slots:
 
     void connectToDevice(const QBluetoothDeviceInfo &device, bool controlRecovery = false)
     {
-        if (socket && socket->isOpen() && socket->peerAddress() == device.address())
+        if (socket && socket->isConnected() && socket->peerAddress() == device.address())
         {
             LOG_INFO("Already connected to the device: " << device.name());
             return;
@@ -1127,7 +1175,8 @@ private slots:
             socket = nullptr;
         }
 
-        QBluetoothSocket *localSocket = new QBluetoothSocket(QBluetoothServiceInfo::L2capProtocol, this);
+        resetHeartRate();
+        ControlSocket *localSocket = new ControlSocket(this);
         localSocket->setProperty("openpodsControlRecovery", controlRecovery);
         socket = localSocket;
 
@@ -1141,9 +1190,8 @@ private slots:
                 finishControlRecovery();
             }
             stopBleScanWhileConnected();
-            connect(localSocket, &QBluetoothSocket::readyRead, this, [this, localSocket]()
+            connect(localSocket, &ControlSocket::packetReceived, this, [this](const QByteArray &data)
                     {
-            QByteArray data = localSocket->readAll();
             QMetaObject::invokeMethod(this, "parseData", Qt::QueuedConnection, Q_ARG(QByteArray, data));
             QMetaObject::invokeMethod(this, "relayPacketToPhone", Qt::QueuedConnection, Q_ARG(QByteArray, data)); });
             sendHandshake();
@@ -1152,9 +1200,9 @@ private slots:
         // Error handler with retry. Per-device member instead of static so
         // attempts don't leak across devices (e.g. switching between two
         // paired AirPods).
-        auto handleError = [this, device, localSocket](QBluetoothSocket::SocketError error)
+        auto handleError = [this, device, localSocket]()
         {
-            LOG_ERROR("Socket error: " << error << ", " << localSocket->errorString());
+            LOG_ERROR("Socket error: " << localSocket->errorString());
 
             // Once a control link has been established, a later socket error
             // is a link-loss event, not another initial-connect failure.
@@ -1198,10 +1246,9 @@ private slots:
             }
         };
 
-        connect(localSocket, &QBluetoothSocket::connected, this, handleConnection);
-        connect(localSocket, QOverload<QBluetoothSocket::SocketError>::of(&QBluetoothSocket::errorOccurred),
-                this, handleError);
-        connect(localSocket, &QBluetoothSocket::disconnected, this,
+        connect(localSocket, &ControlSocket::connected, this, handleConnection);
+        connect(localSocket, &ControlSocket::errorOccurred, this, handleError);
+        connect(localSocket, &ControlSocket::disconnected, this,
                 [this, device, localSocket]() {
                     if (!localSocket->property("openpodsControlConnected").toBool()) {
                         if (localSocket->property("openpodsControlRecovery").toBool()) {
@@ -1215,13 +1262,13 @@ private slots:
                                             QStringLiteral("socket disconnected"));
                 });
 
-        localSocket->connectToService(device.address(), QBluetoothUuid("74ec2172-0bad-4d01-8f77-997b2be0722a"));
+        localSocket->connectToDevice(device.address());
         m_deviceInfo->setBluetoothAddress(device.address().toString());
         notifyAndroidDevice();
     }
 
     void handleControlConnectFailure(const QBluetoothDeviceInfo &device,
-                                     QBluetoothSocket *failedSocket,
+                                     ControlSocket *failedSocket,
                                      const QString &reason)
     {
         if (!failedSocket || socket != failedSocket || !m_controlRecovery.isActive()) {
@@ -1238,7 +1285,7 @@ private slots:
     }
 
     void handleControlSocketLoss(const QBluetoothDeviceInfo &device,
-                                 QBluetoothSocket *lostSocket,
+                                 ControlSocket *lostSocket,
                                  const QString &reason)
     {
         // errorOccurred and disconnected commonly arrive for the same loss;
@@ -1248,6 +1295,7 @@ private slots:
         }
 
         LOG_WARN("AirPods control link lost: " << reason);
+        resetHeartRate();
         lostSocket->disconnect(this);
         lostSocket->close();
         lostSocket->deleteLater();
@@ -1260,9 +1308,24 @@ private slots:
     {
         LOG_DEBUG("Received: " << data.toHex());
 
+        if (data.contains(HeartRate::SERVICE_DESCRIPTOR)) {
+            m_heartRatePublished = true;
+            if (m_heartRateWanted && !m_heartRateStreaming) {
+                startHeartRate();
+            }
+        }
+        if (auto sample = HeartRate::parseSample(data)) {
+            m_heartRateSample = sample;
+            m_heartRateSampledAt = QDateTime::currentMSecsSinceEpoch();
+            return;
+        }
+
         if (data.startsWith(AirPodsPackets::Parse::HANDSHAKE_ACK))
         {
             writePacketToSocket(AirPodsPackets::Connection::SET_SPECIFIC_FEATURES, "Set specific features packet written: ");
+            // Any 0x17 message gets the buds to list their sensor services; stopping head tracking changes nothing.
+            writePacketToSocket(HeartRate::streamPacket(HeartRate::HEAD_TRACKING_SERVICE, ++m_sensorSeq, false),
+                                "Sensor service query written: ");
         }
         else if (data.startsWith(AirPodsPackets::Parse::FEATURES_ACK))
         {
@@ -1318,6 +1381,10 @@ private slots:
         {
             m_deviceInfo->getEarDetection()->parseData(data);
             mediaController->handleEarDetection(m_deviceInfo->getEarDetection());
+            // Upstream librepods (PR 811) found the buds drop the stream when taken out.
+            if (m_heartRateStreaming && m_deviceInfo->getEarDetection()->oneOrMorePodsInEar()) {
+                startHeartRate();
+            }
         }
         // Battery Status
         else if ((data.size() == 22 || data.size() == 12) && data.startsWith(AirPodsPackets::Parse::BATTERY_STATUS))
@@ -1426,7 +1493,7 @@ private slots:
         if (packet.startsWith(AirPodsPackets::Phone::NOTIFICATION))
         {
             QByteArray airpodsPacket = packet.mid(4);
-            if (socket && socket->isOpen()) {
+            if (socket && socket->isConnected()) {
                 socket->write(airpodsPacket);
                 LOG_DEBUG("Relayed packet to AirPods: " << airpodsPacket.toHex());
             } else {
@@ -1448,7 +1515,7 @@ private slots:
         else if (packet.startsWith(AirPodsPackets::Phone::STATUS_REQUEST))
         {
             LOG_INFO("Connection status request received");
-            QByteArray response = (socket && socket->isOpen()) ? AirPodsPackets::Phone::CONNECTED
+            QByteArray response = (socket && socket->isConnected()) ? AirPodsPackets::Phone::CONNECTED
                                                                : AirPodsPackets::Phone::DISCONNECTED;
             phoneSocket->write(response);
             LOG_DEBUG("Sent connection status response: " << response.toHex());
@@ -1456,7 +1523,7 @@ private slots:
         else if (packet.startsWith(AirPodsPackets::Phone::DISCONNECT_REQUEST))
         {
             LOG_INFO("Disconnect request received");
-            if (socket && socket->isOpen()) {
+            if (socket && socket->isConnected()) {
                 socket->close();
                 LOG_INFO("Disconnected from AirPods");
                 // Async: don't block UI thread on bluetoothctl IO.
@@ -1473,7 +1540,7 @@ private slots:
         }
         else
         {
-            if (socket && socket->isOpen()) {
+            if (socket && socket->isConnected()) {
                 socket->write(packet);
                 LOG_DEBUG("Relayed packet to AirPods: " << packet.toHex());
             } else {
@@ -1550,7 +1617,7 @@ public:
     }
 
     void connectToAirPods(bool force) {
-        if (socket && socket->isOpen()) {
+        if (socket && socket->isConnected()) {
             LOG_INFO("Already connected to AirPods");
             return;
         }
@@ -1626,7 +1693,7 @@ signals:
     void hearingAidEnabledChanged(bool enabled);
 
 private:
-    QBluetoothSocket *socket = nullptr;
+    ControlSocket *socket = nullptr;
     QBluetoothSocket *phoneSocket = nullptr;
     QByteArray lastBatteryStatus;
     QByteArray lastEarDetectionStatus;
@@ -1648,6 +1715,13 @@ private:
     bool m_disconnectFinalized = false;
     QString m_lastAirPodsAddress;
     QString m_lastAirPodsName;
+
+    bool m_heartRateWanted = false;
+    bool m_heartRatePublished = false;
+    bool m_heartRateStreaming = false;
+    std::optional<HeartRate::Sample> m_heartRateSample;
+    qint64 m_heartRateSampledAt = 0;
+    quint32 m_sensorSeq = 0;
 
     // Reliability counters — process-lifetime totals, logged on quit.
     // Exposed to QML readers via the public getters below.
@@ -1769,6 +1843,14 @@ public:
         status.insert("ear_detection_behavior", earDetectionBehavior());
         // 0 = open, 1 = closed, 2 = unknown (matches BleInfo::LidState).
         status.insert("lid_state", lidState());
+        QJsonObject heartRate;
+        heartRate.insert("wanted", m_heartRateWanted);
+        heartRate.insert("available", m_heartRatePublished);
+        heartRate.insert("streaming", m_heartRateStreaming);
+        heartRate.insert("bpm", m_heartRateSample ? m_heartRateSample->bpm : 0);
+        heartRate.insert("settled", m_heartRateSample && m_heartRateSample->settled);
+        heartRate.insert("sampled_at_ms", m_heartRateSample ? m_heartRateSampledAt : 0);
+        status.insert("heart_rate", heartRate);
         return status;
     }
 
@@ -2110,6 +2192,10 @@ int main(int argc, char *argv[]) {
                 trayAppPtr->disconnectAirPods();
             } else if (msg == "connect") {
                 trayAppPtr->connectAirPods();
+            } else if (msg == "heartrate:on") {
+                trayAppPtr->setHeartRate(true);
+            } else if (msg == "heartrate:off") {
+                trayAppPtr->setHeartRate(false);
             } else if (msg == "onebud:on") {
                 trayAppPtr->setOneBudANCMode(true);
             } else if (msg == "onebud:off") {
