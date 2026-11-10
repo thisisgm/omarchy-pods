@@ -21,3 +21,10 @@ inline int unansweredChecksAfter(CaptureState state, int unanswered)
 {
     return state == CaptureState::Unknown ? unanswered + 1 : 0;
 }
+
+// Releasing the card under a live capture drops the headset profiles the call's mic is on, and
+// Unknown is not evidence the mic is free.
+inline bool mayReleaseCard(CaptureState state)
+{
+    return state == CaptureState::Idle;
+}
