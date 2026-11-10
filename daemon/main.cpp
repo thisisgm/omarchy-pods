@@ -793,6 +793,7 @@ private slots:
 
     void bluezDeviceConnected(const QString &address, const QString &name)
     {
+        const quint64 generation = ++m_delayedA2dpGeneration;
         rememberAirPodsDevice(address, name);
         m_disconnectFinalized = false;
 
@@ -810,8 +811,15 @@ private slots:
 
         // After system reboot, AirPods might be connected but A2DP profile not active
         // Attempt to activate A2DP profile after a delay to ensure connection is established
-        if (!recovering) QTimer::singleShot(2000, this, [this, address]()
+        if (!recovering) QTimer::singleShot(2000, this, [this, address, generation]()
         {
+            // Disconnect cancellation cannot stop this callback from starting a fresh activation chain.
+            if (generation != m_delayedA2dpGeneration)
+            {
+                LOG_INFO("Skipping delayed A2DP activation, Bluetooth connection changed for " << address);
+                return;
+            }
+
             if (!address.isEmpty())
             {
                 QString formattedAddress = address;
@@ -825,6 +833,7 @@ private slots:
     void onDeviceDisconnected(const QBluetoothAddress &address)
     {
         LOG_INFO("Device disconnected: " << address.toString());
+        ++m_delayedA2dpGeneration;
         // A retry still in flight would reactivate a profile for the device that just went away.
         mediaController->cancelPendingA2dpActivation();
         if (socket)
@@ -1644,6 +1653,7 @@ private:
     int m_retryAttempts = 3;
     int m_retryCount = 0;
     ControlReconnect::Session m_controlRecovery;
+    quint64 m_delayedA2dpGeneration = 0;
     bool m_isSuspending = false;
     bool m_disconnectFinalized = false;
     QString m_lastAirPodsAddress;
