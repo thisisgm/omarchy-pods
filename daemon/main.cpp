@@ -55,6 +55,12 @@ using namespace AirpodsTrayApp::Enums;
 // Users filter via QT_LOGGING_RULES with `openpods.*`.
 Q_LOGGING_CATEGORY(openpods, "openpods")
 
+// How long the BLE scan stays dark after resume and after start-up. Bonded
+// devices reconnect within seconds once the adapter is up, but a keyboard
+// woken late by its user still needs a clear radio; a minute covers the
+// gap between "lid opened" and "first key pressed" for nearly everyone.
+static constexpr int reconnectHoldOffMs = 60000;
+
 class AirPodsTrayApp : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool airpodsConnected READ areAirpodsConnected NOTIFY airPodsStatusChanged)
@@ -718,6 +724,9 @@ public slots:
         // don't surface as user-visible "AirPods Disconnected" toasts.
         QTimer::singleShot(2000, this, [this]() {
             // Suspend stopped discovery on every controller, so resume restarts it and the gate below re-applies.
+            // Bonded keyboards and mice reconnect in the first seconds after resume; a scan burst in that
+            // window blocks them until Bluetooth is toggled, so the radio stays dark for a minute first.
+            m_bleManager->holdOff(reconnectHoldOffMs);
             m_bleManager->startScan();
 
             if (areAirpodsConnected() && m_deviceInfo && !m_deviceInfo->bluetoothAddress().isEmpty())
@@ -1595,6 +1604,8 @@ public:
 
         m_deviceInfo->loadFromSettings(*m_settings);
         // Unreachable with the pods already connected: the constructor returns before this.
+        // Same race as resume: at login the adapter is still handing bonded devices their reconnects.
+        m_bleManager->holdOff(reconnectHoldOffMs);
         m_bleManager->startScan();
     }
 
