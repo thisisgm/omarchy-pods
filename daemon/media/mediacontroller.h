@@ -2,6 +2,8 @@
 #define MEDIACONTROLLER_H
 
 #include <QObject>
+
+#include "capturematch.hpp"
 #include "pulseaudiocontroller.h"
 
 class QProcess;
@@ -45,6 +47,8 @@ public:
   bool restartWirePlumber();
 
   void setEarDetectionBehavior(EarDetectionBehavior behavior);
+  // Whether anything is recording from a source, named exactly. The hi-res mic monitor asks.
+  CaptureState captureStateForSource(const QString &sourceName);
   inline EarDetectionBehavior getEarDetectionBehavior() const { return earDetectionBehavior; }
 
   void play();

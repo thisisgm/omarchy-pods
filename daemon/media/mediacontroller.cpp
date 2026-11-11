@@ -116,6 +116,11 @@ void MediaController::handleEarDetection(EarDetection *earDetection)
   }
 }
 
+CaptureState MediaController::captureStateForSource(const QString &sourceName)
+{
+  return m_pulseAudio->captureStateForSource(sourceName);
+}
+
 void MediaController::setEarDetectionBehavior(EarDetectionBehavior behavior)
 {
   if (earDetectionBehavior == behavior)
@@ -368,6 +373,14 @@ void MediaController::removeAudioOutputDevice() {
 
   if (connectedDeviceMacAddress.isEmpty() || m_deviceOutputName.isEmpty()) {
     LOG_WARN("Connected device MAC address or output name is empty, cannot remove audio output device");
+    return;
+  }
+
+  // A later both-out report releases the card once the call ends, so this needs no timer of its own.
+  const CaptureState capture = m_pulseAudio->captureState(connectedDeviceMacAddress);
+  if (!mayReleaseCard(capture)) {
+    LOG_INFO("Capture " << (capture == CaptureState::Live ? "live" : "unknown")
+             << " on the AirPods, keeping the card so the call holds its headset profile");
     return;
   }
 

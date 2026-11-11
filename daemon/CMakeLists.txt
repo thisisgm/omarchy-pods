@@ -8,6 +8,8 @@ find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Widgets Bluetooth DBus
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PULSEAUDIO REQUIRED libpulse)
+# AAC-ELD decode for the hi-res microphone uplink. System libavcodec, no bundled build.
+pkg_check_modules(AVCODEC REQUIRED libavcodec libavutil)
 
 qt_standard_project_setup()
 
@@ -23,6 +25,11 @@ qt_add_executable(librepods
     media/mediacontroller.h
     media/pulseaudiocontroller.cpp
     media/pulseaudiocontroller.h
+    media/hiresmic.cpp
+    media/hiresmic.h
+    media/hiresframe.hpp
+    media/eldpcm.hpp
+    media/agc.hpp
     airpods_packets.h
     trayiconmanager.cpp
     trayiconmanager.h
@@ -79,8 +86,9 @@ qt_add_resources(librepods "resources"
         assets/podmax.png
 )
 
+target_include_directories(librepods PRIVATE ${AVCODEC_INCLUDE_DIRS})
 target_link_libraries(librepods
-    PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Bluetooth Qt6::DBus OpenSSL::SSL OpenSSL::Crypto ${PULSEAUDIO_LIBRARIES}
+    PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Bluetooth Qt6::DBus OpenSSL::SSL OpenSSL::Crypto ${PULSEAUDIO_LIBRARIES} ${AVCODEC_LIBRARIES}
 )
 
 qt_add_executable(librepods-ctl
@@ -106,6 +114,12 @@ install(FILES assets/me.kavishdevar.librepods.desktop
 install(FILES assets/librepods.svg
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps")
 # With the documented --prefix ~/.local this lands in ~/.local/share/systemd/user, which systemd searches.
+# The call check ships with the plugin so the popup can launch it by name.
+install(PROGRAMS ../tools/callcheck.py
+    DESTINATION bin
+    RENAME airpods-callcheck
+)
+
 install(FILES librepods.service
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/systemd/user")
 

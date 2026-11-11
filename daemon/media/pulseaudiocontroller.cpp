@@ -1,4 +1,6 @@
 #include "pulseaudiocontroller.h"
+
+#include <functional>
 #include "capturematch.hpp"
 #include "profilechoice.hpp"
 #include "logger.h"
@@ -425,18 +427,19 @@ bool PulseAudioController::isProfileAvailable(const QString &cardName, const QSt
 
 // A stream attached to the AirPods mic is a call holding the headset profile, and a
 // muted caller still holds it, so both queries run under one lock to see one server state.
-CaptureState PulseAudioController::captureState(const QString &macAddress)
+CaptureState PulseAudioController::captureStateMatching(const std::function<bool(const QString &)> &matches,
+                                                        const QString &what)
 {
     // Both are known here rather than unanswered, and the activation path already handles them.
-    if (!m_initialized || macAddress.isEmpty()) return CaptureState::Idle;
+    if (!m_initialized || what.isEmpty()) return CaptureState::Idle;
 
     struct SourceData {
         QVector<uint32_t> indexes;
         bool failed = false;
-        QString macAddress;
+        const std::function<bool(const QString &)> *matches = nullptr;
         pa_threaded_mainloop *mainloop = nullptr;
     } sources;
-    sources.macAddress = macAddress;
+    sources.matches = &matches;
     sources.mainloop = m_mainloop;
 
     auto sourceCallback = [](pa_context *, const pa_source_info *info, int eol, void *userdata) {
@@ -450,7 +453,7 @@ CaptureState PulseAudioController::captureState(const QString &macAddress)
         if (!info || info->monitor_of_sink != PA_INVALID_INDEX) {
             return;
         }
-        if (sourceNamesAddress(QString::fromUtf8(info->name), d->macAddress)) {
+        if ((*d->matches)(QString::fromUtf8(info->name))) {
             d->indexes.append(info->index);
         }
     };
@@ -494,10 +497,21 @@ CaptureState PulseAudioController::captureState(const QString &macAddress)
     pa_threaded_mainloop_unlock(m_mainloop);
 
     if (!sourcesWaited || sources.failed || !streamsWaited || streams.failed) {
-        LOG_WARN("PulseAudio capture query failed for " << macAddress << ", capture state unknown");
+        LOG_WARN("PulseAudio capture query failed for " << what << ", capture state unknown");
         return CaptureState::Unknown;
     }
     return streams.capturing ? CaptureState::Live : CaptureState::Idle;
+}
+
+CaptureState PulseAudioController::captureState(const QString &macAddress)
+{
+    return captureStateMatching(
+        [&macAddress](const QString &name) { return sourceNamesAddress(name, macAddress); }, macAddress);
+}
+
+CaptureState PulseAudioController::captureStateForSource(const QString &sourceName)
+{
+    return captureStateMatching([&sourceName](const QString &name) { return name == sourceName; }, sourceName);
 }
 
 QVector<ProfileCandidate> PulseAudioController::getCardProfiles(const QString &cardName)

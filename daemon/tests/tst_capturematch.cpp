@@ -15,6 +15,7 @@ private slots:
     void matchesTheMonitorNameToo();
     void anAnsweredQueryClearsTheUnansweredCount();
     void onlyAnUnknownQuerySpendsTheUnansweredCount();
+    void onlyAnIdleCaptureReleasesTheCard();
 };
 
 void TestCaptureMatch::matchesTheWirePlumberLoopbackName()
@@ -45,6 +46,14 @@ void TestCaptureMatch::matchesTheMonitorNameToo()
 {
     // A match means the address, not a capture, so the caller's monitor_of_sink filter is load-bearing.
     QVERIFY(sourceNamesAddress("bluez_output.AA_BB_CC_DD_EE_FF.1.monitor", "AA_BB_CC_DD_EE_FF"));
+}
+
+void TestCaptureMatch::onlyAnIdleCaptureReleasesTheCard()
+{
+    // A release while the mic is live takes the headset profiles with it, which ends the call.
+    QVERIFY(!mayReleaseCard(CaptureState::Live));
+    QVERIFY(!mayReleaseCard(CaptureState::Unknown));
+    QVERIFY(mayReleaseCard(CaptureState::Idle));
 }
 
 void TestCaptureMatch::anAnsweredQueryClearsTheUnansweredCount()
