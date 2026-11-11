@@ -1595,7 +1595,23 @@ public:
 
         m_deviceInfo->loadFromSettings(*m_settings);
         // Unreachable with the pods already connected: the constructor returns before this.
-        m_bleManager->startScan();
+        // Defer the very first scan: a waking LE peripheral only sends a short
+        // advert burst, and if it lands inside one of our 2s discovery windows
+        // the kernel files it as a scan result instead of connecting it. An
+        // uncontended stretch at boot lets the accept list do its job first;
+        // steady-state duty-cycling picks up right after.
+        LOG_INFO("Deferring initial BLE scan 45s so bonded LE devices can reconnect at boot");
+        QTimer::singleShot(45000, this, [this]() {
+            // The pods may have connected during the defer window; in that
+            // case the scan must stay off exactly as if it had been running --
+            // audio stutters while it scans (omarchy-pods#26).
+            if (areAirpodsConnected()) {
+                LOG_INFO("AirPods connected during defer window, skipping initial BLE scan");
+                return;
+            }
+            LOG_INFO("Starting deferred initial BLE scan now");
+            m_bleManager->startScan();
+        });
     }
 
     // Null engine is the headless run, where there is no window to open and nothing to say about it.

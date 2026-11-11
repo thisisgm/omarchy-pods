@@ -91,7 +91,11 @@ QString getConnectionStateName(BleInfo::ConnectionState state)
 BleManager::BleManager(QObject *parent) : QObject(parent)
 {
     discoveryAgent = new QBluetoothDeviceDiscoveryAgent(this);
-    discoveryAgent->setLowEnergyDiscoveryTimeout(0); // Continuous scanning
+    discoveryAgent->setLowEnergyDiscoveryTimeout(ScanDuty::scanWindowMs);
+
+    idleTimer = new QTimer(this);
+    idleTimer->setSingleShot(true);
+    connect(idleTimer, &QTimer::timeout, this, &BleManager::onIdleFinished);
 
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered,
             this, &BleManager::onDeviceDiscovered);
@@ -113,18 +117,23 @@ BleManager::~BleManager()
 void BleManager::startScan()
 {
     LOG_DEBUG("Starting BLE scan...");
+    duty.request();
+    // A start inside the gap has to disarm the pending resume, or the next tick starts a second window.
+    idleTimer->stop();
     discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
 }
 
 void BleManager::stopScan()
 {
     LOG_DEBUG("Stopping BLE scan...");
+    duty.cancel();
+    idleTimer->stop();
     discoveryAgent->stop();
 }
 
 bool BleManager::isScanning() const
 {
-    return discoveryAgent->isActive();
+    return duty.isRequested();
 }
 
 void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
@@ -228,10 +237,20 @@ void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
 
 void BleManager::onScanFinished()
 {
-    if (discoveryAgent->isActive())
+    if (!duty.windowFinished())
     {
-        discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+        return;
     }
+    idleTimer->start(ScanDuty::idleWindowMs);
+}
+
+void BleManager::onIdleFinished()
+{
+    if (!duty.idleFinished())
+    {
+        return;
+    }
+    discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
 }
 
 void BleManager::onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error)
