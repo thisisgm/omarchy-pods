@@ -48,6 +48,7 @@
 #include "QRCodeImageProvider.hpp"
 #include "systemsleepmonitor.hpp"
 #include "controlreconnect.hpp"
+#include "idlescan.hpp"
 
 using namespace AirpodsTrayApp::Enums;
 
@@ -674,6 +675,17 @@ public slots:
         }
     }
 
+    // Every idle scan start comes through here. The control link recovery is separate: it only
+    // restores a scan it found running, so a disabled scan stays off across a reconnect.
+    void startIdleScan()
+    {
+        if (!idleScanEnabled(*m_settings)) {
+            LOG_INFO("Idle BLE scan is off (bluetooth/idleScan=false), leaving discovery to BlueZ");
+            return;
+        }
+        m_bleManager->startScan();
+    }
+
     bool loadCrossDeviceEnabled() { return m_settings->value("crossdevice/enabled", false).toBool(); }
     void saveCrossDeviceEnabled() { m_settings->setValue("crossdevice/enabled", CrossDevice.isEnabled); }
 
@@ -718,7 +730,7 @@ public slots:
         // don't surface as user-visible "AirPods Disconnected" toasts.
         QTimer::singleShot(2000, this, [this]() {
             // Suspend stopped discovery on every controller, so resume restarts it and the gate below re-applies.
-            m_bleManager->startScan();
+            startIdleScan();
 
             if (areAirpodsConnected() && m_deviceInfo && !m_deviceInfo->bluetoothAddress().isEmpty())
             {
@@ -859,7 +871,7 @@ private slots:
 
         // Clear the device name and model
         m_deviceInfo->reset();
-        m_bleManager->startScan();
+        startIdleScan();
         emit airPodsStatusChanged();
 
         // Skip the disconnect toast if we're suspending/resuming — BlueZ
@@ -1595,7 +1607,7 @@ public:
 
         m_deviceInfo->loadFromSettings(*m_settings);
         // Unreachable with the pods already connected: the constructor returns before this.
-        m_bleManager->startScan();
+        startIdleScan();
     }
 
     // Null engine is the headless run, where there is no window to open and nothing to say about it.
