@@ -190,25 +190,14 @@ public:
                     headsetCharging ? BatteryStatus::Charging : BatteryStatus::Discharging};
             }
         } else {
-            if (rawLeftBattery == CHAR_MAX) {
-                rawLeftBattery = states.value(Component::Left).level; // Use last valid level
-                isLeftCharging = states.value(Component::Left).status == BatteryStatus::Charging;
+            // Values above 100 include the 0x7F sentinel and must preserve availability as well as level.
+            if (rawLeftBattery <= 100) {
+                states[Component::Left] = {static_cast<quint8>(rawLeftBattery), isLeftCharging ? BatteryStatus::Charging : BatteryStatus::Discharging};
             }
-
-            if (rawRightBattery == CHAR_MAX) {
-                rawRightBattery = states.value(Component::Right).level; // Use last valid level
-                isRightCharging = states.value(Component::Right).status == BatteryStatus::Charging;
+            if (rawRightBattery <= 100) {
+                states[Component::Right] = {static_cast<quint8>(rawRightBattery), isRightCharging ? BatteryStatus::Charging : BatteryStatus::Discharging};
             }
-
-            if (rawCaseBattery == CHAR_MAX) {
-                rawCaseBattery = states.value(Component::Case).level; // Use last valid level
-                isCaseCharging = states.value(Component::Case).status == BatteryStatus::Charging;
-            }
-
-            // Update states
-            states[Component::Left] = {static_cast<quint8>(rawLeftBattery), isLeftCharging ? BatteryStatus::Charging : BatteryStatus::Discharging};
-            states[Component::Right] = {static_cast<quint8>(rawRightBattery), isRightCharging ? BatteryStatus::Charging : BatteryStatus::Discharging};
-            // Only a docked pod can read the case, so the payload's 0 there means unknown and writing it would publish a flat case and trip the low-battery latch.
+            // Only a docked pod can distinguish a flat case from an unreadable case.
             if ((rawCaseBattery > 0 || podInCase) && rawCaseBattery <= 100) {
                 states[Component::Case] = {static_cast<quint8>(rawCaseBattery), isCaseCharging ? BatteryStatus::Charging : BatteryStatus::Discharging};
             }
