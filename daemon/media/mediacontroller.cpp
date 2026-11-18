@@ -121,6 +121,30 @@ CaptureState MediaController::captureStateForSource(const QString &sourceName)
   return m_pulseAudio->captureStateForSource(sourceName);
 }
 
+void MediaController::resetA2dpTransport(const QString &macAddress)
+{
+  const QString card = m_pulseAudio->getCardNameForDevice(macAddress);
+  const QString profile = card.isEmpty() ? QString() : m_pulseAudio->getActiveCardProfile(card);
+  // Switching the card back on already builds a fresh transport, so an inactive card needs nothing.
+  if (!profile.startsWith(QStringLiteral("a2dp"))) {
+    LOG_INFO("A2DP reset skipped, card profile is " << (profile.isEmpty() ? QStringLiteral("unknown") : profile));
+    return;
+  }
+  const QString sink = m_pulseAudio->sinkForAddress(macAddress);
+  if (!sink.isEmpty() && m_pulseAudio->suspendSink(sink, true)) {
+    LOG_INFO("Reset A2DP transport by suspend and resume: " << sink);
+    QTimer::singleShot(400, this, [this, sink]() {
+      if (!m_pulseAudio->suspendSink(sink, false)) {
+        LOG_WARN("Resume after the A2DP reset failed for " << sink);
+      }
+    });
+    return;
+  }
+  LOG_WARN("Suspend failed for " << sink << ", cycling the card profile instead");
+  m_pulseAudio->setCardProfile(card, QStringLiteral("off"));
+  activateA2dpProfileWithRetry(macAddress);
+}
+
 void MediaController::setEarDetectionBehavior(EarDetectionBehavior behavior)
 {
   if (earDetectionBehavior == behavior)

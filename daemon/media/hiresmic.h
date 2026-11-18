@@ -20,10 +20,16 @@ public:
     explicit HiResMic(QObject *parent = nullptr);
     ~HiResMic() override;
 
-    // Opens the decoder and publishes the source. False leaves nothing behind.
-    bool start();
+    // Opens the decoder and publishes the source, adopting one an earlier run left loaded.
+    // False leaves nothing behind.
+    bool start(const QString &description);
+    // Closes the decoder and the writer but keeps the source: Discord's voice engine aborts
+    // when any microphone appears or disappears while it records, so the source outlives
+    // disconnects and restarts and is unloaded only by remove().
     void stop();
+    void remove();
     bool isRunning() const { return m_module > 0; }
+    static constexpr const char *sourceName() { return "AirPodsHiRes"; }
 
     // One AAC-ELD access unit from an 0x58 audio SDU.
     void decode(QByteArrayView accessUnit);
@@ -34,8 +40,10 @@ public:
 private:
     bool openDecoder();
     void closeDecoder();
-    bool publishSource();
-    void unpublishSource();
+    bool publishSource(const QString &description);
+    bool adoptSource();
+    void unloadSource();
+    void closeWriter();
     QString fifoPath() const;
 
     AVCodecContext *m_ctx = nullptr;

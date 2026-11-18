@@ -28,6 +28,7 @@ qt_add_executable(librepods
     media/hiresmic.cpp
     media/hiresmic.h
     media/hiresframe.hpp
+    media/hirespolicy.hpp
     media/eldpcm.hpp
     media/agc.hpp
     airpods_packets.h

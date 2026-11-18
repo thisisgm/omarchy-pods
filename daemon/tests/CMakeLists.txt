@@ -39,6 +39,11 @@ openpods_add_test(tst_hiresframe
     ../media/hiresframe.hpp
 )
 
+openpods_add_test(tst_hirespolicy
+    tst_hirespolicy.cpp
+    ../media/hirespolicy.hpp
+)
+
 openpods_add_test(tst_agc
     tst_agc.cpp
     ../media/agc.hpp

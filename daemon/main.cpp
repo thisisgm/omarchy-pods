@@ -28,11 +28,13 @@
 #include <QLibraryInfo>
 #include <QDir>
 #include <QStandardPaths>
+#include <QElapsedTimer>
 
 #include "airpods_packets.h"
 #include "logger.h"
 #include "media/hiresframe.hpp"
 #include "media/hiresmic.h"
+#include "media/hirespolicy.hpp"
 #include "media/mediacontroller.h"
 #include "trayiconmanager.h"
 #include "notifier.hpp"
@@ -141,6 +143,8 @@ public:
         CrossDevice.isEnabled = loadCrossDeviceEnabled();
         setEarDetectionBehavior(loadEarDetectionSettings());
         m_hiResMicEnabled = m_settings->value("hiresMic/enabled", true).toBool();
+        m_hiResClock.start();
+        loadHiResParked();
         setRetryAttempts(loadRetryAttempts());
         // Restore persisted PhoneMAC into the process env BEFORE
         // connectToPhone() reads it. setPhoneMac persists to QSettings
@@ -386,31 +390,196 @@ public slots:
     }
     // The AirPods stream their high-resolution microphone only while armed. Both packets carry
     // the 04 00 04 00 AACP header and message type 0x58, the same type as the audio frames.
-    void setHiResMicEnabled(bool enabled)
+    bool sendHiResStream(bool start)
     {
-        static const QByteArray start = QByteArray::fromHex("04000400580000000900000182000000049600");
-        static const QByteArray stop = QByteArray::fromHex("040004005800000002000301");
-        if (!socket || socket->state() != QBluetoothSocket::SocketState::ConnectedState) {
-            LOG_WARN("Refusing hi-res mic " << (enabled ? "arm" : "disarm") << ": no control link");
-            return;
+        static const QByteArray startPacket = QByteArray::fromHex("04000400580000000900000182000000049600");
+        static const QByteArray stopPacket = QByteArray::fromHex("040004005800000002000301");
+        if (!areAirpodsConnected()) {
+            LOG_WARN("Refusing hi-res mic " << (start ? "START" : "STOP") << ": no control link");
+            return false;
         }
-        if (m_hiResMicArmed == enabled) {
-            return;
+        socket->write(start ? startPacket : stopPacket);
+        return true;
+    }
+
+    bool startHiResCapture()
+    {
+        if (!sendHiResStream(true)) {
+            return false;
         }
-        if (enabled && !m_hiResMic.isRunning()) {
-            LOG_WARN("Refusing hi-res mic arm: no source published");
-            return;
-        }
-        m_hiResMicArmed = enabled;
+        m_hiResMicArmed = true;
         m_hiResSdus = 0;
         m_hiResUnits = 0;
         m_hiResTailBytes = 0;
-        socket->write(enabled ? start : stop);
+        // The stall clock starts now; the first SDU arrives well inside kStallMs.
+        m_hiResLastSduMs = m_hiResClock.elapsed();
+        // Conversation Awareness ducks playback whenever the user speaks, which a call is.
+        if (m_deviceInfo && m_deviceInfo->conversationalAwareness()) {
+            m_hiResCaSaved = true;
+            m_hiResCaUserChanged = false;
+            m_hiResCaInternal = true;
+            setConversationalAwareness(false);
+            m_hiResCaInternal = false;
+        }
         emit airPodsStatusChanged();
-        LOG_INFO("Hi-res mic " << (enabled ? "armed" : "disarmed"));
+        LOG_INFO("Hi-res mic armed");
+        return true;
     }
 
-    // The panel switch. Off tears the source down, so no app can select a mic that is not there.
+    void stopHiResCapture()
+    {
+        sendHiResStream(false);
+        m_hiResMicArmed = false;
+        m_hiResLastSduMs = -1;
+        restoreHiResConversationAwareness();
+        emit airPodsStatusChanged();
+        LOG_INFO("Hi-res mic disarmed");
+    }
+
+    void restoreHiResConversationAwareness()
+    {
+        if (!m_hiResCaSaved) {
+            return;
+        }
+        m_hiResCaSaved = false;
+        if (m_hiResCaUserChanged) {
+            LOG_INFO("Hi-res mic: Conversation Awareness was changed meanwhile, not restoring it");
+            return;
+        }
+        // The setting lives on the AirPods, so one that left mid-call gets it back on reconnect.
+        if (!areAirpodsConnected()) {
+            m_hiResCaRestorePending = true;
+            return;
+        }
+        m_hiResCaInternal = true;
+        setConversationalAwareness(true);
+        m_hiResCaInternal = false;
+    }
+
+    // Requests close together run one reset, after the last of them.
+    void scheduleHiResA2dpReset()
+    {
+        const quint64 generation = ++m_hiResResetGeneration;
+        QTimer::singleShot(OpenPods::HiRes::kA2dpResetDelayMs, this, [this, generation]() {
+            if (generation != m_hiResResetGeneration || !areAirpodsConnected() || !m_deviceInfo) {
+                return;
+            }
+            mediaController->resetA2dpTransport(m_deviceInfo->bluetoothAddress().replace(":", "_"));
+        });
+    }
+
+    QString hiResParkedPath() const
+    {
+        return QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation)
+               + QStringLiteral("/librepods/hires-mic.parked");
+    }
+
+    void loadHiResParked()
+    {
+        QFile file(hiResParkedPath());
+        if (file.open(QIODevice::ReadOnly)) {
+            m_hiResParkedFallback = OpenPods::HiRes::parseParked(QString::fromUtf8(file.readAll()));
+            // A default switched by an earlier run is still undone once a bud is worn.
+            m_hiResParked = !m_hiResParkedFallback.isEmpty();
+        }
+    }
+
+    void saveHiResParked()
+    {
+        if (m_hiResParkedFallback.isEmpty()) {
+            QFile::remove(hiResParkedPath());
+            return;
+        }
+        QDir().mkpath(QFileInfo(hiResParkedPath()).absolutePath());
+        QSaveFile file(hiResParkedPath());
+        if (file.open(QIODevice::WriteOnly)) {
+            file.write(OpenPods::HiRes::serializeParked(m_hiResParkedFallback).toUtf8());
+            file.commit();
+        }
+    }
+
+    // While the AirPods cannot deliver mic audio, another mic becomes the default and apps pinned
+    // to ours move to it, the way the output moves. unparkHiResMic() undoes both.
+    void parkHiResMic()
+    {
+        if (m_hiResParked || !mediaController) {
+            return;
+        }
+        PulseAudioController *pa = mediaController->pulseAudio();
+        const QString source = QString::fromLatin1(HiResMic::sourceName());
+        const QString mac = m_deviceInfo ? m_deviceInfo->bluetoothAddress() : QString();
+        // The AirPods' own inputs would put the card on a headset profile, so they are no fallback.
+        const QString fallback = pa->fallbackSource([&source, &mac](const QString &name) {
+            return name == source || (!mac.isEmpty() && sourceNamesAddress(name, mac));
+        });
+        m_hiResParked = true;
+        m_hiResParkedFallback.clear();
+        m_hiResMoved.clear();
+        if (fallback.isEmpty()) {
+            LOG_INFO("Hi-res mic parked, but there is no other microphone to move apps to");
+            saveHiResParked();
+            return;
+        }
+        if (pa->getDefaultSource() == source && pa->setDefaultSource(fallback)) {
+            m_hiResParkedFallback = fallback;
+            LOG_INFO("Hi-res mic parked: default microphone is now " << fallback);
+        }
+        saveHiResParked();
+        // The session manager first moves the streams that follow the default; the rest are pinned.
+        QTimer::singleShot(400, this, [this, source, fallback]() {
+            if (!m_hiResParked) {
+                return;
+            }
+            PulseAudioController *pa = mediaController->pulseAudio();
+            for (uint32_t index : pa->recordersOn(source, OpenPods::HiRes::kMinRecorderRate)) {
+                if (pa->moveRecorder(index, fallback)) {
+                    m_hiResMoved.append(index);
+                }
+            }
+            if (!m_hiResMoved.isEmpty()) {
+                LOG_INFO("Hi-res mic parked: moved " << m_hiResMoved.size() << " recorder(s) to " << fallback);
+            }
+        });
+    }
+
+    void unparkHiResMic()
+    {
+        if (!m_hiResParked) {
+            return;
+        }
+        m_hiResParked = false;
+        PulseAudioController *pa = mediaController->pulseAudio();
+        const QString source = QString::fromLatin1(HiResMic::sourceName());
+        if (!m_hiResParkedFallback.isEmpty()) {
+            if (pa->getDefaultSource() == m_hiResParkedFallback) {
+                if (pa->setDefaultSource(source)) {
+                    LOG_INFO("Hi-res mic unparked: it is the default microphone again");
+                }
+            } else {
+                LOG_INFO("Hi-res mic unparked: the default microphone was changed meanwhile, leaving it");
+            }
+        }
+        for (uint32_t index : std::as_const(m_hiResMoved)) {
+            pa->moveRecorder(index, source);
+        }
+        m_hiResMoved.clear();
+        m_hiResParkedFallback.clear();
+        saveHiResParked();
+    }
+
+    // An app on the default mic would otherwise record from the AirPods' own input, which
+    // switches the card to the 16 kHz headset profile. A default the user chose elsewhere stays.
+    void claimHiResDefault()
+    {
+        PulseAudioController *pa = mediaController->pulseAudio();
+        const QString current = pa->getDefaultSource();
+        if (m_deviceInfo && sourceNamesAddress(current, m_deviceInfo->bluetoothAddress())
+            && pa->setDefaultSource(QString::fromLatin1(HiResMic::sourceName()))) {
+            LOG_INFO("Hi-res mic is the default microphone instead of " << current);
+        }
+    }
+
+    // The panel switch. Off removes the source, so no app can select a mic that is not there.
     void setHiResMicUserEnabled(bool enabled)
     {
         if (m_hiResMicEnabled == enabled) {
@@ -421,60 +590,247 @@ public slots:
         if (enabled) {
             startHiResMicSource();
         } else {
-            stopHiResMicSource();
+            if (m_hiResMonitor) {
+                m_hiResMonitor->stop();
+            }
+            if (m_hiResMicArmed) {
+                stopHiResCapture();
+                scheduleHiResA2dpReset();
+            }
+            unparkHiResMic();
+            m_hiResMic.remove();
         }
         emit airPodsStatusChanged();
         LOG_INFO("Hi-res mic " << (enabled ? "enabled" : "disabled") << " by request");
     }
 
-    // The source is published for as long as the pods are connected, so an app can pick it
-    // before anything is streaming; the radio stream itself follows the recorder.
+    // The source is published on the first connection and then kept, so an app can pick it
+    // before anything streams; the radio stream itself follows the recorder.
     void startHiResMicSource()
     {
         if (!m_hiResMicEnabled) {
             return;
         }
-        if (m_hiResMic.isRunning() || !m_hiResMic.start()) {
-            return;
+        if (!m_hiResMic.isRunning()) {
+            const QString name = m_deviceInfo ? m_deviceInfo->deviceName().trimmed() : QString();
+            const QString description = name.isEmpty() ? QStringLiteral("AirPods Microphone")
+                                                       : name + QStringLiteral(" Microphone");
+            if (!m_hiResMic.start(description)) {
+                return;
+            }
         }
         if (!m_hiResMonitor) {
             m_hiResMonitor = new QTimer(this);
-            m_hiResMonitor->setInterval(1000);
+            m_hiResMonitor->setInterval(OpenPods::HiRes::kPollMs);
             connect(m_hiResMonitor, &QTimer::timeout, this, &AirPodsTrayApp::pollHiResRecorder);
         }
         m_hiResMonitor->start();
     }
 
-    void stopHiResMicSource()
+    void onHiResConnected()
     {
-        if (m_hiResMonitor) {
-            m_hiResMonitor->stop();
-        }
-        if (m_hiResMicArmed) {
-            setHiResMicEnabled(false);
-        }
-        m_hiResMic.stop();
+        ++m_hiResConnGeneration;
+        m_hiResConnectedAtMs = m_hiResClock.elapsed();
+        m_earReported = false;
+        m_hiResSeenWorn = false;
+        m_hiResDefaultChecked = false;
+        m_hiResOutSinceMs = -1;
+        startHiResMicSource();
     }
 
-    // Unknown is not evidence of a recorder, so it neither arms nor disarms.
+    void onHiResDisconnected()
+    {
+        if (m_hiResMicArmed) {
+            m_hiResMicArmed = false;
+            m_hiResLastSduMs = -1;
+            restoreHiResConversationAwareness();
+            emit airPodsStatusChanged();
+        }
+        m_hiResRecorderGoneMs = -1;
+        m_hiResConnectedAtMs = -1;
+        m_hiResResetWhenWorn = false;
+        resetHiResRestarts();
+        const quint64 generation = ++m_hiResConnGeneration;
+        QTimer::singleShot(OpenPods::HiRes::kDisconnectParkDelayMs, this, [this, generation]() {
+            if (generation != m_hiResConnGeneration || areAirpodsConnected()) {
+                return;
+            }
+            LOG_INFO("Hi-res mic: AirPods still gone, moving apps to another microphone");
+            parkHiResMic();
+        });
+    }
+
+    // Nothing feeds the source once the daemon is gone, so apps move to another mic first.
+    void prepareHiResForQuit()
+    {
+        if (m_hiResMicArmed) {
+            sendHiResStream(false);
+            m_hiResMicArmed = false;
+        }
+        if (m_hiResMic.isRunning()) {
+            parkHiResMic();
+        }
+    }
+
+    void onEarReport(bool primaryBefore, bool secondaryBefore)
+    {
+        m_earReported = true;
+        EarDetection *ear = m_deviceInfo->getEarDetection();
+        if (ear->isPrimaryInEar() != primaryBefore || ear->isSecondaryInEar() != secondaryBefore) {
+            ++m_earGeneration;
+        }
+        pollHiResRecorder();
+    }
+
+    void resetHiResRestarts()
+    {
+        m_hiResBackoffMs = OpenPods::HiRes::kStallMs;
+        m_hiResFailedRestarts = 0;
+        m_hiResGaveUpAtEar = -1;
+    }
+
     void pollHiResRecorder()
     {
-        if (!m_hiResMic.isRunning()) {
+        using namespace OpenPods::HiRes;
+        if (!m_hiResMic.isRunning() || !m_deviceInfo || !areAirpodsConnected()) {
             return;
         }
-        const CaptureState state = mediaController->captureStateForSource("AirPodsHiRes");
-        if (state == CaptureState::Live && !m_hiResMicArmed) {
+        const qint64 now = m_hiResClock.elapsed();
+        EarDetection *ear = m_deviceInfo->getEarDetection();
+        const bool wornNow = ear && ear->oneOrMorePodsInEar();
+        const bool earKnown = m_earReported
+                              || (m_hiResConnectedAtMs >= 0 && now - m_hiResConnectedAtMs > kEarReportWaitMs);
+        if (wornNow) {
+            m_hiResOutSinceMs = -1;
+            m_hiResSeenWorn = m_hiResSeenWorn || earKnown;
+        } else if (m_hiResOutSinceMs < 0) {
+            m_hiResOutSinceMs = now;
+        }
+        // AirPods that connect from the open case were never worn, so there is no grace to ride out.
+        const bool worn = wornNow
+                          || (m_hiResSeenWorn && m_hiResOutSinceMs >= 0 && now - m_hiResOutSinceMs < kNotWornGraceMs);
+
+        if (earKnown && m_hiResCaRestorePending) {
+            m_hiResCaRestorePending = false;
+            m_hiResCaInternal = true;
+            setConversationalAwareness(true);
+            m_hiResCaInternal = false;
+        }
+        if (wornNow && earKnown) {
+            unparkHiResMic();
+            if (!m_hiResDefaultChecked) {
+                m_hiResDefaultChecked = true;
+                claimHiResDefault();
+            }
+        }
+
+        const CaptureState state = mediaController->pulseAudio()->captureStateForSource(
+            QString::fromLatin1(HiResMic::sourceName()), kMinRecorderRate);
+        // Unknown is not evidence either way, so it neither arms nor disarms.
+        if (state == CaptureState::Unknown) {
+            return;
+        }
+        // A parked mic hands silence to whoever still records from it.
+        const bool app = state == CaptureState::Live && !m_hiResParked;
+        if (app) {
+            m_hiResRecorderGoneMs = -1;
+        } else if (m_hiResMicArmed && m_hiResRecorderGoneMs < 0) {
+            m_hiResRecorderGoneMs = now;
+        }
+        const bool inGrace = m_hiResMicArmed && m_hiResRecorderGoneMs >= 0
+                             && now - m_hiResRecorderGoneMs < kRecorderGoneGraceMs;
+        const bool recording = app || inGrace;
+        // Out of the ear the AirPods send nothing, which is not a stall.
+        const bool stalled = wornNow && m_hiResMicArmed && m_hiResLastSduMs >= 0
+                             && now - m_hiResLastSduMs > kStallMs;
+
+        const CaptureAction action = captureAction(m_hiResMicEnabled, recording, worn, m_hiResMicArmed, stalled);
+        if (wornNow && m_hiResResetWhenWorn && action != CaptureAction::Start) {
+            LOG_INFO("Hi-res mic: a bud is back after a STOP with both out, resetting A2DP");
+            scheduleHiResA2dpReset();
+        }
+        if (wornNow || action == CaptureAction::Start) {
+            m_hiResResetWhenWorn = false;
+        }
+
+        switch (action) {
+        case CaptureAction::Start:
+            if (!earKnown || now < m_hiResNextStartMs) {
+                break;
+            }
             LOG_INFO("Hi-res mic: a recorder appeared, arming");
-            setHiResMicEnabled(true);
-        } else if (state == CaptureState::Idle && m_hiResMicArmed) {
-            LOG_INFO("Hi-res mic: no recorder left, disarming");
-            setHiResMicEnabled(false);
+            if (!startHiResCapture()) {
+                m_hiResNextStartMs = now + kStallMs;
+            }
+            break;
+        case CaptureAction::Keep:
+            if (wornNow) {
+                resetHiResRestarts();
+            }
+            break;
+        case CaptureAction::Restart:
+            if (m_hiResGaveUpAtEar >= 0) {
+                if (static_cast<qint64>(m_earGeneration) == m_hiResGaveUpAtEar) {
+                    break;
+                }
+                LOG_INFO("Hi-res mic: ear state changed, retrying the stream");
+                resetHiResRestarts();
+                m_hiResNextRestartMs = now;
+            }
+            if (m_hiResFailedRestarts >= kMaxFailedRestarts) {
+                LOG_WARN("Hi-res mic: no audio after " << m_hiResFailedRestarts
+                         << " restarts, waiting for an ear change");
+                m_hiResGaveUpAtEar = static_cast<qint64>(m_earGeneration);
+                break;
+            }
+            if (now >= m_hiResNextRestartMs) {
+                ++m_hiResFailedRestarts;
+                LOG_WARN("Hi-res mic: no audio for " << kStallMs << " ms, restarting the stream");
+                sendHiResStream(false);
+                if (sendHiResStream(true)) {
+                    m_hiResLastSduMs = now;
+                } else {
+                    m_hiResMicArmed = false;
+                    restoreHiResConversationAwareness();
+                    scheduleHiResA2dpReset();
+                    m_hiResNextStartMs = now + kStallMs;
+                    emit airPodsStatusChanged();
+                }
+                // Another device holding the AirPods' mic would otherwise get a restart every two seconds.
+                m_hiResNextRestartMs = now + m_hiResBackoffMs;
+                m_hiResBackoffMs = nextBackoffMs(m_hiResBackoffMs);
+            }
+            break;
+        case CaptureAction::Stop:
+            LOG_INFO("Hi-res mic: stopping (enabled=" << m_hiResMicEnabled << ", recording=" << recording
+                     << ", worn=" << worn << ")");
+            stopHiResCapture();
+            if (wornNow) {
+                scheduleHiResA2dpReset();
+            } else if (earDetectionBehavior() == MediaController::Disabled) {
+                // The card stays on with both out, so its transport is reset once a bud is back.
+                m_hiResResetWhenWorn = true;
+            }
+            resetHiResRestarts();
+            m_hiResRecorderGoneMs = -1;
+            break;
+        case CaptureAction::Idle:
+            m_hiResRecorderGoneMs = -1;
+            break;
+        }
+
+        // Matches the output, which the media controller releases once both are out past the grace.
+        if (earKnown && !worn && !m_hiResMicArmed && !m_hiResParked
+            && earDetectionBehavior() != MediaController::Disabled) {
+            LOG_INFO("Hi-res mic: no bud in an ear, moving apps to another microphone");
+            parkHiResMic();
         }
     }
 
     // Audio arrives on the control socket, so it is counted here rather than parsed as a packet.
     void handleHiResAudio(const QByteArray &sdu)
     {
+        m_hiResLastSduMs = m_hiResClock.elapsed();
         qsizetype consumed = OpenPods::HiRes::kSduHeaderLen;
         const int units = OpenPods::HiRes::demuxAudioUnits(sdu, [this, &consumed](QByteArrayView au) {
             consumed += OpenPods::HiRes::kAuPrefixLen + au.size();
@@ -483,7 +839,7 @@ public slots:
         ++m_hiResSdus;
         m_hiResUnits += units;
         m_hiResTailBytes += sdu.size() - consumed;
-        if (m_hiResSdus % 100 == 0) {
+        if (m_hiResSdus % 500 == 0) {
             LOG_INFO("Hi-res mic: " << m_hiResSdus << " SDUs, " << m_hiResUnits
                      << " access units, " << m_hiResMic.framesDecoded() << " frames decoded, "
                      << m_hiResMic.decodeErrors() << " errors, " << m_hiResTailBytes
@@ -559,6 +915,9 @@ public slots:
 
     void setConversationalAwareness(bool enabled)
     {
+        if (m_hiResCaSaved && !m_hiResCaInternal) {
+            m_hiResCaUserChanged = true;
+        }
         if (!m_deviceInfo) {
             LOG_WARN("setConversationalAwareness: m_deviceInfo not ready");
             return;
@@ -1261,7 +1620,7 @@ private slots:
             QMetaObject::invokeMethod(this, "parseData", Qt::QueuedConnection, Q_ARG(QByteArray, data));
             QMetaObject::invokeMethod(this, "relayPacketToPhone", Qt::QueuedConnection, Q_ARG(QByteArray, data)); });
             sendHandshake();
-            startHiResMicSource();
+            onHiResConnected();
         };
 
         // Error handler with retry. Per-device member instead of static so
@@ -1326,7 +1685,7 @@ private slots:
                         }
                         return;
                     }
-                    stopHiResMicSource();
+                    onHiResDisconnected();
                     handleControlSocketLoss(device, localSocket,
                                             QStringLiteral("socket disconnected"));
                 });
@@ -1432,8 +1791,11 @@ private slots:
         // Ear Detection
         else if (data.size() == 8 && data.startsWith(AirPodsPackets::Parse::EAR_DETECTION))
         {
+            const bool primaryBefore = m_deviceInfo->getEarDetection()->isPrimaryInEar();
+            const bool secondaryBefore = m_deviceInfo->getEarDetection()->isSecondaryInEar();
             m_deviceInfo->getEarDetection()->parseData(data);
             mediaController->handleEarDetection(m_deviceInfo->getEarDetection());
+            onEarReport(primaryBefore, secondaryBefore);
         }
         // Battery Status
         else if ((data.size() == 22 || data.size() == 12) && data.startsWith(AirPodsPackets::Parse::BATTERY_STATUS))
@@ -1749,6 +2111,31 @@ private:
     quint64 m_hiResSdus = 0;
     quint64 m_hiResUnits = 0;
     qint64 m_hiResTailBytes = 0;
+    // Monotonic milliseconds; -1 means not set.
+    QElapsedTimer m_hiResClock;
+    qint64 m_hiResLastSduMs = -1;
+    qint64 m_hiResConnectedAtMs = -1;
+    qint64 m_hiResOutSinceMs = -1;
+    qint64 m_hiResRecorderGoneMs = -1;
+    qint64 m_hiResNextRestartMs = 0;
+    qint64 m_hiResNextStartMs = 0;
+    qint64 m_hiResGaveUpAtEar = -1;
+    int m_hiResBackoffMs = OpenPods::HiRes::kStallMs;
+    int m_hiResFailedRestarts = 0;
+    bool m_hiResSeenWorn = false;
+    bool m_hiResResetWhenWorn = false;
+    bool m_hiResDefaultChecked = false;
+    bool m_earReported = false;
+    quint64 m_earGeneration = 0;
+    quint64 m_hiResConnGeneration = 0;
+    quint64 m_hiResResetGeneration = 0;
+    bool m_hiResParked = false;
+    QString m_hiResParkedFallback;
+    QVector<uint32_t> m_hiResMoved;
+    bool m_hiResCaSaved = false;
+    bool m_hiResCaInternal = false;
+    bool m_hiResCaUserChanged = false;
+    bool m_hiResCaRestorePending = false;
     QBluetoothSocket *socket = nullptr;
     QBluetoothSocket *phoneSocket = nullptr;
     QByteArray lastBatteryStatus;
@@ -2284,6 +2671,8 @@ int main(int argc, char *argv[]) {
 
     // No error handler here: newConnection is QLocalServer's only signal, so the failed listen above is the only error it reports.
 
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, trayAppPtr,
+                     [trayAppPtr]() { trayAppPtr->prepareHiResForQuit(); });
     QObject::connect(&app, &QCoreApplication::aboutToQuit,
                      serverPtr, [serverPtr, ipcPath]() {
         LOG_DEBUG("Application quitting. Cleaning up local server...");

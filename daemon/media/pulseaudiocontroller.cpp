@@ -428,7 +428,7 @@ bool PulseAudioController::isProfileAvailable(const QString &cardName, const QSt
 // A stream attached to the AirPods mic is a call holding the headset profile, and a
 // muted caller still holds it, so both queries run under one lock to see one server state.
 CaptureState PulseAudioController::captureStateMatching(const std::function<bool(const QString &)> &matches,
-                                                        const QString &what)
+                                                        const QString &what, quint32 minRate)
 {
     // Both are known here rather than unanswered, and the activation path already handles them.
     if (!m_initialized || what.isEmpty()) return CaptureState::Idle;
@@ -462,9 +462,11 @@ CaptureState PulseAudioController::captureStateMatching(const std::function<bool
         bool capturing = false;
         bool failed = false;
         QVector<uint32_t> indexes;
+        quint32 minRate = 0;
         pa_threaded_mainloop *mainloop = nullptr;
     } streams;
     streams.mainloop = m_mainloop;
+    streams.minRate = minRate;
 
     auto streamCallback = [](pa_context *, const pa_source_output_info *info, int eol, void *userdata) {
         StreamData *d = static_cast<StreamData*>(userdata);
@@ -474,7 +476,7 @@ CaptureState PulseAudioController::captureStateMatching(const std::function<bool
             return;
         }
         // A corked stream is an app holding the mic open without capturing, which must not pin the card.
-        if (info && !info->corked && d->indexes.contains(info->source)) {
+        if (info && !info->corked && info->sample_spec.rate >= d->minRate && d->indexes.contains(info->source)) {
             d->capturing = true;
         }
     };
@@ -509,9 +511,212 @@ CaptureState PulseAudioController::captureState(const QString &macAddress)
         [&macAddress](const QString &name) { return sourceNamesAddress(name, macAddress); }, macAddress);
 }
 
-CaptureState PulseAudioController::captureStateForSource(const QString &sourceName)
+CaptureState PulseAudioController::captureStateForSource(const QString &sourceName, quint32 minRate)
 {
-    return captureStateMatching([&sourceName](const QString &name) { return name == sourceName; }, sourceName);
+    return captureStateMatching([&sourceName](const QString &name) { return name == sourceName; }, sourceName,
+                                minRate);
+}
+
+namespace {
+struct SuccessData {
+    bool ok = false;
+    pa_threaded_mainloop *mainloop = nullptr;
+};
+
+void successCallback(pa_context *, int success, void *userdata)
+{
+    auto *d = static_cast<SuccessData *>(userdata);
+    d->ok = success != 0;
+    pa_threaded_mainloop_signal(d->mainloop, 0);
+}
+}
+
+QString PulseAudioController::getDefaultSource()
+{
+    if (!m_initialized) return QString();
+    struct Data {
+        QString name;
+        pa_threaded_mainloop *mainloop = nullptr;
+    } data;
+    data.mainloop = m_mainloop;
+    auto callback = [](pa_context *, const pa_server_info *info, void *userdata) {
+        auto *d = static_cast<Data *>(userdata);
+        if (info && info->default_source_name) {
+            d->name = QString::fromUtf8(info->default_source_name);
+        }
+        pa_threaded_mainloop_signal(d->mainloop, 0);
+    };
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_get_server_info(m_context, callback, &data);
+    if (op) {
+        waitForOperation(op);
+        pa_operation_unref(op);
+    }
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return data.name;
+}
+
+bool PulseAudioController::setDefaultSource(const QString &sourceName)
+{
+    if (!m_initialized || sourceName.isEmpty()) return false;
+    SuccessData data;
+    data.mainloop = m_mainloop;
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_set_default_source(m_context, sourceName.toUtf8().constData(),
+                                                     successCallback, &data);
+    const bool waited = waitForOperation(op);
+    if (op) pa_operation_unref(op);
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return waited && data.ok;
+}
+
+QString PulseAudioController::fallbackSource(const std::function<bool(const QString &)> &reject)
+{
+    if (!m_initialized) return QString();
+    struct Data {
+        QString best;
+        int bestPriority = -1;
+        const std::function<bool(const QString &)> *reject = nullptr;
+        pa_threaded_mainloop *mainloop = nullptr;
+    } data;
+    data.reject = &reject;
+    data.mainloop = m_mainloop;
+    auto callback = [](pa_context *, const pa_source_info *info, int eol, void *userdata) {
+        auto *d = static_cast<Data *>(userdata);
+        if (eol != 0) {
+            pa_threaded_mainloop_signal(d->mainloop, 0);
+            return;
+        }
+        if (!info || info->monitor_of_sink != PA_INVALID_INDEX) {
+            return;
+        }
+        const QString name = QString::fromUtf8(info->name);
+        if ((*d->reject)(name)) {
+            return;
+        }
+        const char *prio = pa_proplist_gets(info->proplist, "priority.session");
+        const int priority = prio ? QString::fromUtf8(prio).toInt() : 0;
+        if (priority > d->bestPriority) {
+            d->bestPriority = priority;
+            d->best = name;
+        }
+    };
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_get_source_info_list(m_context, callback, &data);
+    if (op) {
+        waitForOperation(op);
+        pa_operation_unref(op);
+    }
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return data.best;
+}
+
+QVector<uint32_t> PulseAudioController::recordersOn(const QString &sourceName, quint32 minRate)
+{
+    if (!m_initialized) return {};
+    struct Data {
+        uint32_t source = PA_INVALID_INDEX;
+        QVector<uint32_t> recorders;
+        quint32 minRate = 0;
+        pa_threaded_mainloop *mainloop = nullptr;
+    } data;
+    data.minRate = minRate;
+    data.mainloop = m_mainloop;
+    auto sourceCallback = [](pa_context *, const pa_source_info *info, int eol, void *userdata) {
+        auto *d = static_cast<Data *>(userdata);
+        if (eol != 0) {
+            pa_threaded_mainloop_signal(d->mainloop, 0);
+            return;
+        }
+        if (info) d->source = info->index;
+    };
+    auto streamCallback = [](pa_context *, const pa_source_output_info *info, int eol, void *userdata) {
+        auto *d = static_cast<Data *>(userdata);
+        if (eol != 0) {
+            pa_threaded_mainloop_signal(d->mainloop, 0);
+            return;
+        }
+        if (info && info->source == d->source && info->sample_spec.rate >= d->minRate) {
+            d->recorders.append(info->index);
+        }
+    };
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_get_source_info_by_name(m_context, sourceName.toUtf8().constData(),
+                                                          sourceCallback, &data);
+    if (op) {
+        waitForOperation(op);
+        pa_operation_unref(op);
+    }
+    if (data.source != PA_INVALID_INDEX) {
+        op = pa_context_get_source_output_info_list(m_context, streamCallback, &data);
+        if (op) {
+            waitForOperation(op);
+            pa_operation_unref(op);
+        }
+    }
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return data.recorders;
+}
+
+bool PulseAudioController::moveRecorder(uint32_t index, const QString &sourceName)
+{
+    if (!m_initialized) return false;
+    SuccessData data;
+    data.mainloop = m_mainloop;
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_move_source_output_by_name(m_context, index, sourceName.toUtf8().constData(),
+                                                             successCallback, &data);
+    const bool waited = waitForOperation(op);
+    if (op) pa_operation_unref(op);
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return waited && data.ok;
+}
+
+bool PulseAudioController::suspendSink(const QString &sinkName, bool suspend)
+{
+    if (!m_initialized || sinkName.isEmpty()) return false;
+    SuccessData data;
+    data.mainloop = m_mainloop;
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_suspend_sink_by_name(m_context, sinkName.toUtf8().constData(), suspend ? 1 : 0,
+                                                       successCallback, &data);
+    const bool waited = waitForOperation(op);
+    if (op) pa_operation_unref(op);
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return waited && data.ok;
+}
+
+QString PulseAudioController::sinkForAddress(const QString &macAddress)
+{
+    if (!m_initialized || macAddress.isEmpty()) return QString();
+    struct Data {
+        QString name;
+        QString mac;
+        pa_threaded_mainloop *mainloop = nullptr;
+    } data;
+    data.mac = macAddress;
+    data.mainloop = m_mainloop;
+    auto callback = [](pa_context *, const pa_sink_info *info, int eol, void *userdata) {
+        auto *d = static_cast<Data *>(userdata);
+        if (eol != 0) {
+            pa_threaded_mainloop_signal(d->mainloop, 0);
+            return;
+        }
+        if (info && d->name.isEmpty()) {
+            const QString name = QString::fromUtf8(info->name);
+            if (name.startsWith(QStringLiteral("bluez_output.")) && sourceNamesAddress(name, d->mac)) {
+                d->name = name;
+            }
+        }
+    };
+    pa_threaded_mainloop_lock(m_mainloop);
+    pa_operation *op = pa_context_get_sink_info_list(m_context, callback, &data);
+    if (op) {
+        waitForOperation(op);
+        pa_operation_unref(op);
+    }
+    pa_threaded_mainloop_unlock(m_mainloop);
+    return data.name;
 }
 
 QVector<ProfileCandidate> PulseAudioController::getCardProfiles(const QString &cardName)
