@@ -110,6 +110,17 @@ codec Apple itself uses with AirPods, and it is the lightest on a link the hi-re
 microphone shares. The choice is re-applied every time the daemon activates the
 card.
 
+Measured on AirPods Pro 2 (USB-C) with PipeWire 1.6.9, same signal on each codec:
+
+| Codec | On air | Packets | Latency vs a wired reference |
+|---|---|---|---|
+| AAC | about 230 kbit/s | 47/s, about 600 B | 122 to 166 ms, median 123 |
+| SBC-XQ | 510 kbit/s | 62.5/s, 1021 B (full) | 157 ms; one run dropped clicks and settled at 242 |
+| SBC | 364 kbit/s | 47/s, 969 B | 141 to 142 ms |
+
+A higher SBC bitrate is not higher quality than AAC: SBC-XQ needs more than
+twice the airtime of AAC to carry the same audio, with no gain in latency.
+
 Selecting the AirPods as a **microphone** gives that up. Over the standard
 Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
 the only profiles exposing a source are `headset-head-unit` at 16 kHz mSBC and
@@ -118,7 +129,7 @@ rather than joining it. A card cannot offer a high-quality sink and a microphone
 at the same time. macOS is bound by the same profiles and simply negotiates a
 better voice codec on them.
 
-So take the microphone from another device and leave the AirPods on SBC-XQ. The
+So take the microphone from another device and leave the AirPods on A2DP. The
 daemon helps here: it defers its activation ladder while a capture is live, so it
 will not pull a live call off the headset profile mid-sentence.
 
