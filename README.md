@@ -118,8 +118,19 @@ Measured on AirPods Pro 2 (USB-C) with PipeWire 1.6.9, same signal on each codec
 | SBC-XQ | 510 kbit/s | 62.5/s, 1021 B (full) | 157 ms; one run dropped clicks and settled at 242 |
 | SBC | 364 kbit/s | 47/s, 969 B | 141 to 142 ms |
 
-A higher SBC bitrate is not higher quality than AAC: SBC-XQ needs more than
-twice the airtime of AAC to carry the same audio, with no gain in latency.
+What the codecs carry, from the same capture. The encoder input is 48 kHz,
+16-bit stereo PCM, 1536 kbit/s, and that is also what the AirPods decode back to:
+
+| Codec | Configuration | Codec bitrate | Compression | Bits per sample |
+|---|---|---|---|---|
+| AAC-LC (PipeWire VBR) | 48 kHz, 1024 samples per frame | 234 avg, 161 to 372 per frame, 212 to 290 per second | 6.6:1 | 2.4 |
+| SBC-XQ | dual channel, bitpool 39, 16 blocks, 8 subbands | 504, constant | 3.0:1 | 5.3 |
+| SBC | joint stereo, bitpool 53, 16 blocks, 8 subbands | 357, constant | 4.3:1 | 3.7 |
+
+A higher SBC bitrate is not higher quality than AAC. SBC-XQ spends its bits on
+two independently coded channels with a fixed allocation. AAC adapts the bitrate
+per frame and puts the bits where the ear hears them. SBC-XQ needs more than
+twice the airtime of AAC, with no gain in latency.
 
 Selecting the AirPods as a **microphone** gives that up. Over the standard
 Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
