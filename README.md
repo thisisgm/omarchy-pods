@@ -132,6 +132,23 @@ two independently coded channels with a fixed allocation. AAC adapts the bitrate
 per frame and puts the bits where the ear hears them. SBC-XQ needs more than
 twice the airtime of AAC, with no gain in latency.
 
+Objective quality, offline: ten EBU SQAM items (20 s each, resampled to 48 kHz)
+went through each codec at the settings above (libfdk-aac VBR mode 5 with
+afterburner and the same peak bitrate; `sbcenc` with the same bitpool and channel
+mode) and were scored with PEAQ (ITU-R BS.1387, GstPEAQ 0.6.1, basic version).
+ODG runs from 0 (imperceptible) to -4 (very annoying):
+
+| Codec | Mean ODG | Worst item | Bitrate on this music |
+|---|---|---|---|
+| AAC | -0.06 | -0.16 (orchestra) | 178 kbit/s average, 122 to 222 per item |
+| SBC-XQ | -0.09 | -0.40 (glockenspiel) | 504 kbit/s |
+| SBC | -0.32 | -0.86 (glockenspiel) | 357 kbit/s |
+
+All three stay close to transparent, AAC scores best on average and on its worst
+item while using about a third of SBC-XQ's bitrate. GstPEAQ is not a conformant
+BS.1387 implementation: the reference scored against itself gives +0.21, so read
+the numbers relative to each other.
+
 Selecting the AirPods as a **microphone** gives that up. Over the standard
 Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
 the only profiles exposing a source are `headset-head-unit` at 16 kHz mSBC and
