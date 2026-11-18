@@ -73,6 +73,10 @@ public:
     // Every profile this card reports, for the pure choice in profilechoice.hpp.
     QVector<ProfileCandidate> getCardProfiles(const QString &cardName);
 
+signals:
+    // A recording stream appeared, went or changed (corked or not) on any source.
+    void sourceOutputsChanged();
+
 private:
     pa_threaded_mainloop *m_mainloop = nullptr;
     pa_context *m_context = nullptr;

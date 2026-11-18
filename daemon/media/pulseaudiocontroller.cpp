@@ -95,8 +95,11 @@ bool PulseAudioController::initialize()
     // Subscribe-mask covers SINK events only; we don't care about
     // sink-input / source / card / etc. for the snap path.
     pa_context_set_subscribe_callback(m_context, &PulseAudioController::subscribeCallback, this);
+    // Source outputs too: a recorder appearing is what arms the hi-res mic, and an event is
+    // a poll interval sooner than the monitor's own timer.
     pa_operation *subOp = pa_context_subscribe(
-        m_context, PA_SUBSCRIPTION_MASK_SINK, nullptr, nullptr);
+        m_context, static_cast<pa_subscription_mask_t>(PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SOURCE_OUTPUT),
+        nullptr, nullptr);
     if (subOp) pa_operation_unref(subOp);
 
     pa_threaded_mainloop_unlock(m_mainloop);
@@ -232,7 +235,13 @@ void PulseAudioController::subscribeCallback(pa_context *c,
                                              uint32_t idx, void *userdata)
 {
     PulseAudioController *self = static_cast<PulseAudioController*>(userdata);
-    if (!self || self->m_snapSinkName.isEmpty()) return;
+    if (!self) return;
+    if ((type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) == PA_SUBSCRIPTION_EVENT_SOURCE_OUTPUT) {
+        // Emitted on the PulseAudio thread, so receivers in the main thread get it queued.
+        emit self->sourceOutputsChanged();
+        return;
+    }
+    if (self->m_snapSinkName.isEmpty()) return;
 
     // Only handle sink-change events; new/remove fire on hotplug
     // and don't carry the volume we care about. PA delivers

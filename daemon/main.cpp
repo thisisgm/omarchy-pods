@@ -629,6 +629,10 @@ public slots:
             m_hiResMonitor = new QTimer(this);
             m_hiResMonitor->setInterval(OpenPods::HiRes::kPollMs);
             connect(m_hiResMonitor, &QTimer::timeout, this, &AirPodsTrayApp::pollHiResRecorder);
+            // The AirPods take about 330 ms to send their first frame after START, so the
+            // recorder is noticed at once rather than up to one poll later.
+            connect(mediaController->pulseAudio(), &PulseAudioController::sourceOutputsChanged, this,
+                    &AirPodsTrayApp::pollHiResRecorder, Qt::QueuedConnection);
         }
         m_hiResMonitor->start();
     }
