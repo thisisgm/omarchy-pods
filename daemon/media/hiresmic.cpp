@@ -120,14 +120,23 @@ bool isFifo(const QString &path)
 }
 }
 
-bool HiResMic::adoptSource()
+namespace {
+QString cleanLabel(QString label)
+{
+    return label.remove('"').remove('\'').remove('\\');
+}
+}
+
+// A source under another name (the AirPods were renamed) is recreated rather than adopted.
+bool HiResMic::adoptSource(const QString &label)
 {
     const QString fifo = fifoPath();
     const auto modules = ourModules();
     unsigned keep = 0;
     if (isFifo(fifo) && sourceExists()) {
         for (const auto &module : modules) {
-            if (module.second.contains(QStringLiteral("file=%1 ").arg(fifo))) {
+            if (module.second.contains(QStringLiteral("file=%1 ").arg(fifo))
+                && module.second.contains(QStringLiteral("device.description=\"%1\"").arg(label))) {
                 keep = module.first;
                 break;
             }
@@ -154,7 +163,8 @@ bool HiResMic::adoptSource()
 
 bool HiResMic::publishSource(const QString &description)
 {
-    if (adoptSource()) {
+    const QString label = cleanLabel(description);
+    if (adoptSource(label)) {
         return true;
     }
     const QString fifo = fifoPath();
@@ -171,8 +181,6 @@ bool HiResMic::publishSource(const QString &description)
         return false;
     }
 
-    QString label = description;
-    label.remove('"').remove('\'').remove('\\');
     // node.virtual=false gives the source the HARDWARE flag, so desktop volume applets list it.
     QProcess pactl;
     pactl.start("pactl", {"load-module", "module-pipe-source",
@@ -241,7 +249,7 @@ void HiResMic::stop()
 void HiResMic::remove()
 {
     if (m_module == 0) {
-        adoptSource();
+        adoptSource(QString());
     }
     unloadSource();
     closeDecoder();

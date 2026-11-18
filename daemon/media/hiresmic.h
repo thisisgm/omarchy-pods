@@ -44,7 +44,7 @@ private:
     bool openDecoder();
     void closeDecoder();
     bool publishSource(const QString &description);
-    bool adoptSource();
+    bool adoptSource(const QString &label);
     void unloadSource();
     void closeWriter();
     QString fifoPath() const;
