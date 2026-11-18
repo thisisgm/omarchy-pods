@@ -409,6 +409,7 @@ public slots:
             return false;
         }
         m_hiResMicArmed = true;
+        m_hiResAudioSinceStart = false;
         m_hiResSdus = 0;
         m_hiResUnits = 0;
         m_hiResTailBytes = 0;
@@ -706,7 +707,8 @@ public slots:
         emit airPodsStatusChanged();
     }
 
-    // The headset profile's own input, not WirePlumber's loopback of it.
+    // The headset profile's input as PulseAudio clients see it: WirePlumber's loopback, since the
+    // SCO node itself is internal. Our own source and monitors are skipped.
     QString headsetInputSource() const
     {
         QProcess pactl;
@@ -717,7 +719,8 @@ public slots:
         const QString address = airPodsCardAddress();
         for (const QString &line : QString::fromUtf8(pactl.readAllStandardOutput()).split('\n')) {
             const QStringList fields = line.split('\t');
-            if (fields.size() >= 2 && fields[1].startsWith(QStringLiteral("bluez_input.")) && fields[1].contains(address)) {
+            if (fields.size() >= 2 && fields[1].startsWith(QStringLiteral("bluez_input."))
+                && sourceNamesAddress(fields[1], address)) {
                 return fields[1];
             }
         }
@@ -765,6 +768,7 @@ public slots:
         m_hiResFallback = false;
         m_hfpIdleSinceMs = -1;
         resetHiResRestarts();
+        restoreHiResConversationAwareness();
         LOG_INFO("Hi-res mic: recorder gone, leaving the headset profile; the next recording tries the uplink first");
         if (areAirpodsConnected()) {
             mediaController->activateA2dpProfileWithRetry(airPodsCardAddress());
@@ -789,6 +793,7 @@ public slots:
         if (m_hiResFallback) {
             stopHfpFeed();
             m_hiResFallback = false;
+            restoreHiResConversationAwareness();
         }
         restoreWirePlumberMic();
         if (m_hiResMicArmed) {
@@ -816,9 +821,11 @@ public slots:
     // nobody reads and a pod playing alone. Nothing feeds the source afterwards, so apps move.
     void prepareHiResForQuit()
     {
-        if (m_hiResMicArmed && areAirpodsConnected()) {
-            sendHiResStream(false);
-            m_hiResMicArmed = false;
+        if ((m_hiResMicArmed || m_hiResFallback) && areAirpodsConnected()) {
+            if (m_hiResMicArmed) {
+                sendHiResStream(false);
+                m_hiResMicArmed = false;
+            }
             if (m_hiResCaSaved && !m_hiResCaUserChanged) {
                 m_hiResCaInternal = true;
                 setConversationalAwareness(true);
@@ -952,7 +959,8 @@ public slots:
             }
             break;
         case CaptureAction::Keep:
-            if (wornNow) {
+            // A restart refreshes the stall clock without any audio, so only audio clears the count.
+            if (wornNow && m_hiResAudioSinceStart) {
                 resetHiResRestarts();
             }
             break;
@@ -967,6 +975,7 @@ public slots:
                 sendHiResStream(false);
                 if (sendHiResStream(true)) {
                     m_hiResLastSduMs = now;
+                    m_hiResAudioSinceStart = false;
                 } else {
                     m_hiResMicArmed = false;
                     restoreHiResConversationAwareness();
@@ -1009,6 +1018,7 @@ public slots:
     void handleHiResAudio(const QByteArray &sdu)
     {
         m_hiResLastSduMs = m_hiResClock.elapsed();
+        m_hiResAudioSinceStart = true;
         qsizetype consumed = OpenPods::HiRes::kSduHeaderLen;
         const int units = OpenPods::HiRes::demuxAudioUnits(sdu, [this, &consumed](QByteArrayView au) {
             consumed += OpenPods::HiRes::kAuPrefixLen + au.size();
@@ -2298,6 +2308,7 @@ private:
     qint64 m_hiResNextRestartMs = 0;
     qint64 m_hiResNextStartMs = 0;
     bool m_hiResFallback = false;
+    bool m_hiResAudioSinceStart = false;
     qint64 m_hfpIdleSinceMs = -1;
     QProcess *m_hfpFeed = nullptr;
     // 1 when this daemon turned WirePlumber's autoswitch off and owes it back, 0 otherwise.
