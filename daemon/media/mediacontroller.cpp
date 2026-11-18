@@ -121,7 +121,7 @@ CaptureState MediaController::captureStateForSource(const QString &sourceName)
   return m_pulseAudio->captureStateForSource(sourceName);
 }
 
-void MediaController::resetA2dpTransport(const QString &macAddress)
+void MediaController::resetA2dpTransport(const QString &macAddress, bool blocking)
 {
   const QString card = m_pulseAudio->getCardNameForDevice(macAddress);
   const QString profile = card.isEmpty() ? QString() : m_pulseAudio->getActiveCardProfile(card);
@@ -133,6 +133,11 @@ void MediaController::resetA2dpTransport(const QString &macAddress)
   const QString sink = m_pulseAudio->sinkForAddress(macAddress);
   if (!sink.isEmpty() && m_pulseAudio->suspendSink(sink, true)) {
     LOG_INFO("Reset A2DP transport by suspend and resume: " << sink);
+    if (blocking) {
+      QThread::msleep(400);
+      m_pulseAudio->suspendSink(sink, false);
+      return;
+    }
     QTimer::singleShot(400, this, [this, sink]() {
       if (!m_pulseAudio->suspendSink(sink, false)) {
         LOG_WARN("Resume after the A2DP reset failed for " << sink);

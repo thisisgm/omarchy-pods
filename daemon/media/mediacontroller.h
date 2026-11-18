@@ -52,7 +52,8 @@ public:
   PulseAudioController *pulseAudio() const { return m_pulseAudio; }
   // After a hi-res mic STOP the AirPods play from one bud until the A2DP transport restarts.
   // A sink suspend and resume restarts it without removing the sink; a profile cycle is the fallback.
-  void resetA2dpTransport(const QString &macAddress);
+  // blocking waits out the resume instead of scheduling it, for the quit path with no event loop.
+  void resetA2dpTransport(const QString &macAddress, bool blocking = false);
   inline EarDetectionBehavior getEarDetectionBehavior() const { return earDetectionBehavior; }
 
   void play();

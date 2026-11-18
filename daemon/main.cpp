@@ -660,12 +660,30 @@ public slots:
         });
     }
 
-    // Nothing feeds the source once the daemon is gone, so apps move to another mic first.
+    // Quitting mid-stream must leave the AirPods as a STOP does: Conversation Awareness back,
+    // the STOP actually sent, and the A2DP transport reset, or the next owner finds a stream
+    // nobody reads and a pod playing alone. Nothing feeds the source afterwards, so apps move.
     void prepareHiResForQuit()
     {
-        if (m_hiResMicArmed) {
+        if (m_hiResMicArmed && areAirpodsConnected()) {
             sendHiResStream(false);
             m_hiResMicArmed = false;
+            if (m_hiResCaSaved && !m_hiResCaUserChanged) {
+                m_hiResCaInternal = true;
+                setConversationalAwareness(true);
+                m_hiResCaInternal = false;
+            }
+            m_hiResCaSaved = false;
+            QElapsedTimer flush;
+            flush.start();
+            while (socket && socket->bytesToWrite() > 0 && flush.elapsed() < 1000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            }
+            LOG_INFO("Hi-res mic stopped for quit");
+            QThread::msleep(OpenPods::HiRes::kA2dpResetDelayMs);
+            if (m_deviceInfo) {
+                mediaController->resetA2dpTransport(m_deviceInfo->bluetoothAddress().replace(":", "_"), true);
+            }
         }
         if (m_hiResMic.isRunning()) {
             parkHiResMic();
