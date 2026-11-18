@@ -35,6 +35,7 @@
 #include "media/hiresframe.hpp"
 #include "media/hiresmic.h"
 #include "media/hirespolicy.hpp"
+#include "media/eldpcm.hpp"
 #include "media/mediacontroller.h"
 #include "trayiconmanager.h"
 #include "notifier.hpp"
@@ -597,8 +598,12 @@ public slots:
                 stopHiResCapture();
                 scheduleHiResA2dpReset();
             }
+            if (m_hiResFallback) {
+                exitHfpFallback();
+            }
             unparkHiResMic();
             m_hiResMic.remove();
+            restoreWirePlumberMic();
         }
         emit airPodsStatusChanged();
         LOG_INFO("Hi-res mic " << (enabled ? "enabled" : "disabled") << " by request");
@@ -613,8 +618,8 @@ public slots:
         }
         if (!m_hiResMic.isRunning()) {
             const QString name = m_deviceInfo ? m_deviceInfo->deviceName().trimmed() : QString();
-            const QString description = name.isEmpty() ? QStringLiteral("AirPods Microphone")
-                                                       : name + QStringLiteral(" Microphone");
+            // The AirPods' own name, as their output carries, so the desktop shows one AirPods mic.
+            const QString description = name.isEmpty() ? QStringLiteral("AirPods") : name;
             if (!m_hiResMic.start(description)) {
                 return;
             }
@@ -627,6 +632,146 @@ public slots:
         m_hiResMonitor->start();
     }
 
+    // WirePlumber's autoswitch publishes a second AirPods mic that, once recorded from, drops the
+    // card to the headset profile. It cannot be limited to one device, so it is turned off at
+    // runtime only, while these AirPods are connected, and handed back afterwards; nothing is saved.
+    static QString readWirePlumberAutoswitch()
+    {
+        QProcess wpctl;
+        wpctl.start("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile"});
+        if (!wpctl.waitForFinished(3000) || wpctl.exitCode() != 0) {
+            return QString();
+        }
+        const QString out = QString::fromUtf8(wpctl.readAllStandardOutput());
+        if (out.contains(QStringLiteral("Value: true"))) return QStringLiteral("true");
+        if (out.contains(QStringLiteral("Value: false"))) return QStringLiteral("false");
+        return QString();
+    }
+
+    void hideWirePlumberMic()
+    {
+        if (!m_hiResMicEnabled || readWirePlumberAutoswitch() != QStringLiteral("true")) {
+            return;
+        }
+        if (QProcess::execute("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile", "false"}) == 0) {
+            m_autoswitchOwed = 1;
+            LOG_INFO("WirePlumber autoswitch off while the AirPods are connected, so one AirPods mic is listed");
+        }
+    }
+
+    void restoreWirePlumberMic()
+    {
+        if (m_autoswitchOwed == 0) {
+            return;
+        }
+        m_autoswitchOwed = 0;
+        QProcess::execute("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile", "true"});
+        LOG_INFO("WirePlumber autoswitch handed back");
+    }
+
+    QString airPodsCardAddress() const
+    {
+        return m_deviceInfo ? m_deviceInfo->bluetoothAddress().replace(":", "_") : QString();
+    }
+
+    // The uplink delivered nothing after its restarts: the headset profile's mic feeds the same
+    // source, so apps keep their device. Playback drops to the headset codec meanwhile.
+    void enterHfpFallback()
+    {
+        LOG_WARN("Hi-res mic: no audio after " << m_hiResFailedRestarts
+                 << " restarts, falling back to the headset profile");
+        if (m_hiResMicArmed) {
+            sendHiResStream(false);
+            m_hiResMicArmed = false;
+            m_hiResLastSduMs = -1;
+        }
+        m_hiResFallback = true;
+        m_hfpIdleSinceMs = -1;
+        PulseAudioController *pa = mediaController->pulseAudio();
+        const QString card = pa->getCardNameForDevice(airPodsCardAddress());
+        QString best;
+        int bestPriority = -1;
+        for (const ProfileCandidate &profile : pa->getCardProfiles(card)) {
+            if (profile.available && profile.sources > 0 && profile.name.startsWith(QStringLiteral("headset-head-unit"))
+                && profile.priority > bestPriority) {
+                best = profile.name;
+                bestPriority = profile.priority;
+            }
+        }
+        if (best.isEmpty() || !pa->setCardProfile(card, best)) {
+            LOG_ERROR("Hi-res mic: no headset profile to fall back to on " << card);
+            return;
+        }
+        LOG_INFO("Hi-res mic: card on " << best << " while the uplink is unavailable");
+        emit airPodsStatusChanged();
+    }
+
+    // The headset profile's own input, not WirePlumber's loopback of it.
+    QString headsetInputSource() const
+    {
+        QProcess pactl;
+        pactl.start("pactl", {"list", "sources", "short"});
+        if (!pactl.waitForFinished(3000)) {
+            return QString();
+        }
+        const QString address = airPodsCardAddress();
+        for (const QString &line : QString::fromUtf8(pactl.readAllStandardOutput()).split('\n')) {
+            const QStringList fields = line.split('\t');
+            if (fields.size() >= 2 && fields[1].startsWith(QStringLiteral("bluez_input.")) && fields[1].contains(address)) {
+                return fields[1];
+            }
+        }
+        return QString();
+    }
+
+    void startHfpFeed()
+    {
+        const QString source = headsetInputSource();
+        if (source.isEmpty()) {
+            return;
+        }
+        m_hfpFeed = new QProcess(this);
+        connect(m_hfpFeed, &QProcess::readyReadStandardOutput, this, [this]() {
+            m_hiResMic.writePcm(m_hfpFeed->readAllStandardOutput());
+        });
+        connect(m_hfpFeed, &QProcess::finished, this, [this]() {
+            if (m_hfpFeed) {
+                m_hfpFeed->deleteLater();
+                m_hfpFeed = nullptr;
+            }
+        });
+        m_hfpFeed->start("parec", {"-d", source, "--raw", "--format=s16le", "--channels=1",
+                                   QStringLiteral("--rate=%1").arg(OpenPods::HiRes::kEldSampleRate),
+                                   "--latency-msec=20", "--client-name=librepods-headset-feed"});
+        LOG_INFO("Hi-res mic: feeding the source from " << source);
+    }
+
+    void stopHfpFeed()
+    {
+        if (!m_hfpFeed) {
+            return;
+        }
+        QProcess *feed = m_hfpFeed;
+        m_hfpFeed = nullptr;
+        feed->disconnect(this);
+        feed->kill();
+        feed->waitForFinished(1000);
+        feed->deleteLater();
+    }
+
+    void exitHfpFallback()
+    {
+        stopHfpFeed();
+        m_hiResFallback = false;
+        m_hfpIdleSinceMs = -1;
+        resetHiResRestarts();
+        LOG_INFO("Hi-res mic: recorder gone, leaving the headset profile; the next recording tries the uplink first");
+        if (areAirpodsConnected()) {
+            mediaController->activateA2dpProfileWithRetry(airPodsCardAddress());
+        }
+        emit airPodsStatusChanged();
+    }
+
     void onHiResConnected()
     {
         ++m_hiResConnGeneration;
@@ -636,10 +781,16 @@ public slots:
         m_hiResDefaultChecked = false;
         m_hiResOutSinceMs = -1;
         startHiResMicSource();
+        hideWirePlumberMic();
     }
 
     void onHiResDisconnected()
     {
+        if (m_hiResFallback) {
+            stopHfpFeed();
+            m_hiResFallback = false;
+        }
+        restoreWirePlumberMic();
         if (m_hiResMicArmed) {
             m_hiResMicArmed = false;
             m_hiResLastSduMs = -1;
@@ -685,9 +836,11 @@ public slots:
                 mediaController->resetA2dpTransport(m_deviceInfo->bluetoothAddress().replace(":", "_"), true);
             }
         }
+        stopHfpFeed();
         if (m_hiResMic.isRunning()) {
             parkHiResMic();
         }
+        restoreWirePlumberMic();
     }
 
     void onEarReport(bool primaryBefore, bool secondaryBefore)
@@ -704,7 +857,6 @@ public slots:
     {
         m_hiResBackoffMs = OpenPods::HiRes::kStallMs;
         m_hiResFailedRestarts = 0;
-        m_hiResGaveUpAtEar = -1;
     }
 
     void pollHiResRecorder()
@@ -714,6 +866,9 @@ public slots:
             return;
         }
         const qint64 now = m_hiResClock.elapsed();
+        if (++m_hiResPollCount % 25 == 0) {
+            hideWirePlumberMic();
+        }
         EarDetection *ear = m_deviceInfo->getEarDetection();
         const bool wornNow = ear && ear->oneOrMorePodsInEar();
         const bool earKnown = m_earReported
@@ -758,6 +913,21 @@ public slots:
         const bool inGrace = m_hiResMicArmed && m_hiResRecorderGoneMs >= 0
                              && now - m_hiResRecorderGoneMs < kRecorderGoneGraceMs;
         const bool recording = app || inGrace;
+
+        if (m_hiResFallback) {
+            const bool stillWanted = m_hiResMicEnabled && app && worn;
+            if (stillWanted) {
+                m_hfpIdleSinceMs = -1;
+                if (!m_hfpFeed) {
+                    startHfpFeed();
+                }
+            } else if (m_hfpIdleSinceMs < 0) {
+                m_hfpIdleSinceMs = now;
+            } else if (now - m_hfpIdleSinceMs >= kFallbackIdleMs) {
+                exitHfpFallback();
+            }
+            return;
+        }
         // Out of the ear the AirPods send nothing, which is not a stall.
         const bool stalled = wornNow && m_hiResMicArmed && m_hiResLastSduMs >= 0
                              && now - m_hiResLastSduMs > kStallMs;
@@ -787,18 +957,8 @@ public slots:
             }
             break;
         case CaptureAction::Restart:
-            if (m_hiResGaveUpAtEar >= 0) {
-                if (static_cast<qint64>(m_earGeneration) == m_hiResGaveUpAtEar) {
-                    break;
-                }
-                LOG_INFO("Hi-res mic: ear state changed, retrying the stream");
-                resetHiResRestarts();
-                m_hiResNextRestartMs = now;
-            }
             if (m_hiResFailedRestarts >= kMaxFailedRestarts) {
-                LOG_WARN("Hi-res mic: no audio after " << m_hiResFailedRestarts
-                         << " restarts, waiting for an ear change");
-                m_hiResGaveUpAtEar = static_cast<qint64>(m_earGeneration);
+                enterHfpFallback();
                 break;
             }
             if (now >= m_hiResNextRestartMs) {
@@ -2137,7 +2297,12 @@ private:
     qint64 m_hiResRecorderGoneMs = -1;
     qint64 m_hiResNextRestartMs = 0;
     qint64 m_hiResNextStartMs = 0;
-    qint64 m_hiResGaveUpAtEar = -1;
+    bool m_hiResFallback = false;
+    qint64 m_hfpIdleSinceMs = -1;
+    QProcess *m_hfpFeed = nullptr;
+    // 1 when this daemon turned WirePlumber's autoswitch off and owes it back, 0 otherwise.
+    int m_autoswitchOwed = 0;
+    int m_hiResPollCount = 0;
     int m_hiResBackoffMs = OpenPods::HiRes::kStallMs;
     int m_hiResFailedRestarts = 0;
     bool m_hiResSeenWorn = false;

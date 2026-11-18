@@ -247,6 +247,17 @@ void HiResMic::remove()
     closeDecoder();
 }
 
+void HiResMic::writePcm(QByteArrayView pcm)
+{
+    if (m_fifo < 0 || pcm.isEmpty()) {
+        return;
+    }
+    // A full pipe drops, as in decode().
+    if (::write(m_fifo, pcm.data(), pcm.size()) < 0 && errno != EAGAIN) {
+        ++m_errors;
+    }
+}
+
 void HiResMic::decode(QByteArrayView accessUnit)
 {
     if (!m_ctx || m_fifo < 0 || accessUnit.isEmpty()) {

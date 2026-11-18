@@ -31,6 +31,9 @@ public:
     bool isRunning() const { return m_module > 0; }
     static constexpr const char *sourceName() { return "AirPodsHiRes"; }
 
+    // 64 kHz mono s16 from another path, written as the uplink's own frames are.
+    void writePcm(QByteArrayView pcm);
+
     // One AAC-ELD access unit from an 0x58 audio SDU.
     void decode(QByteArrayView accessUnit);
 
