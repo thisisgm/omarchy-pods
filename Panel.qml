@@ -318,7 +318,7 @@ Panel {
           }
 
           Column {
-            visible: root.caVisible || root.oneBudVisible
+            visible: root.caVisible || root.oneBudVisible || root.hiResMicVisible
             width: parent.width
             spacing: Style.space(6)
 

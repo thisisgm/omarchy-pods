@@ -2502,9 +2502,9 @@ public:
         // 0 = PauseWhenOneRemoved, 1 = PauseWhenBothRemoved,
         // 2 = Disabled (matches MediaController::EarDetectionBehavior).
         status.insert("ear_detection_behavior", earDetectionBehavior());
-        // The uplink is offered once its source is published, which needs the decoder this
-        // build was compiled against; enabled is the user's switch, active means it streams.
-        status.insert("supports_hires_mic", m_hiResMic.isRunning() || m_hiResMicEnabled);
+        // The decoder is a build requirement, so this build always offers the switch, off included;
+        // a daemon without the mic omits the key. Enabled is the user's switch, active means it streams.
+        status.insert("supports_hires_mic", true);
         status.insert("hires_mic_enabled", m_hiResMicEnabled);
         status.insert("hires_mic_active", m_hiResMicArmed);
         // 0 = open, 1 = closed, 2 = unknown (matches BleInfo::LidState).
