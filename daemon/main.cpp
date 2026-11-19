@@ -531,20 +531,30 @@ public slots:
         }
         saveHiResParked();
         // The session manager first moves the streams that follow the default; the rest are pinned.
+        // No timer fires once aboutToQuit returns, so quitting waits here instead.
+        if (m_hiResQuitting) {
+            QThread::msleep(400);
+            movePinnedRecorders(source, fallback);
+            return;
+        }
         QTimer::singleShot(400, this, [this, source, fallback]() {
-            if (!m_hiResParked) {
-                return;
-            }
-            PulseAudioController *pa = mediaController->pulseAudio();
-            for (uint32_t index : pa->recordersOn(source, OpenPods::HiRes::kMinRecorderRate)) {
-                if (pa->moveRecorder(index, fallback)) {
-                    m_hiResMoved.append(index);
-                }
-            }
-            if (!m_hiResMoved.isEmpty()) {
-                LOG_INFO("Hi-res mic parked: moved " << m_hiResMoved.size() << " recorder(s) to " << fallback);
+            if (m_hiResParked) {
+                movePinnedRecorders(source, fallback);
             }
         });
+    }
+
+    void movePinnedRecorders(const QString &source, const QString &fallback)
+    {
+        PulseAudioController *pa = mediaController->pulseAudio();
+        for (uint32_t index : pa->recordersOn(source, OpenPods::HiRes::kMinRecorderRate)) {
+            if (pa->moveRecorder(index, fallback)) {
+                m_hiResMoved.append(index);
+            }
+        }
+        if (!m_hiResMoved.isEmpty()) {
+            LOG_INFO("Hi-res mic parked: moved " << m_hiResMoved.size() << " recorder(s) to " << fallback);
+        }
     }
 
     void unparkHiResMic()
@@ -832,6 +842,11 @@ public slots:
     // nobody reads and a pod playing alone. Nothing feeds the source afterwards, so apps move.
     void prepareHiResForQuit()
     {
+        // The flush below dispatches events, and a poll from it would send another START.
+        m_hiResQuitting = true;
+        if (m_hiResMonitor) {
+            m_hiResMonitor->stop();
+        }
         if ((m_hiResMicArmed || m_hiResFallback) && areAirpodsConnected()) {
             if (m_hiResMicArmed) {
                 sendHiResStream(false);
@@ -880,7 +895,7 @@ public slots:
     void pollHiResRecorder()
     {
         using namespace OpenPods::HiRes;
-        if (!m_hiResMic.isRunning() || !m_deviceInfo || !areAirpodsConnected()) {
+        if (m_hiResQuitting || !m_hiResMic.isRunning() || !m_deviceInfo || !areAirpodsConnected()) {
             return;
         }
         const qint64 now = m_hiResClock.elapsed();
@@ -2319,6 +2334,7 @@ private:
     qint64 m_hiResNextRestartMs = 0;
     qint64 m_hiResNextStartMs = 0;
     bool m_hiResFallback = false;
+    bool m_hiResQuitting = false;
     bool m_hiResAudioSinceStart = false;
     qint64 m_hfpIdleSinceMs = -1;
     QProcess *m_hfpFeed = nullptr;
