@@ -8,7 +8,7 @@ class TestProfileChoice : public QObject
     Q_OBJECT
 
 private slots:
-    void prefersAacWhateverThePriority();
+    void picksHighestBitrateNotHighestPriority();
     void unknownCodecsFallBackToPriority();
     void skipsHeadsetProfilesThatCarryASource();
     void skipsUnavailableProfiles();
@@ -30,22 +30,10 @@ static QVector<ProfileCandidate> airPodsCard()
     };
 }
 
-void TestProfileChoice::prefersAacWhateverThePriority()
+void TestProfileChoice::picksHighestBitrateNotHighestPriority()
 {
-    QCOMPARE(bestPlaybackProfile(airPodsCard()), QString("a2dp-sink"));
-    // AAC still leads when PipeWire ranks it last.
-    QVector<ProfileCandidate> aacRankedLast = {
-        {"a2dp-sink-sbc", "High Fidelity Playback (A2DP Sink, codec SBC)", 133, true, 1, 0},
-        {"a2dp-sink-sbc_xq", "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", 132, true, 1, 0},
-        {"a2dp-sink", "High Fidelity Playback (A2DP Sink, codec AAC)", 1, true, 1, 0},
-    };
-    QCOMPARE(bestPlaybackProfile(aacRankedLast), QString("a2dp-sink"));
-    // Without AAC, SBC-XQ comes before SBC.
-    QVector<ProfileCandidate> noAac = {
-        {"a2dp-sink-sbc", "High Fidelity Playback (A2DP Sink, codec SBC)", 133, true, 1, 0},
-        {"a2dp-sink-sbc_xq", "High Fidelity Playback (A2DP Sink, codec SBC-XQ)", 131, true, 1, 0},
-    };
-    QCOMPARE(bestPlaybackProfile(noAac), QString("a2dp-sink-sbc_xq"));
+    // SBC-XQ carries 453kbps against AAC's 256, and PipeWire's priority says the opposite.
+    QCOMPARE(bestPlaybackProfile(airPodsCard()), QString("a2dp-sink-sbc_xq"));
 }
 
 void TestProfileChoice::unknownCodecsFallBackToPriority()
@@ -103,11 +91,12 @@ void TestProfileChoice::skipsHeadsetProfilesThatCarryASource()
 
 void TestProfileChoice::skipsUnavailableProfiles()
 {
-    QVector<ProfileCandidate> aacUnavailable = airPodsCard();
-    for (ProfileCandidate &c : aacUnavailable) {
-        if (c.name == "a2dp-sink") c.available = false;
+    QVector<ProfileCandidate> sbcXqUnavailable = airPodsCard();
+    for (ProfileCandidate &c : sbcXqUnavailable) {
+        if (c.name == "a2dp-sink-sbc_xq") c.available = false;
     }
-    QCOMPARE(bestPlaybackProfile(aacUnavailable), QString("a2dp-sink-sbc_xq"));
+    // SBC carries 328kbps, so it outranks AAC's 256 under the same rule.
+    QCOMPARE(bestPlaybackProfile(sbcXqUnavailable), QString("a2dp-sink-sbc"));
 }
 
 void TestProfileChoice::skipsProfilesWithNoSink()
@@ -158,13 +147,12 @@ void TestProfileChoice::readsTheCodecOutOfTheProfileNameToo()
     QVERIFY(codecFromProfileName("headset-head-unit").isEmpty());
     QVERIFY(codecFromProfileName("off").isEmpty());
 
-    // Under a translated description the bare profile is the codec no suffixed sibling carries.
+    // A translated description must not demote SBC-XQ, which is the inversion this fix removes.
     QVector<ProfileCandidate> translated = {
-        {"a2dp-sink", "Reproduccion de alta fidelidad (A2DP Sink)", 1, true, 1, 0},
-        {"a2dp-sink-sbc", "Reproduccion de alta fidelidad (A2DP Sink)", 133, true, 1, 0},
+        {"a2dp-sink", "Reproduccion de alta fidelidad (A2DP Sink)", 133, true, 1, 0},
         {"a2dp-sink-sbc_xq", "Reproduccion de alta fidelidad (A2DP Sink)", 131, true, 1, 0},
     };
-    QCOMPARE(bestPlaybackProfile(translated), QString("a2dp-sink"));
+    QCOMPARE(bestPlaybackProfile(translated), QString("a2dp-sink-sbc_xq"));
 }
 
 QTEST_GUILESS_MAIN(TestProfileChoice)
