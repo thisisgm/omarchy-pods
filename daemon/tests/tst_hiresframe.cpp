@@ -33,6 +33,8 @@ private slots:
     void demuxesEveryAccessUnit();
     void stopsOnATruncatedAccessUnit();
     void emitsNothingFromAHeaderOnlySdu();
+    void keepsSamplesWholeAcrossShortWrites();
+    void dropsWholeSamplesWhenThePipeIsFull();
 };
 
 void TestHiResFrame::acceptsAnAudioSdu()
@@ -79,6 +81,49 @@ void TestHiResFrame::stopsOnATruncatedAccessUnit()
 void TestHiResFrame::emitsNothingFromAHeaderOnlySdu()
 {
     QCOMPARE(demuxAudioUnits(sdu(0x0001, {}), [](QByteArrayView) { }), 0);
+}
+
+void TestHiResFrame::keepsSamplesWholeAcrossShortWrites()
+{
+    OpenPods::HiRes::SampleWriter writer;
+    QByteArray pipe;
+    // Odd short writes, as a nonblocking pipe can return for a write over PIPE_BUF.
+    const QList<qsizetype> takes {3, 5, 1, 5};
+    int call = 0;
+    auto sink = [&](QByteArrayView bytes) {
+        const qsizetype n = qMin(takes[call++], bytes.size());
+        pipe.append(bytes.first(n));
+        return n;
+    };
+    writer.write(QByteArray::fromHex("0102030405060708"), sink);
+    writer.write(QByteArray::fromHex("1112131415161718"), sink);
+    writer.write(QByteArray::fromHex("2122"), sink);
+    writer.write(QByteArray::fromHex("31323334"), sink);
+    QCOMPARE(pipe.size() % 2, 0);
+    // Every sample in the pipe is one that was sent, never the tail of one and the head of the next.
+    const QList<QByteArray> sent {"\x01\x02", "\x03\x04", "\x05\x06", "\x07\x08", "\x11\x12", "\x13\x14",
+                                  "\x15\x16", "\x17\x18", "\x21\x22", "\x31\x32", "\x33\x34"};
+    for (qsizetype i = 0; i < pipe.size(); i += 2) {
+        QVERIFY2(sent.contains(pipe.mid(i, 2)), qPrintable(pipe.mid(i, 2).toHex()));
+    }
+}
+
+void TestHiResFrame::dropsWholeSamplesWhenThePipeIsFull()
+{
+    OpenPods::HiRes::SampleWriter writer;
+    QByteArray pipe;
+    qsizetype room = 1;
+    auto sink = [&](QByteArrayView bytes) {
+        const qsizetype n = qMin(room, bytes.size());
+        pipe.append(bytes.first(n));
+        room -= n;
+        return n;
+    };
+    writer.write(QByteArray::fromHex("0a0b0c0d"), sink);
+    writer.write(QByteArray::fromHex("1a1b"), sink);
+    room = 64;
+    writer.write(QByteArray::fromHex("2a2b"), sink);
+    QCOMPARE(pipe, QByteArray::fromHex("0a0b2a2b"));
 }
 
 QTEST_GUILESS_MAIN(TestHiResFrame)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QByteArrayView>
 #include <functional>
 
@@ -46,4 +47,28 @@ namespace OpenPods::HiRes
         }
         return units;
     }
+    // A pipe write can be partial, and s16 needs the stream on even byte offsets: a write that
+    // stops mid-sample leaves the byte that completes it to lead the next one. The sink returns
+    // the bytes it took, 0 for a full pipe; whole samples are what gets dropped.
+    class SampleWriter
+    {
+    public:
+        void write(QByteArrayView pcm, const std::function<qsizetype(QByteArrayView)> &sink)
+        {
+            QByteArray joined;
+            if (m_carry >= 0) {
+                joined.reserve(pcm.size() + 1);
+                joined.append(static_cast<char>(m_carry));
+                joined.append(pcm.data(), pcm.size());
+                pcm = joined;
+            }
+            const qsizetype written = qMax<qsizetype>(sink(pcm), 0);
+            const bool midSample = (m_carry >= 0) != (written % 2 == 1);
+            m_carry = midSample ? static_cast<quint8>(pcm[written]) : -1;
+        }
+        void reset() { m_carry = -1; }
+
+    private:
+        int m_carry = -1;
+    };
 }

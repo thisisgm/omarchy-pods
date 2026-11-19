@@ -5,6 +5,7 @@
 #include <QString>
 
 #include "agc.hpp"
+#include "hiresframe.hpp"
 
 struct AVCodecContext;
 struct AVFrame;
@@ -48,6 +49,7 @@ private:
     void unloadSource();
     void closeWriter();
     QString fifoPath() const;
+    void writeFifo(QByteArrayView pcm);
 
     AVCodecContext *m_ctx = nullptr;
     AVFrame *m_frame = nullptr;
@@ -55,6 +57,7 @@ private:
     int m_fifo = -1;
     unsigned m_module = 0;
     OpenPods::HiRes::Preamp m_preamp;
+    OpenPods::HiRes::SampleWriter m_writer;
     quint64 m_frames = 0;
     quint64 m_errors = 0;
 };

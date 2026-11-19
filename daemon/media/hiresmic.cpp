@@ -210,6 +210,19 @@ void HiResMic::closeWriter()
         ::close(m_fifo);
         m_fifo = -1;
     }
+    m_writer.reset();
+}
+
+// A reader that stopped draining must not stall the control link, so a full pipe drops.
+void HiResMic::writeFifo(QByteArrayView pcm)
+{
+    m_writer.write(pcm, [this](QByteArrayView bytes) -> qsizetype {
+        const ssize_t written = ::write(m_fifo, bytes.data(), bytes.size());
+        if (written < 0 && errno != EAGAIN) {
+            ++m_errors;
+        }
+        return written;
+    });
 }
 
 void HiResMic::unloadSource()
@@ -260,10 +273,7 @@ void HiResMic::writePcm(QByteArrayView pcm)
     if (m_fifo < 0 || pcm.isEmpty()) {
         return;
     }
-    // A full pipe drops, as in decode().
-    if (::write(m_fifo, pcm.data(), pcm.size()) < 0 && errno != EAGAIN) {
-        ++m_errors;
-    }
+    writeFifo(pcm);
 }
 
 void HiResMic::decode(QByteArrayView accessUnit)
@@ -290,11 +300,7 @@ void HiResMic::decode(QByteArrayView accessUnit)
             out[i] = OpenPods::HiRes::floatToS16(in[i]);
         }
         m_preamp.process(out, samples);
-        // A reader that stopped draining must not stall the control link, so a full pipe drops.
-        const ssize_t written = ::write(m_fifo, pcm.constData(), pcm.size());
-        if (written < 0 && errno != EAGAIN) {
-            ++m_errors;
-        }
+        writeFifo(pcm);
         ++m_frames;
     }
 }
