@@ -1513,6 +1513,10 @@ private slots:
         if (socket)
         {
             LOG_WARN("Socket is still open, closing it");
+            // Clearing socket keeps handleControlSocketLoss() from running the same cleanup again.
+            if (socket->property("openpodsControlConnected").toBool()) {
+                onHiResDisconnected();
+            }
             socket->disconnect(this);
             socket->close();
             socket->deleteLater();
@@ -1899,7 +1903,6 @@ private slots:
                         }
                         return;
                     }
-                    onHiResDisconnected();
                     handleControlSocketLoss(device, localSocket,
                                             QStringLiteral("socket disconnected"));
                 });
@@ -1937,6 +1940,7 @@ private slots:
         }
 
         LOG_WARN("AirPods control link lost: " << reason);
+        onHiResDisconnected();
         lostSocket->disconnect(this);
         lostSocket->close();
         lostSocket->deleteLater();
