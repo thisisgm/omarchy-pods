@@ -157,7 +157,8 @@ omarchy plugin add https://github.com/thisisgm/omarchy-pods --enable
 installs to the same place.
 
 `setup` installs `cmake`, `ninja`, `qt6-connectivity`, `qt6-tools`,
-`qt6-declarative`, `pkgconf` and `libpulse` if they are missing, builds the
+`qt6-declarative`, `pkgconf`, `libpulse`, `ffmpeg` (the microphone's AAC-ELD
+decoder) and `pyside6` (`airpods-callcheck`) if they are missing, builds the
 daemon into `~/.local`, and enables `librepods.service`. The icon stays hidden
 until AirPods are connected (`hideWhenDisconnected`). To keep it visible:
 
@@ -168,7 +169,7 @@ omarchy bar set io.github.thisisgm.omapods hideWhenDisconnected false --json
 To build the daemon by hand instead of running `setup`:
 
 ```bash
-omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse
+omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse ffmpeg pyside6
 cd ~/.config/omarchy/plugins/io.github.thisisgm.omapods/daemon
 cmake -B build -G Ninja -DBUILD_TESTING=OFF && cmake --build build
 cmake --install build --prefix ~/.local
