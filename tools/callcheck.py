@@ -268,6 +268,8 @@ class CallCheck(QWidget):
         self._piano.finished.connect(self._piano_finished)
         self._piano_file: Path | None = None
         self._take: Path | None = None
+        self._recorder: QProcess | None = None
+        self._player: QProcess | None = None
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.record_button)
@@ -344,6 +346,23 @@ class CallCheck(QWidget):
 
     def closeEvent(self, event) -> None:
         self.meter.stop()
+        # Stop the take first, and unhook the signals so nothing restarts the UI during shutdown.
+        if self._recorder is not None:
+            try:
+                self._recorder.finished.disconnect(self._play_take)
+            except (RuntimeError, TypeError):
+                pass
+            self._recorder.kill()
+            self._recorder.waitForFinished(1000)
+        if self._player is not None:
+            try:
+                self._player.finished.disconnect(self._take_done)
+            except (RuntimeError, TypeError):
+                pass
+            self._player.kill()
+        if self._take is not None:
+            self._take.unlink(missing_ok=True)
+            self._take = None
         self._piano.kill()
         if self._piano_file is not None:
             self._piano_file.unlink(missing_ok=True)
