@@ -28,6 +28,9 @@ check("live case has no in_ear", good.caseBattery, { level: 100, charging: false
 check("live supportsNoiseOff is honoured", good.supportsNoiseOff, false)
 check("live noiseMode", good.noiseMode, 1)
 
+const powerbeats = Model.parseStatus('{"connected":true,"is_powerbeats":true,"model_name":"Powerbeats Pro 2","schema_version":1}')
+check("Powerbeats family flag parses", powerbeats.isPowerbeats, true)
+
 // A fresh daemon omits left, right and case entirely rather than sending available:false.
 const fresh = Model.parseStatus('{"connected":false,"noise_mode":-1,"schema_version":1}')
 check("fresh line parses", fresh.ok, true)

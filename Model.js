@@ -47,6 +47,7 @@ function defaultStatus() {
     deviceName: "",
     modelName: "",
     isProSeries: false,
+    isPowerbeats: false,
     isHeadset: false,
     supportsNoiseOff: true,
     supportsNoiseControl: true,
@@ -136,6 +137,7 @@ function parseStatus(raw) {
   status.deviceName = String(parsed.device_name || "")
   status.modelName = String(parsed.model_name || "")
   status.isProSeries = parsed.is_pro_series === true
+  status.isPowerbeats = parsed.is_powerbeats === true
   // Older daemons send neither key, so this stays false and the pod rows keep drawing.
   status.isHeadset = parsed.is_headset === true
   // Older daemons do not send this, and every model before the Pro 3 had Off.
