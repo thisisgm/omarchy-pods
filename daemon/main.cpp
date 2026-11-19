@@ -409,6 +409,8 @@ public slots:
             return false;
         }
         m_hiResMicArmed = true;
+        // A reset still pending from the last STOP would cut this capture.
+        ++m_hiResResetGeneration;
         m_hiResAudioSinceStart = false;
         m_hiResSdus = 0;
         m_hiResUnits = 0;
@@ -463,7 +465,8 @@ public slots:
     {
         const quint64 generation = ++m_hiResResetGeneration;
         QTimer::singleShot(OpenPods::HiRes::kA2dpResetDelayMs, this, [this, generation]() {
-            if (generation != m_hiResResetGeneration || !areAirpodsConnected() || !m_deviceInfo) {
+            if (generation != m_hiResResetGeneration || m_hiResMicArmed || m_hiResFallback
+                || !areAirpodsConnected() || !m_deviceInfo) {
                 return;
             }
             mediaController->resetA2dpTransport(m_deviceInfo->bluetoothAddress().replace(":", "_"));
