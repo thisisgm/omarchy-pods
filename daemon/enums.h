@@ -148,9 +148,9 @@ namespace AirpodsTrayApp
             }
         }
 
-        // Published for every model but only meaningful where supportsNoiseControl is true; the Pro 3 accepts the Off packet and ignores it.
-        inline bool supportsNoiseOff(AirPodsModel model) {
-            return model != AirPodsModel::AirPodsPro3;
+        // Published for every model but only meaningful where supportsNoiseControl is true.
+        inline bool supportsNoiseOff(AirPodsModel) {
+            return true;
         }
 
         // Listening modes at all: AirPods 1, 2, 3 and the plain AirPods 4 have none.

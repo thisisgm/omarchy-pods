@@ -23,5 +23,5 @@ fact was not observable, the file says so in its own words instead of guessing.
 | [librepods-build-requirements](librepods-build-requirements.md) | why the packaged librepods cannot drive this panel |
 | [ipc-socket-location](ipc-socket-location.md) | why the control socket left /tmp, and the Qt rule that made it a one-line move |
 | [plugin-design-decisions](plugin-design-decisions.md) | what this panel owns against the stock audio and Bluetooth panels |
-| [airpods-pro-3-has-no-off-mode](airpods-pro-3-has-no-off-mode.md) | why the mode list comes from the daemon and not from a constant |
+| [airpods-pro-3-off-mode](airpods-pro-3-off-mode.md) | the Pro 3 gained Off on current firmware, and why the mode list still comes from the daemon |
 | [nerd-font-glyph-coverage](nerd-font-glyph-coverage.md) | why the bar mark is drawn: fontconfig claims glyphs the font cannot draw |
