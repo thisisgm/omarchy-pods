@@ -693,7 +693,6 @@ public slots:
             m_hiResMicArmed = false;
             m_hiResLastSduMs = -1;
         }
-        m_hiResFallback = true;
         m_hfpIdleSinceMs = -1;
         PulseAudioController *pa = mediaController->pulseAudio();
         const QString card = pa->getCardNameForDevice(airPodsCardAddress());
@@ -707,9 +706,14 @@ public slots:
             }
         }
         if (best.isEmpty() || !pa->setCardProfile(card, best)) {
+            // Not in fallback, so the uplink is re-armed after the backoff and a later stall tries again.
             LOG_ERROR("Hi-res mic: no headset profile to fall back to on " << card);
+            m_hiResNextStartMs = m_hiResClock.elapsed() + m_hiResBackoffMs;
+            m_hiResBackoffMs = OpenPods::HiRes::nextBackoffMs(m_hiResBackoffMs);
+            emit airPodsStatusChanged();
             return;
         }
+        m_hiResFallback = true;
         LOG_INFO("Hi-res mic: card on " << best << " while the uplink is unavailable");
         emit airPodsStatusChanged();
     }
