@@ -69,6 +69,7 @@ private:
   QStringList getPlayingMediaPlayers();
   // Only the retry chain calls this, so the one-restart flag below cannot be read outside a chain.
   bool activateA2dpProfile();
+  void resumeSink(const QString &sink, bool blocking, int attempt = 0);
   void attemptA2dpActivation(const QString &macAddress, quint64 generation, int attempt, int unanswered = 0);
 
   QStringList pausedByAppServices;

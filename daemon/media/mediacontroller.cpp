@@ -135,19 +135,50 @@ void MediaController::resetA2dpTransport(const QString &macAddress, bool blockin
     LOG_INFO("Reset A2DP transport by suspend and resume: " << sink);
     if (blocking) {
       QThread::msleep(400);
-      m_pulseAudio->suspendSink(sink, false);
+      resumeSink(sink, true);
       return;
     }
-    QTimer::singleShot(400, this, [this, sink]() {
-      if (!m_pulseAudio->suspendSink(sink, false)) {
-        LOG_WARN("Resume after the A2DP reset failed for " << sink);
-      }
-    });
+    QTimer::singleShot(400, this, [this, sink]() { resumeSink(sink, false); });
     return;
   }
   LOG_WARN("Suspend failed for " << sink << ", cycling the card profile instead");
   m_pulseAudio->setCardProfile(card, QStringLiteral("off"));
-  activateA2dpProfileWithRetry(macAddress);
+  if (!blocking) {
+    activateA2dpProfileWithRetry(macAddress);
+    return;
+  }
+  // Quit has no event loop left for the retry ladder's timers, so the card is restored here.
+  cancelPendingA2dpActivation();
+  setConnectedDeviceMacAddress(macAddress);
+  m_wirePlumberRestartedThisChain = false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (activateA2dpProfile()) {
+      return;
+    }
+    QThread::msleep(500);
+  }
+  LOG_ERROR("Could not restore the A2DP profile on " << card << " before quitting");
+}
+
+// Resuming a sink that is already running succeeds, so a retry after a lost reply is harmless.
+void MediaController::resumeSink(const QString &sink, bool blocking, int attempt)
+{
+  static constexpr int kMaxAttempts = 3;
+  static constexpr int kDelayMs = 400;
+  if (m_pulseAudio->suspendSink(sink, false)) {
+    return;
+  }
+  if (attempt + 1 >= kMaxAttempts) {
+    LOG_ERROR("Resume after the A2DP reset failed " << kMaxAttempts << " times for " << sink);
+    return;
+  }
+  LOG_WARN("Resume after the A2DP reset failed for " << sink << ", retrying");
+  if (blocking) {
+    QThread::msleep(kDelayMs);
+    resumeSink(sink, true, attempt + 1);
+    return;
+  }
+  QTimer::singleShot(kDelayMs, this, [this, sink, attempt]() { resumeSink(sink, false, attempt + 1); });
 }
 
 void MediaController::setEarDetectionBehavior(EarDetectionBehavior behavior)
