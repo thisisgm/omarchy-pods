@@ -36,7 +36,8 @@ namespace AirpodsTrayApp
             AirPods4ANC,
             AirPodsPro3,
             // Appended, never inserted: this int is persisted and published as model_int.
-            AirPodsMax2
+            AirPodsMax2,
+            PowerbeatsPro
         };
         Q_ENUM_NS(AirPodsModel)
 
@@ -72,7 +73,12 @@ namespace AirpodsTrayApp
                 // A3064 verified on a real device 2026-05-21; A3063 and A3065 are its published siblings.
                 {"A3063", AirPodsModel::AirPodsPro3},
                 {"A3064", AirPodsModel::AirPodsPro3},
-                {"A3065", AirPodsModel::AirPodsPro3}};
+                {"A3065", AirPodsModel::AirPodsPro3},
+                // Powerbeats Pro: A2047 (Left), A2048 (Right), A2078 (Case), A3157
+                {"A2047", AirPodsModel::PowerbeatsPro},
+                {"A2048", AirPodsModel::PowerbeatsPro},
+                {"A2078", AirPodsModel::PowerbeatsPro},
+                {"A3157", AirPodsModel::PowerbeatsPro}};
 
             return modelNumberMap.value(modelNumber, AirPodsModel::Unknown);
         }
@@ -82,6 +88,7 @@ namespace AirpodsTrayApp
             switch (model) {
                 case AirPodsModel::AirPods1:
                 case AirPodsModel::AirPods2:
+                case AirPodsModel::PowerbeatsPro:
                     return {"pod.png", "pod_case.png"};
                 case AirPodsModel::AirPods3:
                     return {"pod3.png", "pod3_case.png"};
@@ -130,6 +137,7 @@ namespace AirpodsTrayApp
                 case AirPodsModel::AirPodsMaxUSBC:         return QStringLiteral("AirPods Max (USB-C)");
                 case AirPodsModel::AirPodsMax2:            return QStringLiteral("AirPods Max 2");
                 case AirPodsModel::AirPodsPro3:            return QStringLiteral("AirPods Pro 3");
+                case AirPodsModel::PowerbeatsPro:          return QStringLiteral("Powerbeats Pro");
                 case AirPodsModel::Unknown:                return QString();
             }
             return QString();
@@ -164,6 +172,7 @@ namespace AirpodsTrayApp
                 case AirPodsModel::AirPodsMaxLightning:
                 case AirPodsModel::AirPodsMaxUSBC:
                 case AirPodsModel::AirPodsMax2:
+                case AirPodsModel::PowerbeatsPro:
                 // Fail open: a model this map has not learned yet keeps the modes it had before.
                 case AirPodsModel::Unknown:
                     return true;
@@ -203,6 +212,7 @@ namespace AirpodsTrayApp
                 case AirPodsModel::AirPodsPro2Lightning:
                 case AirPodsModel::AirPodsPro2USBC:
                 case AirPodsModel::AirPodsPro3:
+                case AirPodsModel::PowerbeatsPro:
                     return true;
                 default:
                     return false;

@@ -54,7 +54,12 @@ Panel {
   readonly property string lidLabel: Model.lidText(pods.lidState)
 
   // The daemon names the family, so the mark is the shape of the device actually connected.
-  readonly property string podsVariant: pods.isHeadset ? "max" : pods.isProSeries ? "pro" : "buds"
+  readonly property string podsVariant: {
+    if (pods.isPowerbeats || pods.isBeats) return "beats"
+    if (pods.isHeadset) return "max"
+    if (pods.isProSeries) return "pro"
+    return "buds"
+  }
 
   // The daemon decides which modes this device has, so no row is drawn that the hardware ignores.
   readonly property var modes: pods.availableModes()

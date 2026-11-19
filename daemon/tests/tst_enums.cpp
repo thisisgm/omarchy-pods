@@ -39,6 +39,7 @@ private slots:
         QTest::newRow("AirPodsMaxL")       << int(AirPodsModel::AirPodsMaxLightning);
         QTest::newRow("AirPodsMaxUSBC")    << int(AirPodsModel::AirPodsMaxUSBC);
         QTest::newRow("AirPodsMax2")       << int(AirPodsModel::AirPodsMax2);
+        QTest::newRow("PowerbeatsPro")     << int(AirPodsModel::PowerbeatsPro);
         QTest::newRow("Unknown")           << int(AirPodsModel::Unknown);
     }
 
@@ -69,6 +70,10 @@ private slots:
         QCOMPARE(parseModelNumber("A3064"), AirPodsModel::AirPodsPro3);
         QCOMPARE(parseModelNumber("A3063"), AirPodsModel::AirPodsPro3);
         QCOMPARE(parseModelNumber("A3065"), AirPodsModel::AirPodsPro3);
+        QCOMPARE(parseModelNumber("A2047"), AirPodsModel::PowerbeatsPro);
+        QCOMPARE(parseModelNumber("A2048"), AirPodsModel::PowerbeatsPro);
+        QCOMPARE(parseModelNumber("A2078"), AirPodsModel::PowerbeatsPro);
+        QCOMPARE(parseModelNumber("A3157"), AirPodsModel::PowerbeatsPro);
         // Apple publishes none of these four, so the dropped guesses must not answer Pro 3.
         QCOMPARE(parseModelNumber("A3066"), AirPodsModel::Unknown);
         QCOMPARE(parseModelNumber("A3334"), AirPodsModel::Unknown);
@@ -83,6 +88,8 @@ private slots:
                  QStringLiteral("AirPods Pro 3"));
         QCOMPARE(modelDisplayName(AirPodsModel::AirPodsPro2USBC),
                  QStringLiteral("AirPods Pro 2 (USB-C)"));
+        QCOMPARE(modelDisplayName(AirPodsModel::PowerbeatsPro),
+                 QStringLiteral("Powerbeats Pro"));
         QCOMPARE(modelDisplayName(AirPodsModel::Unknown), QString());
     }
 
@@ -107,23 +114,19 @@ private slots:
             AirPodsModel::AirPodsMaxLightning,
             AirPodsModel::AirPodsMaxUSBC,
             AirPodsModel::AirPodsMax2,
+            AirPodsModel::PowerbeatsPro,
         };
         for (const auto m : known) {
             const QString name = modelDisplayName(m);
             QVERIFY2(!name.isEmpty(),
                      qPrintable(QStringLiteral("modelDisplayName(%1) is empty — enum addition missing switch case")
                                 .arg(static_cast<int>(m))));
-            // Must start with "AirPods" — sanity check on the
-            // marketing prefix; catches typos like "AirPod" or
-            // "Beats" leakage.
-            QVERIFY2(name.startsWith(QStringLiteral("AirPods")),
-                     qPrintable(QStringLiteral("modelDisplayName(%1)=\"%2\" missing AirPods prefix")
-                                .arg(static_cast<int>(m)).arg(name)));
         }
         // Unknown must stay empty so consumers can skip-render.
         QCOMPARE(modelDisplayName(AirPodsModel::Unknown), QString());
-        // The loop above only asks for a non-empty AirPods-prefixed string, so pin the published names too.
+        // The loop above only asks for a non-empty string, so pin the published names too.
         QCOMPARE(modelDisplayName(AirPodsModel::AirPodsMax2), QStringLiteral("AirPods Max 2"));
+        QCOMPARE(modelDisplayName(AirPodsModel::PowerbeatsPro), QStringLiteral("Powerbeats Pro"));
         // Both AirPods 4 variants say AirPods 4 on purpose, so a reviewer cannot read the match as a slip.
         QCOMPARE(modelDisplayName(AirPodsModel::AirPods4), QStringLiteral("AirPods 4"));
         QCOMPARE(modelDisplayName(AirPodsModel::AirPods4ANC), QStringLiteral("AirPods 4"));
@@ -145,6 +148,7 @@ private slots:
         QCOMPARE(int(AirPodsModel::AirPods4ANC), 10);
         QCOMPARE(int(AirPodsModel::AirPodsPro3), 11);
         QCOMPARE(int(AirPodsModel::AirPodsMax2), 12);
+        QCOMPARE(int(AirPodsModel::PowerbeatsPro), 13);
     }
 
     void isModelHeadset_onlyMax()
@@ -198,6 +202,7 @@ private slots:
         QTest::newRow("AirPodsMaxL")     << int(AirPodsModel::AirPodsMaxLightning)  << true  << false << false << false;
         QTest::newRow("AirPodsMaxUSBC")  << int(AirPodsModel::AirPodsMaxUSBC)       << true  << false << false << false;
         QTest::newRow("AirPodsMax2")     << int(AirPodsModel::AirPodsMax2)          << true  << true  << true  << false;
+        QTest::newRow("PowerbeatsPro")   << int(AirPodsModel::PowerbeatsPro)        << true  << false << false << true;
         // Unknown fails open on modes so an unmapped model keeps what it had, and gains nothing else.
         QTest::newRow("Unknown")         << int(AirPodsModel::Unknown)              << true  << false << false << false;
     }
@@ -220,7 +225,7 @@ private slots:
     // No listening feature can exist on a device with no listening modes.
     void capabilities_neverExceedNoiseControl()
     {
-        for (int i = 0; i <= int(AirPodsModel::AirPodsMax2); ++i) {
+        for (int i = 0; i <= int(AirPodsModel::PowerbeatsPro); ++i) {
             const auto m = static_cast<AirPodsModel>(i);
             if (supportsNoiseControl(m)) continue;
             QVERIFY2(!supportsAdaptiveAudio(m) && !supportsConversationalAwareness(m) && !supportsOneBudANC(m),

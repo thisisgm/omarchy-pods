@@ -48,6 +48,8 @@ function defaultStatus() {
     modelName: "",
     isProSeries: false,
     isHeadset: false,
+    isBeats: false,
+    isPowerbeats: false,
     supportsNoiseOff: true,
     supportsNoiseControl: true,
     supportsAdaptive: false,
@@ -138,6 +140,8 @@ function parseStatus(raw) {
   status.isProSeries = parsed.is_pro_series === true
   // Older daemons send neither key, so this stays false and the pod rows keep drawing.
   status.isHeadset = parsed.is_headset === true
+  status.isBeats = status.modelName.indexOf("Beats") !== -1 || status.deviceName.indexOf("Beats") !== -1 || parsed.model_int === 13
+  status.isPowerbeats = status.modelName.indexOf("Powerbeats") !== -1 || status.deviceName.indexOf("Powerbeats") !== -1 || parsed.model_int === 13
   // Older daemons do not send this, and every model before the Pro 3 had Off.
   status.supportsNoiseOff = parsed.supports_noise_off !== false
   // A daemon without these keys falls back to what the panel used to gate on.

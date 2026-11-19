@@ -238,6 +238,13 @@ namespace AirPodsPackets
         }
     }
 
+    // Apple Handoff - OWNS_CONNECTION
+    namespace OwnsConnection
+    {
+        static const QByteArray CLAIM = ControlCommand::createCommand(0x06, 0x01);
+        static const QByteArray RELEASE = ControlCommand::createCommand(0x06, 0x00);
+    }
+
     // Parsing Headers
     namespace Parse
     {
@@ -246,6 +253,38 @@ namespace AirPodsPackets
         static const QByteArray METADATA = QByteArray::fromHex("040004001d");
         static const QByteArray HANDSHAKE_ACK = QByteArray::fromHex("01000400");
         static const QByteArray FEATURES_ACK = QByteArray::fromHex("040004002b00"); // Note: Only tested with airpods pro 2
+        static const QByteArray AUDIO_SOURCE = QByteArray::fromHex("040004000e");
+    }
+
+    // Audio Source - indicates which device currently owns active playback/call
+    namespace AudioSource
+    {
+        enum Type : quint8
+        {
+            NONE = 0x00,
+            CALL = 0x01,
+            MEDIA = 0x02
+        };
+
+        struct Info
+        {
+            QByteArray deviceMac;
+            Type type;
+            bool isValid;
+        };
+
+        inline Info parse(const QByteArray &data)
+        {
+            Info info{QByteArray(), NONE, false};
+            // Format: 04 00 04 00 0e [1 byte len] [6 bytes MAC] [1 byte type]
+            if (data.size() >= 13 && data.startsWith(Parse::AUDIO_SOURCE))
+            {
+                info.deviceMac = data.mid(6, 6);
+                info.type = static_cast<Type>(static_cast<quint8>(data.at(12)));
+                info.isValid = true;
+            }
+            return info;
+        }
     }
 }
 

@@ -23,7 +23,9 @@ AirpodsTrayApp::Enums::AirPodsModel getModelName(quint16 modelId)
         {0x1420, AirPodsModel::AirPodsPro2Lightning},
         {0x2420, AirPodsModel::AirPodsPro2USBC},
         // Apple product 0x2027 arrives byte-swapped, so data[3] is 0x27 and this key is 0x2720.
-        {0x2720, AirPodsModel::AirPodsPro3}
+        {0x2720, AirPodsModel::AirPodsPro3},
+        // Apple product 0x201D (Powerbeats Pro) arrives byte-swapped as 0x1D20.
+        {0x1D20, AirPodsModel::PowerbeatsPro}
         // No AirPods Max 2 id yet: AAP names it instead, and an unrecognized id is ignored.
     };
 

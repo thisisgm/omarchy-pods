@@ -14,6 +14,8 @@ Item {
   property string modelName: ""
   property bool isProSeries: false
   property bool isHeadset: false
+  property bool isBeats: false
+  property bool isPowerbeats: false
   property bool supportsNoiseOff: true
   property bool supportsNoiseControl: true
   property bool supportsAdaptive: false
@@ -87,6 +89,25 @@ Item {
 
   // The daemon removes the file when it stops, so an absent file is a stopped daemon.
   function stateGone() {
+    isProSeries = false
+    isHeadset = false
+    isBeats = false
+    isPowerbeats = false
+    supportsNoiseOff = true
+    supportsNoiseControl = true
+    supportsAdaptive = false
+    supportsConversationalAwareness = false
+    supportsOneBudANC = false
+    noiseMode = Model.NOISE_UNKNOWN
+    adaptiveNoiseLevel = 0
+    oneBudANC = false
+    conversationalAwareness = false
+    earDetectionBehavior = Model.EAR_PAUSE_ONE_OUT
+    lidState = Model.LID_UNKNOWN
+    leftPod = Model.defaultPod()
+    rightPod = Model.defaultPod()
+    caseBattery = ({ level: Model.LEVEL_UNKNOWN, charging: false })
+    headsetBattery = ({ level: Model.LEVEL_UNKNOWN, charging: false })
     daemonReachable = false
     connected = false
     schemaUnsupported = false
@@ -99,6 +120,8 @@ Item {
     modelName = status.modelName
     isProSeries = status.isProSeries
     isHeadset = status.isHeadset
+    isBeats = status.isBeats
+    isPowerbeats = status.isPowerbeats
     supportsNoiseOff = status.supportsNoiseOff
     supportsNoiseControl = status.supportsNoiseControl
     supportsAdaptive = status.supportsAdaptive

@@ -177,6 +177,7 @@ public:
     {
         settings.beginGroup("DeviceInfo");
         settings.setValue("deviceName", deviceName());
+        settings.setValue("bluetoothAddress", bluetoothAddress());
         settings.setValue("model", static_cast<int>(model()));
         // Persist the raw "A<NNNN>" code too — on next launch we'll
         // feed it through parseModelNumber so newly-added entries
@@ -196,6 +197,7 @@ public:
     void loadFromSettings(const QSettings &settings)
     {
         setDeviceName(settings.value("DeviceInfo/deviceName", "").toString());
+        setBluetoothAddress(settings.value("DeviceInfo/bluetoothAddress", "").toString());
         // Restore the raw model code first so the re-parse below sees
         // it; if absent (legacy QSettings), the persisted enum value
         // wins.
