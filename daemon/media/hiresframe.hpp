@@ -48,27 +48,44 @@ namespace OpenPods::HiRes
         return units;
     }
     // A pipe write can be partial, and s16 needs the stream on even byte offsets: a write that
-    // stops mid-sample leaves the byte that completes it to lead the next one. The sink returns
-    // the bytes it took, 0 for a full pipe; whole samples are what gets dropped.
+    // stops mid-sample leaves the byte that completes it to lead the next one. Input can split a
+    // sample too, as a read from parec does, so an odd last byte waits for the rest of its sample.
+    // The sink returns the bytes it took, 0 for a full pipe; whole samples are what gets dropped.
     class SampleWriter
     {
     public:
         void write(QByteArrayView pcm, const std::function<qsizetype(QByteArrayView)> &sink)
         {
-            QByteArray joined;
-            if (m_carry >= 0) {
-                joined.reserve(pcm.size() + 1);
-                joined.append(static_cast<char>(m_carry));
-                joined.append(pcm.data(), pcm.size());
-                pcm = joined;
+            QByteArray samples;
+            samples.reserve(pcm.size() + 2);
+            const bool carried = m_carry >= 0;
+            if (carried) {
+                samples.append(static_cast<char>(m_carry));
             }
-            const qsizetype written = qMax<qsizetype>(sink(pcm), 0);
-            const bool midSample = (m_carry >= 0) != (written % 2 == 1);
-            m_carry = midSample ? static_cast<quint8>(pcm[written]) : -1;
+            if (m_inputTail >= 0) {
+                samples.append(static_cast<char>(m_inputTail));
+            }
+            samples.append(pcm.data(), pcm.size());
+            m_inputTail = -1;
+            if ((samples.size() - (carried ? 1 : 0)) % 2 == 1) {
+                m_inputTail = static_cast<quint8>(samples.back());
+                samples.chop(1);
+            }
+            if (samples.isEmpty()) {
+                return;
+            }
+            const qsizetype written = qMax<qsizetype>(sink(samples), 0);
+            const bool midSample = carried != (written % 2 == 1);
+            m_carry = midSample ? static_cast<quint8>(samples[written]) : -1;
         }
-        void reset() { m_carry = -1; }
+        void reset()
+        {
+            m_carry = -1;
+            m_inputTail = -1;
+        }
 
     private:
         int m_carry = -1;
+        int m_inputTail = -1;
     };
 }

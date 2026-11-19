@@ -35,6 +35,8 @@ private slots:
     void emitsNothingFromAHeaderOnlySdu();
     void keepsSamplesWholeAcrossShortWrites();
     void dropsWholeSamplesWhenThePipeIsFull();
+    void joinsOddInputChunksWrittenInFull();
+    void joinsOddInputChunksAcrossShortWrites();
 };
 
 void TestHiResFrame::acceptsAnAudioSdu()
@@ -124,6 +126,47 @@ void TestHiResFrame::dropsWholeSamplesWhenThePipeIsFull()
     room = 64;
     writer.write(QByteArray::fromHex("2a2b"), sink);
     QCOMPARE(pipe, QByteArray::fromHex("0a0b2a2b"));
+}
+
+void TestHiResFrame::joinsOddInputChunksWrittenInFull()
+{
+    OpenPods::HiRes::SampleWriter writer;
+    QByteArray pipe;
+    auto sink = [&](QByteArrayView bytes) {
+        pipe.append(bytes);
+        return bytes.size();
+    };
+    // A read from parec can end anywhere, one byte included.
+    writer.write(QByteArray::fromHex("01"), sink);
+    writer.write(QByteArray::fromHex("0203"), sink);
+    writer.write(QByteArray::fromHex("04"), sink);
+    writer.write(QByteArray::fromHex("050607"), sink);
+    writer.write(QByteArray::fromHex("08"), sink);
+    QCOMPARE(pipe, QByteArray::fromHex("0102030405060708"));
+}
+
+void TestHiResFrame::joinsOddInputChunksAcrossShortWrites()
+{
+    OpenPods::HiRes::SampleWriter writer;
+    QByteArray pipe;
+    const QList<qsizetype> takes {1, 0, 64, 64};
+    int call = 0;
+    auto sink = [&](QByteArrayView bytes) {
+        const qsizetype n = qMin(takes[call++], bytes.size());
+        pipe.append(bytes.first(n));
+        return n;
+    };
+    writer.write(QByteArray::fromHex("010203"), sink);
+    writer.write(QByteArray::fromHex("0405"), sink);
+    writer.write(QByteArray::fromHex("060708"), sink);
+    writer.write(QByteArray::fromHex("090a0b"), sink);
+    // Only 0304 fell on the full pipe; 02 still completes its sample, so every sample left is whole and in order.
+    QCOMPARE(pipe, QByteArray::fromHex("010205060708090a"));
+    writer.write(QByteArray::fromHex("0c"), [&](QByteArrayView bytes) {
+        pipe.append(bytes);
+        return bytes.size();
+    });
+    QCOMPARE(pipe, QByteArray::fromHex("010205060708090a0b0c"));
 }
 
 QTEST_GUILESS_MAIN(TestHiResFrame)
