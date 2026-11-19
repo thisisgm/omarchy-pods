@@ -138,12 +138,13 @@ Disconnecting and reconnecting the whole device also works, at the cost of the
 playback link. This daemon registers no Bluetooth profile, so that list is
 BlueZ's and PipeWire's to produce.
 
-There is a route around all of this that uses no audio profile at all: the AirPods
-can send a high-resolution microphone stream over the same AACP channel this
-daemon already uses for battery and controls, which leaves A2DP playback running
-untouched. Upstream librepods has an implementation of it for its Rust rewrite in
-[PR 655](https://github.com/kavishdevar/librepods/pull/655), unmerged at the time
-of writing. Nothing in this daemon does that today.
+The daemon also takes the AirPods' high-resolution microphone (64 kHz) over the AACP
+control channel it already uses, so A2DP playback keeps running. It is published as
+one microphone named after the AirPods, and the panel switches it on and off. If
+that stream delivers no audio after two restarts while an app records, the daemon
+falls back to the headset profile for that call, so playback is narrowband in the
+meantime. It returns to A2DP a few seconds after the recorder leaves. The idea comes
+from upstream librepods, see [PR 655](https://github.com/kavishdevar/librepods/pull/655).
 
 ## Install
 
