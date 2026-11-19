@@ -1029,6 +1029,10 @@ public slots:
             break;
         case CaptureAction::Idle:
             m_hiResRecorderGoneMs = -1;
+            // A failed fallback retry leaves Conversation Awareness owed back while the mic is unarmed.
+            if (m_hiResCaSaved && !m_hiResFallback) {
+                restoreHiResConversationAwareness();
+            }
             break;
         }
 
