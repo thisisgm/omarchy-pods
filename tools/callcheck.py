@@ -73,6 +73,8 @@ class Readiness:
     default_source: str
     default_sink: str
     card_profile: str
+    daemon_connected: bool
+    output_is_airpods: bool
     hires_published: bool
     clean_published: bool
     mic_enabled: bool | None
@@ -88,13 +90,36 @@ class Readiness:
             out.append(f"{CLEAN_SOURCE} exists and suppresses room noise; the raw uplink is selected.")
         elif self.default_source not in (HIRES_SOURCE, CLEAN_SOURCE) and self.hires_published:
             out.append("The AirPods microphone is available but something else is your input.")
+        if not self.daemon_connected:
+            out.append("The AirPods daemon reports no connected AirPods.")
         if self.mic_enabled is False:
             out.append("The AirPods microphone is switched off in the panel.")
+        elif not self.hires_published:
+            out.append("The AirPods microphone is not available.")
         if self.card_profile.startswith("headset"):
             out.append("The card is on a headset profile, so playback is the narrowband one.")
-        if not self.default_sink.startswith("bluez_output."):
+        if not self.output_is_airpods:
             out.append("Output is not the AirPods.")
         return out
+
+
+def sink_address(sink: str) -> str:
+    """The Bluetooth address of a PipeWire sink, empty for anything else."""
+    current = ""
+    for line in run(["pactl", "list", "sinks"]).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Name:"):
+            current = stripped.split(":", 1)[1].strip()
+        elif current == sink and stripped.startswith("api.bluez5.address"):
+            return stripped.split("=", 1)[1].strip().strip('"')
+    return ""
+
+
+def is_apple_device(address: str) -> bool:
+    # A bluez_output. prefix only says Bluetooth; Apple's vendor ID 0x004C says AirPods.
+    if not address:
+        return False
+    return "Modalias: bluetooth:v004C" in run(["bluetoothctl", "info", address])
 
 
 def read_state() -> Readiness:
@@ -117,10 +142,13 @@ def read_state() -> Readiness:
             profile = stripped.split(":", 1)[1].strip()
             card = ""
     sources = run(["pactl", "list", "sources", "short"])
+    default_sink = run(["pactl", "get-default-sink"]).strip()
     return Readiness(
         default_source=run(["pactl", "get-default-source"]).strip(),
-        default_sink=run(["pactl", "get-default-sink"]).strip(),
+        default_sink=default_sink,
         card_profile=profile,
+        daemon_connected=status.get("connected") is True,
+        output_is_airpods=default_sink.startswith("bluez_output.") and is_apple_device(sink_address(default_sink)),
         hires_published=HIRES_SOURCE in sources,
         clean_published=CLEAN_SOURCE in sources,
         mic_enabled=status.get("hires_mic_enabled"),
@@ -145,26 +173,37 @@ class LevelMeter(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._sample)
         self._peak = 0.0
+        # Sampled in a QProcess so the window keeps painting while each half second records.
+        self._capture = QProcess(self)
+        self._capture.finished.connect(self._sampled)
+        self._capture.errorOccurred.connect(self._capture_failed)
 
     def start(self) -> None:
         self._timer.start(600)
 
     def stop(self) -> None:
         self._timer.stop()
+        self._capture.kill()
+        self._capture.waitForFinished(1000)
         self.bar.setValue(0)
         self.caption.setText("idle")
 
     def _sample(self) -> None:
+        if self._capture.state() != QProcess.NotRunning:
+            return
         # Recorded to stdout and stopped with an interrupt: killing pw-record outright leaves
         # the wav header unfinalised, which reads back as silence.
-        try:
-            done = subprocess.run(["timeout", "-s", "INT", "0.5", "pw-record",
-                                   "--rate", "48000", "--channels", "1", "--", "-"],
-                                  capture_output=True, timeout=2.0)
-        except (OSError, subprocess.SubprocessError):
+        self._capture.start("timeout", ["-s", "INT", "0.5", "pw-record",
+                                        "--rate", "48000", "--channels", "1", "--", "-"])
+
+    def _capture_failed(self, error: QProcess.ProcessError) -> None:
+        if error == QProcess.FailedToStart:
             self.caption.setText("pw-record is not available")
+
+    def _sampled(self) -> None:
+        if not self._timer.isActive():
             return
-        level = peak_of_raw(done.stdout)
+        level = peak_of_raw(bytes(self._capture.readAllStandardOutput()))
         if level is None:
             self.caption.setText("no audio from the input")
             return
@@ -228,6 +267,7 @@ class CallCheck(QWidget):
         self._piano = QProcess(self)
         self._piano.finished.connect(self._piano_finished)
         self._piano_file: Path | None = None
+        self._take: Path | None = None
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.record_button)
@@ -303,6 +343,7 @@ class CallCheck(QWidget):
             self._start_piano()
 
     def closeEvent(self, event) -> None:
+        self.meter.stop()
         self._piano.kill()
         if self._piano_file is not None:
             self._piano_file.unlink(missing_ok=True)
@@ -314,18 +355,33 @@ class CallCheck(QWidget):
         subprocess.run(["pactl", "set-default-source", wanted], capture_output=True)
         self.refresh()
 
+    # Recording and playback run as QProcesses one after the other, so the window stays live.
     def record_and_play(self) -> None:
         self.record_button.setEnabled(False)
         self.meter.stop()
         self.record_button.setText("Recording...")
-        QApplication.processEvents()
-        path = Path(NamedTemporaryFile(suffix=".wav", delete=False).name)
-        subprocess.run(["timeout", str(RECORD_SECONDS), "pw-record", "--rate", "48000",
-                        "--channels", "1", "--", str(path)], capture_output=True)
+        self._take = Path(NamedTemporaryFile(suffix=".wav", delete=False).name)
+        self._recorder = QProcess(self)
+        self._recorder.finished.connect(self._play_take)
+        self._recorder.errorOccurred.connect(self._take_failed)
+        self._recorder.start("timeout", [str(RECORD_SECONDS), "pw-record", "--rate", "48000",
+                                         "--channels", "1", "--", str(self._take)])
+
+    def _play_take(self) -> None:
         self.record_button.setText("Playing it back...")
-        QApplication.processEvents()
-        subprocess.run(["pw-play", "--", str(path)], capture_output=True)
-        path.unlink(missing_ok=True)
+        self._player = QProcess(self)
+        self._player.finished.connect(self._take_done)
+        self._player.errorOccurred.connect(self._take_failed)
+        self._player.start("pw-play", ["--", str(self._take)])
+
+    def _take_failed(self, error: QProcess.ProcessError) -> None:
+        if error == QProcess.FailedToStart:
+            self._take_done()
+
+    def _take_done(self) -> None:
+        if self._take is not None:
+            self._take.unlink(missing_ok=True)
+            self._take = None
         self.record_button.setText(f"Record {RECORD_SECONDS}s, play back")
         self.record_button.setEnabled(True)
         self.meter.start()
