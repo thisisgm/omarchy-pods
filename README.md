@@ -182,6 +182,12 @@ systemctl --user restart librepods.service
 which is where the panel finds `librepods-ctl`. The unit is bound to
 `graphical-session.target`, so the daemon comes back after a reboot.
 
+## Connect when Chrome or Spotify plays media
+
+AirPods can connect automatically when you play media in Chrome, Chromium or Spotify. This is enabled by default and runs inside the existing daemon. Connect your AirPods manually once so it remembers them; it then makes up to two connection attempts per playback session, with a delay between retries. Already-connected AirPods are left alone.
+
+Disconnecting through Omarchy's Bluetooth menu pauses automatic connections until you reconnect the AirPods to the PC, even across daemon restarts. Use `librepods-ctl media-connect:off` or `librepods-ctl media-connect:on` to disable or enable the feature for all supported apps; enabling it does not override a manual-disconnect pause. Run `librepods-ctl status` to check `media_connect_enabled` and `media_connect_paused`.
+
 ## Remove
 
 ```bash
