@@ -4,6 +4,10 @@
   Battery for each pod and the case, the listening modes, adaptive noise level, Conversation Awareness, One-Bud ANC and ear detection, drawn in Omarchy's own panel idiom.
 </p>
 
+AirPods remain fully supported, and Powerbeats Pro and Powerbeats Pro 2 use the
+same battery, listening-mode and ear-detection panel with their own ear-hook
+mark.
+
 <p align="center">
   <a href="https://omarchyplugins.com/plugin.html?id=io.github.thisisgm.omapods"><img alt="On omarchyplugins.com" src="https://img.shields.io/badge/omarchyplugins.com-listed-8b5cf6"></a>
   <a href="https://github.com/thisisgm/omarchy-pods/tags"><img alt="Latest tag" src="https://img.shields.io/github/v/tag/thisisgm/omarchy-pods?label=version"></a>
@@ -35,9 +39,10 @@
   connected, and the case level may keep refreshing over the control link, as it
   does here, or hold like the lid, as the issue 26 reporter saw. Per-pod battery, ANC and ear detection keep updating
   throughout.
-- **A mark that matches the hardware**: stemmed buds, AirPods Pro or AirPods Max,
-  chosen from the model the daemon reports. AirPods Max carry no case, so their
-  panel drops the case row and shows a single headphone battery.
+- **A mark that matches the hardware**: stemmed buds, AirPods Pro, AirPods Max
+  or Powerbeats Pro, chosen from the model the daemon reports. AirPods Max carry
+  no case, so their panel drops the case row and shows a single headphone
+  battery.
 
 ## Deliberately absent
 
@@ -86,10 +91,12 @@ anyway. It works because the panel reads that file and nothing else.
   `ca:`, `onebud:` or `adaptive:` verbs, and a model map that stops before
   AirPods Pro 3, so the panel would stay hidden forever. The copy here carries
   every model number Apple lists as of August 2026, up to the 2026 AirPods
-  Max 2, and what each of those models can actually do. See [daemon/UPSTREAM.md](daemon/UPSTREAM.md)
+  Max 2, plus both Powerbeats Pro generations, and what each of those models can
+  actually do. See [daemon/UPSTREAM.md](daemon/UPSTREAM.md)
   for what it is, who wrote it and what was changed. `omarchy plugin add` only
   clones the plugin; `setup` builds the daemon.
-- AirPods paired to the machine through the usual Bluetooth flow.
+- AirPods or Powerbeats Pro paired to the machine through the usual Bluetooth
+  flow.
 
 ## How it works
 

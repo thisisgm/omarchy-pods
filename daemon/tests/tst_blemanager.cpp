@@ -43,6 +43,14 @@ static QByteArray withRightPodPrimary(const QByteArray &frame)
     return other;
 }
 
+static QByteArray withModel(const QByteArray &frame, quint16 model)
+{
+    QByteArray other = frame;
+    other[3] = char(model >> 8);
+    other[4] = char(model & 0xff);
+    return other;
+}
+
 // Emissions for one frame, or -1 when the slot could not be invoked at all.
 static int parseFrame(const QByteArray &frame, BleInfo *emitted)
 {
@@ -69,6 +77,8 @@ private slots:
     void unparseableFrameIsDropped_data();
     void unparseableFrameIsDropped();
     void realAirPodsFrameIsParsed();
+    void powerBeatsProFrameIsRecognized();
+    void powerBeatsPro2FrameIsRecognized();
     void podsBatteryKeepsLeftAndRightApart();
 };
 
@@ -101,6 +111,22 @@ void TestBleManager::realAirPodsFrameIsParsed()
     // Decoded from the capture: 0x8f is a case nibble of 15 meaning absent, 0x04 is idle.
     QCOMPARE(parsed.caseBattery, -1);
     QCOMPARE(parsed.connectionState, BleInfo::ConnectionState::IDLE);
+}
+
+void TestBleManager::powerBeatsProFrameIsRecognized()
+{
+    BleInfo parsed;
+
+    QCOMPARE(parseFrame(withModel(QByteArray::fromHex(airPodsFrameHex), 0x0B20), &parsed), 1);
+    QCOMPARE(int(parsed.modelName), int(AirpodsTrayApp::Enums::AirPodsModel::PowerbeatsPro));
+}
+
+void TestBleManager::powerBeatsPro2FrameIsRecognized()
+{
+    BleInfo parsed;
+
+    QCOMPARE(parseFrame(withModel(QByteArray::fromHex(airPodsFrameHex), 0x1D20), &parsed), 1);
+    QCOMPARE(int(parsed.modelName), int(AirpodsTrayApp::Enums::AirPodsModel::PowerbeatsPro2));
 }
 
 void TestBleManager::podsBatteryKeepsLeftAndRightApart()
