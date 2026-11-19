@@ -271,6 +271,16 @@ private:
         LOG_INFO("Disconnecting device at " << devicePath);
     }
 
+    // bluetoothctl never exits on some error paths ("Device  not available"
+    // for an empty address, among others) and keeps printing every BLE RSSI
+    // change. QProcess buffers that output until finished(), so a stuck child
+    // grows this daemon's heap without bound. --timeout makes bluetoothctl
+    // quit on its own, and a null stdin keeps it out of interactive mode.
+    static void startBluetoothctl(QProcess *proc, const QStringList &args) {
+        proc->setStandardInputFile(QProcess::nullDevice());
+        proc->start("bluetoothctl", QStringList() << "--timeout" << "30" << args);
+    }
+
 public slots:
     // Apple-style Disconnect / Connect controls. Wrap `bluetoothctl`
     // with the saved BD_ADDR. Async QProcess + deleteLater so the Qt
@@ -302,7 +312,7 @@ public slots:
                     }
                     proc->deleteLater();
                 });
-        proc->start("bluetoothctl", QStringList() << "disconnect" << addr);
+        startBluetoothctl(proc, QStringList() << "disconnect" << addr);
     }
 
     void connectAirPods() {
@@ -328,7 +338,7 @@ public slots:
                     }
                     proc->deleteLater();
                 });
-        proc->start("bluetoothctl", QStringList() << "connect" << addr);
+        startBluetoothctl(proc, QStringList() << "connect" << addr);
     }
 
     // Apple "Forget This Device" parity. Walks bluetoothctl with the
@@ -359,7 +369,7 @@ public slots:
                     }
                     proc->deleteLater();
                 });
-        proc->start("bluetoothctl", QStringList() << "remove" << addr);
+        startBluetoothctl(proc, QStringList() << "remove" << addr);
     }
 
     void connectToDevice(const QString &address) {
@@ -1466,7 +1476,7 @@ private slots:
                             LOG_INFO("Bluetoothctl disconnect output: " << proc->readAllStandardOutput().trimmed());
                             proc->deleteLater();
                         });
-                proc->start("bluetoothctl", QStringList() << "disconnect" << m_deviceInfo->bluetoothAddress());
+                startBluetoothctl(proc, QStringList() << "disconnect" << m_deviceInfo->bluetoothAddress());
                 isConnectedLocally = false;
                 CrossDevice.isAvailable = true;
             }
@@ -1555,7 +1565,9 @@ public:
             return;
         }
 
-        if (force) {
+        if (force && m_deviceInfo->bluetoothAddress().isEmpty()) {
+            LOG_WARN("Not forcing connection: no AirPods address known yet");
+        } else if (force) {
             LOG_INFO("Forcing connection to AirPods");
             // Async: don't block UI on bluetoothctl. Once it finishes, walk
             // the connected-device list and dispatch to connectToDevice().
@@ -1574,7 +1586,7 @@ public:
                             }
                         }
                     });
-            proc->start("bluetoothctl", QStringList() << "connect" << m_deviceInfo->bluetoothAddress());
+            startBluetoothctl(proc, QStringList() << "connect" << m_deviceInfo->bluetoothAddress());
             return;
         }
         QBluetoothLocalDevice localDevice;
