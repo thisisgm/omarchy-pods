@@ -1,0 +1,33 @@
+[graph]
+all-features = true
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+
+[licenses]
+# The allow-list is policy for crates added later, so an unused entry is not a warning.
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "GPL-3.0-only",
+]
+
+[bans]
+deny = [
+    { crate = "openssl-sys", reason = "TLS is not part of this daemon" },
+    { crate = "libdbus-sys", reason = "D-Bus is reached through pure Rust, not libdbus" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

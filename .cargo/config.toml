@@ -1,0 +1,8 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+[registry]
+global-min-publish-age = "7 days"
+
+[resolver]
+incompatible-rust-versions = "fallback"
