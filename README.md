@@ -110,13 +110,15 @@ which is SBC-XQ at 453 kbps ahead of SBC at 328 and AAC at 256. That is the
 default, and it is re-applied every time the daemon activates the card, because
 PipeWire's own profile priority puts AAC first and would otherwise win.
 
-Selecting the AirPods as a **microphone** gives that up. Over the standard
-Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
-the only profiles exposing a source are `headset-head-unit` at 16 kHz mSBC and
-`headset-head-unit-cvsd` at 8 kHz, and each one replaces the playback profile
-rather than joining it. A card cannot offer a high-quality sink and a microphone
-at the same time. macOS is bound by the same profiles and simply negotiates a
-better voice codec on them.
+Selecting the AirPods as a **microphone** gives that up on the standard Bluetooth
+headset profiles. Over those, two-way voice runs on a separate low-bandwidth
+channel, so the only profiles exposing a source are `headset-head-unit` at 16 kHz
+mSBC and `headset-head-unit-cvsd` at 8 kHz, and each one replaces the playback
+profile rather than joining it. A card cannot offer a high-quality sink and a
+microphone at the same time on those profiles. macOS is bound by the same
+profiles and simply negotiates a better voice codec on them. The daemon's own
+hi-res microphone, described below, avoids this trade-off because it keeps A2DP
+running.
 
 So take the microphone from another device and leave the AirPods on SBC-XQ. The
 daemon helps here: it defers its activation ladder while a capture is live, so it
