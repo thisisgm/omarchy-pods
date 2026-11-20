@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import wave
@@ -172,6 +174,9 @@ class LevelMeter(QWidget):
         layout.addWidget(self.caption)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._sample)
+        self._interrupt = QTimer(self)
+        self._interrupt.setSingleShot(True)
+        self._interrupt.timeout.connect(self._interrupt_capture)
         self._peak = 0.0
         # Sampled in a QProcess so the window keeps painting while each half second records.
         self._capture = QProcess(self)
@@ -183,6 +188,7 @@ class LevelMeter(QWidget):
 
     def stop(self) -> None:
         self._timer.stop()
+        self._interrupt.stop()
         self._capture.kill()
         self._capture.waitForFinished(1000)
         self.bar.setValue(0)
@@ -191,10 +197,14 @@ class LevelMeter(QWidget):
     def _sample(self) -> None:
         if self._capture.state() != QProcess.NotRunning:
             return
-        # Recorded to stdout and stopped with an interrupt: killing pw-record outright leaves
-        # the wav header unfinalised, which reads back as silence.
-        self._capture.start("timeout", ["-s", "INT", "0.5", "pw-record",
-                                        "--rate", "48000", "--channels", "1", "--", "-"])
+        # Stopped with SIGINT, not killed, so pw-record finalises the wav header.
+        self._capture.start("pw-record", ["--rate", "48000", "--channels", "1", "--", "-"])
+        self._interrupt.start(500)
+
+    def _interrupt_capture(self) -> None:
+        pid = int(self._capture.processId())
+        if self._capture.state() != QProcess.NotRunning and pid > 0:
+            os.kill(pid, signal.SIGINT)
 
     def _capture_failed(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.FailedToStart:
@@ -270,6 +280,9 @@ class CallCheck(QWidget):
         self._take: Path | None = None
         self._recorder: QProcess | None = None
         self._player: QProcess | None = None
+        self._record_timer = QTimer(self)
+        self._record_timer.setSingleShot(True)
+        self._record_timer.timeout.connect(self._stop_take)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.record_button)
@@ -347,6 +360,7 @@ class CallCheck(QWidget):
     def closeEvent(self, event) -> None:
         self.meter.stop()
         # Stop the take first, and unhook the signals so nothing restarts the UI during shutdown.
+        self._record_timer.stop()
         if self._recorder is not None:
             try:
                 self._recorder.finished.disconnect(self._play_take)
@@ -383,8 +397,13 @@ class CallCheck(QWidget):
         self._recorder = QProcess(self)
         self._recorder.finished.connect(self._play_take)
         self._recorder.errorOccurred.connect(self._take_failed)
-        self._recorder.start("timeout", [str(RECORD_SECONDS), "pw-record", "--rate", "48000",
-                                         "--channels", "1", "--", str(self._take)])
+        self._recorder.start("pw-record", ["--rate", "48000", "--channels", "1", "--", str(self._take)])
+        self._record_timer.start(RECORD_SECONDS * 1000)
+
+    # SIGTERM ends the take and lets pw-record finalise the wav header.
+    def _stop_take(self) -> None:
+        if self._recorder is not None:
+            self._recorder.terminate()
 
     def _play_take(self) -> None:
         self.record_button.setText("Playing it back...")
