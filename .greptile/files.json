@@ -1,0 +1,12 @@
+{
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "description": "What gets a change sent back here, the output codec rule, and the premise rule for reviewers"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "description": "Plugin and daemon split, test suite contract, house style and platform facts"
+    }
+  ]
+}
