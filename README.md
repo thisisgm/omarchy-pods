@@ -110,13 +110,15 @@ which is SBC-XQ at 453 kbps ahead of SBC at 328 and AAC at 256. That is the
 default, and it is re-applied every time the daemon activates the card, because
 PipeWire's own profile priority puts AAC first and would otherwise win.
 
-Selecting the AirPods as a **microphone** gives that up. Over the standard
-Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
-the only profiles exposing a source are `headset-head-unit` at 16 kHz mSBC and
-`headset-head-unit-cvsd` at 8 kHz, and each one replaces the playback profile
-rather than joining it. A card cannot offer a high-quality sink and a microphone
-at the same time. macOS is bound by the same profiles and simply negotiates a
-better voice codec on them.
+Selecting the AirPods as a **microphone** gives that up on the standard Bluetooth
+headset profiles. Over those, two-way voice runs on a separate low-bandwidth
+channel, so the only profiles exposing a source are `headset-head-unit` at 16 kHz
+mSBC and `headset-head-unit-cvsd` at 8 kHz, and each one replaces the playback
+profile rather than joining it. A card cannot offer a high-quality sink and a
+microphone at the same time on those profiles. macOS is bound by the same
+profiles and simply negotiates a better voice codec on them. The daemon's own
+hi-res microphone, described below, avoids this trade-off because it keeps A2DP
+running.
 
 So take the microphone from another device and leave the AirPods on SBC-XQ. The
 daemon helps here: it defers its activation ladder while a capture is live, so it
@@ -138,12 +140,13 @@ Disconnecting and reconnecting the whole device also works, at the cost of the
 playback link. This daemon registers no Bluetooth profile, so that list is
 BlueZ's and PipeWire's to produce.
 
-There is a route around all of this that uses no audio profile at all: the AirPods
-can send a high-resolution microphone stream over the same AACP channel this
-daemon already uses for battery and controls, which leaves A2DP playback running
-untouched. Upstream librepods has an implementation of it for its Rust rewrite in
-[PR 655](https://github.com/kavishdevar/librepods/pull/655), unmerged at the time
-of writing. Nothing in this daemon does that today.
+The daemon also takes the AirPods' high-resolution microphone (64 kHz) over the AACP
+control channel it already uses, so A2DP playback keeps running. It is published as
+one microphone named after the AirPods, and the panel switches it on and off. If
+that stream delivers no audio after two restarts while an app records, the daemon
+falls back to the headset profile for that call, so playback is narrowband in the
+meantime. It returns to A2DP a few seconds after the recorder leaves. The idea comes
+from upstream librepods, see [PR 655](https://github.com/kavishdevar/librepods/pull/655).
 
 ## Install
 
@@ -157,7 +160,8 @@ omarchy plugin add https://github.com/thisisgm/omarchy-pods --enable
 installs to the same place.
 
 `setup` installs `cmake`, `ninja`, `qt6-connectivity`, `qt6-tools`,
-`qt6-declarative`, `pkgconf` and `libpulse` if they are missing, builds the
+`qt6-declarative`, `pkgconf`, `libpulse`, `ffmpeg` (the microphone's AAC-ELD
+decoder) and `pyside6` (`airpods-callcheck`) if they are missing, builds the
 daemon into `~/.local`, and enables `librepods.service`. The icon stays hidden
 until AirPods are connected (`hideWhenDisconnected`). To keep it visible:
 
@@ -168,7 +172,7 @@ omarchy bar set io.github.thisisgm.omapods hideWhenDisconnected false --json
 To build the daemon by hand instead of running `setup`:
 
 ```bash
-omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse
+omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse ffmpeg pyside6
 cd ~/.config/omarchy/plugins/io.github.thisisgm.omapods/daemon
 cmake -B build -G Ninja -DBUILD_TESTING=OFF && cmake --build build
 cmake --install build --prefix ~/.local

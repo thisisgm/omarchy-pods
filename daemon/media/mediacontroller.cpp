@@ -116,6 +116,71 @@ void MediaController::handleEarDetection(EarDetection *earDetection)
   }
 }
 
+CaptureState MediaController::captureStateForSource(const QString &sourceName)
+{
+  return m_pulseAudio->captureStateForSource(sourceName);
+}
+
+void MediaController::resetA2dpTransport(const QString &macAddress, bool blocking)
+{
+  const QString card = m_pulseAudio->getCardNameForDevice(macAddress);
+  const QString profile = card.isEmpty() ? QString() : m_pulseAudio->getActiveCardProfile(card);
+  // Switching the card back on already builds a fresh transport, so an inactive card needs nothing.
+  if (!profile.startsWith(QStringLiteral("a2dp"))) {
+    LOG_INFO("A2DP reset skipped, card profile is " << (profile.isEmpty() ? QStringLiteral("unknown") : profile));
+    return;
+  }
+  const QString sink = m_pulseAudio->sinkForAddress(macAddress);
+  if (!sink.isEmpty() && m_pulseAudio->suspendSink(sink, true)) {
+    LOG_INFO("Reset A2DP transport by suspend and resume: " << sink);
+    if (blocking) {
+      QThread::msleep(400);
+      resumeSink(sink, true);
+      return;
+    }
+    QTimer::singleShot(400, this, [this, sink]() { resumeSink(sink, false); });
+    return;
+  }
+  LOG_WARN("Suspend failed for " << sink << ", cycling the card profile instead");
+  m_pulseAudio->setCardProfile(card, QStringLiteral("off"));
+  if (!blocking) {
+    activateA2dpProfileWithRetry(macAddress);
+    return;
+  }
+  // Quit has no event loop left for the retry ladder's timers, so the card is restored here.
+  cancelPendingA2dpActivation();
+  setConnectedDeviceMacAddress(macAddress);
+  m_wirePlumberRestartedThisChain = false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (activateA2dpProfile()) {
+      return;
+    }
+    QThread::msleep(500);
+  }
+  LOG_ERROR("Could not restore the A2DP profile on " << card << " before quitting");
+}
+
+// Resuming a sink that is already running succeeds, so a retry after a lost reply is harmless.
+void MediaController::resumeSink(const QString &sink, bool blocking, int attempt)
+{
+  static constexpr int kMaxAttempts = 3;
+  static constexpr int kDelayMs = 400;
+  if (m_pulseAudio->suspendSink(sink, false)) {
+    return;
+  }
+  if (attempt + 1 >= kMaxAttempts) {
+    LOG_ERROR("Resume after the A2DP reset failed " << kMaxAttempts << " times for " << sink);
+    return;
+  }
+  LOG_WARN("Resume after the A2DP reset failed for " << sink << ", retrying");
+  if (blocking) {
+    QThread::msleep(kDelayMs);
+    resumeSink(sink, true, attempt + 1);
+    return;
+  }
+  QTimer::singleShot(kDelayMs, this, [this, sink, attempt]() { resumeSink(sink, false, attempt + 1); });
+}
+
 void MediaController::setEarDetectionBehavior(EarDetectionBehavior behavior)
 {
   if (earDetectionBehavior == behavior)
@@ -368,6 +433,14 @@ void MediaController::removeAudioOutputDevice() {
 
   if (connectedDeviceMacAddress.isEmpty() || m_deviceOutputName.isEmpty()) {
     LOG_WARN("Connected device MAC address or output name is empty, cannot remove audio output device");
+    return;
+  }
+
+  // A later both-out report releases the card once the call ends, so this needs no timer of its own.
+  const CaptureState capture = m_pulseAudio->captureState(connectedDeviceMacAddress);
+  if (!mayReleaseCard(capture)) {
+    LOG_INFO("Capture " << (capture == CaptureState::Live ? "live" : "unknown")
+             << " on the AirPods, keeping the card so the call holds its headset profile");
     return;
   }
 

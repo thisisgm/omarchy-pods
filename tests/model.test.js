@@ -28,6 +28,19 @@ check("live case has no in_ear", good.caseBattery, { level: 100, charging: false
 check("live supportsNoiseOff is honoured", good.supportsNoiseOff, false)
 check("live noiseMode", good.noiseMode, 1)
 
+// The microphone keys, and their absence. A daemon built without the decoder sends none of them.
+check("live has no hi-res mic keys", good.supportsHiResMic, false)
+check("live hi-res mic enabled defaults off when absent", good.hiResMicEnabled, false)
+check("live hi-res mic active defaults off when absent", good.hiResMicActive, false)
+
+const withMic = Model.parseStatus('{"connected":true,"schema_version":1,"supports_hires_mic":true,"hires_mic_enabled":true,"hires_mic_active":false}')
+check("mic capability parses", withMic.supportsHiResMic, true)
+check("mic switch parses", withMic.hiResMicEnabled, true)
+check("mic idle parses", withMic.hiResMicActive, false)
+
+const micStreaming = Model.parseStatus('{"connected":true,"schema_version":1,"supports_hires_mic":true,"hires_mic_enabled":true,"hires_mic_active":true}')
+check("mic streaming parses", micStreaming.hiResMicActive, true)
+
 // A fresh daemon omits left, right and case entirely rather than sending available:false.
 const fresh = Model.parseStatus('{"connected":false,"noise_mode":-1,"schema_version":1}')
 check("fresh line parses", fresh.ok, true)

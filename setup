@@ -6,7 +6,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")" && pwd)
 daemon="$root/daemon"
 
-omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse
+omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse ffmpeg pyside6
 
 cmake -S "$daemon" -B "$daemon/build" -G Ninja -DBUILD_TESTING=OFF
 cmake --build "$daemon/build"

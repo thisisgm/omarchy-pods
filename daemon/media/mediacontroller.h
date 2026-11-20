@@ -2,6 +2,8 @@
 #define MEDIACONTROLLER_H
 
 #include <QObject>
+
+#include "capturematch.hpp"
 #include "pulseaudiocontroller.h"
 
 class QProcess;
@@ -45,6 +47,13 @@ public:
   bool restartWirePlumber();
 
   void setEarDetectionBehavior(EarDetectionBehavior behavior);
+  // Whether anything is recording from a source, named exactly. The hi-res mic monitor asks.
+  CaptureState captureStateForSource(const QString &sourceName);
+  PulseAudioController *pulseAudio() const { return m_pulseAudio; }
+  // After a hi-res mic STOP the AirPods play from one bud until the A2DP transport restarts.
+  // A sink suspend and resume restarts it without removing the sink; a profile cycle is the fallback.
+  // blocking waits out the resume instead of scheduling it, for the quit path with no event loop.
+  void resetA2dpTransport(const QString &macAddress, bool blocking = false);
   inline EarDetectionBehavior getEarDetectionBehavior() const { return earDetectionBehavior; }
 
   void play();
@@ -60,6 +69,7 @@ private:
   QStringList getPlayingMediaPlayers();
   // Only the retry chain calls this, so the one-restart flag below cannot be read outside a chain.
   bool activateA2dpProfile();
+  void resumeSink(const QString &sink, bool blocking, int attempt = 0);
   void attemptA2dpActivation(const QString &macAddress, quint64 generation, int attempt, int unanswered = 0);
 
   QStringList pausedByAppServices;

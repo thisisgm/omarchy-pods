@@ -57,6 +57,9 @@ function defaultStatus() {
     adaptiveNoiseLevel: 0,
     oneBudANC: false,
     conversationalAwareness: false,
+    supportsHiResMic: false,
+    hiResMicEnabled: false,
+    hiResMicActive: false,
     earDetectionBehavior: EAR_PAUSE_ONE_OUT,
     lidState: LID_UNKNOWN,
     left: defaultPod(),
@@ -149,6 +152,10 @@ function parseStatus(raw) {
   status.adaptiveNoiseLevel = intOr(parsed.adaptive_noise_level, 0)
   status.oneBudANC = parsed.one_bud_anc_mode === true
   status.conversationalAwareness = parsed.conversational_awareness === true
+  // A daemon built without the microphone decoder sends none of these, which reads as absent.
+  status.supportsHiResMic = parsed.supports_hires_mic === true
+  status.hiResMicEnabled = parsed.hires_mic_enabled === true
+  status.hiResMicActive = parsed.hires_mic_active === true
   status.earDetectionBehavior = intOr(parsed.ear_detection_behavior, EAR_PAUSE_ONE_OUT)
   status.lidState = intOr(parsed.lid_state, LID_UNKNOWN)
   status.left = podFrom(parsed.left)
