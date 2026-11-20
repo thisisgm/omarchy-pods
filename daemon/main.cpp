@@ -418,6 +418,11 @@ public slots:
         m_hiResTailBytes = 0;
         // The stall clock starts now; the first SDU arrives well inside kStallMs.
         m_hiResLastSduMs = m_hiResClock.elapsed();
+        // A restore still owed from a drop must not fire mid-capture, so this capture takes it over.
+        if (m_hiResCaRestorePending) {
+            m_hiResCaRestorePending = false;
+            m_hiResCaSaved = true;
+        }
         // Conversation Awareness ducks playback whenever the user speaks, which a call is.
         if (m_deviceInfo && m_deviceInfo->conversationalAwareness()) {
             m_hiResCaSaved = true;
