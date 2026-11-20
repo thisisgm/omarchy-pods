@@ -1,9 +1,0 @@
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=OpenPods
-Comment=AirPods controller for Linux (OpenPods, fork of LibrePods)
-Exec=librepods
-Icon=librepods
-Terminal=false
-Categories=Audio;AudioVideo;Utility;Qt;

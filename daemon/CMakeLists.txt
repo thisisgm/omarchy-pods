@@ -101,8 +101,8 @@ install(TARGETS librepods
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-install(FILES assets/me.kavishdevar.librepods.desktop
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+# Earlier installs put this entry down, and install_manifest.txt no longer lists it for removal.
+install(CODE "file(REMOVE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATAROOTDIR}/applications/me.kavishdevar.librepods.desktop\")")
 install(FILES assets/librepods.svg
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps")
 # With the documented --prefix ~/.local this lands in ~/.local/share/systemd/user, which systemd searches.
