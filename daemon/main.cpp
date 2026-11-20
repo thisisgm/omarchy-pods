@@ -797,6 +797,7 @@ public slots:
             if (m_hfpFeed) {
                 m_hfpFeed->deleteLater();
                 m_hfpFeed = nullptr;
+                m_hiResMic.dropPartialInput();
             }
         });
         m_hfpFeed->start("parec", {"-d", source, "--raw", "--format=s16le", "--channels=1",
