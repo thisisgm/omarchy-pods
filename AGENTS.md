@@ -52,15 +52,17 @@ has already shipped and been reverted.
 
 Over the standard Bluetooth profiles a card cannot expose a high-quality sink and a
 microphone at once: the only profiles carrying a source are 16 kHz mSBC and 8 kHz
-CVSD, and they replace the playback profile. So do not propose selecting the AirPods
-as an input device, and do not add anything that switches to a headset profile on the
-user's behalf. The supported answer is to take the microphone from another device.
+CVSD, and they replace the playback profile. So do not propose selecting a headset
+profile of the AirPods as an input, and do not add anything that switches to a headset
+profile on the user's behalf. Until the Rust daemon ships its microphone source, the
+supported answer is to take the microphone from another device.
 
 The exception is not a profile at all. Apple's AACP channel can carry a
 high-resolution microphone stream while A2DP playback continues untouched, and
 upstream has an unmerged Rust implementation in
-[PR 655](https://github.com/kavishdevar/librepods/pull/655). If you want to raise
-that, raise the upstream path, not a profile switch here.
+[PR 655](https://github.com/kavishdevar/librepods/pull/655). The Rust daemon being
+built in this repository takes the microphone that way. A change to the microphone goes
+through that channel, never through a profile switch.
 
 ## Say what you assumed
 
