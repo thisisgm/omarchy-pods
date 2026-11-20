@@ -615,6 +615,7 @@ public slots:
             if (m_hiResFallback) {
                 exitHfpFallback();
             }
+            restoreHiResConversationAwareness();
             unparkHiResMic();
             m_hiResMic.remove();
             restoreWirePlumberMic();
@@ -825,6 +826,7 @@ public slots:
             restoreHiResConversationAwareness();
             emit airPodsStatusChanged();
         }
+        restoreHiResConversationAwareness();
         m_hiResRecorderGoneMs = -1;
         m_hiResConnectedAtMs = -1;
         m_hiResResetWhenWorn = false;
@@ -849,7 +851,8 @@ public slots:
         if (m_hiResMonitor) {
             m_hiResMonitor->stop();
         }
-        if ((m_hiResMicArmed || m_hiResFallback) && areAirpodsConnected()) {
+        const bool streaming = m_hiResMicArmed || m_hiResFallback;
+        if ((streaming || m_hiResCaSaved) && areAirpodsConnected()) {
             if (m_hiResMicArmed) {
                 sendHiResStream(false);
                 m_hiResMicArmed = false;
@@ -865,10 +868,12 @@ public slots:
             while (socket && socket->bytesToWrite() > 0 && flush.elapsed() < 1000) {
                 QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
             }
-            LOG_INFO("Hi-res mic stopped for quit");
-            QThread::msleep(OpenPods::HiRes::kA2dpResetDelayMs);
-            if (m_deviceInfo) {
-                mediaController->resetA2dpTransport(m_deviceInfo->bluetoothAddress().replace(":", "_"), true);
+            if (streaming) {
+                LOG_INFO("Hi-res mic stopped for quit");
+                QThread::msleep(OpenPods::HiRes::kA2dpResetDelayMs);
+                if (m_deviceInfo) {
+                    mediaController->resetA2dpTransport(m_deviceInfo->bluetoothAddress().replace(":", "_"), true);
+                }
             }
         }
         stopHfpFeed();
