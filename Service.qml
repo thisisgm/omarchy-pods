@@ -65,8 +65,15 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
+  // A change during a read is kept so the reader runs once more with the newer file.
+  property bool _rereadState: false
+
   function refresh() {
-    stateFile.reload()
+    if (stateReader.running) {
+      _rereadState = true
+      return
+    }
+    stateReader.running = true
   }
 
   function applyLine(raw) {
@@ -206,16 +213,31 @@ Item {
     onTriggered: root.actionStatus = ""
   }
 
+  // Only watches: FileView buffers the whole file with no size cap, so the reader below does the reading.
   FileView {
-    id: stateFile
     path: root.statePath
     watchChanges: true
+    preload: false
     printErrors: false
-    // text() is stale inside the change signal, so both paths go through reload.
-    onFileChanged: reload()
-    onLoaded: root.applyLine(text())
-    onLoadFailed: root.stateGone()
+    onFileChanged: root.refresh()
   }
+
+  Process {
+    id: stateReader
+    running: false
+    command: ["head", "-c", String(Model.MAX_STATUS_BYTES + 1), "--", root.statePath]
+    stdout: StdioCollector { id: stateOut; waitForEnd: true }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) root.stateGone()
+      else root.applyLine(stateOut.text)
+      if (root._rereadState) {
+        root._rereadState = false
+        root.refresh()
+      }
+    }
+  }
+
+  Component.onCompleted: refresh()
 
   Process {
     id: commandProcess

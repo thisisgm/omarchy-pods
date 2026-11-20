@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS }"
+  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
 
 let failures = 0
@@ -27,6 +27,11 @@ check("live left level", good.left.level, 79)
 check("live case has no in_ear", good.caseBattery, { level: 100, charging: false })
 check("live supportsNoiseOff is honoured", good.supportsNoiseOff, false)
 check("live noiseMode", good.noiseMode, 1)
+
+// The panel reads at most one byte past the cap, so a longer line means an oversized file.
+const huge = Model.parseStatus('{"schema_version":1,"pad":"' + "x".repeat(Model.MAX_STATUS_BYTES) + '"}')
+check("oversized line is refused", huge.ok, false)
+check("oversized line says why", huge.lastError, "The librepods status file is too large to read")
 
 // A fresh daemon omits left, right and case entirely rather than sending available:false.
 const fresh = Model.parseStatus('{"connected":false,"noise_mode":-1,"schema_version":1}')
