@@ -461,6 +461,22 @@ public slots:
         m_hiResCaInternal = false;
     }
 
+    // Called on every ear report, since the poll stops once the mic is disabled.
+    void restorePendingHiResConversationAwareness()
+    {
+        if (!m_hiResCaRestorePending || m_hiResQuitting) {
+            return;
+        }
+        m_hiResCaRestorePending = false;
+        if (m_hiResCaUserChanged) {
+            LOG_INFO("Hi-res mic: Conversation Awareness was changed meanwhile, not restoring it");
+            return;
+        }
+        m_hiResCaInternal = true;
+        setConversationalAwareness(true);
+        m_hiResCaInternal = false;
+    }
+
     // Requests close together run one reset, after the last of them.
     void scheduleHiResA2dpReset()
     {
@@ -907,6 +923,7 @@ public slots:
         if (ear->isPrimaryInEar() != primaryBefore || ear->isSecondaryInEar() != secondaryBefore) {
             ++m_earGeneration;
         }
+        restorePendingHiResConversationAwareness();
         pollHiResRecorder();
     }
 
@@ -940,11 +957,8 @@ public slots:
         const bool worn = wornNow
                           || (m_hiResSeenWorn && m_hiResOutSinceMs >= 0 && now - m_hiResOutSinceMs < kNotWornGraceMs);
 
-        if (earKnown && m_hiResCaRestorePending) {
-            m_hiResCaRestorePending = false;
-            m_hiResCaInternal = true;
-            setConversationalAwareness(true);
-            m_hiResCaInternal = false;
+        if (earKnown) {
+            restorePendingHiResConversationAwareness();
         }
         if (wornNow && earKnown) {
             unparkHiResMic();
