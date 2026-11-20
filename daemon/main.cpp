@@ -146,6 +146,7 @@ public:
         m_hiResMicEnabled = m_settings->value("hiresMic/enabled", true).toBool();
         m_hiResClock.start();
         loadHiResParked();
+        restoreWirePlumberMic();
         setRetryAttempts(loadRetryAttempts());
         // Restore persisted PhoneMAC into the process env BEFORE
         // connectToPhone() reads it. setPhoneMac persists to QSettings
@@ -672,20 +673,36 @@ public slots:
         if (!m_hiResMicEnabled || readWirePlumberAutoswitch() != QStringLiteral("true")) {
             return;
         }
-        if (QProcess::execute("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile", "false"}) == 0) {
-            m_autoswitchOwed = 1;
-            LOG_INFO("WirePlumber autoswitch off while the AirPods are connected, so one AirPods mic is listed");
+        // Written first, so a crash after the change still leaves the debt for the next start to pay.
+        const QString owed = autoswitchOwedPath();
+        QDir().mkpath(QFileInfo(owed).absolutePath());
+        QFile marker(owed);
+        if (!marker.open(QIODevice::WriteOnly)) {
+            return;
         }
+        marker.close();
+        if (QProcess::execute("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile", "false"}) == 0) {
+            LOG_INFO("WirePlumber autoswitch off while the AirPods are connected, so one AirPods mic is listed");
+        } else {
+            QFile::remove(owed);
+        }
+    }
+
+    static QString autoswitchOwedPath()
+    {
+        return QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation)
+               + QStringLiteral("/librepods/autoswitch.owed");
     }
 
     void restoreWirePlumberMic()
     {
-        if (m_autoswitchOwed == 0) {
+        if (!QFile::exists(autoswitchOwedPath())) {
             return;
         }
-        m_autoswitchOwed = 0;
-        QProcess::execute("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile", "true"});
-        LOG_INFO("WirePlumber autoswitch handed back");
+        if (QProcess::execute("wpctl", {"settings", "bluetooth.autoswitch-to-headset-profile", "true"}) == 0) {
+            QFile::remove(autoswitchOwedPath());
+            LOG_INFO("WirePlumber autoswitch handed back");
+        }
     }
 
     QString airPodsCardAddress() const
@@ -2353,8 +2370,6 @@ private:
     bool m_hiResAudioSinceStart = false;
     qint64 m_hfpIdleSinceMs = -1;
     QProcess *m_hfpFeed = nullptr;
-    // 1 when this daemon turned WirePlumber's autoswitch off and owes it back, 0 otherwise.
-    int m_autoswitchOwed = 0;
     int m_hiResPollCount = 0;
     int m_hiResBackoffMs = OpenPods::HiRes::kStallMs;
     int m_hiResFailedRestarts = 0;
