@@ -30,6 +30,9 @@ var GLYPH_CHECK = "\uDB80\uDD2C"
 
 // Longest error the panel will show inside a row, and the cut that leaves room for the ellipsis.
 var MAX_ERROR_CHARS = 140
+
+// The real file is about 1 KB; the read is capped one byte past this so an oversized file is detectable.
+var MAX_STATUS_BYTES = 65536
 var ELIDED_ERROR_CHARS = 137
 
 function defaultPod() {
@@ -105,6 +108,10 @@ function podFrom(raw) {
 // A headset (AirPods Max) instead sends "is_headset":true and "headset":{"available":true,"charging":false,"level":100}, with no pods and no case.
 function parseStatus(raw) {
   var status = defaultStatus()
+  if (String(raw || "").length > MAX_STATUS_BYTES) {
+    status.lastError = "The librepods status file is too large to read"
+    return status
+  }
   var text = String(raw || "").trim()
   if (text === "") {
     status.lastError = "The librepods status file is empty"
