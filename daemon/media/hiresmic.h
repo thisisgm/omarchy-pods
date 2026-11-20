@@ -34,6 +34,8 @@ public:
 
     // 64 kHz mono s16 from another path, written as the uplink's own frames are.
     void writePcm(QByteArrayView pcm);
+    // Discards an odd input byte left by a producer that stopped, so the next one starts on a sample.
+    void dropPartialInput();
 
     // One AAC-ELD access unit from an 0x58 audio SDU.
     void decode(QByteArrayView accessUnit);

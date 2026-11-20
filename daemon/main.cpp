@@ -750,6 +750,7 @@ public slots:
 
     void startHfpFeed()
     {
+        m_hiResMic.dropPartialInput();
         const QString source = headsetInputSource();
         if (source.isEmpty()) {
             return;
@@ -781,6 +782,7 @@ public slots:
         feed->kill();
         feed->waitForFinished(1000);
         feed->deleteLater();
+        m_hiResMic.dropPartialInput();
     }
 
     void exitHfpFallback()

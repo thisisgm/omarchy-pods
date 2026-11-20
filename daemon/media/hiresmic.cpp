@@ -276,6 +276,11 @@ void HiResMic::writePcm(QByteArrayView pcm)
     writeFifo(pcm);
 }
 
+void HiResMic::dropPartialInput()
+{
+    m_writer.dropInputTail();
+}
+
 void HiResMic::decode(QByteArrayView accessUnit)
 {
     if (!m_ctx || m_fifo < 0 || accessUnit.isEmpty()) {

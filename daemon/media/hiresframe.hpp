@@ -83,6 +83,8 @@ namespace OpenPods::HiRes
             m_carry = -1;
             m_inputTail = -1;
         }
+        // The owed FIFO byte stays, since the FIFO still needs it; only the input tail belongs to the old producer.
+        void dropInputTail() { m_inputTail = -1; }
 
     private:
         int m_carry = -1;

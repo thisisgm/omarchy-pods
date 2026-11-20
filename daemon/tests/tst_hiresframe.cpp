@@ -37,6 +37,8 @@ private slots:
     void dropsWholeSamplesWhenThePipeIsFull();
     void joinsOddInputChunksWrittenInFull();
     void joinsOddInputChunksAcrossShortWrites();
+    void dropsTheOddInputByteOfAStoppedProducer();
+    void keepsTheOwedByteAcrossADroppedInputTail();
 };
 
 void TestHiResFrame::acceptsAnAudioSdu()
@@ -167,6 +169,41 @@ void TestHiResFrame::joinsOddInputChunksAcrossShortWrites()
         return bytes.size();
     });
     QCOMPARE(pipe, QByteArray::fromHex("010205060708090a0b0c"));
+}
+
+void TestHiResFrame::dropsTheOddInputByteOfAStoppedProducer()
+{
+    OpenPods::HiRes::SampleWriter writer;
+    QByteArray pipe;
+    auto sink = [&](QByteArrayView bytes) {
+        pipe.append(bytes);
+        return bytes.size();
+    };
+    // Trace: 010203 leaves 03 as the input tail and writes 0102; dropping 03 leaves 0a0b whole.
+    writer.write(QByteArray::fromHex("010203"), sink);
+    writer.dropInputTail();
+    writer.write(QByteArray::fromHex("0a0b"), sink);
+    QCOMPARE(pipe, QByteArray::fromHex("01020a0b"));
+}
+
+void TestHiResFrame::keepsTheOwedByteAcrossADroppedInputTail()
+{
+    OpenPods::HiRes::SampleWriter writer;
+    QByteArray pipe;
+    const QList<qsizetype> takes {1, 64};
+    int call = 0;
+    auto sink = [&](QByteArrayView bytes) {
+        const qsizetype n = qMin(takes[call++], bytes.size());
+        pipe.append(bytes.first(n));
+        return n;
+    };
+    // Trace: 0102 writes 01 only, so 02 is owed to the FIFO; dropping the input tail keeps it,
+    // and the next producer's 0a0b follows it, giving 01 02 0a 0b.
+    writer.write(QByteArray::fromHex("0102"), sink);
+    QCOMPARE(pipe, QByteArray::fromHex("01"));
+    writer.dropInputTail();
+    writer.write(QByteArray::fromHex("0a0b"), sink);
+    QCOMPARE(pipe, QByteArray::fromHex("01020a0b"));
 }
 
 QTEST_GUILESS_MAIN(TestHiResFrame)
