@@ -1,7 +1,7 @@
 //! The temp session, the daemon process and the waits that the tests against the built binary share.
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,9 @@ pub(crate) const HANG_LIMIT: Duration = Duration::from_secs(10);
 
 /// How often a wait checks its condition again.
 const POLL: Duration = Duration::from_millis(10);
+
+/// Bytes taken from a socket per read; a longer reply takes several.
+const READ_CHUNK: usize = 4096;
 
 #[expect(
     clippy::disallowed_methods,
@@ -109,13 +112,10 @@ impl Session {
     }
 
     /// `ask`, giving back the error of a connection the daemon closed at accept.
-    pub(crate) fn try_ask(&self, verb: &[u8]) -> std::io::Result<Vec<u8>> {
+    pub(crate) fn try_ask(&self, verb: &[u8]) -> io::Result<Vec<u8>> {
         let mut stream = UnixStream::connect(self.socket())?;
         stream.write_all(verb)?;
-        stream.set_read_timeout(Some(HANG_LIMIT))?;
-        let mut reply = Vec::new();
-        stream.read_to_end(&mut reply)?;
-        Ok(reply)
+        read_until_close(&mut stream)
     }
 
     /// Sends `verb`, closes the write side, and reads until the daemon closes.
@@ -154,10 +154,30 @@ impl Session {
 
 /// Reads until the peer closes, failing the test once `HANG_LIMIT` passes.
 pub(crate) fn read_to_close(stream: &mut UnixStream) -> Vec<u8> {
-    stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+    read_until_close(stream).unwrap()
+}
+
+/// Reads until the peer closes, or gives a timeout once `HANG_LIMIT` passes in all, however often the peer sends.
+fn read_until_close(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
+    let started = Instant::now();
     let mut reply = Vec::new();
-    stream.read_to_end(&mut reply).unwrap();
-    reply
+    let mut chunk = [0; READ_CHUNK];
+    loop {
+        let left = HANG_LIMIT.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                ErrorKind::TimedOut,
+                format!("the peer kept the connection open past {HANG_LIMIT:?}"),
+            ));
+        }
+        stream.set_read_timeout(Some(left))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => return Ok(reply),
+            Ok(read) => reply.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// A daemon process, killed when the test ends if it is still running.
