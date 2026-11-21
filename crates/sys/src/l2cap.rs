@@ -4,6 +4,7 @@ use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
+use pods_proto::packets::CONTROL_PSM;
 use rustix::io::Errno;
 use rustix::net::addr::{SocketAddrArg, SocketAddrLen, SocketAddrOpaque};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
@@ -66,14 +67,14 @@ pub enum ChannelError {
 struct SockaddrL2([u8; SOCKADDR_L2_LEN]);
 
 impl SockaddrL2 {
-    // Sample output for 11:22:33:44:55:66 and PSM 0x1001: 1f 00 01 10 66 55 44 33 22 11 00 00 00 00.
+    // Sample output for 11:22:33:44:55:66 and the control PSM 0x1001: 1f 00 01 10 66 55 44 33 22 11 00 00 00 00.
     #[expect(
         clippy::host_endian_bytes,
         reason = "the kernel reads sa_family_t in host order; the PSM is little endian on every host"
     )]
-    fn new(peer: BdAddr, psm: u16) -> Self {
+    fn new(peer: BdAddr) -> Self {
         let [family_0, family_1] = AddressFamily::BLUETOOTH.as_raw().to_ne_bytes();
-        let [psm_0, psm_1] = psm.to_le_bytes();
+        let [psm_0, psm_1] = CONTROL_PSM.to_le_bytes();
         let [a0, a1, a2, a3, a4, a5] = peer.octets();
         Self([
             family_0,
@@ -108,8 +109,8 @@ unsafe impl SocketAddrArg for SockaddrL2 {
     }
 }
 
-/// Opens a channel to `psm` on `peer`; `timeout` bounds the connect and every later send.
-pub fn connect(peer: BdAddr, psm: u16, timeout: Duration) -> Result<Channel, ChannelError> {
+/// Opens the control channel on `peer`; `timeout` bounds the connect and every later send.
+pub fn connect(peer: BdAddr, timeout: Duration) -> Result<Channel, ChannelError> {
     // Protocol `None` is 0, which is `BTPROTO_L2CAP` in include/net/bluetooth/bluetooth.h.
     let fd = socket_with(
         AddressFamily::BLUETOOTH,
@@ -120,7 +121,7 @@ pub fn connect(peer: BdAddr, psm: u16, timeout: Duration) -> Result<Channel, Cha
     .map_err(ChannelError::Socket)?;
     // A blocking L2CAP connect waits no longer than the send timeout (l2cap_sock_connect in net/bluetooth/l2cap_sock.c).
     set_socket_timeout(&fd, Timeout::Send, Some(timeout)).map_err(ChannelError::Option)?;
-    rustix::net::connect(&fd, &SockaddrL2::new(peer, psm)).map_err(ChannelError::Connect)?;
+    rustix::net::connect(&fd, &SockaddrL2::new(peer)).map_err(ChannelError::Connect)?;
     Ok(Channel { fd })
 }
 
@@ -186,7 +187,7 @@ mod tests {
     #[test]
     fn sockaddr_bytes_are_the_kernel_layout() {
         let peer = "11:22:33:44:55:66".parse().unwrap();
-        let addr = SockaddrL2::new(peer, 0x1001);
+        let addr = SockaddrL2::new(peer);
         // The family reads `1f 00` on a little endian host, which x86-64 and aarch64 Linux both are.
         assert_eq!(
             addr.0,
@@ -264,7 +265,7 @@ mod tests {
     #[test]
     fn connect_without_bluetooth_is_an_error_not_a_panic() {
         let peer = "02:00:00:00:00:01".parse().unwrap();
-        let error = connect(peer, 0x1001, Duration::from_secs(1)).unwrap_err();
+        let error = connect(peer, Duration::from_secs(1)).unwrap_err();
         // A host that cannot open a Bluetooth socket must fail at `Socket`, and one that can must fail at `Connect`.
         match socket_with(
             AddressFamily::BLUETOOTH,
