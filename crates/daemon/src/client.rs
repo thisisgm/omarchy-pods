@@ -11,6 +11,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use pods_core::legacy::REOPEN_VERB;
+
 /// How long the client waits to connect, as `waitForConnected(500)` does.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -24,9 +26,6 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 const MAX_REPLY_BYTES: usize = 65536;
 
 const STATUS_VERB: &str = "status";
-
-/// The only other verb the daemon answers, and a silent close is its yes.
-const REOPEN_VERB: &str = "reopen";
 
 const ERROR_PREFIX: &[u8] = b"error:";
 

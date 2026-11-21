@@ -50,12 +50,6 @@ const LOG_PREFIX: &str = "D-Bus interface off";
 /// The status document key prefix of the flags `Capabilities` lists.
 const CAPABILITY_KEY_PREFIX: &str = "supports_";
 
-/// What a method returns when the pods have the command but have not answered.
-const SENT: &str = "sent";
-
-/// What a method returns when the state already shows the command carried out.
-const CONFIRMED: &str = "confirmed";
-
 /// Serves the interface for as long as the session bus keeps the connection, or logs one line and returns at once.
 pub(super) async fn serve(hub: Hub) {
     // A watch, not `follow`: a property signal carries values, so a slow bus gets the net change, never a backlog or a drop.
@@ -269,11 +263,7 @@ impl Omapods {
 
 /// A method's reply for how its command ended.
 fn answer(outcome: Outcome) -> Result<&'static str, CallError> {
-    match outcome {
-        Outcome::Sent => Ok(SENT),
-        Outcome::Confirmed => Ok(CONFIRMED),
-        Outcome::Refused(error) => Err(error.into()),
-    }
+    Ok(outcome.name()?)
 }
 
 // The interface name is written only here, and its trailing number is the interface version.

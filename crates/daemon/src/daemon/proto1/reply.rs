@@ -24,12 +24,10 @@ pub(super) fn state(id: u64, state: &State) -> String {
 
 /// The reply to `set` and `do`.
 pub(super) fn outcome(id: u64, outcome: Outcome) -> String {
-    let result = match outcome {
-        Outcome::Sent => "sent",
-        Outcome::Confirmed => "confirmed",
-        Outcome::Refused(error) => return refusal(Some(id), RequestError::Command(error)),
-    };
-    format!("{{\"id\":{id},\"ok\":true,\"result\":\"{result}\"}}\n")
+    match outcome.name() {
+        Ok(result) => format!("{{\"id\":{id},\"ok\":true,\"result\":\"{result}\"}}\n"),
+        Err(error) => refusal(Some(id), RequestError::Command(error)),
+    }
 }
 
 /// The reply to a refused request; `None` writes the id as null.

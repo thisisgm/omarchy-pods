@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use pods_core::command::CommandError;
+use pods_core::command::{CommandError, Outcome};
 use serde_json::{Map, Value};
 
 use super::{
@@ -23,7 +23,7 @@ const WENT_AWAY: &str = "The daemon went away.\n";
 const LINE_WITH_NEWLINE_BYTES: usize = MAX_REPLY_BYTES + 1;
 
 /// The `result` a reply to `set` or `do` carries when the daemon took the command.
-const RESULTS: [&str; 2] = ["sent", "confirmed"];
+const RESULTS: [Result<&str, CommandError>; 2] = [Outcome::Sent.name(), Outcome::Confirmed.name()];
 
 #[derive(Debug)]
 enum Failure {
@@ -175,7 +175,7 @@ fn state_reply(line: &[u8]) -> Result<String, Failure> {
 // Sample input: `{"id":1,"ok":true,"result":"confirmed"}`
 fn result_reply(line: &[u8]) -> Result<(), Failure> {
     match reply(line)?.get("result").and_then(Value::as_str) {
-        Some(result) if RESULTS.contains(&result) => Ok(()),
+        Some(result) if RESULTS.contains(&Ok(result)) => Ok(()),
         Some(_) | None => Err(Failure::NotUnderstood),
     }
 }

@@ -230,6 +230,21 @@ fn all_lists_every_error_once() {
 }
 
 #[test]
+fn both_documents_name_the_word_of_each_taken_outcome() {
+    for document in [
+        include_str!("../../../../docs/protocol-1.md"),
+        include_str!("../../../../docs/dbus-api.md"),
+    ] {
+        for outcome in [Outcome::Sent, Outcome::Confirmed] {
+            let word = format!("`{}`", outcome.name().unwrap());
+            assert!(document.contains(&word), "{word}");
+        }
+    }
+    let refused = Outcome::Refused(CommandError::Timeout);
+    assert_eq!(refused.name(), Err(CommandError::Timeout));
+}
+
+#[test]
 fn codes_are_the_snake_case_variant_names() {
     for error in CommandError::ALL {
         let mut snake = String::new();
