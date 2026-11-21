@@ -44,7 +44,8 @@ cargo xtask ci
 
 `rust-toolchain.toml` pins the compiler, `rustfmt` and `clippy`, so rustup fetches
 those by itself. `cargo-nextest` and `cargo-deny` are separate tools and need the
-install line once; without them the gate stops at the first one missing.
+install line once; without them the gate stops at the first one missing. The D-Bus
+tests start a private `dbus-daemon`, so it must be on `PATH` as well.
 
 A green suite is not evidence that a fix works. See the next section.
 

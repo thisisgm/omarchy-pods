@@ -22,6 +22,9 @@ const CI_STEPS: [&[&str]; 5] = [
     &["deny", "check"],
 ];
 
+/// Set on every gate, as the hosted clippy job sets it, so a Cargo warning such as an unused dependency fails here too.
+const BUILD_WARNINGS: (&str, &str) = ("CARGO_BUILD_WARNINGS", "deny");
+
 fn main() -> ExitCode {
     match env::args_os().nth(1) {
         Some(command) if command == "ci" => run_ci(),
@@ -39,7 +42,8 @@ fn run_ci() -> ExitCode {
     for args in CI_STEPS {
         let step = format!("cargo {}", args.join(" "));
         report(&format!("xtask: {step}"));
-        let status = match Command::new(&cargo).args(args).status() {
+        let (name, value) = BUILD_WARNINGS;
+        let status = match Command::new(&cargo).args(args).env(name, value).status() {
             Ok(status) => status,
             Err(error) => {
                 report(&format!("xtask: could not start {step}: {error}"));
@@ -78,6 +82,8 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use super::{BUILD_WARNINGS, CI_STEPS};
+
     const FORBID_UNSAFE: &str = r#"unsafe_code = "forbid""#;
     const DENY_UNSAFE: &str = r#"unsafe_code = "deny""#;
 
@@ -98,6 +104,27 @@ mod tests {
             }
         }
         lines
+    }
+
+    #[test]
+    fn every_local_gate_runs_in_the_hosted_workflow() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/ci.yml");
+        let workflow = fs::read_to_string(&path).unwrap();
+        let has_line = |wanted: &str| workflow.lines().any(|line| line.trim() == wanted);
+        for step in CI_STEPS {
+            let hosted = match step {
+                // The hosted job runs cargo-deny through its action, which takes the arguments as `command`.
+                ["deny", rest @ ..] => {
+                    assert!(workflow.contains("uses: EmbarkStudios/cargo-deny-action@"));
+                    format!("command: {}", rest.join(" "))
+                }
+                _ => format!("- run: cargo {}", step.join(" ")),
+            };
+            assert!(has_line(&hosted), "ci.yml has no `{hosted}`");
+        }
+        let (name, value) = BUILD_WARNINGS;
+        let warnings = format!("{name}: {value}");
+        assert!(has_line(&warnings), "ci.yml has no `{warnings}`");
     }
 
     #[test]
