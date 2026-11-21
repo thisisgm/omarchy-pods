@@ -64,27 +64,23 @@ pub(crate) struct HciRecord {
     pub data: Vec<u8>,
 }
 
-/// Why a trace was refused; each names the rule it broke and the header field or record it read, never a byte of a record's data.
+/// Why a trace was refused; each names the rule it broke and the record it read, never a value the trace holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TraceError {
     #[error("btsnoop trace is {len} bytes, shorter than its {FILE_HEADER_LEN} byte file header")]
     NoFileHeader { len: usize },
     #[error("btsnoop trace does not start with the btsnoop identification pattern")]
     BadMagic,
-    #[error("btsnoop trace has version {version}, and only version {VERSION} exists")]
-    BadVersion { version: u32 },
+    #[error("btsnoop trace has a version other than {VERSION}, the only one that exists")]
+    BadVersion,
     #[error(
-        "btsnoop trace has datalink type {datalink}; only the monitor datalink {MONITOR_DATALINK}, which btmon -w writes, is read"
+        "btsnoop trace has a datalink type other than the monitor datalink {MONITOR_DATALINK}, which btmon -w writes"
     )]
-    UnknownDatalink { datalink: u32 },
+    UnknownDatalink,
     #[error(
-        "btsnoop record {record} at byte offset {offset} claims {len} bytes of data, and a record holds at most {MAX_RECORD_LEN}"
+        "btsnoop record {record} at byte offset {offset} claims more data than the {MAX_RECORD_LEN} bytes a record holds"
     )]
-    RecordTooLong {
-        record: usize,
-        offset: usize,
-        len: u32,
-    },
+    RecordTooLong { record: usize, offset: usize },
 }
 
 /// What is wrong with the record a trace stops being read at.
@@ -211,13 +207,11 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
     if magic != MAGIC {
         return Err(TraceError::BadMagic);
     }
-    let version = u32::from_be_bytes(version);
-    if version != VERSION {
-        return Err(TraceError::BadVersion { version });
+    if u32::from_be_bytes(version) != VERSION {
+        return Err(TraceError::BadVersion);
     }
-    let datalink = u32::from_be_bytes(datalink);
-    if datalink != MONITOR_DATALINK {
-        return Err(TraceError::UnknownDatalink { datalink });
+    if u32::from_be_bytes(datalink) != MONITOR_DATALINK {
+        return Err(TraceError::UnknownDatalink);
     }
     let mut kept = Vec::new();
     let mut cut = None;
@@ -235,11 +229,7 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
             cut = stop(Damage::CutShort);
             break;
         };
-        let too_long = TraceError::RecordTooLong {
-            record,
-            offset,
-            len: header.included,
-        };
+        let too_long = TraceError::RecordTooLong { record, offset };
         if header.included > MAX_RECORD_LEN {
             return Err(too_long);
         }
