@@ -5,6 +5,7 @@ use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_proto::packet::{Incoming, classify};
 
+use super::commands::KnownSettings;
 use super::{Action, Machine, Phase};
 use crate::command::ADAPTIVE_LEVEL_MAX;
 use crate::state::State;
@@ -34,7 +35,7 @@ impl Machine {
                 Vec::new()
             }
             Incoming::Control(control) => {
-                apply_control(state, control);
+                apply_control(state, &mut self.known_settings, control);
                 self.confirm(control)
             }
             Incoming::Metadata(metadata) => {
@@ -49,27 +50,31 @@ impl Machine {
 }
 
 /// Stores a control report's setting when a row reads its identifier and takes its value: `04 00 04 00 09 00 28 01 00 00 00` is conversation awareness on.
-fn apply_control(state: &mut State, control: ControlCommand) {
+fn apply_control(state: &mut State, known: &mut KnownSettings, control: ControlCommand) {
     match control.id {
         ControlId::NOISE_CONTROL => {
             if let Ok(mode) = NoiseMode::from_command(&control) {
                 state.noise_mode = mode;
+                known.noise = true;
             }
         }
         ControlId::CONVERSATIONAL_AWARENESS => {
             if let Some(enabled) = control.state() {
                 state.conversational_awareness = enabled;
+                known.conversational_awareness = true;
             }
         }
         ControlId::ONE_BUD_ANC => {
             if let Some(enabled) = control.state() {
                 state.one_bud_anc_mode = enabled;
+                known.one_bud_anc = true;
             }
         }
         ControlId::ADAPTIVE_NOISE_LEVEL => {
             let [level, ..] = control.value;
             if level <= ADAPTIVE_LEVEL_MAX {
                 state.adaptive_noise_level = level;
+                known.adaptive_level = true;
             }
         }
         // Every other identifier is a setting no row of the table reads.

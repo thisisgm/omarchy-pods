@@ -20,6 +20,19 @@ pub(super) struct Pending {
     deadline: Duration,
 }
 
+/// The settings the pods reported on the current channel, and whether the adaptive level was stored on it.
+#[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one flag per setting, all cleared together when a channel opens"
+)]
+pub(super) struct KnownSettings {
+    pub(super) noise: bool,
+    pub(super) conversational_awareness: bool,
+    pub(super) one_bud_anc: bool,
+    pub(super) adaptive_level: bool,
+}
+
 /// The setting a written command changes, for the counter it raises.
 #[derive(Debug, Clone, Copy)]
 enum Setting {
@@ -60,7 +73,7 @@ impl Machine {
         command: Command,
         now: Duration,
     ) -> Vec<Action> {
-        match handling(state, &self.pending, command) {
+        match handling(state, self.known_settings, &self.pending, command) {
             Handling::Answer(outcome) => vec![resolve(ticket, outcome)],
             Handling::AsWithoutLink => vec![resolve(ticket, command::apply(state, &command))],
             Handling::Wait(setting, expect) => {
@@ -77,6 +90,7 @@ impl Machine {
             }
             Handling::Store(level) => {
                 state.adaptive_noise_level = level;
+                self.known_settings.adaptive_level = true;
                 raise(&mut state.counters.adaptive_level_changes);
                 let frame = ControlCommand {
                     id: ControlId::ADAPTIVE_NOISE_LEVEL,
@@ -139,14 +153,21 @@ fn unanswered(state: &State, expect: ControlCommand) -> CommandError {
     }
 }
 
-/// What `command` takes in `Up`, read from the state, the commands still waiting and the model's features.
-fn handling(state: &State, pending: &[Pending], command: Command) -> Handling {
+/// What `command` takes in `Up`, read from the state, what this channel reported, the commands still waiting and the model's features.
+fn handling(
+    state: &State,
+    known: KnownSettings,
+    pending: &[Pending],
+    command: Command,
+) -> Handling {
     let features = state.model.capabilities();
     match command {
-        Command::SetNoise(target) => noise(state, pending, features, target),
+        Command::SetNoise(target) => noise(state, known, pending, features, target),
         Command::SetConversationalAwareness(enabled) => switch(
             features.conversational_awareness,
-            state.conversational_awareness,
+            known
+                .conversational_awareness
+                .then_some(state.conversational_awareness),
             enabled,
             Setting::ConversationalAwareness,
             ControlId::CONVERSATIONAL_AWARENESS,
@@ -154,13 +175,13 @@ fn handling(state: &State, pending: &[Pending], command: Command) -> Handling {
         ),
         Command::SetOneBudAnc(enabled) => switch(
             features.one_bud_anc,
-            state.one_bud_anc_mode,
+            known.one_bud_anc.then_some(state.one_bud_anc_mode),
             enabled,
             Setting::OneBudAnc,
             ControlId::ONE_BUD_ANC,
             pending,
         ),
-        Command::SetAdaptiveLevel(level) => adaptive_level(state, features, level),
+        Command::SetAdaptiveLevel(level) => adaptive_level(state, known, features, level),
         // corner: connect, disconnect and forget keep their answer without a link until device actions exist.
         Command::SetEarDetection(_)
         | Command::Reopen
@@ -181,6 +202,7 @@ fn on_its_way(pending: &[Pending], id: ControlId) -> Option<ControlCommand> {
 
 fn noise(
     state: &State,
+    known: KnownSettings,
     pending: &[Pending],
     features: Capabilities,
     target: NoiseTarget,
@@ -199,8 +221,7 @@ fn noise(
     if !offers(features, mode) {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
-    // A value the state shows counts as set only while no write to that setting is on its way.
-    if on_its_way.is_none() && mode == state.noise_mode {
+    if on_its_way.is_none() && known.noise.then_some(state.noise_mode) == Some(mode) {
         return Handling::Answer(Outcome::Confirmed);
     }
     Handling::Wait(Setting::Noise, mode.command())
@@ -224,9 +245,10 @@ fn offers(features: Capabilities, mode: NoiseMode) -> bool {
     }
 }
 
+/// `current` is the value reported on this channel, if any.
 fn switch(
     supported: bool,
-    current: bool,
+    current: Option<bool>,
     enabled: bool,
     setting: Setting,
     id: ControlId,
@@ -235,18 +257,23 @@ fn switch(
     if !supported {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
-    if on_its_way(pending, id).is_none() && enabled == current {
+    if on_its_way(pending, id).is_none() && current == Some(enabled) {
         return Handling::Answer(Outcome::Confirmed);
     }
     Handling::Wait(setting, ControlCommand::switch(id, enabled))
 }
 
-fn adaptive_level(state: &State, features: Capabilities, level: u8) -> Handling {
+fn adaptive_level(
+    state: &State,
+    known: KnownSettings,
+    features: Capabilities,
+    level: u8,
+) -> Handling {
     if !features.adaptive || state.noise_mode != NoiseMode::Adaptive {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
     let level = level.min(ADAPTIVE_LEVEL_MAX);
-    if level == state.adaptive_noise_level {
+    if known.adaptive_level.then_some(state.adaptive_noise_level) == Some(level) {
         return Handling::Answer(Outcome::Confirmed);
     }
     Handling::Store(level)
