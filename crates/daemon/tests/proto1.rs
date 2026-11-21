@@ -26,8 +26,11 @@ mod tests {
     /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/socket.rs`.
     const MAX_CONNECTIONS: usize = 64;
 
-    /// The changes the slow subscriber and burst tests make, past what one socket buffer and the daemon's queues hold.
+    /// The changes the slow subscriber and pipelining tests make, past what one socket buffer and the daemon's queues hold.
     const CHANGES: usize = 200;
+
+    /// Past the 64 changes the hub lets a subscriber leave untaken, within the 16 queued lines plus the ~92 event lines a default 208 KiB socket buffer holds.
+    const BURST_CHANGES: usize = 96;
 
     /// Half the 2000 ms stall deadline: the bound on a set and a get answered while a slow subscriber falls behind.
     const OTHERS_ANSWERED_WITHIN: Duration = Duration::from_millis(1000);
@@ -410,26 +413,27 @@ mod tests {
     }
 
     #[test]
-    fn a_pipelined_burst_of_changes_reaches_a_prompt_subscriber_whole() {
+    fn a_pipelined_burst_of_changes_reaches_a_subscriber_whole() {
         let session = Session::new();
         let _daemon = session.start();
         let mut subscriber = Client::connect(&session);
-        let first_reply = subscriber.ask(SUBSCRIBE);
+        let mut expected = ear_changes(&subscriber.ask(SUBSCRIBE));
         let mut burst = Client::connect(&session);
-        thread::scope(|scope| {
-            let reader =
-                scope.spawn(move || (0..CHANGES).map(|_| subscriber.line()).collect::<Vec<_>>());
-            let lines: String = (0..CHANGES).map(|id| ear_change(id) + "\n").collect();
-            burst.send(lines.as_bytes());
-            for id in 0..CHANGES {
-                assert_eq!(burst.line(), confirmed(id));
-            }
-            let mut expected = ear_changes(&first_reply);
-            for line in reader.join().unwrap() {
-                expected += 1;
-                assert_eq!(ear_changes(&line), expected, "{line}");
-            }
-        });
+        let lines: String = (0..BURST_CHANGES).map(|id| ear_change(id) + "\n").collect();
+        burst.send(lines.as_bytes());
+        for id in 0..BURST_CHANGES {
+            assert_eq!(burst.line(), confirmed(id));
+        }
+        // Read only after the burst, so the result never rests on how soon a reader thread is scheduled.
+        for seen in 0..BURST_CHANGES {
+            let line = subscriber.line();
+            assert!(
+                !line.is_empty(),
+                "the subscriber was closed after {seen} events"
+            );
+            expected += 1;
+            assert_eq!(ear_changes(&line), expected, "{line}");
+        }
     }
 
     #[test]
