@@ -134,8 +134,8 @@ of code the reviewer had assumed was missing. Do not change code you believe is
 correct just to close a finding faster, and do not expect a finding to stick just
 because it sounds serious.
 
-Merges use a merge commit, never a squash, so contributor authorship survives in
-the history.
+Merges use a rebase, never a squash, so contributor authorship survives in the
+history.
 
 ## Security
 
