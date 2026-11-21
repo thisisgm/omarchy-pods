@@ -3,19 +3,17 @@
 use crate::control::{ControlCommand, ControlId};
 use crate::error::{HEADER_LEN, ParseError, Parser};
 
-// The C++ daemon has no uplink code to compare with: START, STOP and the audio layout are those of librepods-org/librepods pull request 655, files aacp.rs and aacp_audio.rs.
+// From librepods-org/librepods pull request 655 (aacp.rs, aacp_audio.rs); the C++ has no uplink.
 
-/// Every uplink packet, audio or control, starts with these bytes.
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00];
-/// The subtype is a little endian u16 right after the header.
+/// A little endian u16 right after the header.
 const SUBTYPE_LEN: usize = 2;
 /// Header plus the subtype, the shortest uplink packet.
 const MIN_LEN: usize = 8;
 /// Subtype of START and STOP.
 const SUBTYPE_CONTROL: u16 = 0x0000;
-/// Subtype of a packet that carries coded audio.
 const SUBTYPE_AUDIO: u16 = 0x0001;
-/// The declared length of a control packet is a little endian u16 right after the subtype.
+/// A little endian u16 right after the subtype of a control packet.
 const DECLARED_LEN_BYTES: usize = 2;
 /// Header, subtype and the declared length.
 const CONTROL_MIN_LEN: usize = 10;
@@ -27,23 +25,20 @@ pub const UNIT_PREFIX_LEN: usize = 5;
 /// Bytes 8 to 21 of an audio SDU, which no known code reads.
 pub const OPAQUE_LEN: usize = 14;
 
-/// Asks the pods to start sending microphone audio.
 pub const START: [u8; 19] = [
     0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x82, 0x00, 0x00, 0x00,
     0x04, 0x96, 0x00,
 ];
 
-/// Asks the pods to stop sending microphone audio.
 pub const STOP: [u8; 12] = [
     0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 0x01,
 ];
 
-/// One opcode 0x58 packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UplinkPacket<'a> {
     Audio(AudioSdu<'a>),
     Control(UplinkControl<'a>),
-    /// A subtype nobody has documented, kept whole so the caller can log or count it.
+    /// An undocumented subtype, kept whole so the caller can log or count it.
     Unknown {
         subtype: u16,
         /// Everything after the subtype.
@@ -52,8 +47,7 @@ pub enum UplinkPacket<'a> {
 }
 
 impl<'a> UplinkPacket<'a> {
-    /// Reads one SDU of the control channel; `Ok(None)` is any other opcode, which is ordinary traffic.
-    // 04 00 04 00 58 00 01 00 ...: header with opcode 0x58, subtype little endian (1 audio, 0 control), then the body.
+    /// Sample input: `04 00 04 00 58 00 01 00 ...`, subtype 1 audio or 0 control, then the body.
     pub fn parse(sdu: &'a [u8]) -> Result<Option<Self>, ParseError> {
         let Some(after_header) = sdu.strip_prefix(&HEADER) else {
             return Ok(None);
@@ -75,7 +69,6 @@ impl<'a> UplinkPacket<'a> {
     }
 }
 
-/// An audio SDU: the header bytes nobody understands, then the access units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioSdu<'a> {
     /// Bytes 8 to 21, handed out raw.
@@ -84,7 +77,7 @@ pub struct AudioSdu<'a> {
 }
 
 impl<'a> AudioSdu<'a> {
-    // a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab ac ad 10 20 30 40 02 00 00: 14 opaque bytes, then the access units.
+    // `a0 a1 a2 ... ad 10 20 30 40 02 00 00`: 14 opaque bytes, then the access units.
     fn parse(body: &'a [u8], sdu_len: usize) -> Result<Self, ParseError> {
         let Some((opaque, units)) = body.split_first_chunk::<OPAQUE_LEN>() else {
             return Err(ParseError::TooShort {
@@ -96,22 +89,20 @@ impl<'a> AudioSdu<'a> {
         Ok(Self { opaque, units })
     }
 
-    /// The access units of this SDU, in order.
     #[must_use]
     pub fn units(&self) -> Units<'a> {
         Units { rest: self.units }
     }
 }
 
-/// One coded audio unit and the stamp sent in front of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccessUnit<'a> {
-    /// The four bytes before the length, little endian; their unit is unknown.
+    /// Little endian on the wire; its unit is unknown.
     pub stamp: u32,
     pub data: &'a [u8],
 }
 
-/// Walks the access units of one audio SDU and stops at the first one that is cut short.
+/// Stops at the first access unit that is cut short.
 #[derive(Debug, Clone)]
 pub struct Units<'a> {
     rest: &'a [u8],
@@ -128,7 +119,7 @@ impl Units<'_> {
 impl<'a> Iterator for Units<'a> {
     type Item = AccessUnit<'a>;
 
-    // 10 20 30 40 02 00 00: stamp 0x40302010 little endian, length 2, then that many unit bytes.
+    // `10 20 30 40 02 00 00`: stamp 0x40302010 little endian, length 2, then the unit bytes.
     fn next(&mut self) -> Option<AccessUnit<'a>> {
         let ([stamp @ .., len], after_prefix) = self.rest.split_first_chunk::<UNIT_PREFIX_LEN>()?;
         let (data, rest) = after_prefix.split_at_checked(usize::from(*len))?;
@@ -140,7 +131,7 @@ impl<'a> Iterator for Units<'a> {
     }
 }
 
-/// A control packet: the shape of START and STOP, and of the reply the pods are reported to send.
+/// The shape of START, STOP and the reply the pods are reported to send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UplinkControl<'a> {
     /// Bytes 8 and 9; reading them as the payload length is a guess, so a mismatch is not an error.
@@ -150,7 +141,7 @@ pub struct UplinkControl<'a> {
 }
 
 impl<'a> UplinkControl<'a> {
-    // 03 00 01 01 01: declared length 3 little endian, then the payload.
+    // `03 00 01 01 01`: declared length 3 little endian, then the payload.
     fn parse(body: &'a [u8], sdu_len: usize) -> Result<Self, ParseError> {
         let Some((declared_len, payload)) = body.split_first_chunk::<DECLARED_LEN_BYTES>() else {
             return Err(ParseError::TooShort {
@@ -165,17 +156,14 @@ impl<'a> UplinkControl<'a> {
         })
     }
 
-    /// Whether the payload is as long as the packet declares.
     #[must_use]
     pub fn length_matches(&self) -> bool {
         usize::from(self.declared_len) == self.payload.len()
     }
 }
 
-/// Why an audio SDU could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum EncodeError {
-    /// The unit at `index` is longer than its one length byte can say.
     #[error(
         "{parser} cannot carry access unit {index}: it is {len} bytes, the length byte holds at most {max}",
         parser = Parser::UplinkAudio,
@@ -184,7 +172,6 @@ pub enum EncodeError {
     UnitTooLong { index: usize, len: usize },
 }
 
-/// Builds the audio SDU the pods would send for these units.
 pub fn encode_audio(
     opaque: &[u8; OPAQUE_LEN],
     units: &[AccessUnit<'_>],
@@ -206,7 +193,7 @@ pub fn encode_audio(
     Ok(sdu)
 }
 
-/// Which bud's microphone the pods use, numbered as the control command carries it.
+/// Numbered as the control command carries it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MicSide {
     Automatic = 0,
@@ -215,7 +202,6 @@ pub enum MicSide {
 }
 
 impl MicSide {
-    /// The control command that selects this side.
     #[must_use]
     pub fn command(self) -> ControlCommand {
         let wire = match self {
@@ -265,17 +251,16 @@ mod tests {
         "04 00 04 00 58 00 01 00 a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 aa ab ac ad 10 20 30 40 02 00 00";
     /// Offset of the low subtype byte, 1 in an audio SDU and 0 in a control packet.
     const SUBTYPE_AT: usize = 6;
-    /// How many data bytes of the last unit the truncation test keeps.
     const KEPT_DATA_BYTES: usize = 3;
 
-    // Sample output for (0x10, 3): 10 11 12, counting bytes that stand in for one coded unit.
+    // Sample output for (0x10, 3): `10 11 12`, counting bytes that stand in for one coded unit.
     fn unit_bytes(first: u8, len: usize) -> Vec<u8> {
         std::iter::successors(Some(first), |byte| Some(byte.wrapping_add(1)))
             .take(len)
             .collect()
     }
 
-    /// One unit per payload, stamped from 0x01020304 upward so every stamp byte differs.
+    /// Stamped from 0x01020304 upward so every stamp byte differs.
     fn units(payloads: &[Vec<u8>]) -> Vec<AccessUnit<'_>> {
         (0x0102_0304_u32..)
             .zip(payloads)
@@ -290,7 +275,6 @@ mod tests {
             .split_off(AUDIO_HEADER_LEN)
     }
 
-    /// Three whole units followed by the first `kept` wire bytes of a fourth.
     fn sdu_cut_into_the_last_unit(whole: &[AccessUnit<'_>; 4], kept: usize) -> Vec<u8> {
         let [first, second, third, last] = *whole;
         let mut sdu = encode_audio(&OPAQUE, &[first, second, third]).unwrap();

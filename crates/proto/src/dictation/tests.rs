@@ -1,10 +1,10 @@
-//! Every input here is built by the test: the fixed protocol bytes, and frames of the table of contents byte then counting bytes.
+//! Built here: the protocol bytes, and frames of a table of contents byte then counting bytes.
 
 use super::*;
 use crate::att::AttPdu;
 use crate::fixture::hex;
 
-/// Opcode, audio handle, marker, packet counter 0x2a, declared length 8, then one frame: flag 0x80, level 0xd5, counter 0x0104, length 3, three codec bytes.
+/// Counter 0x2a, declared length 8, one frame: flag 0x80, level 0xd5, counter 0x0104, length 3.
 const ONE_FRAME_NOTIFICATION: &str = "1b 0d 00 01 00 2a 08 00 80 d5 04 01 03 b8 10 11";
 /// The two values a flag byte is known to take.
 const FLAGS: [u8; 2] = [0x80, 0x00];
@@ -12,19 +12,17 @@ const FLAGS: [u8; 2] = [0x80, 0x00];
 const FIRST_LEVEL: u8 = 0xb9;
 /// Offset of the low handle byte in an ATT PDU; the high byte follows it.
 const HANDLE_AT: usize = 1;
-/// Offset of the value in a notification, after the opcode and the handle; also the length of the shortest notification.
+/// Offset of the value in a notification; also the shortest notification's length.
 const VALUE_AT: usize = 3;
-/// Offset of the packet counter in an audio notification.
 const PACKET_COUNTER_AT: usize = 5;
 /// Offset of the low byte of the declared length in an audio notification.
 const DECLARED_LEN_AT: usize = 6;
-/// How many data bytes of the last frame the truncation test keeps.
 const KEPT_DATA_BYTES: usize = 3;
 /// The longest frame one length byte can say.
 const LONGEST_FRAME: usize = 255;
 /// The most frame bytes the two length bytes can say.
 const LONGEST_BODY: usize = 65535;
-/// How many longest frames, 260 bytes each with the prefix, fit under `LONGEST_BODY` with 15 bytes to spare.
+/// Longest frames, 260 bytes each with the prefix, that fit under `LONGEST_BODY` with 15 to spare.
 const FULL_FRAMES: usize = 252;
 /// Data bytes of the last frame that bring the body to exactly `LONGEST_BODY`.
 const LAST_DATA_AT_THE_LIMIT: usize = 10;
@@ -33,7 +31,7 @@ const LAST_DATA_PAST_THE_LIMIT: usize = 11;
 /// One more longest frame than fits: 253 of them are 65780 frame bytes, past `LONGEST_BODY`.
 const FRAMES_PAST_THE_LIMIT: usize = FULL_FRAMES + 1;
 
-// Sample output for (0x10, 3): b8 10 11, the table of contents byte then counting bytes that stand in for one coded frame.
+// Sample output for (0x10, 3): `b8 10 11`, the table of contents byte then counting bytes.
 fn codec_bytes(seed: u8, len: usize) -> Vec<u8> {
     let counting = std::iter::successors(Some(seed), |byte| Some(byte.wrapping_add(1)));
     std::iter::once(TOC_CELT_WIDEBAND_20MS_MONO)
@@ -42,7 +40,7 @@ fn codec_bytes(seed: u8, len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// One frame per payload, counted from `first_counter` and wrapping, with alternating flags and rising levels so every prefix differs.
+/// Counters from `first_counter`, wrapping; flags alternate, levels rise, so every prefix differs.
 fn frames(first_counter: u16, payloads: &[Vec<u8>]) -> Vec<Frame<'_>> {
     let counters = std::iter::successors(Some(first_counter), |c| Some(c.wrapping_add(1)));
     payloads
@@ -66,7 +64,6 @@ fn frame_record(frame: Frame<'_>) -> Vec<u8> {
         .split_off(AUDIO_PREFIX_LEN)
 }
 
-/// Three whole frames followed by the first `kept` wire bytes of a fourth.
 fn notification_cut_into_the_last_frame(whole: &[Frame<'_>; 4], kept: usize) -> Vec<u8> {
     let [first, second, third, last] = *whole;
     let mut pdu = encode_audio(0, &[first, second, third]).unwrap();
@@ -100,7 +97,7 @@ fn audio(pdu: &[u8]) -> AudioNotification<'_> {
     }
 }
 
-// Sample input: 52 07 00 01 00, whose handle is the little endian 0x0007 after the opcode.
+// Sample input: `52 07 00 01 00`, whose handle is the little endian 0x0007 after the opcode.
 fn handle_of(pdu: &[u8]) -> u16 {
     u16::from_le_bytes([pdu[HANDLE_AT], pdu[VALUE_AT - 1]])
 }
