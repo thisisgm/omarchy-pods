@@ -53,6 +53,15 @@ mod tests {
     /// How long a waiting connection may go without progress, from `STALL_DEADLINE` in `src/daemon/proto1.rs`.
     const STALL_DEADLINE: Duration = Duration::from_millis(2000);
 
+    /// The stall deadline plus slack for a shared host, well short of a deadline started again at each dripped byte.
+    const STALL_CLOSED_BY: Duration = Duration::from_millis(3000);
+
+    /// The pause between the bytes of the dripped line, so several bytes land inside one stall deadline.
+    const DRIP_PAUSE: Duration = Duration::from_millis(300);
+
+    /// Bytes in the dripped line, so the drip would outlast the stall deadline three times over.
+    const DRIP_BYTES: usize = 20;
+
     /// Requests the non-reading client sends, far past what the socket buffers, the queue and the pending bytes hold.
     const UNREAD_GETS: usize = 5000;
 
@@ -585,6 +594,44 @@ mod tests {
         let log = daemon.log();
         assert_eq!(log.matches(&stalled).count(), 3, "{log}");
         assert_eq!(subscriber.ask(GET), state_reply(7, &state));
+    }
+
+    #[test]
+    fn a_line_dripped_a_byte_at_a_time_is_closed_by_the_stall_deadline() {
+        let session = Session::new();
+        let _daemon = session.start();
+        let mut stream = UnixStream::connect(session.socket()).unwrap();
+        let mut reader = stream.try_clone().unwrap();
+        reader.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+        // The first byte chooses protocol 1, and no byte ends the line.
+        let mut line = [b' '; DRIP_BYTES];
+        line[0] = b'{';
+        let closed = AtomicBool::new(false);
+        let started = Instant::now();
+        let (read, waited) = thread::scope(|scope| {
+            let watcher = scope.spawn(|| {
+                let read = reader.read(&mut [0_u8; 1]);
+                let waited = started.elapsed();
+                closed.store(true, Ordering::Relaxed);
+                (read, waited)
+            });
+            for byte in line {
+                if closed.load(Ordering::Relaxed) || stream.write_all(&[byte]).is_err() {
+                    break;
+                }
+                pause(DRIP_PAUSE);
+            }
+            watcher.join().unwrap()
+        });
+        assert!(
+            matches!(&read, Ok(0))
+                || matches!(&read, Err(error) if error.kind() == ErrorKind::ConnectionReset),
+            "{read:?}"
+        );
+        assert!(
+            (STALL_DEADLINE..STALL_CLOSED_BY).contains(&waited),
+            "{waited:?}"
+        );
     }
 
     #[test]

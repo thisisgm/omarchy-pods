@@ -335,6 +335,10 @@ mod tests {
         expected.counters.reopen_calls = reopens;
         assert_eq!(status, to_status_line(&expected));
         assert_ne!(one.running(), two.running());
+        // The loser left before touching a file, so the survivor's state file stays and follows its state.
+        wait_for("the survivor's state file", || {
+            (fs::read_to_string(session.state_file()).ok()? == status).then_some(())
+        });
     }
 
     #[test]
@@ -504,6 +508,20 @@ mod tests {
             "{}",
             daemon.log()
         );
+    }
+
+    #[test]
+    fn read_only_runtime_dir_fails_with_the_lock_named() {
+        let session = Session::new();
+        fs::set_permissions(session.runtime_dir(), fs::Permissions::from_mode(0o500)).unwrap();
+        let mut daemon = session.spawn(&["daemon"], "daemon.log");
+        let code = daemon.wait_exit().code();
+        fs::set_permissions(session.runtime_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(code, Some(1));
+        let lock = session.socket().with_extension(LOCK_EXTENSION);
+        let named = format!("cannot open the daemon lock {}:", lock.display());
+        assert!(daemon.log().contains(&named), "{}", daemon.log());
+        assert!(!session.state_file().exists());
     }
 
     /// Waits until the daemon has logged a failed write naming the state file, then checks it still serves.
