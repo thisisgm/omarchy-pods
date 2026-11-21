@@ -671,7 +671,7 @@ mod tests {
     #[test]
     fn a_subscriber_that_ends_its_side_gets_its_replies_and_is_closed() {
         let session = Session::new();
-        let _daemon = session.start();
+        let daemon = session.start();
         let mut stream = UnixStream::connect(session.socket()).unwrap();
         stream
             .write_all(format!("{SUBSCRIBE}\n{GET}\n{{\"v\":1,").as_bytes())
@@ -683,6 +683,9 @@ mod tests {
             String::from_utf8(read_to_close(&mut stream)).unwrap(),
             expected
         );
+        // The end of input closes it quietly, and a close by the stall deadline would be logged.
+        let log = daemon.log();
+        assert!(!log.contains("protocol 1 client closed"), "{log}");
     }
 
     #[test]
