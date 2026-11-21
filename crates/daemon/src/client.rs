@@ -1,4 +1,4 @@
-//! The command line client, byte for byte the C++ `daemon/librepods-ctl.cpp`.
+//! The command line client of the C++ daemon: the messages, timeouts and exit codes of `daemon/librepods-ctl.cpp`.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
