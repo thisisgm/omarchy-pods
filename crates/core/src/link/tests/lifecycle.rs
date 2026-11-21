@@ -448,7 +448,6 @@ fn reset_device_matches_the_cpp_reset() {
     assert_eq!(
         state,
         State {
-            connected: false,
             device_name: defaults.device_name,
             model: Model::Unknown,
             noise_mode: NoiseMode::Off,
