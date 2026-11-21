@@ -580,12 +580,10 @@ mod tests {
                 "the unread replies"
             );
         });
-        assert_eq!(
-            daemon.log().matches("made no progress").count(),
-            3,
-            "{}",
-            daemon.log()
-        );
+        // The daemon names its own deadline, so a drift from the copy here shows.
+        let stalled = format!("made no progress for {} ms", STALL_DEADLINE.as_millis());
+        let log = daemon.log();
+        assert_eq!(log.matches(&stalled).count(), 3, "{log}");
         assert_eq!(subscriber.ask(GET), state_reply(7, &state));
     }
 
