@@ -11,7 +11,7 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, UNIX_EPOCH};
 
     use cpp_source::MAIN;
     use pods_core::legacy::{LegacyRequest, parse_verb};
@@ -70,6 +70,12 @@ mod tests {
 
     /// The level the adaptive verb sends.
     const ADAPTIVE_VERB: &str = "adaptive:37";
+
+    /// Bytes no daemon writes, standing for a running survivor's state file.
+    const SURVIVOR_STATE: &[u8] = b"{\"survivor\":true}\n";
+
+    /// The sentinel's modification time, in 2001, so a rewrite with the same bytes still shows.
+    const SURVIVOR_MTIME: Duration = Duration::from_secs(1_000_000_000);
 
     impl Session {
         fn state_file(&self) -> PathBuf {
@@ -586,6 +592,47 @@ mod tests {
         );
         assert!(!session.state_file().parent().unwrap().exists());
         assert!(!session.socket().exists());
+    }
+
+    #[test]
+    fn a_daemon_that_loses_the_start_leaves_the_survivors_state_file_alone() {
+        for (exit, answering) in [("the probe exit", true), ("the lock exit", false)] {
+            let session = Session::new();
+            // The test is the survivor: it holds the lock and, for the probe exit, a bound socket whose backlog takes the probe.
+            let held = File::create(session.socket().with_extension(LOCK_EXTENSION)).unwrap();
+            held.try_lock().unwrap();
+            let _socket = answering.then(|| UnixListener::bind(session.socket()).unwrap());
+            let state_file = session.state_file();
+            fs::create_dir(state_file.parent().unwrap()).unwrap();
+            fs::write(&state_file, SURVIVOR_STATE).unwrap();
+            let sentinel = File::options().write(true).open(&state_file).unwrap();
+            sentinel.set_modified(UNIX_EPOCH + SURVIVOR_MTIME).unwrap();
+            let before = fs::metadata(&state_file).unwrap();
+            let mut loser = session.spawn(&["daemon"], "loser.log");
+            assert_eq!(loser.wait_exit().code(), Some(0), "{exit}");
+            let socket = session.socket();
+            let wanted = if answering {
+                format!(
+                    "a daemon already answers on {}; asked it to reopen, exiting",
+                    socket.display()
+                )
+            } else {
+                format!(
+                    "another daemon is starting on {}; leaving the socket to it",
+                    socket.display()
+                )
+            };
+            assert_eq!(log_without_the_bus_line(&loser.log()), [wanted.as_str()]);
+            let kept = fs::read(&state_file).unwrap_or_default();
+            assert_eq!(kept, SURVIVOR_STATE, "{exit}");
+            let after = fs::metadata(&state_file).unwrap();
+            assert_eq!(after.ino(), before.ino(), "{exit}");
+            assert_eq!(
+                after.modified().unwrap(),
+                before.modified().unwrap(),
+                "{exit}"
+            );
+        }
     }
 
     #[test]
