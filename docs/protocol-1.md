@@ -113,8 +113,8 @@ After `subscribe`, the daemon sends one line per change of the state:
 
 The daemon keeps at most 16 lines waiting for a client that reads slowly. When
 a 17th would wait, or 2 seconds pass while lines wait and none of them is sent
-in full, it closes that connection rather than skip a change. A subscriber therefore sees every change
-in order, or its connection closes.
+in full, it closes that connection rather than skip a change. A subscriber
+therefore sees every change in order, or its connection closes.
 
 ## Errors
 
