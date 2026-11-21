@@ -71,7 +71,7 @@ pub(crate) struct Second {
     pub packets: u64,
     /// Their bytes, RTP header included.
     pub bytes: u64,
-    /// Packets whose RTP sequence number does not follow the one before on the same channel.
+    /// Packets whose RTP sequence number does not follow the one before on the same channel, unless a start command came between them.
     pub gaps: u64,
     /// The longest wait between a media packet of this second and the media packet before it.
     pub largest_interval_ns: u64,
@@ -124,8 +124,23 @@ enum Packet<'a> {
 #[derive(Debug)]
 struct Proposal {
     label: u8,
-    sender: Direction,
     codec: Option<Codec>,
+}
+
+/// The Set Configuration command of each side that waits for the other side's response; both may wait with one label.
+#[derive(Debug, Default)]
+struct Proposals {
+    from_host: Option<Proposal>,
+    from_pods: Option<Proposal>,
+}
+
+impl Proposals {
+    fn of(&mut self, sender: Direction) -> &mut Option<Proposal> {
+        match sender {
+            Direction::ToPods => &mut self.from_host,
+            Direction::FromPods => &mut self.from_pods,
+        }
+    }
 }
 
 /// One media packet the host sent.
@@ -144,6 +159,8 @@ struct Tables {
     configuration: Option<Codec>,
     seconds: BTreeMap<u64, Second>,
     packets: Vec<MediaPacket>,
+    /// The handle and the stamp of every start command, after which a source may begin a new RTP sequence.
+    starts: Vec<(u16, u64)>,
     unread: Unread,
 }
 
@@ -230,9 +247,16 @@ fn roles(channels: &Channels) -> Vec<(Role, &Channel)> {
 impl Tables {
     fn read(channels: &Channels) -> Self {
         let mut tables = Self::default();
-        for (role, channel) in roles(channels) {
+        let roles = roles(channels);
+        // Every start command is known before the media is read, since a start decides whether a jump in sequence is a gap.
+        for (role, channel) in &roles {
+            if *role == Role::Signalling {
+                tables.signalling(channel);
+            }
+        }
+        for (role, channel) in &roles {
             match role {
-                Role::Signalling => tables.signalling(channel),
+                Role::Signalling => {}
                 Role::Media => tables.media(channel),
                 Role::Other => bump(&mut tables.unread.other_channels),
             }
@@ -274,7 +298,7 @@ impl Tables {
     }
 
     // Sample input: 04 04 07 06 00 02 80 01 8c 84, the two stream end point bytes of a Set Configuration command, then its capabilities.
-    fn proposal(&mut self, sender: Direction, signal: Signal<'_>) -> Option<Proposal> {
+    fn proposal(&mut self, signal: Signal<'_>) -> Option<Proposal> {
         let mut rest = signal.body;
         let Some([_acceptor, _initiator]) = take(&mut rest) else {
             bump(&mut self.unread.malformed_signals);
@@ -282,13 +306,12 @@ impl Tables {
         };
         Some(Proposal {
             label: signal.label,
-            sender,
             codec: self.codecs(rest).into_iter().next(),
         })
     }
 
     fn signalling(&mut self, channel: &Channel) {
-        let mut proposed: Option<Proposal> = None;
+        let mut proposals = Proposals::default();
         for sdu in &channel.sdus {
             let signal = match packet(&sdu.sdu) {
                 Packet::Single(signal) => signal,
@@ -308,26 +331,42 @@ impl Tables {
                     let offered = self.codecs(signal.body);
                     self.capabilities.extend(offered);
                 }
-                (SET_CONFIGURATION, COMMAND) => proposed = self.proposal(sdu.direction, signal),
+                (SET_CONFIGURATION, COMMAND) => {
+                    *proposals.of(sdu.direction) = self.proposal(signal);
+                }
                 (SET_CONFIGURATION, RESPONSE_ACCEPT | RESPONSE_REJECT) => {
                     // Only the other side's answer with the command's own label settles a proposal.
-                    let answered = proposed.take_if(|proposal| {
-                        proposal.label == signal.label && proposal.sender != sdu.direction
-                    });
+                    let proposer = match sdu.direction {
+                        Direction::ToPods => Direction::FromPods,
+                        Direction::FromPods => Direction::ToPods,
+                    };
+                    let answered = proposals
+                        .of(proposer)
+                        .take_if(|proposal| proposal.label == signal.label);
                     let accepted = answered.filter(|_| signal.message == RESPONSE_ACCEPT);
                     if let Some(codec) = accepted.and_then(|proposal| proposal.codec) {
                         self.configuration = Some(codec);
                     }
                 }
-                (START, COMMAND) => bump(&mut self.second(sdu.at_ns).starts),
+                (START, COMMAND) => {
+                    self.starts.push((channel.handle, sdu.at_ns));
+                    bump(&mut self.second(sdu.at_ns).starts);
+                }
                 (SUSPEND, COMMAND) => bump(&mut self.second(sdu.at_ns).suspends),
                 _ => {}
             }
         }
     }
 
+    /// Whether a start command on `handle` came after the packet stamped `before` and no later than the one stamped `now`.
+    fn restarted(&self, handle: u16, before: u64, now: u64) -> bool {
+        self.starts
+            .iter()
+            .any(|(on, at)| *on == handle && before < *at && *at <= now)
+    }
+
     fn media(&mut self, channel: &Channel) {
-        let mut previous: Option<u16> = None;
+        let mut previous: Option<(u16, u64)> = None;
         for sdu in &channel.sdus {
             if sdu.direction != Direction::ToPods {
                 continue;
@@ -336,8 +375,11 @@ impl Tables {
                 bump(&mut self.unread.not_rtp);
                 continue;
             };
-            let gap = previous.is_some_and(|before| sequence != before.wrapping_add(1));
-            previous = Some(sequence);
+            let gap = previous.is_some_and(|(before, before_ns)| {
+                sequence != before.wrapping_add(1)
+                    && !self.restarted(channel.handle, before_ns, sdu.at_ns)
+            });
+            previous = Some((sequence, sdu.at_ns));
             self.packets.push(MediaPacket {
                 at_ns: sdu.at_ns,
                 len: u64::try_from(sdu.sdu.len()).unwrap_or(u64::MAX),
