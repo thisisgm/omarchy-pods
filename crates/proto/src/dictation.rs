@@ -219,9 +219,9 @@ pub enum EncodeError {
         max = u8::MAX
     )]
     FrameTooLong { index: usize, len: usize },
-    /// The frames and their prefixes take `len` bytes together, more than the two length bytes can say.
+    /// `len` counts what the 16 bit length field must hold, the frames and their prefixes, not the whole notification.
     #[error(
-        "{parser} cannot carry {len} bytes of frames: the length field holds at most {max}",
+        "{parser} cannot carry {len} bytes of frames: the length field counts the frames and their prefixes, not the whole notification, and holds at most {max}",
         parser = Parser::DictationAudio,
         max = u16::MAX
     )]

@@ -480,7 +480,11 @@ fn a_packet_over_65535_bytes_cannot_be_encoded() {
     let mut frames = vec![frame(0, &longest); FULL_FRAMES];
     frames.push(frame(0, &at_the_limit));
     let pdu = encode_audio(0, &frames).unwrap();
-    assert_eq!(pdu.len(), AUDIO_PREFIX_LEN + LONGEST_BODY);
+    assert_eq!(
+        pdu.len(),
+        AUDIO_PREFIX_LEN + LONGEST_BODY,
+        "the limit is on the frame bytes, so the notification is longer than it"
+    );
     let largest = audio(&pdu);
     assert_eq!(largest.declared_len, u16::MAX);
     assert!(largest.length_matches());
@@ -492,6 +496,6 @@ fn a_packet_over_65535_bytes_cannot_be_encoded() {
     assert_eq!(error, EncodeError::PacketTooLong { len: 65536 });
     assert_eq!(
         error.to_string(),
-        "dictation audio notification cannot carry 65536 bytes of frames: the length field holds at most 65535"
+        "dictation audio notification cannot carry 65536 bytes of frames: the length field counts the frames and their prefixes, not the whole notification, and holds at most 65535"
     );
 }
