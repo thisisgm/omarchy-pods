@@ -1,6 +1,7 @@
 //! The control channel's lifecycle as a pure machine: events and the time go in, actions come out.
 
 mod commands;
+mod devices;
 pub mod ladder;
 mod reports;
 
@@ -150,6 +151,8 @@ pub struct Machine {
     held: bool,
     /// The link reached `Up` since the last device reset.
     populated: bool,
+    /// User disconnects called and not failed since the last reset; while any, the device leaving skips the grace and no dial goes out.
+    user_disconnects: u32,
     /// Paired AirPods seen, first seen first, at most `KNOWN_MAX`; once full, a new address is not kept.
     known: Vec<BdAddr>,
     last_linked: Option<BdAddr>,
@@ -193,6 +196,27 @@ impl Machine {
                     Outcome::Refused(CommandError::NotConnected),
                 )]
             }
+            (
+                _,
+                E::Command {
+                    ticket,
+                    command: Command::Connect,
+                },
+            ) => self.connect(state, ticket),
+            (
+                _,
+                E::Command {
+                    ticket,
+                    command: Command::Disconnect,
+                },
+            ) => self.disconnect(state, ticket),
+            (
+                _,
+                E::Command {
+                    ticket,
+                    command: Command::Forget,
+                },
+            ) => self.forget_device(state, ticket),
             (
                 P::Idle
                 | P::Opening { .. }
@@ -431,7 +455,19 @@ impl Machine {
                 raise(&mut state.counters.reconnect_failures);
                 self.idle(state)
             }
-            // Nothing to do: stopped, calls not handled yet, packets outside the handshake and `Up`, events the shell rules out, ticks with no deadline.
+            (
+                P::Idle
+                | P::Opening { .. }
+                | P::AwaitHandshakeAck { .. }
+                | P::AwaitFeaturesAck { .. }
+                | P::Up { .. }
+                | P::Closing { .. }
+                | P::Backoff { .. }
+                | P::Parked { .. }
+                | P::Grace { .. },
+                E::CallFailed(action),
+            ) => self.call_failed(state, action),
+            // Nothing to do: stopped, packets outside the handshake and `Up`, events the shell rules out, ticks with no deadline.
             (
                 P::Stopped,
                 E::DeviceUp(_)
@@ -444,18 +480,6 @@ impl Machine {
                 | E::SendFailed
                 | E::Tick
                 | E::Shutdown,
-            )
-            | (
-                P::Idle
-                | P::Opening { .. }
-                | P::AwaitHandshakeAck { .. }
-                | P::AwaitFeaturesAck { .. }
-                | P::Up { .. }
-                | P::Closing { .. }
-                | P::Backoff { .. }
-                | P::Parked { .. }
-                | P::Grace { .. },
-                E::CallFailed(_),
             )
             | (
                 P::Idle
@@ -545,6 +569,12 @@ impl Machine {
         let Some(device) = self.active else {
             return self.idle(state);
         };
+        if self.user_disconnects > 0 {
+            // corner: the user's disconnect ended the channel before BlueZ said the device left, and a dial now would page it back.
+            let until = after(now, FIRST_RETRY_MS);
+            self.enter(state, Phase::Backoff { attempt, until });
+            return Vec::new();
+        }
         raise(&mut state.counters.reconnect_attempts);
         self.open(state, device, attempt)
     }
@@ -609,10 +639,10 @@ impl Machine {
         Vec::new()
     }
 
-    /// BlueZ says the device left; keep its state for a grace if the link had been up.
+    /// BlueZ says the device left; keep its state for a grace if the link had been up and the user did not disconnect it.
     fn absent(&mut self, state: &mut State, now: Duration) -> Vec<Action> {
         self.held = false;
-        if !self.populated {
+        if !self.populated || self.user_disconnects > 0 {
             return self.idle(state);
         }
         self.enter(
@@ -636,6 +666,7 @@ impl Machine {
         self.active = None;
         self.held = false;
         self.populated = false;
+        self.user_disconnects = 0;
     }
 
     fn is_active(&self, device: BdAddr) -> bool {
@@ -692,6 +723,7 @@ fn raise(counter: &mut u64) {
 mod tests {
     mod commands;
     mod cpp_ladder;
+    mod devices;
     mod invariants;
     mod known;
     mod ladders;

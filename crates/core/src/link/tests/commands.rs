@@ -30,8 +30,8 @@ const PRIMARY_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x01]
 /// The secondary bud in an ear, the primary out.
 const SECONDARY_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x01, 0x00];
 
-/// Every command a client can send.
-fn every_command() -> [Command; 17] {
+/// Every command a client can send but connect, disconnect and forget, which `devices.rs` covers.
+fn every_command() -> [Command; 14] {
     [
         Command::SetNoise(NoiseTarget::Mode(NoiseMode::Off)),
         Command::SetNoise(NoiseTarget::Mode(NoiseMode::Anc)),
@@ -46,9 +46,6 @@ fn every_command() -> [Command; 17] {
         Command::SetOneBudAnc(true),
         Command::SetOneBudAnc(false),
         Command::SetAdaptiveLevel(level(30)),
-        Command::Connect,
-        Command::Disconnect,
-        Command::Forget,
         Command::Reopen,
     ]
 }

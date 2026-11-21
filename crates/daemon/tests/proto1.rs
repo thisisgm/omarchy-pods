@@ -79,6 +79,7 @@ mod tests {
     const SUBSCRIBE: &str = r#"{"v":1,"id":8,"op":"subscribe"}"#;
     const NOT_CONNECTED: &str =
         r#"{"code":"not_connected","message":"The AirPods are not connected."}"#;
+    const NO_DEVICE: &str = r#"{"code":"no_device","message":"There are no AirPods to act on."}"#;
     const BAD_REQUEST: &str =
         r#"{"code":"bad_request","message":"The daemon could not read the request."}"#;
 
@@ -274,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn every_action_is_refused_with_not_connected_and_reopen_is_not_an_action() {
+    fn every_action_with_no_airpods_known_is_no_device_and_reopen_is_not_an_action() {
         let session = Session::new();
         let _daemon = session.start();
         let mut client = Client::connect(&session);
@@ -282,7 +283,7 @@ mod tests {
             let request = format!(r#"{{"v":1,"id":10,"op":"do","action":"{action}"}}"#);
             assert_eq!(
                 client.ask(&request),
-                error_reply("10", NOT_CONNECTED),
+                error_reply("10", NO_DEVICE),
                 "{action}"
             );
         }

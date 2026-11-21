@@ -2,11 +2,12 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::mem;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -17,13 +18,20 @@ use pods_trap::{Answer, Dial, Route, Trap, TrapError};
 use rustix::process::{Signal, kill_process};
 use serde_json::Value;
 
-use super::bluez::{AAP_UUID, AdapterPath, DevicePath, FakeBluez};
+use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, start_bus};
-use super::{BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Session, wait_for, wait_within};
+use super::{
+    BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, do_request, outcome, wait_for,
+    wait_within,
+};
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
 /// A dial may leave just as `Connected` falls.
 pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
+/// The most a reply or a status may take while a BlueZ call hangs.
+pub(crate) const ANSWERED_WITHIN: Duration = Duration::from_millis(200);
+/// BlueZ method calls the daemon leaves unanswered at once before it fails the next.
+pub(crate) const CALLS_IN_FLIGHT_MAX: usize = 4;
 /// A dial that should come at once.
 pub(crate) const DIAL_WAIT: Duration = Duration::from_secs(1);
 /// How long the daemon waits for the pods to report a setting back.
@@ -60,10 +68,22 @@ const WATCH_LOG_NAME: &str = "watch.log";
 const ADDRESS_PREFIX: [u8; 5] = [0x02, 0x00, 0x00, 0x00, 0x00];
 const LOGGED_ADDRESS: [&str; 2] = ["02:00:00", "02_00_00"];
 
+#[derive(Clone)]
 pub(crate) struct Device {
     pub(crate) address: BdAddr,
     pub(crate) path: DevicePath,
     pub(crate) pods: Pods,
+}
+
+impl Device {
+    /// The call `method` on this device's own object, as the fake BlueZ records it.
+    pub(crate) fn call(&self, method: DeviceMethod) -> Call {
+        Call {
+            object: self.path.0.clone(),
+            method,
+            argument: None,
+        }
+    }
 }
 
 type Prepare = Box<dyn FnOnce(&mut Command)>;
@@ -78,7 +98,8 @@ pub(crate) struct Rig {
     adapter: Option<AdapterPath>,
     system_bus: Option<Bus>,
     session_bus: Bus,
-    pods: Vec<(BdAddr, Pods)>,
+    /// Shared with the fake BlueZ's reaction to calls.
+    devices: Arc<Mutex<Vec<Device>>>,
     prepare: Vec<Prepare>,
     session: Session,
 }
@@ -116,7 +137,7 @@ impl Rig {
             adapter: None,
             system_bus: None,
             session_bus,
-            pods: Vec::new(),
+            devices: Arc::default(),
             prepare: Vec::new(),
             session,
         }
@@ -128,7 +149,9 @@ impl Rig {
 
     fn bring_up_bluez(&mut self, own_name: bool) {
         let bus = start_bus(&self.session, SYSTEM_BUS);
-        let bluez = FakeBluez::start(&bus.address, own_name);
+        let mut bluez = FakeBluez::start(&bus.address, own_name);
+        let devices = Arc::clone(&self.devices);
+        bluez.on_call(move |bluez, call| react(bluez, call, &devices));
         self.adapter = Some(bluez.add_adapter());
         self.bluez = Some(bluez);
         self.system_bus = Some(bus);
@@ -152,7 +175,9 @@ impl Rig {
 
     /// Paired AirPods, not connected, at the next fixture address, routed to fake pods of their own.
     pub(crate) fn add_pods(&mut self, profile: Profile) -> Device {
-        let last = u8::try_from(self.pods.len()).unwrap().saturating_add(1);
+        let last = u8::try_from(lock(&self.devices).len())
+            .unwrap()
+            .saturating_add(1);
         let address = test_address(last);
         let pods = Pods::new(profile);
         let path = self
@@ -161,12 +186,30 @@ impl Rig {
         if let Some(trap) = &self.trap {
             trap.route(address, CONTROL_PSM, serve(&pods, Duration::ZERO));
         }
-        self.pods.push((address, pods.clone()));
-        Device {
+        let device = Device {
             address,
             path,
             pods,
-        }
+        };
+        lock(&self.devices).push(device.clone());
+        device
+    }
+
+    /// The daemon with one pair of pods it knows, paired and not connected.
+    pub(crate) fn with_known_pods() -> (Self, Device) {
+        let mut rig = Self::new();
+        let device = rig.add_pods(Profile::default());
+        rig.start();
+        rig.wait_disconnect_answers("not_connected");
+        (rig, device)
+    }
+
+    /// Asks `do disconnect` until it answers `code`, which tells what the daemon knows without a BlueZ call.
+    pub(crate) fn wait_disconnect_answers(&self, code: &str) {
+        let mut client = Proto1::connect(self.session());
+        wait_for(&format!("do disconnect to answer {code}"), || {
+            (outcome(&client.ask(&do_request(1, "disconnect"))) == code).then_some(())
+        });
     }
 
     /// Changes the daemon's command before a start.
@@ -176,13 +219,12 @@ impl Rig {
 
     /// Starts the built daemon under the trap and returns once its socket accepts.
     pub(crate) fn start(&mut self) {
-        let routes = self
-            .pods
+        let routes = lock(&self.devices)
             .iter()
-            .map(|(address, pods)| Route {
-                device: *address,
+            .map(|device| Route {
+                device: device.address,
                 psm: CONTROL_PSM,
-                answer: serve(pods, Duration::ZERO),
+                answer: serve(&device.pods, Duration::ZERO),
             })
             .collect();
         let command = self.command();
@@ -232,15 +274,12 @@ impl Rig {
 
     /// BlueZ reports the device connected.
     pub(crate) fn link_up(&self, device: &Device) {
-        self.bluez()
-            .set(&device.path, "Connected", zbus::OwnedVariant::from(true));
+        link_up(self.bluez(), &device.path);
     }
 
     /// BlueZ reports the device gone and its pods hang up, as a lost link does.
     pub(crate) fn link_down(&self, device: &Device) {
-        self.bluez()
-            .set(&device.path, "Connected", zbus::OwnedVariant::from(false));
-        device.pods.hang_up();
+        link_down(self.bluez(), &device.path, &device.pods);
     }
 
     /// The address of the session bus the daemon serves its D-Bus interface on.
@@ -376,7 +415,7 @@ impl Rig {
             stopped,
             trap,
             bluez,
-            pods,
+            devices,
             ..
         } = self;
         if let Some(mut daemon) = daemon {
@@ -418,8 +457,46 @@ impl Rig {
         if let Some(bluez) = bluez {
             bluez.finish();
         }
-        for (_, pods) in pods {
-            pods.finish().unwrap_or_else(|failure| panic!("{failure}"));
+        let devices = mem::take(&mut *lock(&devices));
+        for device in devices {
+            device
+                .pods
+                .finish()
+                .unwrap_or_else(|failure| panic!("{failure}"));
+        }
+    }
+}
+
+fn lock(devices: &Mutex<Vec<Device>>) -> MutexGuard<'_, Vec<Device>> {
+    devices.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn link_up(bluez: &Bluez, path: &DevicePath) {
+    bluez.set(path, "Connected", zbus::OwnedVariant::from(true));
+}
+
+fn link_down(bluez: &Bluez, path: &DevicePath, pods: &Pods) {
+    bluez.set(path, "Connected", zbus::OwnedVariant::from(false));
+    pods.hang_up();
+}
+
+/// Moves the fake BlueZ and the fake pods together after a call BlueZ answered, as the real ones move.
+fn react(bluez: &Bluez, call: &Call, devices: &Mutex<Vec<Device>>) {
+    let path = match call.method {
+        DeviceMethod::Connect | DeviceMethod::Disconnect => call.object.clone(),
+        DeviceMethod::RemoveDevice => call.argument.clone().expect("the device path"),
+    };
+    let device = lock(devices)
+        .iter()
+        .find(|device| device.path.0 == path)
+        .cloned()
+        .expect("a call on a device of the rig");
+    match call.method {
+        DeviceMethod::Connect => link_up(bluez, &device.path),
+        DeviceMethod::Disconnect => link_down(bluez, &device.path, &device.pods),
+        DeviceMethod::RemoveDevice => {
+            bluez.remove(&device.path);
+            device.pods.hang_up();
         }
     }
 }
@@ -498,6 +575,11 @@ pub(crate) fn named(status: &Value) -> bool {
     status["device_name"]
         .as_str()
         .is_some_and(|name| !name.is_empty())
+}
+
+/// One `*_total` counter of a parsed status.
+pub(crate) fn total(status: &Value, counter: &str) -> u64 {
+    status[counter].as_u64().unwrap()
 }
 
 /// From `wanted` to `wanted` plus `REAL_TIME_SLACK`, the range a real time check takes.

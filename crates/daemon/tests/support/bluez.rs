@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
+use std::ops::Deref;
+use std::panic;
 use std::pin::Pin;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
 use std::thread::{self, JoinHandle};
@@ -37,6 +39,9 @@ const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const FAILED: &str = "org.bluez.Error.Failed";
 const UNKNOWN: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 const THREAD_NAME: &str = "fake-bluez";
+const REACTOR_THREAD: &str = "fake-bluez-reactions";
+/// Answered calls waiting for their reaction; a test makes a handful.
+const REACTIONS_QUEUE: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AdapterPath(pub(crate) String);
@@ -62,10 +67,18 @@ pub(crate) struct Call {
 /// The serving thread and the sender that ends it.
 type Server = (oneshot::Sender<()>, JoinHandle<()>);
 
-pub(crate) struct FakeBluez {
+/// The fake's connection, its runtime and its objects, which the reactions to calls share.
+#[derive(Clone)]
+pub(crate) struct Bluez {
     connection: Connection,
     handle: Handle,
     objects: Arc<Mutex<Objects>>,
+}
+
+/// Declared in the order they must end: the reactions use the server.
+pub(crate) struct FakeBluez {
+    bluez: Bluez,
+    reactor: Option<JoinHandle<()>>,
     server: Option<Server>,
 }
 
@@ -80,6 +93,7 @@ struct Objects {
     fail: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
     sweeps: Vec<Instant>,
+    reactions: Option<SyncSender<Call>>,
 }
 
 struct Device {
@@ -115,13 +129,61 @@ impl FakeBluez {
             .recv_timeout(HANG_LIMIT)
             .expect("the fake BlueZ on the bus");
         Self {
-            connection,
-            handle,
-            objects,
+            bluez: Bluez {
+                connection,
+                handle,
+                objects,
+            },
+            reactor: None,
             server: Some((stop, thread)),
         }
     }
 
+    /// Runs `reaction` on a thread of its own after each device or adapter call the fake answers with success, in order.
+    pub(crate) fn on_call(&mut self, reaction: impl Fn(&Bluez, &Call) + Send + 'static) {
+        let (sender, answered) = mpsc::sync_channel(REACTIONS_QUEUE);
+        self.lock().reactions = Some(sender);
+        let bluez = self.bluez.clone();
+        let thread = thread::Builder::new()
+            .name(REACTOR_THREAD.to_owned())
+            .spawn(move || {
+                for call in answered {
+                    reaction(&bluez, &call);
+                }
+            })
+            .unwrap();
+        self.reactor = Some(thread);
+    }
+
+    /// Whether the serving thread has ended on its own.
+    pub(crate) fn stopped_serving(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_none_or(|(_, thread)| thread.is_finished())
+    }
+
+    /// Ends the serving thread, failing the test if it stopped serving or panicked before.
+    pub(crate) fn finish(mut self) {
+        let (stop, thread) = self.server.take().expect("a serving fake BlueZ");
+        assert!(
+            !thread.is_finished(),
+            "the fake BlueZ stopped serving before the end of the test"
+        );
+        // A thread gone by now ended in a panic, which the join reports.
+        stop.send(()).ok();
+        assert!(thread.join().is_ok(), "the fake BlueZ panicked");
+    }
+}
+
+impl Deref for FakeBluez {
+    type Target = Bluez;
+
+    fn deref(&self) -> &Bluez {
+        &self.bluez
+    }
+}
+
+impl Bluez {
     pub(crate) fn add_adapter(&self) -> AdapterPath {
         let path = {
             let mut objects = self.lock();
@@ -281,25 +343,6 @@ impl FakeBluez {
         })
     }
 
-    /// Whether the serving thread has ended on its own.
-    pub(crate) fn stopped_serving(&self) -> bool {
-        self.server
-            .as_ref()
-            .is_none_or(|(_, thread)| thread.is_finished())
-    }
-
-    /// Ends the serving thread, failing the test if it stopped serving or panicked before.
-    pub(crate) fn finish(mut self) {
-        let (stop, thread) = self.server.take().expect("a serving fake BlueZ");
-        assert!(
-            !thread.is_finished(),
-            "the fake BlueZ stopped serving before the end of the test"
-        );
-        // A thread gone by now ended in a panic, which the join reports.
-        stop.send(()).ok();
-        assert!(thread.join().is_ok(), "the fake BlueZ panicked");
-    }
-
     fn lock(&self) -> MutexGuard<'_, Objects> {
         self.objects.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -320,11 +363,20 @@ impl FakeBluez {
 
 impl Drop for FakeBluez {
     fn drop(&mut self) {
-        if let Some((stop, thread)) = self.server.take() {
+        // The reactor ends once its queue's sender is gone.
+        self.lock().reactions = None;
+        let reacted = self.reactor.take().map(JoinHandle::join);
+        let served = self.server.take().map(|(stop, thread)| {
             // A thread that already ended dropped its receiver, which is the end wanted.
             stop.send(()).ok();
-            // A thread that panicked has nothing left to clean up.
-            drop(thread.join());
+            thread.join()
+        });
+        for ended in [reacted, served].into_iter().flatten() {
+            if let Err(panic) = ended
+                && !thread::panicking()
+            {
+                panic::resume_unwind(panic);
+            }
         }
     }
 }
@@ -369,11 +421,29 @@ impl Objects {
             (Some(OBJECT_MANAGER), Some("GetManagedObjects"), Some("/")) => {
                 Message::method_return(&header).build(&self.managed())
             }
-            _ if recorded.is_some() => Message::method_return(&header).build(&()),
+            _ if recorded.is_some() => {
+                if let (Some(recorded), Some(reactions)) = (recorded, &self.reactions)
+                    && let Err(error) = reactions.try_send(recorded)
+                {
+                    panic!("the reaction to a call was lost: {error}");
+                }
+                Message::method_return(&header).build(&())
+            }
             (Some(PROPERTIES), Some("GetAll"), Some(path)) => match self.devices.get(path) {
                 Some(device) => Message::method_return(&header).build(&device.properties()),
                 None => Message::error(&header, UNKNOWN).build(&("No such object",)),
             },
+            (Some(PROPERTIES), Some("Get"), Some(path)) => {
+                let property = call
+                    .body()
+                    .deserialize::<(String, String)>()
+                    .ok()
+                    .and_then(|(_, name)| self.devices.get(path)?.properties().remove(&name));
+                match property {
+                    Some(value) => Message::method_return(&header).build(&value),
+                    None => Message::error(&header, UNKNOWN).build(&("No such property",)),
+                }
+            }
             _ => Message::error(&header, UNKNOWN).build(&("Not served by the fake",)),
         };
         Some(reply.unwrap())

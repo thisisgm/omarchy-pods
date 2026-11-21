@@ -5,6 +5,7 @@ use proptest::prelude::*;
 
 use super::sim::{Answer, DEVICES, Input, Sim, ms};
 use crate::command::tests::any_command;
+use crate::link::DeviceAction;
 
 /// The longest random packet, one receive buffer.
 const PACKET_MAX: usize = 4096;
@@ -38,6 +39,14 @@ fn packet() -> impl Strategy<Value = Vec<u8>> {
     ]
 }
 
+fn device_action() -> impl Strategy<Value = DeviceAction> {
+    prop_oneof![
+        Just(DeviceAction::Connect),
+        Just(DeviceAction::Disconnect),
+        Just(DeviceAction::Forget),
+    ]
+}
+
 fn answer() -> impl Strategy<Value = Answer> {
     prop_oneof![Just(Answer::Open), Just(Answer::Refuse), Just(Answer::Hold)]
 }
@@ -50,7 +59,7 @@ fn input() -> impl Strategy<Value = Input> {
         1 => Just(Input::BluezLost),
         6 => packet().prop_map(Input::Packet),
         2 => any_command().prop_map(Input::Command),
-        1 => Just(Input::CallFailed),
+        1 => device_action().prop_map(Input::CallFailed),
         2 => Just(Input::Tick),
         3 => (0..=SHORT_WAIT_MAX_MS).prop_map(|wait| Input::Wait(ms(wait))),
         1 => (0..=WAIT_MAX_MS).prop_map(|wait| Input::Wait(ms(wait))),

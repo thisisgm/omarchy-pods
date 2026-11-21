@@ -7,6 +7,11 @@ use std::process::{Command, Stdio};
 
 use super::{Daemon, Session, wait_for};
 
+/// The names the daemon serves on the session bus, from `src/daemon/dbus.rs`.
+pub(crate) const BUS_NAME: &str = "io.github.thisisgm.Omapods";
+pub(crate) const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
+pub(crate) const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+
 const BUS_DAEMON: &str = "dbus-daemon";
 const SOCKET_NAME: &str = "bus.sock";
 

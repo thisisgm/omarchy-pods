@@ -87,6 +87,30 @@ level included.
 ### `do`
 
 Asks for one action, named by `action`: `connect`, `disconnect` or `forget`.
+Each acts on the AirPods that have the link, else the AirPods that last had it
+since the daemon started, else the only AirPods BlueZ knows. When there are
+none, or several and none has had the link, it is refused with `no_device`.
+
+- `connect` replies `confirmed` when the link is already up. When BlueZ holds
+  the AirPods connected and the daemon waits to dial them again, it dials them
+  at once. Otherwise it asks BlueZ to connect them.
+- `disconnect` asks BlueZ to disconnect the AirPods, and the state is cleared
+  as soon as the link ends. It is refused with `not_connected` unless the
+  daemon is linked to them, dialling them or waiting to dial them again, and
+  BlueZ reports them connected.
+- `forget` asks BlueZ to remove the AirPods, which unpairs them.
+
+Each replies `sent` once the action is handed on, before BlueZ or the AirPods
+answer, so `sent` does not mean BlueZ accepted the call. The state then shows
+what BlueZ did. A call fails when BlueZ refuses it or does not answer within 30
+seconds. It is not made at all when four calls already wait for BlueZ, when
+BlueZ no longer holds the AirPods, or when the system bus is out of reach. A
+`connect` or `disconnect` that fails or is not made raises
+`connect_failures_total` or `disconnect_failures_total` and changes nothing
+else; a `forget` that fails or is not made is only logged. While a
+`disconnect` waits for BlueZ, the daemon does not dial the AirPods again, and
+if BlueZ reports them gone their state is cleared at once; once it fails, the
+daemon dials them again as before.
 
 ## Replies
 
@@ -103,9 +127,12 @@ A reply carries the request's `id` and `ok`.
   prints and the state file holds.
 - `set` and `do` reply with `result`. `confirmed` means the state shows the
   change: either it already did, or the AirPods reported the change within
-  700 ms of the command. `sent` means the command went to the AirPods and
-  nothing will report it back; today only `adaptive_level` replies `sent`, and
-  the state shows the level asked for at once. A setting command that waits
+  700 ms of the command. `sent` means the command was handed on and the reply
+  does not wait for its end. After `adaptive_level` the state shows the level
+  asked for at once. After a `do` the state shows what BlueZ did, and a call
+  that fails or is not made shows only in a counter or the log, as described
+  under `do`.
+  A setting command that waits
   for the AirPods is answered when they report the change or when the 700 ms
   pass.
 - A refused request replies with `error`: `code` for programs and `message`, one
@@ -131,7 +158,7 @@ therefore sees every change in order, or its connection closes.
 
 | `code` | `message` | When |
 |---|---|---|
-| `not_connected` | The AirPods are not connected. | The command needs the AirPods and they are not connected. |
+| `not_connected` | The AirPods are not connected. | The command needs the AirPods and they are not connected, or `disconnect` found them not linked, dialled or waiting to be dialled, or not connected in BlueZ, as described under `do`. |
 | `not_supported` | These AirPods do not support that. | The model has no such feature or listening mode, or `adaptive_level` was set while the listening mode is not adaptive. |
 | `not_worn` | The AirPods are not in an ear. | A listening mode change was not reported back within 700 ms and no bud is in an ear. Over ear AirPods get `timeout` instead. |
 | `out_of_range` | The value is outside the range the setting takes. | `adaptive_level` outside 0 to 100. |
@@ -139,6 +166,7 @@ therefore sees every change in order, or its connection closes.
 | `bad_request` | The daemon could not read the request. | See below. |
 | `timeout` | The AirPods did not answer in time. | The AirPods did not report the change within 700 ms, the daemon's input queue, which the AirPods' packets share, was full, or too many commands already waited for the AirPods to confirm them. |
 | `headless` | This daemon runs headless and has no window. | Not sent in protocol 1. |
+| `no_device` | There are no AirPods to act on. | A `do` found no AirPods to act on, as described under `do`. |
 | `unsupported_version` | This daemon speaks protocol version 1 only. | The line has a usable `id`, and `v` is present and is not `1`. The error lists the versions the daemon speaks in `supported`. |
 
 `bad_request` covers:

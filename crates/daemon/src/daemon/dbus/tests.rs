@@ -52,6 +52,7 @@ fn spelled(error: CommandError) -> &'static str {
         CommandError::BadRequest => "io.github.thisisgm.Omapods1.Error.BadRequest",
         CommandError::Timeout => "io.github.thisisgm.Omapods1.Error.Timeout",
         CommandError::Headless => "io.github.thisisgm.Omapods1.Error.Headless",
+        CommandError::NoDevice => "io.github.thisisgm.Omapods1.Error.NoDevice",
     }
 }
 
@@ -438,8 +439,9 @@ fn every_method_answers_with_what_submit_returns() {
         );
         assert!(peer.hub.state().conversational_awareness);
         assert_eq!(call(client, "SetOneBudAnc", &(true,)).await, not_connected);
+        let no_device = Err(format!("{ERROR_PREFIX}NoDevice"));
         for method in ["Connect", "Disconnect", "Forget"] {
-            assert_eq!(call(client, method, &()).await, not_connected, "{method}");
+            assert_eq!(call(client, method, &()).await, no_device, "{method}");
         }
     });
 }

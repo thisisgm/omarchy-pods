@@ -8,8 +8,11 @@ use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURE
 
 use crate::command::{Command, Outcome};
 use crate::link::ladder::PENDING_MAX;
-use crate::link::{Action, End, Event, Machine, Phase, Ticket};
+use crate::link::{Action, DeviceAction, End, Event, Machine, Phase, Ticket};
 use crate::state::State;
+
+/// What a step that asks for nothing returns.
+pub(super) const NO_ACTIONS: [&str; 0] = [];
 
 /// Synthetic device addresses, never a real one.
 pub(super) const DEVICES: [&str; 2] = ["02:00:00:00:00:01", "02:00:00:00:00:02"];
@@ -38,7 +41,7 @@ pub(super) enum Input {
     BluezLost,
     Packet(Vec<u8>),
     Command(Command),
-    CallFailed,
+    CallFailed(DeviceAction),
     Tick,
     /// Moves the clock on, ticking at every deadline on the way.
     Wait(Duration),
@@ -82,7 +85,7 @@ enum Queued {
     Ended(End),
     Packet(Vec<u8>),
     Command(Command),
-    CallFailed,
+    CallFailed(DeviceAction),
     SendFailed,
     Tick,
     Shutdown,
@@ -145,7 +148,7 @@ impl Sim {
             Input::BluezLost => Queued::BluezLost,
             Input::Packet(bytes) => Queued::Packet(bytes),
             Input::Command(command) => Queued::Command(command),
-            Input::CallFailed => Queued::CallFailed,
+            Input::CallFailed(action) => Queued::CallFailed(action),
             Input::Tick => Queued::Tick,
             Input::Shutdown => Queued::Shutdown,
             Input::Wait(span) => return self.run_until(self.now.saturating_add(span)),
@@ -316,7 +319,7 @@ impl Sim {
                 self.next_ticket = self.next_ticket.saturating_add(1);
                 Event::Command { ticket, command }
             }
-            Queued::CallFailed => Event::CallFailed(crate::link::DeviceAction::Connect),
+            Queued::CallFailed(action) => Event::CallFailed(action),
             Queued::SendFailed => Event::SendFailed,
             Queued::Tick => Event::Tick,
             Queued::Shutdown => Event::Shutdown,

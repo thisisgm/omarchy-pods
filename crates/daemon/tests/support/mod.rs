@@ -260,6 +260,10 @@ pub(crate) fn set_request(id: usize, key: &str, value: &str) -> String {
     format!(r#"{{"v":1,"id":{id},"op":"set","key":"{key}","value":"{value}"}}"#)
 }
 
+pub(crate) fn do_request(id: usize, action: &str) -> String {
+    format!(r#"{{"v":1,"id":{id},"op":"do","action":"{action}"}}"#)
+}
+
 /// A reply's `result`, or the `code` of its `error`.
 pub(crate) fn outcome(reply: &Value) -> &str {
     reply["result"]

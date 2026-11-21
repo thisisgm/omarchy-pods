@@ -218,6 +218,7 @@ fn entry_in_all(error: CommandError) -> CommandError {
         CommandError::BadRequest => CommandError::ALL[5],
         CommandError::Timeout => CommandError::ALL[6],
         CommandError::Headless => CommandError::ALL[7],
+        CommandError::NoDevice => CommandError::ALL[8],
     }
 }
 

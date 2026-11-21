@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use zbus::OwnedVariant;
 use zbus::connection::Builder;
 
+use crate::support::bus::{BUS_NAME, INTERFACE, OBJECT_PATH};
 use crate::support::rig::{ANC, Rig, TRANSPARENCY, assert_gap, connected, not_before};
 use crate::support::{HANG_LIMIT, Proto1, read_to_close, wait_for, wait_within};
 
@@ -65,9 +66,6 @@ const NEW_LEVEL: Cell = Cell {
     charging: false,
 };
 
-const BUS_NAME: &str = "io.github.thisisgm.Omapods";
-const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
-const INTERFACE: &str = "io.github.thisisgm.Omapods1";
 const GET: &str = r#"{"v":1,"id":1,"op":"get"}"#;
 const SUBSCRIBE: &[u8] = b"{\"v\":1,\"id\":1,\"op\":\"subscribe\"}\n";
 

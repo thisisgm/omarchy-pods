@@ -200,7 +200,11 @@ fn set_exit_codes_and_messages() {
             1,
             "The daemon could not read the request.\n",
         ),
-        (&["do", "disconnect"], 1, "The AirPods are not connected.\n"),
+        (
+            &["do", "disconnect"],
+            1,
+            "There are no AirPods to act on.\n",
+        ),
         (
             &["do", "reopen"],
             1,

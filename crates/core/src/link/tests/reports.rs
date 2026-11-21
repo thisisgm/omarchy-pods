@@ -7,13 +7,12 @@ use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_proto::packet::{Incoming, classify};
 
-use super::sim::{Input, Sim, ms};
+use super::sim::{Input, NO_ACTIONS, Sim, ms};
 use crate::command::tests::level;
 use crate::link::Phase;
 use crate::link::ladder::Attempt;
 use crate::state::State;
 
-const NO_ACTIONS: [&str; 0] = [];
 /// The longest random packet, one receive buffer.
 const PACKET_MAX: usize = 4096;
 /// Any fixed seed; the bytes only have to be arbitrary, not secret.
