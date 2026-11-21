@@ -73,15 +73,12 @@ pub struct Deadline {
     pub waited: Duration,
 }
 
-/// An `AF_UNIX` `SOCK_SEQPACKET` pair as `(host, pods)` channels, for tests in one process.
-///
-/// # Panics
-///
-/// When the kernel cannot make a socket pair.
+/// An `AF_UNIX` `SOCK_SEQPACKET` pair as `(host, pods)`; panics when the kernel cannot make one.
 #[must_use]
 #[expect(
     clippy::expect_used,
-    reason = "a test tool: with no socket pair there is no test to run"
+    clippy::missing_panics_doc,
+    reason = "a test tool: with no socket pair there is no test to run, and the one line says so"
 )]
 pub fn pair() -> (Channel, Channel) {
     let (host, pods) = socketpair(
