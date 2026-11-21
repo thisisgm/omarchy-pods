@@ -1,5 +1,6 @@
 //! The machine under arbitrary input: whatever arrives, the invariants hold and every ticket resolves once.
 
+use pods_proto::noise::NoiseMode;
 use proptest::prelude::*;
 
 use super::sim::{Answer, DEVICES, Input, Sim, ms};
@@ -21,6 +22,14 @@ fn device() -> impl Strategy<Value = usize> {
 fn packet() -> impl Strategy<Value = Vec<u8>> {
     let mut samples = pods_samples::first_burst();
     samples.push(pods_samples::control());
+    for mode in [
+        NoiseMode::Off,
+        NoiseMode::Anc,
+        NoiseMode::Transparency,
+        NoiseMode::Adaptive,
+    ] {
+        samples.push(mode.command().encode());
+    }
     let acks = vec![pods_samples::handshake_ack(), pods_samples::features_ack()];
     prop_oneof![
         4 => prop::sample::select(acks),

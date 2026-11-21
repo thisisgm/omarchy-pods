@@ -254,6 +254,11 @@ impl Sim {
         self.resolves.values().flatten().copied().collect()
     }
 
+    /// Every outcome ticket `ticket` resolved with, in order.
+    pub(super) fn outcome(&self, ticket: u64) -> Vec<Outcome> {
+        self.resolves.get(&ticket).cloned().unwrap_or_default()
+    }
+
     fn drain(&mut self) {
         for _ in 0..CASCADE_MAX {
             let Some(queued) = self.queue.pop_front() else {
@@ -403,6 +408,20 @@ impl Sim {
         if self.machine.active.is_some() && phase == Phase::Idle {
             self.violations
                 .push(format!("{label}: Idle with an active device"));
+        }
+        let pending = self.machine.pending.len();
+        if pending > 0 && !up {
+            self.violations
+                .push(format!("{label}: {pending} commands pending in {phase:?}"));
+        }
+        if pending > 0 && self.machine.deadline().is_none() {
+            self.violations.push(format!(
+                "{label}: {pending} commands pending and no deadline"
+            ));
+        }
+        if pending > PENDING_MAX {
+            self.violations
+                .push(format!("{label}: {pending} commands pending"));
         }
     }
 }

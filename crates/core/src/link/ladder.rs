@@ -27,6 +27,9 @@ pub const PARKED_RETRY_MS: u64 = 300_000;
 /// The C++ absent ladder as one deadline, `firstDelayMs` then `delayMs(1..=3)` for the default `m_retryAttempts`: 750 + 1000 + 2000 + 4000.
 pub const ABSENT_GRACE_MS: u64 = 7750;
 
+/// Under the client's 1000 ms reply wait with 300 ms to spare.
+pub const CONFIRM_TIMEOUT_MS: u64 = 700;
+
 /// Commands waiting for a report at once; the next one is refused.
 pub const PENDING_MAX: usize = 16;
 
