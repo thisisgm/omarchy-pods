@@ -150,7 +150,7 @@ async fn until_stopped(
 /// Removes the state file, which is how a watcher learns the daemon stopped.
 async fn remove_state_file(file: &StateFile) {
     if let Err(error) = file.remove().await {
-        log(&error);
+        log(&error.to_string());
     }
 }
 
