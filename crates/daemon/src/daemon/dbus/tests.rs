@@ -9,10 +9,12 @@ use std::thread;
 use std::time::Duration;
 
 use pods_core::command::AdaptiveLevel;
+use pods_core::state::EarDetectionBehavior;
 use pods_core::status::to_status_line;
 use pods_proto::battery::{Batteries, Charge};
 use pods_proto::ear::{EarPlacement, EarReport};
 use pods_proto::model::Model;
+use pods_proto::noise::NoiseMode;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -525,25 +527,6 @@ fn every_announced_property_is_a_property_of_the_interface() {
         .filter(|name| *name != "ApiVersion")
         .collect();
     assert_eq!(announced, introspected);
-}
-
-#[test]
-fn every_mode_and_behavior_has_a_name() {
-    for mode in [
-        NoiseMode::Off,
-        NoiseMode::Anc,
-        NoiseMode::Transparency,
-        NoiseMode::Adaptive,
-    ] {
-        assert!(!noise_mode_name(mode).is_empty(), "{mode:?}");
-    }
-    for behavior in [
-        EarDetectionBehavior::PauseWhenOneRemoved,
-        EarDetectionBehavior::PauseWhenBothRemoved,
-        EarDetectionBehavior::Disabled,
-    ] {
-        assert!(!ear_detection_name(behavior).is_empty(), "{behavior:?}");
-    }
 }
 
 #[test]

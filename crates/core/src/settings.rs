@@ -46,15 +46,6 @@ pub fn setting(key: &str, value: &str) -> Result<Command, CommandError> {
     }
 }
 
-// Sample input: key `ear_detection` with `SetEarDetection(PauseWhenBothRemoved)` gives `both`.
-#[must_use]
-pub fn word(key: &str, command: Command) -> Option<&'static str> {
-    match family(key)? {
-        Family::Words(prefix) => legacy::family_word(prefix, command),
-        Family::Switch(_) | Family::Level => None,
-    }
-}
-
 fn family(key: &str) -> Option<Family> {
     KEYS.iter()
         .find_map(|&(name, family)| (name == key).then_some(family))

@@ -69,6 +69,16 @@ pub enum EarDetectionBehavior {
 }
 
 impl EarDetectionBehavior {
+    /// The word after `ear:` in a legacy verb, which `set ear_detection` takes and the `EarDetection` property shows.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::PauseWhenOneRemoved => "one",
+            Self::PauseWhenBothRemoved => "both",
+            Self::Disabled => "off",
+        }
+    }
+
     pub(crate) fn number(self) -> u8 {
         match self {
             Self::PauseWhenOneRemoved => 0,
