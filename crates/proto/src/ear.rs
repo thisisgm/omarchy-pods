@@ -1,9 +1,9 @@
 //! Ear detection: where each bud sits.
 
-use crate::error::{ParseError, strip_header};
+use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
 /// Every ear detection packet starts with these bytes.
-const HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00];
+const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00];
 /// Header plus the primary and secondary placement bytes.
 const MIN_LEN: usize = 8;
 
@@ -41,9 +41,10 @@ impl EarReport {
     /// Reads an ear detection packet; bytes past the eighth are ignored.
     // 04 00 04 00 06 00 00 01: header, primary placement, secondary placement.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let body = strip_header(bytes, &HEADER, MIN_LEN)?;
+        let body = strip_header(Parser::Ear, bytes, HEADER, MIN_LEN)?;
         let Some(&[primary, secondary]) = body.first_chunk::<2>() else {
             return Err(ParseError::TooShort {
+                parser: Parser::Ear,
                 need: MIN_LEN,
                 got: bytes.len(),
             });
@@ -95,6 +96,7 @@ impl EarReport {
 mod tests {
     use super::*;
     use crate::cpp_header::PACKETS;
+    use crate::error::Header;
 
     fn packet(primary: u8, secondary: u8) -> Vec<u8> {
         let mut buf = HEADER.to_vec();
@@ -126,7 +128,11 @@ mod tests {
         buf.push(0x00);
         assert_eq!(
             EarReport::parse(&buf),
-            Err(ParseError::TooShort { need: 8, got: 7 })
+            Err(ParseError::TooShort {
+                parser: Parser::Ear,
+                need: 8,
+                got: 7
+            })
         );
     }
 
@@ -186,7 +192,14 @@ mod tests {
 
     #[test]
     fn rejects_a_packet_without_the_ear_header() {
-        assert_eq!(EarReport::parse(&[0; 8]), Err(ParseError::BadHeader));
+        assert_eq!(
+            EarReport::parse(&[0; 8]),
+            Err(ParseError::BadHeader {
+                parser: Parser::Ear,
+                expected: Header(HEADER),
+                got: Header([0; 6]),
+            })
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Battery levels from the control channel packet and from the decrypted proximity payload.
 
-use crate::error::{ParseError, strip_header};
+use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
 /// Every control channel battery packet starts with these bytes.
-const HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x04, 0x00];
+const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x04, 0x00];
 /// Header plus the entry count byte.
 const MIN_LEN: usize = 7;
 /// Kind, spacer, level, status, end.
@@ -43,6 +43,7 @@ impl TryFrom<u8> for Component {
             0x04 => Ok(Self::Left),
             0x08 => Ok(Self::Case),
             _ => Err(ParseError::UnknownValue {
+                parser: Parser::Battery,
                 field: "battery component",
                 value,
             }),
@@ -75,15 +76,17 @@ impl BatteryReport {
     /// Reads the control channel battery packet; an unknown part or a level above 100 is left out.
     // 04 00 04 00 04 00 01 01 01 55 02 01: header, count, then per entry kind, 01, level, status, 01.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let body = strip_header(bytes, &HEADER, MIN_LEN)?;
+        let body = strip_header(Parser::Battery, bytes, HEADER, MIN_LEN)?;
         let Some((&count, rest)) = body.split_first() else {
             return Err(ParseError::TooShort {
+                parser: Parser::Battery,
                 need: MIN_LEN,
                 got: bytes.len(),
             });
         };
         if count > MAX_ENTRIES {
             return Err(ParseError::UnknownValue {
+                parser: Parser::Battery,
                 field: "battery count",
                 value: count,
             });
@@ -91,6 +94,7 @@ impl BatteryReport {
         let (entries, remainder) = rest.as_chunks::<ENTRY_LEN>();
         if !remainder.is_empty() || entries.len() != usize::from(count) {
             return Err(ParseError::WrongLength {
+                parser: Parser::Battery,
                 expected: usize::from(count)
                     .saturating_mul(ENTRY_LEN)
                     .saturating_add(MIN_LEN),
@@ -101,7 +105,11 @@ impl BatteryReport {
         for &[kind, spacer, level, status, end] in entries {
             for (field, mark) in [("battery spacer", spacer), ("battery end", end)] {
                 if mark != ENTRY_MARK {
-                    return Err(ParseError::UnknownValue { field, value: mark });
+                    return Err(ParseError::UnknownValue {
+                        parser: Parser::Battery,
+                        field,
+                        value: mark,
+                    });
                 }
             }
             let Ok(component) = Component::try_from(kind) else {
@@ -132,6 +140,7 @@ impl BatteryReport {
     ) -> Result<Self, ParseError> {
         let Ok(&[_, first, second, case, ..]) = <&[u8; DECRYPTED_LEN]>::try_from(payload) else {
             return Err(ParseError::WrongLength {
+                parser: Parser::DecryptedBattery,
                 expected: DECRYPTED_LEN,
                 got: payload.len(),
             });
