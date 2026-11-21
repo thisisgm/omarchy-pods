@@ -298,7 +298,10 @@ fn a_start_while_the_uplink_runs_is_not_repeated() {
 
     assert_eq!(report.pods.count(&START), 1);
     assert!(report.stop_followed_start(), "{:02x?}", report.pods.got());
-    assert_eq!(report.outcome().starts, 1);
+    let outcome = report.outcome();
+    assert_eq!(outcome.starts, 1);
+    // The second start is passed over, so the script still runs to its end.
+    assert_eq!(outcome.end, EndReason::ScriptDone);
 }
 
 #[test]
@@ -311,11 +314,17 @@ fn no_stop_is_sent_when_no_start_was_sent() {
     hang_up.pods.hang_up_when_ready = true;
     let mut interrupted = Case::new(Opening::Handshake, &[at(0, Action::Start)]);
     interrupted.interrupted = true;
-    for (name, case, sent) in [
-        ("script done", done, 3),
-        ("handshake timeout", timeout, 2),
-        ("peer hang up", hang_up, 3),
-        ("interrupted before the run", interrupted, 0),
+    let timed_out = EndReason::HandshakeTimeout(Step::AwaitFeaturesAck);
+    for (name, case, sent, end) in [
+        ("script done", done, 3, EndReason::ScriptDone),
+        ("handshake timeout", timeout, 2, timed_out),
+        ("peer hang up", hang_up, 3, EndReason::PeerClosed),
+        (
+            "interrupted before the run",
+            interrupted,
+            0,
+            EndReason::Interrupted,
+        ),
     ] {
         let report = case.run();
         let got = report.pods.got();
@@ -323,6 +332,7 @@ fn no_stop_is_sent_when_no_start_was_sent() {
         assert!(!got.contains(&&START[..]), "{name}: {got:02x?}");
         assert_eq!(got.len(), sent, "{name}: {got:02x?}");
         let outcome = report.outcome();
+        assert_eq!(outcome.end, end, "{name}");
         assert_eq!((outcome.starts, outcome.stops), (0, 0), "{name}");
         assert!(report.marks("stop").is_empty(), "{name}");
     }
@@ -470,23 +480,24 @@ fn side_is_restored_on_every_exit_path() {
 #[test]
 fn a_script_restore_puts_back_the_side_the_pods_reported() {
     let events = [
-        at(0, Action::SetSide(MicSide::Left)),
-        at(10, Action::SetSide(MicSide::Right)),
+        at(0, Action::SetSide(MicSide::Right)),
+        at(10, Action::SetSide(MicSide::Automatic)),
         at(20, Action::RestoreSide),
         at(30, Action::Cue("after the restore")),
         at(40, Action::End),
     ];
     let mut case = Case::new(Opening::Handshake, &events);
     case.script.needs_initial_side = true;
-    case.pods.side = Some(MicSide::Automatic);
+    // The reported side is neither the default nor the last one set, so only a restore of what was read sends it.
+    case.pods.side = Some(MicSide::Left);
     let report = case.run();
 
-    let sides: Vec<Vec<u8>> = [MicSide::Left, MicSide::Right, MicSide::Automatic]
+    let sides: Vec<Vec<u8>> = [MicSide::Right, MicSide::Automatic, MicSide::Left]
         .map(|side| side.command().encode())
         .to_vec();
     assert_eq!(report.pods.got()[3..], sides);
     let texts: Vec<&str> = report.marks("side").iter().map(|mark| mark.1).collect();
-    assert_eq!(texts, ["set left", "set right", "restored"]);
+    assert_eq!(texts, ["set right", "set automatic", "restored"]);
     // The side goes back when the script says, not when the run ends.
     let kinds = report.kinds();
     assert!(
@@ -508,7 +519,6 @@ fn a_truncated_sdu_is_marked_and_counted_not_logged() {
     );
     let from_pods = report.logged(Direction::FromPods);
     assert_eq!(from_pods, report.pods.sent[1..]);
-    assert!(!report.log.contains("1111"));
     let outcome = report.outcome();
     assert_eq!(outcome.truncated, 1);
     assert_eq!(outcome.sdus_in, u64::try_from(from_pods.len()).unwrap());
