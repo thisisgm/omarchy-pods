@@ -246,6 +246,7 @@ version = "0.0.0"
 dependencies = [
  "cpp-source",
  "pods-proto",
+ "proptest",
  "serde_json",
 ]
 
