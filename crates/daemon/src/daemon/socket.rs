@@ -12,7 +12,7 @@ use rustix::fs::Mode;
 use rustix::process::umask;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::task::JoinSet;
+use tokio::task::{JoinSet, spawn_blocking};
 use tokio::time::{sleep, timeout};
 
 use super::hub::Hub;
@@ -56,14 +56,27 @@ pub(super) async fn ask_running_daemon_to_reopen(socket: &Path) -> bool {
 }
 
 /// Takes the lock beside `socket` that one starting or running daemon holds, or `None` while another holds it.
-pub(super) fn lock(socket: &Path) -> Result<Option<File>, String> {
+pub(super) async fn lock(socket: &Path) -> Result<Option<File>, String> {
     let path = socket.with_extension(LOCK_EXTENSION);
+    let job = path.clone();
+    spawn_blocking(move || take_lock(&job))
+        .await
+        .map_err(|error| {
+            format!(
+                "cannot take the daemon lock {}: the lock did not finish: {error}",
+                path.display()
+            )
+        })?
+}
+
+/// Opens and locks `path` on the calling thread, which `lock` keeps off the runtime.
+fn take_lock(path: &Path) -> Result<Option<File>, String> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(LOCK_MODE)
-        .open(&path)
+        .open(path)
         .map_err(|error| format!("cannot open the daemon lock {}: {error}", path.display()))?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
@@ -76,7 +89,26 @@ pub(super) fn lock(socket: &Path) -> Result<Option<File>, String> {
 }
 
 /// Removes a socket file a dead daemon left, then binds `socket` with mode 0600; the caller holds the lock.
-pub(super) fn bind(socket: &Path) -> Result<UnixListener, String> {
+pub(super) async fn bind(socket: &Path) -> Result<UnixListener, String> {
+    let job = socket.to_path_buf();
+    let listener = spawn_blocking(move || bind_now(&job))
+        .await
+        .map_err(|error| {
+            format!(
+                "cannot bind the control socket {}: the bind did not finish: {error}",
+                socket.display()
+            )
+        })??;
+    UnixListener::from_std(listener).map_err(|error| {
+        format!(
+            "cannot serve the control socket {}: {error}",
+            socket.display()
+        )
+    })
+}
+
+/// The file work of `bind` on the calling thread, which `bind` keeps off the runtime.
+fn bind_now(socket: &Path) -> Result<StdUnixListener, String> {
     match fs::remove_file(socket) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {}
@@ -87,7 +119,7 @@ pub(super) fn bind(socket: &Path) -> Result<UnixListener, String> {
             ));
         }
     }
-    // The umask is process wide; the current thread runtime has started no other thread to create a file meanwhile.
+    // The umask is process wide; startup awaits each blocking job before the next, so no other thread creates a file meanwhile.
     let previous = umask(Mode::from_raw_mode(SOCKET_UMASK));
     let bound = StdUnixListener::bind(socket);
     umask(previous);
@@ -97,15 +129,31 @@ pub(super) fn bind(socket: &Path) -> Result<UnixListener, String> {
             socket.display()
         )
     })?;
-    listener
-        .set_nonblocking(true)
-        .and_then(|()| UnixListener::from_std(listener))
-        .map_err(|error| {
-            format!(
-                "cannot serve the control socket {}: {error}",
-                socket.display()
-            )
-        })
+    listener.set_nonblocking(true).map_err(|error| {
+        format!(
+            "cannot serve the control socket {}: {error}",
+            socket.display()
+        )
+    })?;
+    Ok(listener)
+}
+
+/// Removes the socket file at shutdown, on the blocking pool; one already gone is not an error.
+pub(super) async fn remove(socket: &Path) -> Result<(), String> {
+    let job = socket.to_path_buf();
+    let removal = spawn_blocking(move || fs::remove_file(job)).await;
+    match removal {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Ok(Err(error)) => Err(format!(
+            "cannot remove the control socket {}: {error}",
+            socket.display()
+        )),
+        Err(error) => Err(format!(
+            "cannot remove the control socket {}: the removal did not finish: {error}",
+            socket.display()
+        )),
+    }
 }
 
 /// Accepts clients until aborted, each in its own task, so a slow or silent client delays no other.
@@ -134,9 +182,29 @@ pub(super) async fn accept_loop(listener: UnixListener, hub: Hub) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+
     use cpp_source::MAIN;
+    use rustix::fs::{CWD, OFlags, mkfifoat, open};
+    use tokio::runtime::Builder;
 
     use super::*;
+
+    /// A lock still being taken after this long has blocked the thread it runs on.
+    const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+    fn block_on<F: Future>(future: F) -> F::Output {
+        Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    /// Opens the FIFO at `path` to read without waiting for a writer.
+    fn open_reader(path: &Path) -> File {
+        File::from(open(path, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).unwrap())
+    }
 
     #[test]
     fn start_probe_matches_the_cpp_single_instance_guard() {
@@ -152,11 +220,11 @@ mod tests {
     fn lock_is_refused_while_another_holds_it() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("librepods.sock");
-        let held = lock(&socket).unwrap();
+        let held = block_on(lock(&socket)).unwrap();
         assert!(held.is_some());
-        assert!(lock(&socket).unwrap().is_none());
+        assert!(block_on(lock(&socket)).unwrap().is_none());
         drop(held);
-        assert!(lock(&socket).unwrap().is_some());
+        assert!(block_on(lock(&socket)).unwrap().is_some());
         let mode = fs::metadata(dir.path().join("librepods.lock"))
             .unwrap()
             .permissions();
@@ -164,5 +232,35 @@ mod tests {
             std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
             LOCK_MODE
         );
+    }
+
+    #[test]
+    fn lock_leaves_the_runtime_thread_free_while_it_opens_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("librepods.sock");
+        let lock_path = socket.with_extension(LOCK_EXTENSION);
+        // Opening a FIFO to write waits for a reader, and only a task on the runtime thread opens one.
+        mkfifoat(CWD, &lock_path, Mode::from_raw_mode(LOCK_MODE)).unwrap();
+        let reader_path = lock_path.clone();
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            let outcome = block_on(async {
+                let reader = tokio::spawn(async move { open_reader(&reader_path) });
+                let taken = lock(&socket).await;
+                (taken, reader.await)
+            });
+            // The test has already failed if nobody is left to receive this.
+            drop(done.send(outcome));
+        });
+        match finished.recv_timeout(HANG_LIMIT) {
+            Ok((taken, reader)) => {
+                assert!(taken.unwrap().is_some());
+                drop(reader.unwrap());
+            }
+            Err(error) => {
+                drop(open_reader(&lock_path));
+                panic!("taking the lock held the runtime thread: {error}");
+            }
+        }
     }
 }

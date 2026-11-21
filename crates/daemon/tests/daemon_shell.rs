@@ -16,6 +16,7 @@ mod tests {
     use pods_core::legacy::{LegacyRequest, parse_verb};
     use pods_core::state::State;
     use pods_core::status::to_status_line;
+    use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};
     use rustix::process::{Pid, Signal, kill_process};
     use tempfile::TempDir;
 
@@ -59,6 +60,12 @@ mod tests {
 
     /// Two and a half of the daemon's one second write retries, long enough to see a repeated log line.
     const RETRIES_WATCHED: Duration = Duration::from_millis(2500);
+
+    /// The lock file's extension beside the socket, from `LOCK_EXTENSION` in `src/daemon/socket.rs`.
+    const LOCK_EXTENSION: &str = "lock";
+
+    /// SIGTERM is signal 15, so bit 14 of a signal mask in `/proc/<pid>/status`.
+    const SIGTERM_BIT: u64 = 1 << 14;
 
     /// The level the adaptive verb sends.
     const ADAPTIVE_VERB: &str = "adaptive:37";
@@ -230,6 +237,17 @@ mod tests {
                 .find(|line| line.starts_with("VmRSS:"))
                 .unwrap();
             line.split_whitespace().nth(1).unwrap().parse().unwrap()
+        }
+
+        /// Whether the daemon has installed its SIGTERM handler, from `/proc/<pid>/status`.
+        // Sample input: `SigCgt:\t0000000000004003`
+        fn catches_sigterm(&self) -> bool {
+            let status = fs::read_to_string(format!("/proc/{}/status", self.child.id())).unwrap();
+            let mask = status
+                .lines()
+                .find_map(|line| line.strip_prefix("SigCgt:"))
+                .unwrap();
+            u64::from_str_radix(mask.trim(), 16).unwrap() & SIGTERM_BIT != 0
         }
     }
 
@@ -489,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn sigterm_during_startup_is_handled_once_startup_finishes() {
+        let session = Session::new();
+        let lock = session.socket().with_extension(LOCK_EXTENSION);
+        // Opening a FIFO to write waits for a reader, so the daemon cannot pass its lock until the test opens one.
+        mkfifoat(CWD, &lock, Mode::from_raw_mode(0o600)).unwrap();
+        let mut daemon = session.spawn(&["daemon"], "daemon.log");
+        wait_for("the daemon's SIGTERM handler", || {
+            daemon.catches_sigterm().then_some(())
+        });
+        kill_process(daemon.pid(), Signal::TERM).unwrap();
+        let reader = open(&lock, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).unwrap();
+        assert_eq!(daemon.wait_exit().code(), Some(0));
+        assert_eq!(daemon.log(), "SIGTERM received, stopping\n");
+        assert!(!session.socket().exists());
+        assert!(!session.state_file().exists());
+        drop(reader);
+    }
+
+    #[test]
     fn state_file_is_not_rewritten_when_nothing_changes() {
         let session = Session::new();
         let _daemon = session.start();
@@ -655,7 +692,25 @@ mod tests {
             "{log}"
         );
         assert!(!session.state_file().exists());
+        // Only the first publish creates the state directory, so it ran before the bind failed.
+        assert!(session.state_file().parent().unwrap().is_dir());
         assert!(session.socket().is_dir());
+    }
+
+    #[test]
+    fn held_lock_exits_zero_before_the_first_publish() {
+        let session = Session::new();
+        let held = File::create(session.socket().with_extension(LOCK_EXTENSION)).unwrap();
+        held.try_lock().unwrap();
+        let mut daemon = session.spawn(&["daemon"], "daemon.log");
+        assert_eq!(daemon.wait_exit().code(), Some(0));
+        assert!(
+            daemon.log().contains("another daemon is starting"),
+            "{}",
+            daemon.log()
+        );
+        assert!(!session.state_file().parent().unwrap().exists());
+        assert!(!session.socket().exists());
     }
 
     #[test]

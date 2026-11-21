@@ -6,8 +6,7 @@ mod signals;
 mod socket;
 pub(crate) mod state_file;
 
-use std::fs;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -58,7 +57,7 @@ async fn serve(paths: Paths) -> ExitCode {
         ));
         return ExitCode::SUCCESS;
     }
-    let _lock = match socket::lock(&paths.socket) {
+    let _lock = match socket::lock(&paths.socket).await {
         Ok(Some(lock)) => lock,
         Ok(None) => {
             log(&format!(
@@ -79,8 +78,8 @@ async fn serve(paths: Paths) -> ExitCode {
     // Before the socket exists, so a client that can connect finds the state file unless the write failed.
     let first = to_status_line(&updates.borrow());
     let mut failures = WriteFailures::default();
-    failures.note(&file, file.publish_now(&first));
-    let listener = match socket::bind(&paths.socket) {
+    failures.note(&file, file.publish(first).await);
+    let listener = match socket::bind(&paths.socket).await {
         Ok(listener) => listener,
         Err(error) => {
             log(&error);
@@ -95,13 +94,8 @@ async fn serve(paths: Paths) -> ExitCode {
     log(&format!("{signal} received, stopping"));
     accept.abort();
     follow.abort();
-    match fs::remove_file(&paths.socket) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => log(&format!(
-            "cannot remove the control socket {}: {error}",
-            paths.socket.display()
-        )),
+    if let Err(error) = socket::remove(&paths.socket).await {
+        log(&error);
     }
     remove_state_file(&file).await;
     ExitCode::SUCCESS
