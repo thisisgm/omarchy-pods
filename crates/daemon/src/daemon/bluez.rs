@@ -54,7 +54,7 @@ const WORTH_A_READ: [&str; 2] = ["UUIDs", "ServicesResolved"];
 /// The signals of every match rule merged in the order the connection received them.
 type Signals = IntoStream<JoinMultiple<Vec<Peekable<MessageStream>>>>;
 
-/// The body of `GetManagedObjects`: path, then interface, then property.
+/// The body of `GetManagedObjects`, path then interface then property: `{/org/bluez/hci0/dev_02_00_00_00_00_01: {"org.bluez.Device1": {"Connected": <true>}}}`.
 type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>;
 
 /// Watches until aborted, or until the driver is gone.
@@ -138,6 +138,7 @@ impl Watcher<'_> {
         }
     }
 
+    /// Sample input: `("org.bluez", ":1.4", "")`, `(/org/bluez/hci0/dev_02_00_00_00_00_01, {"org.bluez.Device1": {"Connected": <true>}})` or `(/org/bluez/hci0/dev_02_00_00_00_00_01, ["org.bluez.Device1"])`.
     async fn take(&mut self, message: &Message) -> ControlFlow<()> {
         let header = message.header();
         let change = match header.member().map(MemberName::as_str) {
@@ -180,7 +181,7 @@ impl Watcher<'_> {
         }
     }
 
-    /// A `PropertiesChanged` of `Device1`, read whole when it may make a candidate of a path not kept.
+    /// A `PropertiesChanged` of `Device1` such as `("org.bluez.Device1", {"Connected": <true>}, ["Alias"])`, read whole when it may make a candidate of a path not kept.
     async fn changed(&mut self, path: &str, message: &Message) -> Option<Change> {
         let (_, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
             message.body().deserialize().ok()?;
@@ -240,7 +241,7 @@ impl Watcher<'_> {
         self.report(Change::Swept(devices)).await
     }
 
-    /// Without BlueZ on the bus no sweep is tried again, as its return brings one.
+    /// Whether `NameHasOwner` answers `(true,)` for BlueZ; without BlueZ on the bus no sweep is tried again, as its return brings one.
     async fn bluez_on_bus(&self) -> bool {
         let call = self.connection.call_method(
             Some(BUS),

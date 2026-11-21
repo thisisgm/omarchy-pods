@@ -46,8 +46,7 @@ pub(super) struct Candidates {
 }
 
 impl Properties {
-    /// Reads `Address`, `UUIDs` and `Connected`; a value of another type reads as absent, and no other property is touched.
-    // Sample input: `{"Address": <"02:00:00:00:00:01">, "UUIDs": <["74ec2172-0bad-4d01-8f77-997b2be0722a"]>, "Connected": <true>}`.
+    /// Reads `Address`, `UUIDs` and `Connected` of `{"Address": <"02:00:00:00:00:01">, "UUIDs": <["74ec2172-0bad-4d01-8f77-997b2be0722a"]>, "Connected": <true>}`; a value of another type reads as absent.
     pub(super) fn read(properties: &HashMap<String, OwnedVariant>) -> Self {
         let value = |name: &str| properties.get(name).map(|value| &**value);
         Self {
