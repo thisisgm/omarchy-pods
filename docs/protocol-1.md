@@ -27,10 +27,11 @@ them in the order they arrive.
 - The daemon waits on the client while a request line is unfinished, while a
   reply or event it has queued is not yet sent, and, on a connection that has
   not subscribed, at all times. While it waits, it closes the connection after
-  2 seconds without progress. Progress is a complete request line answered or a
-  queued line sent in full; the bytes of an unfinished line do not count, so
-  the 2 seconds for a line run from the last progress before it. A subscriber
-  with nothing unfinished or queued may stay idle as long as it likes.
+  2 seconds without progress. The 2 seconds start when the daemon begins to
+  wait and start again at each progress: a complete request line answered, or
+  a queued line sent in full. The bytes of an unfinished line are not progress.
+  A subscriber with nothing unfinished or queued may stay idle as long as it
+  likes.
 - Members a request does not use are ignored. A member given twice takes its
   last value.
 
