@@ -17,9 +17,9 @@ const KNOCK_HOLD_MS: u32 = 3_000;
 const SOAK_TAIL_MS: u32 = 5_000;
 /// How long the uplink runs in each cycle of `trials` and `firstword`.
 const CYCLE_STREAM_MS: u32 = 5_000;
-/// The first sixteen cycles of `trials` start this far apart, which leaves 10 s of idle before each.
+/// The first sixteen cycles of `trials` start this far apart, which leaves 10 s of idle between them.
 const TRIALS_SHORT_PERIOD_MS: u32 = 15_000;
-/// How many cycles of `trials` follow the short idle.
+/// How many cycles of `trials` start that close together; the first of them starts at the gate.
 const TRIALS_SHORT_CYCLES: u32 = 16;
 /// The starts of the last four cycles of `trials`, each after 60 s of idle.
 const TRIALS_LONG_STARTS_MS: [u32; 4] = [290_000, 355_000, 420_000, 485_000];
@@ -285,7 +285,7 @@ fn cycles(starts_ms: impl IntoIterator<Item = u32>) -> impl Iterator<Item = Even
     })
 }
 
-/// `trials`: twenty uplink runs while the owner counts and then stays quiet, sixteen after 10 s of idle and four after 60 s.
+/// `trials`: twenty uplink runs while the owner counts and then stays quiet: one at the gate, fifteen after 10 s of idle and four after 60 s.
 fn trials() -> Vec<Event> {
     let short_starts = (0..TRIALS_SHORT_CYCLES).map(|k| k.saturating_mul(TRIALS_SHORT_PERIOD_MS));
     let mut events = vec![at(0, Action::Cue("Count aloud until told to stop"))];
