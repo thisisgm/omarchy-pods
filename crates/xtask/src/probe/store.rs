@@ -259,9 +259,9 @@ pub(crate) fn read_device(root: &Path) -> Result<BdAddr, StoreError> {
     parse_device(&path, &contents)
 }
 
-/// Reads a file from outside the store by the same rules as a capture: a regular file of the caller's, owner only, at most `MAX_READ_BYTES`.
-pub(crate) fn read_trace(path: &Path) -> Result<Vec<u8>, StoreError> {
-    read_bounded(CWD, path, path, ModeRule::OwnerOnly, MAX_READ_BYTES)
+/// Reads a file from outside the store by the same rules as a capture, with its own bound: a regular file of the caller's, owner only, at most `limit` bytes.
+pub(crate) fn read_trace(path: &Path, limit: u64) -> Result<Vec<u8>, StoreError> {
+    read_bounded(CWD, path, path, ModeRule::OwnerOnly, limit)
 }
 
 // Sample input: b"AA:BB:CC:DD:EE:FF\n", one address and an optional newline.
