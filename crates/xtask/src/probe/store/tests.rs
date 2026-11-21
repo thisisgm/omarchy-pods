@@ -265,10 +265,15 @@ fn run_opened_inside_a_git_work_tree_is_refused() {
     let session = run.parent().unwrap();
     fs::create_dir(session.join(".git")).unwrap();
     let error = Run::open(&run).unwrap_err();
-    assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
+    assert!(
+        matches!(&error, StoreError::InRepository { path, .. } if path == session),
+        "{error}"
+    );
     let error = Session::open(&root_of(&home), STAMP).unwrap_err();
-    assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
-    assert!(names_path(&error, session), "{error}");
+    assert!(
+        matches!(&error, StoreError::InRepository { path, .. } if path == session),
+        "{error}"
+    );
 
     let relative = Path::new(ROOT_NAME).join(STAMP).join("run");
     let error = Run::open(&relative).unwrap_err();
