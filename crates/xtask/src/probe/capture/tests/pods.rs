@@ -34,14 +34,16 @@ pub(super) const TAIL_NS: u64 = 40_000_000;
 const PODS_POLL: Duration = Duration::from_millis(2);
 /// Larger than any packet the loop sends, so the fake pods never cut one short.
 const PODS_BUFFER_LEN: usize = 8192;
-/// The shortest coded unit, which decodes to silence.
+/// The two byte unit the tests of `pods_proto::uplink` call silent; the loop logs it and never decodes it.
 const SILENT_UNIT: [u8; 2] = [0x00, 0x00];
 /// How many units the pods are reported to put in one audio SDU.
 const UNITS_PER_SDU: u32 = 4;
-/// Both buds in the ear.
+/// Both buds in the ear: the header of `pods_proto::ear`, then its placement byte 00 for each bud.
 pub(super) const EAR_PACKET: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00];
-/// How a log line of an audio SDU from the pods begins after its stamp.
+/// How a log line of an audio SDU from the pods begins after its stamp: the mark of `pods_proto::sdulog` for a packet from the pods, then the header of `pods_proto::uplink` with subtype 1.
 const AUDIO_LINE: &[u8] = b" < 0400040058000100";
+/// What follows the prefix in an acknowledgement here: two bytes the handshake never reads, so any value serves.
+const ACK_REST: [u8; 2] = [0x00, 0x00];
 /// The seed of the noise packets, so every run feeds the same bytes.
 const NOISE_SEED: [u8; 32] = [0x5a; 32];
 
@@ -94,8 +96,6 @@ pub(super) struct Transcript {
     pub(super) heard: Vec<Heard>,
     /// Every packet that left, in order.
     pub(super) sent: Vec<Vec<u8>>,
-    /// The loop was still holding the channel at the deadline.
-    pub(super) hung: bool,
 }
 
 impl Transcript {
@@ -156,7 +156,7 @@ pub(super) fn noise(len: usize) -> Vec<u8> {
 
 /// An acknowledgement as the pods send it: the prefix, then bytes the handshake does not read.
 pub(super) fn ack(prefix: &[u8]) -> Vec<u8> {
-    [prefix, &[0x00, 0x00]].concat()
+    [prefix, &ACK_REST].concat()
 }
 
 /// Plays the pods until the loop closes the channel, their part says to hang up, or the deadline passes.
@@ -176,7 +176,6 @@ fn play(channel: Channel, part: &Pods, interrupted: &AtomicBool) -> Transcript {
     }
     loop {
         if began.elapsed() > DEADLINE {
-            far.transcript.hung = true;
             break;
         }
         // A loop that closed with a packet of the pods unread shows here as one error, ahead of what it sent before that.
@@ -244,6 +243,7 @@ pub(super) fn spawn(
     interrupted: Arc<AtomicBool>,
 ) -> mpsc::Receiver<Transcript> {
     let (done, result) = mpsc::channel();
+    // The send fails only when the test has stopped waiting for it, and a wait that ran out has already failed the test.
     thread::spawn(move || done.send(play(far, &part, &interrupted)));
     result
 }
@@ -380,6 +380,7 @@ impl Case {
             }));
             let returned_ns = now_ns();
             drop(channel);
+            // As in `spawn`: nobody is left to tell when this send fails.
             loop_done.send(Box::new(Report {
                 outcome: outcome.ok(),
                 log: String::from_utf8(log.bytes).unwrap(),
@@ -394,10 +395,6 @@ impl Case {
         let mut report = report.expect("the loop did not return before the deadline");
         let pods = pods_result.recv_timeout(DEADLINE);
         report.pods = pods.expect("the fake pods did not finish before the deadline");
-        assert!(
-            !report.pods.hung,
-            "the loop kept the channel past the deadline"
-        );
         *report
     }
 }
