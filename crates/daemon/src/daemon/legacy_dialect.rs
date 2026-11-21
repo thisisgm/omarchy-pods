@@ -38,6 +38,8 @@ pub(super) async fn serve_connection(mut stream: UnixStream, hub: Hub) {
     };
     match timeout(REPLY_DEADLINE, stream.write_all(reply.as_bytes())).await {
         Ok(Ok(())) => {}
+        // A second daemon instance sends `reopen` and exits without reading the refusal, which is normal.
+        Ok(Err(error)) if error.kind() == ErrorKind::BrokenPipe => {}
         Ok(Err(error)) => log(&format!("control socket: cannot send the reply: {error}")),
         Err(_elapsed) => log(&format!(
             "control socket: the client took no reply within {REPLY_DEADLINE:?}"
