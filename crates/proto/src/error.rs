@@ -14,12 +14,16 @@ pub enum Parser {
     DecryptedBattery,
     /// `EarReport::parse`.
     Ear,
-    /// `ControlCommand::parse`.
+    /// `ControlCommand::parse` and the value byte `MicSide::try_from` reads.
     Control,
     /// `NoiseMode::from_command`.
     NoiseCommand,
     /// `NoiseMode::try_from`.
     NoiseMode,
+    /// `UplinkPacket::parse` reading an audio SDU.
+    UplinkAudio,
+    /// `UplinkPacket::parse` reading a control packet, or a 0x58 packet cut before its subtype.
+    UplinkControl,
 }
 
 impl fmt::Display for Parser {
@@ -31,6 +35,8 @@ impl fmt::Display for Parser {
             Self::Control => "control command",
             Self::NoiseCommand => "noise control command",
             Self::NoiseMode => "noise mode number",
+            Self::UplinkAudio => "uplink audio packet",
+            Self::UplinkControl => "uplink control packet",
         })
     }
 }
@@ -165,6 +171,8 @@ mod tests {
             (Parser::Control, "control command"),
             (Parser::NoiseCommand, "noise control command"),
             (Parser::NoiseMode, "noise mode number"),
+            (Parser::UplinkAudio, "uplink audio packet"),
+            (Parser::UplinkControl, "uplink control packet"),
         ] {
             assert_eq!(parser.to_string(), name);
         }
