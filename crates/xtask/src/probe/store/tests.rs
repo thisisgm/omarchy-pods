@@ -98,7 +98,10 @@ fn creates_root_session_and_run_with_mode_0700() {
     let again = Session::open(&root, STAMP).unwrap();
     assert_eq!(again.path(), session.path());
     let reopened = Run::open(&run_path).unwrap();
-    assert_eq!(reopened.read("uplink.bin").unwrap(), b"units");
+    assert_eq!(
+        reopened.read("uplink.bin", MAX_READ_BYTES).unwrap(),
+        b"units"
+    );
 }
 
 #[test]
@@ -115,7 +118,7 @@ fn files_are_0600_and_never_overwritten() {
     let error = run.create_file("uplink.bin").unwrap_err();
     assert!(matches!(error, StoreError::FileExists { .. }), "{error}");
     assert!(names_path(&error, &run_path.join("uplink.bin")), "{error}");
-    assert_eq!(run.read("uplink.bin").unwrap(), b"first");
+    assert_eq!(run.read("uplink.bin", MAX_READ_BYTES).unwrap(), b"first");
 
     let target = home.path().join("target");
     fs::write(&target, b"keep").unwrap();
@@ -490,7 +493,12 @@ fn file_name_with_a_slash_is_refused() {
             matches!(error, StoreError::BadFileName { .. }),
             "{name:?}: {error}"
         );
-        let error = run.read(name).unwrap_err();
+        let error = run.read(name, MAX_READ_BYTES).unwrap_err();
+        assert!(
+            matches!(error, StoreError::BadFileName { .. }),
+            "{name:?}: {error}"
+        );
+        let error = run.write_unnamed(name, b"x").unwrap_err();
         assert!(
             matches!(error, StoreError::BadFileName { .. }),
             "{name:?}: {error}"
@@ -512,32 +520,100 @@ fn reads_are_regular_owner_only_and_bounded() {
 
     fs::write(run_path.join("shared.bin"), b"x").unwrap();
     set_mode(&run_path.join("shared.bin"), 0o640);
-    let error = run.read("shared.bin").unwrap_err();
+    let error = run.read("shared.bin", MAX_READ_BYTES).unwrap_err();
     assert!(matches!(error, StoreError::NotOwnerOnly { .. }), "{error}");
     set_mode(&run_path.join("shared.bin"), 0o400);
-    assert_eq!(run.read("shared.bin").unwrap(), b"x");
+    assert_eq!(run.read("shared.bin", MAX_READ_BYTES).unwrap(), b"x");
 
     symlink(run_path.join("shared.bin"), run_path.join("link.bin")).unwrap();
-    let error = run.read("link.bin").unwrap_err();
+    let error = run.read("link.bin", MAX_READ_BYTES).unwrap_err();
     assert!(matches!(error, StoreError::Symlink { .. }), "{error}");
     fs::create_dir(run_path.join("dir.bin")).unwrap();
-    let error = run.read("dir.bin").unwrap_err();
+    let error = run.read("dir.bin", MAX_READ_BYTES).unwrap_err();
     assert!(matches!(error, StoreError::WrongType { .. }), "{error}");
     make_fifo(&run_path.join("fifo.bin"));
     let fifo_run = Run::open(&run_path).unwrap();
-    let error = within_deadline(move || fifo_run.read("fifo.bin")).unwrap_err();
+    let error = within_deadline(move || fifo_run.read("fifo.bin", MAX_READ_BYTES)).unwrap_err();
     assert!(matches!(error, StoreError::WrongType { .. }), "{error}");
 
     let largest = run.create_file("largest.bin").unwrap();
     largest.set_len(MAX_READ_BYTES).unwrap();
     drop(largest);
-    let read = run.read("largest.bin").unwrap();
+    let read = run.read("largest.bin", MAX_READ_BYTES).unwrap();
     assert_eq!(u64::try_from(read.len()).unwrap(), MAX_READ_BYTES);
     let over = run.create_file("over.bin").unwrap();
     over.set_len(MAX_READ_BYTES + 1).unwrap();
     drop(over);
-    let error = run.read("over.bin").unwrap_err();
+    let error = run.read("over.bin", MAX_READ_BYTES).unwrap_err();
     assert!(matches!(error, StoreError::TooLarge { .. }), "{error}");
+    assert_eq!(run.read("shared.bin", 1).unwrap(), b"x");
+    let error = run.read("shared.bin", 0).unwrap_err();
+    assert!(
+        matches!(error, StoreError::TooLarge { limit: 0, .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_file_written_unnamed_shows_only_when_it_gets_its_name() {
+    let home = tempfile::tempdir().unwrap();
+    let session = Session::open(&root_of(&home), STAMP).unwrap();
+    let run = Run::create(&session, "whole").unwrap();
+    let run_path = session.path().join("whole");
+    let names = || fs::read_dir(&run_path).unwrap().count();
+
+    let table = run.write_unnamed("table.tsv", b"key\tvalue\n").unwrap();
+    assert_eq!(names(), 0);
+    table.give_name().unwrap();
+    assert_eq!(
+        fs::read(run_path.join("table.tsv")).unwrap(),
+        b"key\tvalue\n"
+    );
+    assert_eq!(mode_of(&run_path.join("table.tsv")), OWNER_FILE);
+
+    let dropped = run.write_unnamed("dropped.tsv", b"never named").unwrap();
+    drop(dropped);
+    assert_eq!(names(), 1);
+}
+
+#[test]
+fn an_unnamed_file_never_takes_a_name_that_exists() {
+    let home = tempfile::tempdir().unwrap();
+    let session = Session::open(&root_of(&home), STAMP).unwrap();
+    let run = Run::create(&session, "taken").unwrap();
+    let run_path = session.path().join("taken");
+    let outside = home.path().join("outside.tsv");
+    fs::write(&outside, b"outside").unwrap();
+
+    fs::write(run_path.join("there.tsv"), b"first").unwrap();
+    symlink(&outside, run_path.join("link.tsv")).unwrap();
+    symlink(home.path().join("absent"), run_path.join("dangling.tsv")).unwrap();
+    for name in ["there.tsv", "link.tsv", "dangling.tsv"] {
+        let error = run.write_unnamed(name, b"second").unwrap_err();
+        assert!(
+            matches!(error, StoreError::FileExists { .. }),
+            "{name}: {error}"
+        );
+        assert!(names_path(&error, &run_path.join(name)), "{error}");
+    }
+
+    let late = run.write_unnamed("late.tsv", b"second").unwrap();
+    let link_late = run.write_unnamed("link-late.tsv", b"second").unwrap();
+    fs::write(run_path.join("late.tsv"), b"first").unwrap();
+    symlink(&outside, run_path.join("link-late.tsv")).unwrap();
+    for (unnamed, name) in [(late, "late.tsv"), (link_late, "link-late.tsv")] {
+        let error = unnamed.give_name().unwrap_err();
+        assert!(
+            matches!(error, StoreError::FileExists { .. }),
+            "{name}: {error}"
+        );
+        assert!(names_path(&error, &run_path.join(name)), "{error}");
+    }
+
+    assert_eq!(fs::read(run_path.join("there.tsv")).unwrap(), b"first");
+    assert_eq!(fs::read(run_path.join("late.tsv")).unwrap(), b"first");
+    assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    assert!(!home.path().join("absent").exists());
 }
 
 #[test]

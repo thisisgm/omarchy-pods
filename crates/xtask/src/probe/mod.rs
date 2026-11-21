@@ -1,6 +1,7 @@
 //! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, `stop` ends an uplink a killed capture left running, and `hci` reads a btmon or `PacketLogger` trace into a run.
 
 mod a2dp;
+mod analyse;
 mod capture;
 mod hci;
 mod script;
@@ -69,6 +70,11 @@ enum ProbeCommand {
         /// The name of the run to create: 1 to 32 characters of a-z, 0-9 and -.
         #[arg(long)]
         run: String,
+    },
+    /// Measures the shape of the audio stream in one run and writes analysis.tsv and units.tsv into it.
+    Analyse {
+        /// The run directory, a session directory of the store then the run name.
+        run_dir: PathBuf,
     },
 }
 
@@ -160,6 +166,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         },
         ProbeCommand::Stop => stop(&mut host),
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
+        ProbeCommand::Analyse { run_dir } => analyse(&run_dir),
     }
 }
 
@@ -175,6 +182,21 @@ fn init(stamp: &str, home: &str) -> ExitCode {
     match Session::open(&store::root(home.as_ref()), stamp) {
         Ok(session) => {
             print_line(&session.path().display().to_string());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            report(&format!("xtask probe: {error}"));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Analyses one run and prints its analysis table, which is all analyse writes on stdout.
+fn analyse(run_dir: &Path) -> ExitCode {
+    match analyse::analyse_run(run_dir) {
+        Ok(table) => {
+            // Only the last newline goes, for print_line to add back: the last row may end in a tab.
+            print_line(table.strip_suffix('\n').unwrap_or(&table));
             ExitCode::SUCCESS
         }
         Err(error) => {
