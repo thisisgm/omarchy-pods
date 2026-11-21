@@ -7,6 +7,7 @@ use pods_proto::noise::NoiseMode;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::command::tests::level;
 use crate::state::{Counters, EarDetectionBehavior, LidState};
 
 fn status(state: &State) -> Value {
@@ -25,7 +26,7 @@ fn populated_state_lands_every_field_on_its_key() {
         model: Model::AirPodsPro2USBC,
         model_number: "A3048".to_owned(),
         noise_mode: NoiseMode::Adaptive,
-        adaptive_noise_level: 37,
+        adaptive_noise_level: level(37),
         conversational_awareness: true,
         one_bud_anc_mode: true,
         batteries: Batteries {

@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use pods_core::command::AdaptiveLevel;
 use pods_core::status::to_status_line;
 use pods_proto::battery::{Batteries, Charge};
 use pods_proto::ear::{EarPlacement, EarReport};
@@ -240,7 +241,7 @@ fn populated() -> State {
         device_name: "Test Pods".to_owned(),
         model: Model::AirPodsPro2USBC,
         noise_mode: NoiseMode::Transparency,
-        adaptive_noise_level: 37,
+        adaptive_noise_level: AdaptiveLevel::new(37).unwrap(),
         conversational_awareness: true,
         one_bud_anc_mode: true,
         batteries: Batteries {
@@ -462,11 +463,11 @@ fn set_adaptive_level_accepts_0_and_100() {
         for level in [0_u8, 100] {
             let reply = call(&peer.client, "SetAdaptiveLevel", &(level,)).await;
             assert_eq!(reply, not_connected, "{level}");
-            assert_eq!(peer.hub.state().adaptive_noise_level, level);
+            assert_eq!(peer.hub.state().adaptive_noise_level.percent(), level);
         }
         let reply = call(&peer.client, "SetAdaptiveLevel", &(101_u8,)).await;
         assert_eq!(reply, Err(format!("{ERROR_PREFIX}OutOfRange")));
-        assert_eq!(peer.hub.state().adaptive_noise_level, 100);
+        assert_eq!(peer.hub.state().adaptive_noise_level.percent(), 100);
     });
 }
 

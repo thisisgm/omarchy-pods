@@ -8,6 +8,7 @@ use pods_proto::noise::NoiseMode;
 use pods_proto::packet::{Incoming, classify};
 
 use super::sim::{Input, Sim, ms};
+use crate::command::tests::level;
 use crate::link::Phase;
 use crate::link::ladder::Attempt;
 use crate::state::State;
@@ -147,7 +148,7 @@ fn battery_ear_noise_and_metadata_reach_the_state() {
     assert!(!sim.state.one_bud_anc_mode);
 
     sim.feed(Input::Packet(report(ControlId::ADAPTIVE_NOISE_LEVEL, 30)));
-    assert_eq!(sim.state.adaptive_noise_level, 30);
+    assert_eq!(sim.state.adaptive_noise_level, level(30));
 
     sim.feed(Input::Packet(pods_samples::metadata()));
     assert_eq!(sim.state.device_name, "Test\u{2019}s AirPods Pro");
@@ -336,17 +337,17 @@ fn notifications_are_asked_again_once_after_2_s_without_battery() {
 fn an_adaptive_level_over_100_from_the_pods_is_ignored() {
     let mut sim = Sim::new();
     sim.bring_up(0);
-    let level = sim.state.adaptive_noise_level;
+    let before = sim.state.adaptive_noise_level;
     for ignored in [101, 0x7f, u8::MAX] {
         sim.feed(Input::Packet(report(
             ControlId::ADAPTIVE_NOISE_LEVEL,
             ignored,
         )));
-        assert_eq!(sim.state.adaptive_noise_level, level, "{ignored}");
+        assert_eq!(sim.state.adaptive_noise_level, before, "{ignored}");
     }
     sim.feed(Input::Packet(report(ControlId::ADAPTIVE_NOISE_LEVEL, 100)));
-    assert_eq!(sim.state.adaptive_noise_level, 100);
+    assert_eq!(sim.state.adaptive_noise_level, level(100));
     sim.feed(Input::Packet(report(ControlId::ADAPTIVE_NOISE_LEVEL, 0)));
-    assert_eq!(sim.state.adaptive_noise_level, 0);
+    assert_eq!(sim.state.adaptive_noise_level, level(0));
     sim.check();
 }

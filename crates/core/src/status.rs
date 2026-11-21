@@ -86,7 +86,7 @@ pub fn to_status_object(state: &State) -> Value {
         ),
         (
             "adaptive_noise_level",
-            Value::from(state.adaptive_noise_level),
+            Value::from(state.adaptive_noise_level.percent()),
         ),
         ("one_bud_anc_mode", Value::from(state.one_bud_anc_mode)),
         ("model_name", Value::from(state.model.display_name())),

@@ -9,6 +9,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::ladders::{PARKED_AT_MS, PARKED_WAIT_MS};
 use super::sim::{Answer, Input, Sim, addr, ms};
+use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::{Attempt, KNOWN_MAX};
 use crate::link::{Event, Machine, Phase};
@@ -521,7 +522,7 @@ fn reset_device_matches_the_cpp_reset() {
         model: Model::from_number("A3063"),
         model_number: "A3063".into(),
         noise_mode: NoiseMode::Adaptive,
-        adaptive_noise_level: 20,
+        adaptive_noise_level: level(20),
         conversational_awareness: true,
         one_bud_anc_mode: true,
         batteries: Batteries {

@@ -7,6 +7,33 @@ use crate::state::{EarDetectionBehavior, State};
 /// The highest adaptive noise level, the upper bound of the C++ `parseIntVerb` and `qBound`.
 pub(crate) const ADAPTIVE_LEVEL_MAX: u8 = 100;
 
+/// The C++ `m_adaptiveNoiseLevel` initial value.
+const INITIAL_ADAPTIVE_LEVEL: u8 = 50;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdaptiveLevel(u8);
+
+impl AdaptiveLevel {
+    pub fn new(percent: u8) -> Result<Self, CommandError> {
+        if percent <= ADAPTIVE_LEVEL_MAX {
+            Ok(Self(percent))
+        } else {
+            Err(CommandError::OutOfRange)
+        }
+    }
+
+    #[must_use]
+    pub fn percent(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for AdaptiveLevel {
+    fn default() -> Self {
+        Self(INITIAL_ADAPTIVE_LEVEL)
+    }
+}
+
 /// One request to change the pods or the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -14,8 +41,7 @@ pub enum Command {
     SetEarDetection(EarDetectionBehavior),
     SetConversationalAwareness(bool),
     SetOneBudAnc(bool),
-    /// Percent from 0 to 100; a larger value is taken as 100, as the C++ `qBound` takes it.
-    SetAdaptiveLevel(u8),
+    SetAdaptiveLevel(AdaptiveLevel),
     Connect,
     Disconnect,
     Forget,
@@ -117,7 +143,6 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
             Outcome::Refused(CommandError::NotConnected)
         }
         Command::SetAdaptiveLevel(level) => {
-            let level = level.min(ADAPTIVE_LEVEL_MAX);
             if level != state.adaptive_noise_level && state.noise_mode == NoiseMode::Adaptive {
                 // corner: the C++ stores even when the send fails, and the pods' own report overwrites it on connect.
                 state.adaptive_noise_level = level;

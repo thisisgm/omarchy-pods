@@ -187,7 +187,7 @@ impl Properties {
             ear_detection: ear_detection_name(state.ear_detection_behavior),
             conversational_awareness: state.conversational_awareness,
             one_bud_anc: state.one_bud_anc_mode,
-            adaptive_level: state.adaptive_noise_level,
+            adaptive_level: state.adaptive_noise_level.percent(),
             batteries: BTreeMap::from([
                 ("left", battery_reading(batteries.left)),
                 ("right", battery_reading(batteries.right)),

@@ -291,6 +291,24 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_100_is_taken_and_101_is_an_unknown_request() {
+        let session = Session::new();
+        let daemon = session.start();
+        assert_eq!(session.send(b"adaptive:100"), b"");
+        assert_eq!(session.status(), to_status_line(&State::default()));
+        assert!(
+            !daemon.log().contains("unknown request"),
+            "{}",
+            daemon.log()
+        );
+        assert_eq!(session.send(b"adaptive:101"), b"");
+        assert_eq!(session.status(), to_status_line(&State::default()));
+        let log = daemon.log();
+        assert_eq!(log.matches("unknown request").count(), 1, "{log}");
+        assert!(log.contains(r#"unknown request "adaptive:101""#), "{log}");
+    }
+
+    #[test]
     fn second_instance_exits_zero_and_first_keeps_serving() {
         let session = Session::new();
         let mut first = session.start();

@@ -4,10 +4,11 @@ use cpp_source::{IPC_VERB, MAIN, MEDIA_CONTROLLER};
 use proptest::prelude::*;
 
 use super::*;
+use crate::command::ADAPTIVE_LEVEL_MAX;
 
 fn level(verb: &str) -> Option<u8> {
     match parse_verb(verb.as_bytes()) {
-        Some(LegacyRequest::Command(Command::SetAdaptiveLevel(level))) => Some(level),
+        Some(LegacyRequest::Command(Command::SetAdaptiveLevel(level))) => Some(level.percent()),
         None => None,
         Some(other) => panic!("{verb:?} parsed to {other:?}"),
     }
@@ -155,7 +156,9 @@ fn every_verb_parses_to_the_request_whose_call_its_cpp_handler_makes() {
         assert!(handler.contains(&call), "{verb}: no {call} in {handler}");
     }
     let handler = MAIN.body(&format!("msg.startsWith(\"{ADAPTIVE_PREFIX}\"))"));
-    let call = cpp_call(LegacyRequest::Command(Command::SetAdaptiveLevel(0)));
+    let call = cpp_call(LegacyRequest::Command(Command::SetAdaptiveLevel(
+        AdaptiveLevel::default(),
+    )));
     assert!(handler.contains(&call), "{handler}");
 }
 
@@ -229,7 +232,7 @@ proptest! {
             None => {}
             Some(LegacyRequest::Command(Command::SetAdaptiveLevel(level))) => {
                 prop_assert!(bytes.starts_with(ADAPTIVE_PREFIX.as_bytes()));
-                prop_assert!(level <= ADAPTIVE_LEVEL_MAX);
+                prop_assert!(level.percent() <= ADAPTIVE_LEVEL_MAX);
             }
             Some(request) => {
                 prop_assert!(VERBS.iter().any(|&(verb, known)| verb.as_bytes() == bytes && known == request));
@@ -256,7 +259,7 @@ proptest! {
 
 fn level_of(bytes: &[u8]) -> Option<u8> {
     match parse_verb(bytes)? {
-        LegacyRequest::Command(Command::SetAdaptiveLevel(level)) => Some(level),
+        LegacyRequest::Command(Command::SetAdaptiveLevel(level)) => Some(level.percent()),
         other @ (LegacyRequest::Status | LegacyRequest::Command(_)) => {
             panic!("{bytes:?} parsed to {other:?}")
         }
