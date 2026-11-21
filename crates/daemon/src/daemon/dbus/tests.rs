@@ -1,5 +1,7 @@
 //! The interface over a peer to peer connection on a socket pair, so no bus daemon is needed.
 
+mod document;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
