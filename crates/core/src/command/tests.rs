@@ -130,8 +130,7 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(state.counters.ear_detection_changes, 1);
 }
 
-/// Asserts that every C++ statement of `function` that sends is the call alone, so nothing reads whether the packet went out.
-// Sample input: `{ ... QByteArray packet = ...; writePacketToSocket(packet, "Noise control mode packet written: "); ++m_x; }`
+/// Asserts each sending statement of `function` is the call alone, as in `{ ... QByteArray packet = ...; writePacketToSocket(packet, "Noise control mode packet written: "); ++m_x; }`, so nothing reads whether it went out.
 fn assert_send_is_unchecked(function: &str) {
     let body = MAIN.body(&format!("void {function}("));
     let statements: Vec<&str> = body
