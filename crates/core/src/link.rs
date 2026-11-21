@@ -37,7 +37,7 @@ pub enum DeviceAction {
 }
 
 /// Something that happened, handed to `step` by the driver.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event<'a> {
     /// BlueZ reports this AirPods device connected.
     DeviceUp(BdAddr),
@@ -63,7 +63,7 @@ pub enum Event<'a> {
 }
 
 /// Something the driver must do, in the order `step` returns them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Connect the control channel; answered by `ChannelOpened` or `ChannelEnded`.
     OpenChannel(BdAddr),
@@ -560,11 +560,11 @@ impl Machine {
     }
 
     fn is_active(&self, device: BdAddr) -> bool {
-        self.active.is_some_and(|active| same(active, device))
+        self.active == Some(device)
     }
 
     fn remember(&mut self, device: BdAddr) {
-        if self.known.iter().any(|known| same(*known, device)) {
+        if self.known.contains(&device) {
             return;
         }
         if self.known.len() >= KNOWN_MAX {
@@ -575,8 +575,8 @@ impl Machine {
 
     /// Forgets a removed device, and its link history so no later command picks it.
     fn forget(&mut self, device: BdAddr) {
-        self.known.retain(|known| !same(*known, device));
-        if self.last_linked.is_some_and(|last| same(last, device)) {
+        self.known.retain(|known| *known != device);
+        if self.last_linked == Some(device) {
             self.last_linked = None;
         }
         if self.is_active(device) {
@@ -601,11 +601,6 @@ fn resolve(ticket: Ticket, outcome: Outcome) -> Action {
 
 fn raise(counter: &mut u64) {
     *counter = counter.saturating_add(1);
-}
-
-// `BdAddr` compares by its octets, which never leave this module.
-fn same(left: BdAddr, right: BdAddr) -> bool {
-    left.octets() == right.octets()
 }
 
 #[cfg(test)]

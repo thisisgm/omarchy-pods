@@ -13,7 +13,7 @@ const TEXT_LEN: usize = OCTETS * GROUP_LEN - 1;
 const HEX_RADIX: u32 = 16;
 
 /// A device address, octets in the order people read them.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BdAddr([u8; OCTETS]);
 
 /// Why a text is not a device address; it names the place and cannot hold any of the text.
