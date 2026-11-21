@@ -25,14 +25,14 @@ pub(crate) fn without_opcode(loaded: &Loaded) -> usize {
     short.count()
 }
 
-/// The opcode and the length of the largest packet from the pods, the first of equals; zeros when none has an opcode.
-pub(crate) fn largest_packet(loaded: &Loaded) -> (u16, usize) {
-    let mut largest = (0, 0);
+/// The opcode and the length of the largest packet from the pods, the first of equals; `None` when none has an opcode.
+pub(crate) fn largest_packet(loaded: &Loaded) -> Option<(u16, usize)> {
+    let mut largest: Option<(u16, usize)> = None;
     for packet in &loaded.seen {
         if let Some(opcode) = packet.opcode
-            && packet.len > largest.1
+            && largest.is_none_or(|(_, len)| packet.len > len)
         {
-            largest = (opcode, packet.len);
+            largest = Some((opcode, packet.len));
         }
     }
     largest

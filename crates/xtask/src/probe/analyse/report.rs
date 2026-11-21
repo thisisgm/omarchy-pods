@@ -168,13 +168,13 @@ fn count_rows(whole: &Loaded, marks: &[Mark]) -> Vec<Row> {
 
 fn census_rows(whole: &Loaded) -> Vec<Row> {
     let largest = match largest_packet(whole) {
-        (_, 0) => Row::new(
+        None => Row::new(
             "largest_packet",
             &NONE,
             BYTES,
             "no packet from the pods carries an opcode",
         ),
-        (opcode, len) => Row::new(
+        Some((opcode, len)) => Row::new(
             "largest_packet",
             &len,
             BYTES,
