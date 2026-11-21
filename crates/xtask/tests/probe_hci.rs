@@ -28,6 +28,16 @@ mod hci {
     const OWNER_FILE: u32 = 0o600;
     /// A mode with a group bit, which the bounded read refuses.
     const GROUP_READABLE: u32 = 0o640;
+    /// The store's bound on a capture read, 64 MiB, which a trace may pass.
+    const CAPTURE_BOUND: usize = 64 * 1024 * 1024;
+    /// The bound on a trace, 512 MiB, written out so the test pins the number.
+    const TRACE_BOUND: u64 = 536_870_912;
+    /// Monitor opcode of a system note, a record the reader skips.
+    const OPCODE_SYSTEM_NOTE: u16 = 12;
+    /// The most data bytes one record holds.
+    const LONGEST_RECORD: usize = 65_535;
+    /// Enough longest records to pass `CAPTURE_BOUND`: each takes 65 559 bytes with its header.
+    const NOTES_PAST_CAPTURE_BOUND: usize = 1024;
     /// Every file a run of the session trace holds.
     const SESSION_FILES: [&str; 6] = [
         "a2dp.tsv",
@@ -219,6 +229,32 @@ mod hci {
             assert!(error.contains(&path.display().to_string()), "{error}");
             assert!(!home.path().join("omapods-captures").exists(), "{rule}");
         }
+    }
+
+    #[test]
+    fn a_trace_past_the_capture_bound_is_read_and_one_past_its_own_is_refused() {
+        let mut long = session();
+        let note = vec![0x5a; LONGEST_RECORD];
+        for _ in 0..NOTES_PAST_CAPTURE_BOUND {
+            long.record(OPCODE_SYSTEM_NOTE, &note);
+        }
+        let trace = long.bytes();
+        assert!(trace.len() > CAPTURE_BOUND);
+        let (home, path) = home_with_trace(&trace);
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        assert_eq!(log(&run_dir(&home, RUN), "sdu.log"), control_packets());
+
+        let (home, path) = home_with_trace(&[]);
+        let sparse = fs::File::options().write(true).open(&path).unwrap();
+        sparse.set_len(TRACE_BOUND + 1).unwrap();
+        drop(sparse);
+        let refused = hci(&home, &path, RUN);
+        assert!(!refused.status.success(), "{refused:?}");
+        assert_eq!(refused.stdout, b"");
+        let error = String::from_utf8(refused.stderr).unwrap();
+        assert!(error.contains("is larger than 536870912 bytes"), "{error}");
+        assert!(!home.path().join("omapods-captures").exists());
     }
 
     #[test]

@@ -31,6 +31,8 @@ const SECONDS_HEADER: &str =
     "second\tmedia_packets\tmedia_bytes\trtp_gaps\tlargest_interval_ns\tavdtp_suspend\tavdtp_start";
 /// What a column holds when the trace has no value for it.
 const ABSENT: &str = "-";
+/// A trace is refused above 512 MiB; it holds the music stream of a whole session, which the store's capture bound is too small for.
+const MAX_TRACE_BYTES: u64 = 512 * 1024 * 1024;
 /// The smallest attribute MTU that fits a 438 byte notification behind its 3 byte header (Core 6.1 Vol 3 Part F 3.4.7.1).
 const ATT_MTU_NEEDED: u16 = 441;
 
@@ -288,7 +290,7 @@ pub(crate) fn export(
     stamp: &str,
     run: &str,
 ) -> Result<String, ExportError> {
-    let bytes = store::read_trace(trace)?;
+    let bytes = store::read_trace(trace, MAX_TRACE_BYTES)?;
     let records = records(&bytes).map_err(|source| ExportError::Trace {
         path: trace.to_path_buf(),
         source,

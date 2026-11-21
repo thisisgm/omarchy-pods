@@ -538,6 +538,27 @@ fn reads_are_regular_owner_only_and_bounded() {
     assert!(matches!(error, StoreError::TooLarge { .. }), "{error}");
 }
 
+#[test]
+fn a_trace_is_read_up_to_the_bound_it_is_given() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("hci.btsnoop");
+    fs::write(&path, b"0123456789").unwrap();
+    set_mode(&path, OWNER_FILE);
+    assert_eq!(read_trace(&path, 10).unwrap(), b"0123456789");
+    let error = read_trace(&path, 9).unwrap_err();
+    assert!(
+        matches!(error, StoreError::TooLarge { limit: 9, .. }),
+        "{error}"
+    );
+    assert!(names_path(&error, &path), "{error}");
+
+    set_mode(&path, 0o640);
+    let error = read_trace(&path, 10).unwrap_err();
+    assert!(matches!(error, StoreError::NotOwnerOnly { .. }), "{error}");
+    let error = read_trace(Path::new(SYSTEM_FILE), 10).unwrap_err();
+    assert!(matches!(error, StoreError::WrongOwner { .. }), "{error}");
+}
+
 /// Calls that remove, rename or overwrite; the code before the tests holds none of them.
 const FORBIDDEN: [&str; 12] = [
     "remove_",
