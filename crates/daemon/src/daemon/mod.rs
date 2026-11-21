@@ -1,5 +1,6 @@
 //! The daemon: it owns the state, serves the control socket in protocol 1 and the C++ daemon's dialect, publishes the state file and serves D-Bus.
 
+mod bluez;
 mod dbus;
 mod hub;
 mod legacy_dialect;
@@ -91,8 +92,7 @@ async fn serve(paths: Paths) -> ExitCode {
 
     let (link, inputs) = link::queue();
     let hub = Hub::new(link.clone());
-    // Held for the device watcher, which reads it; until it exists nothing sends a device event, so nothing is requested.
-    let (requests, _watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
+    let (requests, watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
     let connector: link::Connector =
         Arc::new(|device| l2cap::connect(device, CONTROL_PSM, link::CONNECT_TIMEOUT));
     let driver = tokio::spawn(link::drive(
@@ -120,9 +120,10 @@ async fn serve(paths: Paths) -> ExitCode {
 
     let accept = tokio::spawn(socket::accept_loop(listener, hub.clone()));
     let follow = tokio::spawn(state_file::follow(updates, file.clone(), failures));
-    // After the bind, so a missing or slow session bus never delays the socket or the state file.
+    // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(dbus::serve(hub.clone()));
-    let (code, driver) = until_stopped(stop.first(), accept, follow, driver).await;
+    let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests));
+    let (code, driver) = until_stopped(stop.first(), accept, follow, driver, watcher).await;
     if let Some(driver) = driver {
         link::stop(&link, driver).await;
     }
@@ -144,12 +145,13 @@ enum Ended {
     Driver,
 }
 
-/// Waits for `stop` or for any task to end, logs which, and ends `accept` and `follow`; the exit code is 1 when a task ended, so the service manager restarts the daemon, and the driver comes back while it still runs, for `link::stop`.
+/// Waits for `stop` or for any task to end, logs which, and ends every task but the driver; the exit code is 1 when a task ended, so the service manager restarts the daemon, and the driver comes back while it still runs, for `link::stop`.
 async fn until_stopped(
     stop: impl Future<Output = &'static str>,
     mut accept: JoinHandle<()>,
     mut follow: JoinHandle<()>,
     mut driver: JoinHandle<()>,
+    mut watcher: JoinHandle<()>,
 ) -> (ExitCode, Option<JoinHandle<()>>) {
     let mut stop = pin!(stop);
     let ended = poll_fn(|context| {
@@ -157,10 +159,12 @@ async fn until_stopped(
             log(&format!("{signal} received, stopping"));
             return Poll::Ready(Ended::Signal);
         }
+        // The driver before the watcher, which returns when the driver is gone.
         let tasks = [
             ("the control socket's accept loop", &mut accept, Ended::Task),
             ("the state file writer", &mut follow, Ended::Task),
             ("the link driver", &mut driver, Ended::Driver),
+            ("the BlueZ watcher", &mut watcher, Ended::Task),
         ];
         for (task, handle, ended) in tasks {
             if let Poll::Ready(result) = Pin::new(handle).poll(context) {
@@ -175,6 +179,7 @@ async fn until_stopped(
     .await;
     accept.abort();
     follow.abort();
+    watcher.abort();
     match ended {
         Ended::Signal => (ExitCode::SUCCESS, Some(driver)),
         Ended::Task => (ExitCode::FAILURE, Some(driver)),
@@ -215,21 +220,23 @@ mod tests {
     /// How long a wait with nothing ended must still be waiting; nothing in it takes time, so any wait shows a wrong return.
     const STILL_WAITING_AFTER: Duration = Duration::from_millis(100);
 
-    /// Runs `until_stopped` with `stop` and the three tasks the futures make, failing if it never returns.
+    /// Runs `until_stopped` with `stop` and the four tasks the futures make, failing if it never returns.
     fn exit_code(
         stop: impl Future<Output = &'static str>,
         accept: impl Future<Output = ()> + Send + 'static,
         follow: impl Future<Output = ()> + Send + 'static,
         driver: impl Future<Output = ()> + Send + 'static,
+        watcher: impl Future<Output = ()> + Send + 'static,
     ) -> ExitCode {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let (accept, follow, driver) = (
+            let (accept, follow, driver, watcher) = (
                 tokio::spawn(accept),
                 tokio::spawn(follow),
                 tokio::spawn(driver),
+                tokio::spawn(watcher),
             );
-            let waiting = until_stopped(stop, accept, follow, driver);
+            let waiting = until_stopped(stop, accept, follow, driver, watcher);
             timeout(HANG_LIMIT, waiting).await.unwrap().0
         })
     }
@@ -250,7 +257,8 @@ mod tests {
             let accept = tokio::spawn(future::pending());
             let follow = tokio::spawn(future::pending());
             let driver = tokio::spawn(future::pending());
-            let waiting = until_stopped(future::pending(), accept, follow, driver);
+            let watcher = tokio::spawn(future::pending());
+            let waiting = until_stopped(future::pending(), accept, follow, driver, watcher);
             timeout(STILL_WAITING_AFTER, waiting).await
         });
         assert!(waited.is_err(), "it returned {waited:?} with nothing ended");
@@ -259,36 +267,24 @@ mod tests {
     #[test]
     fn the_tasks_still_running_are_ended() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-        let flags = [
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(AtomicBool::new(false)),
-        ];
-        let [accept_dropped, follow_dropped] = flags.clone();
+        let flags = [(); 3].map(|()| Arc::new(AtomicBool::new(false)));
+        let ended = |flag: &Arc<AtomicBool>| {
+            let flag = DropFlag(Arc::clone(flag));
+            async move {
+                let _flag = flag;
+                future::pending::<()>().await;
+            }
+        };
         runtime.block_on(async {
-            let accept = tokio::spawn(async move {
-                let _flag = DropFlag(accept_dropped);
-                future::pending::<()>().await;
-            });
-            let follow = tokio::spawn(async move {
-                let _flag = DropFlag(follow_dropped);
-                future::pending::<()>().await;
-            });
+            let [accept, follow, watcher] = flags.each_ref().map(|flag| tokio::spawn(ended(flag)));
             // One turn so each task holds its flag before the stop.
             task::yield_now().await;
-            assert_eq!(
-                until_stopped(
-                    future::ready("SIGTERM"),
-                    accept,
-                    follow,
-                    tokio::spawn(future::pending())
-                )
-                .await
-                .0,
-                ExitCode::SUCCESS
-            );
+            let driver = tokio::spawn(future::pending());
+            let stopped = until_stopped(future::ready("SIGTERM"), accept, follow, driver, watcher);
+            assert_eq!(stopped.await.0, ExitCode::SUCCESS);
             task::yield_now().await;
             let dropped = flags.each_ref().map(|flag| flag.load(Ordering::Relaxed));
-            assert_eq!(dropped, [true, true], "accept, follow");
+            assert_eq!(dropped, [true, true, true], "accept, follow, watcher");
         });
     }
 
@@ -296,6 +292,7 @@ mod tests {
     fn a_stop_signal_exits_zero() {
         let code = exit_code(
             future::ready("SIGTERM"),
+            future::pending(),
             future::pending(),
             future::pending(),
             future::pending(),
@@ -308,6 +305,7 @@ mod tests {
         let code = exit_code(
             future::pending(),
             future::ready(()),
+            future::pending(),
             future::pending(),
             future::pending(),
         );
@@ -323,6 +321,7 @@ mod tests {
                 panic!("the writer failed");
             },
             future::pending(),
+            future::pending(),
         );
         assert_eq!(code, ExitCode::FAILURE);
     }
@@ -336,8 +335,24 @@ mod tests {
             async {
                 panic!("the driver failed");
             },
+            future::pending(),
         );
         assert_eq!(code, ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn a_bluez_watcher_that_returns_exits_one_and_hands_back_the_driver() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let accept = tokio::spawn(future::pending());
+            let follow = tokio::spawn(future::pending());
+            let driver = tokio::spawn(future::pending());
+            let watcher = tokio::spawn(future::ready(()));
+            let stopped = until_stopped(future::pending(), accept, follow, driver, watcher);
+            let (code, driver) = timeout(HANG_LIMIT, stopped).await.unwrap();
+            assert_eq!(code, ExitCode::FAILURE);
+            driver.expect("the running driver").abort();
+        });
     }
 
     #[test]
@@ -354,7 +369,8 @@ mod tests {
             link.send(link::Input::Shutdown(done)).await.unwrap();
             let accept = tokio::spawn(future::pending());
             let follow = tokio::spawn(future::pending());
-            let waiting = until_stopped(future::pending(), accept, follow, driver);
+            let watcher = tokio::spawn(future::pending());
+            let waiting = until_stopped(future::pending(), accept, follow, driver, watcher);
             timeout(HANG_LIMIT, waiting).await.unwrap()
         });
         assert_eq!(code, ExitCode::FAILURE);
@@ -371,7 +387,8 @@ mod tests {
             let accept = tokio::spawn(future::pending());
             let follow = tokio::spawn(future::pending());
             let driver = tokio::spawn(future::pending());
-            let stopped = until_stopped(future::ready("SIGTERM"), accept, follow, driver);
+            let watcher = tokio::spawn(future::pending());
+            let stopped = until_stopped(future::ready("SIGTERM"), accept, follow, driver, watcher);
             let (code, driver) = timeout(HANG_LIMIT, stopped).await.unwrap();
             assert_eq!(code, ExitCode::SUCCESS);
             let driver = driver.expect("the running driver");

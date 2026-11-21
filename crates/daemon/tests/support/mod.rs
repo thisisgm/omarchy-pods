@@ -2,6 +2,7 @@
 
 pub(crate) mod bluez;
 pub(crate) mod bus;
+pub(crate) mod rig;
 
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Read, Write};
@@ -17,8 +18,17 @@ use tempfile::TempDir;
 
 pub(crate) const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
 
+/// The log of a daemon that `Session::start` or the rig starts, in the session directory.
+pub(crate) const DAEMON_LOG: &str = "daemon.log";
+
 /// A daemon or client still running after this long is hung, and the test kills it and fails.
 pub(crate) const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+/// The bus a daemon outside the rig is pointed at, which never runs, so no test reaches the real system bus.
+const NO_SYSTEM_BUS: &str = "no-system-bus";
+
+/// How the daemon's line about that missing bus starts, from `watch` in `src/daemon/bluez.rs`.
+const NO_SYSTEM_BUS_LOG: &str = "bluez: cannot reach the system bus:";
 
 /// How often a wait checks its condition again.
 const POLL: Duration = Duration::from_millis(10);
@@ -32,6 +42,13 @@ const READ_CHUNK: usize = 4096;
 )]
 pub(crate) fn pause(duration: Duration) {
     thread::sleep(duration);
+}
+
+/// The lines of a daemon's log but the one about the system bus that never runs.
+pub(crate) fn log_lines(log: &str) -> Vec<&str> {
+    log.lines()
+        .filter(|line| !line.starts_with(NO_SYSTEM_BUS_LOG))
+        .collect()
 }
 
 /// Waits for `ready` to give a value, failing the test once `HANG_LIMIT` passes.
@@ -96,7 +113,11 @@ impl Session {
             .env("XDG_STATE_HOME", self.state_home())
             .env("HOME", self.dir.path().join("home"))
             // With no address the daemon tries the bus under the temp runtime directory, which never exists.
-            .env_remove("DBUS_SESSION_BUS_ADDRESS");
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
+            .env(
+                "DBUS_SYSTEM_BUS_ADDRESS",
+                bus::bus_address(self, NO_SYSTEM_BUS),
+            );
         command
     }
 
@@ -115,11 +136,15 @@ impl Session {
 
     /// Starts a daemon and waits until its socket accepts, which the daemon binds only after its first state file write.
     pub(crate) fn start(&self) -> Daemon {
-        let daemon = self.spawn(&["daemon"], "daemon.log");
+        let daemon = self.spawn(&["daemon"], DAEMON_LOG);
+        self.wait_accepting();
+        daemon
+    }
+
+    pub(crate) fn wait_accepting(&self) {
         wait_for("the daemon socket", || {
             UnixStream::connect(self.socket()).ok()
         });
-        daemon
     }
 
     /// Sends `verb` without closing the write side, as `librepods-ctl` does, and reads until the daemon closes.

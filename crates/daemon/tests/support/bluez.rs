@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::Poll;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use pods_proto::addr::BdAddr;
 use tokio::runtime::{Builder as RuntimeBuilder, Handle};
@@ -32,6 +33,7 @@ const BLUEZ_NAME: &str = "org.bluez";
 const ADAPTER_PREFIX: &str = "/org/bluez/hci";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+const FAILED: &str = "org.bluez.Error.Failed";
 const UNKNOWN: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 const THREAD_NAME: &str = "fake-bluez";
 
@@ -55,12 +57,25 @@ pub(crate) struct FakeBluez {
 struct Objects {
     adapters: Vec<String>,
     devices: HashMap<String, Device>,
+    /// Every change of a device object's connection, its adding and its removal included, oldest first.
+    edges: Vec<Edge>,
+    hold: bool,
+    fail: bool,
+    /// The `GetManagedObjects` calls that reached the fake, held ones included.
+    sweeps: usize,
 }
 
 struct Device {
     adapter: String,
     address: BdAddr,
     uuids: Vec<String>,
+    connected: bool,
+}
+
+struct Edge {
+    at: Instant,
+    address: BdAddr,
+    path: String,
     connected: bool,
 }
 
@@ -122,7 +137,11 @@ impl FakeBluez {
             connected,
         };
         let interfaces = HashMap::from([(DEVICE_INTERFACE.to_owned(), device.properties())]);
-        self.lock().devices.insert(path.clone(), device);
+        {
+            let mut objects = self.lock();
+            objects.edge(&path, address, connected);
+            objects.devices.insert(path.clone(), device);
+        }
         self.emit(
             "/",
             OBJECT_MANAGER,
@@ -136,12 +155,13 @@ impl FakeBluez {
     pub(crate) fn set(&self, path: &DevicePath, property: &str, value: OwnedVariant) {
         {
             let mut objects = self.lock();
-            let device = objects
-                .devices
-                .get_mut(&path.0)
-                .expect("a device of the fake");
+            let Objects { devices, edges, .. } = &mut *objects;
+            let device = devices.get_mut(&path.0).expect("a device of the fake");
             match property {
-                "Connected" => device.connected = bool::try_from(&value).unwrap(),
+                "Connected" => {
+                    device.connected = bool::try_from(&value).unwrap();
+                    edges.push(Edge::now(&path.0, device.address, device.connected));
+                }
                 "UUIDs" => device.uuids = Vec::try_from(value.try_clone().unwrap()).unwrap(),
                 _ => {}
             }
@@ -149,6 +169,80 @@ impl FakeBluez {
         let changed = HashMap::from([(property, value)]);
         let body = (DEVICE_INTERFACE, changed, Vec::<String>::new());
         self.emit(&path.0, PROPERTIES, "PropertiesChanged", &body);
+    }
+
+    /// Removes a device and emits `InterfacesRemoved` for it.
+    pub(crate) fn remove(&self, path: &DevicePath) {
+        {
+            let mut objects = self.lock();
+            let device = objects
+                .devices
+                .remove(&path.0)
+                .expect("a device of the fake");
+            objects.edge(&path.0, device.address, false);
+        }
+        let body = (object(&path.0), vec![DEVICE_INTERFACE]);
+        self.emit("/", OBJECT_MANAGER, "InterfacesRemoved", &body);
+    }
+
+    pub(crate) fn drop_name(&self) {
+        let released = self
+            .handle
+            .block_on(self.connection.release_name(BLUEZ_NAME));
+        assert!(released.unwrap(), "the fake BlueZ did not own {BLUEZ_NAME}");
+    }
+
+    pub(crate) fn take_name(&self) {
+        self.handle
+            .block_on(self.connection.request_name(BLUEZ_NAME))
+            .unwrap();
+    }
+
+    /// While set, no method call is answered.
+    pub(crate) fn hold_replies(&self, hold: bool) {
+        self.lock().hold = hold;
+    }
+
+    /// While set, every method call is answered with `org.bluez.Error.Failed`.
+    pub(crate) fn fail_calls(&self, fail: bool) {
+        self.lock().fail = fail;
+    }
+
+    /// How many sweeps reached the fake so far.
+    pub(crate) fn sweeps(&self) -> usize {
+        self.lock().sweeps
+    }
+
+    /// Whether any object of `address` was connected at `at` or within `slack` before it.
+    pub(crate) fn connected_at(&self, address: BdAddr, at: Instant, slack: Duration) -> bool {
+        let from = at.checked_sub(slack).unwrap_or(at);
+        let objects = self.lock();
+        let mut paths: Vec<&str> = objects
+            .edges
+            .iter()
+            .filter(|edge| edge.address == address)
+            .map(|edge| edge.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths.into_iter().any(|path| {
+            let mut connected_at_from = false;
+            for edge in objects.edges.iter().filter(|edge| edge.path == path) {
+                if edge.at <= from {
+                    connected_at_from = edge.connected;
+                } else if edge.at <= at && edge.connected {
+                    return true;
+                }
+            }
+            connected_at_from
+        })
+    }
+
+    /// Whether the serving thread has ended on its own.
+    pub(crate) fn stopped_serving(&self) -> bool {
+        self.server
+            .as_ref()
+            .is_none_or(|(_, thread)| thread.is_finished())
     }
 
     /// Ends the serving thread, failing the test if it stopped serving or panicked before.
@@ -193,6 +287,10 @@ impl Drop for FakeBluez {
 }
 
 impl Objects {
+    fn edge(&mut self, path: &str, address: BdAddr, connected: bool) {
+        self.edges.push(Edge::now(path, address, connected));
+    }
+
     fn managed(&self) -> Managed {
         let adapters = self.adapters.iter().map(|path| {
             let interfaces = HashMap::from([(ADAPTER_INTERFACE.to_owned(), HashMap::new())]);
@@ -205,8 +303,18 @@ impl Objects {
         adapters.chain(devices).collect()
     }
 
-    fn answer(&self, call: &Message) -> Message {
+    /// The reply to `call`, or none while replies are held.
+    fn answer(&mut self, call: &Message) -> Option<Message> {
         let header = call.header();
+        if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
+            self.sweeps = self.sweeps.saturating_add(1);
+        }
+        if self.hold {
+            return None;
+        }
+        if self.fail {
+            return Some(Message::error(&header, FAILED).build(&("Failed",)).unwrap());
+        }
         let interface = header.interface().map(InterfaceName::as_str);
         let member = header.member().map(MemberName::as_str);
         let path = header.path().map(ObjectPath::as_str);
@@ -220,7 +328,7 @@ impl Objects {
             },
             _ => Message::error(&header, UNKNOWN).build(&("Not served by the fake",)),
         };
-        reply.unwrap()
+        Some(reply.unwrap())
     }
 }
 
@@ -250,6 +358,17 @@ impl Device {
                 OwnedVariant::from(self.connected),
             ),
         ])
+    }
+}
+
+impl Edge {
+    fn now(path: &str, address: BdAddr, connected: bool) -> Self {
+        Self {
+            at: Instant::now(),
+            address,
+            path: path.to_owned(),
+            connected,
+        }
     }
 }
 
@@ -304,7 +423,9 @@ fn run(
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .answer(&call);
-            connection.send(&reply).await.unwrap();
+            if let Some(reply) = reply {
+                connection.send(&reply).await.unwrap();
+            }
         }
     });
 }

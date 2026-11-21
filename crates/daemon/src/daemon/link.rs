@@ -40,7 +40,6 @@ const STOP_WAIT_MS: u64 = 500;
 const READER_THREAD: &str = "link-reader";
 
 #[derive(Debug, Clone, Copy)]
-#[expect(dead_code, reason = "the device watcher, still to come, sends these")]
 pub(super) enum DeviceEvent {
     Up(BdAddr),
     Down(BdAddr),
@@ -65,10 +64,13 @@ pub(super) enum Input {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[expect(dead_code, reason = "the device watcher, still to come, reads these")]
 pub(super) enum Request {
     Sweep,
     Call {
+        #[expect(
+            dead_code,
+            reason = "the watcher fails every call until it calls the device's BlueZ object"
+        )]
         device: BdAddr,
         action: DeviceAction,
     },

@@ -1,0 +1,332 @@
+//! Watches BlueZ on the system bus and tells the driver when paired AirPods appear, connect, disconnect or go.
+
+mod objects;
+
+use std::collections::HashMap;
+use std::future::poll_fn;
+use std::ops::ControlFlow;
+use std::pin::{Pin, pin};
+use std::task::Poll;
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+use tokio::time::{sleep, timeout};
+use zbus::export::futures_core::Stream;
+use zbus::export::serde::Deserialize;
+use zbus::names::MemberName;
+use zbus::zvariant::Type;
+use zbus::{Connection, Message, MessageStream, OwnedObjectPath, OwnedVariant};
+
+use super::link::{DeviceEvent, Input, Request};
+use super::log;
+use objects::{Candidates, Change, Properties};
+
+/// The service UUID a device lists when it offers the AirPods control channel.
+pub(super) const AAP_UUID: &str = "74ec2172-0bad-4d01-8f77-997b2be0722a";
+
+/// The C++ `sweepTimeoutMs`: bluetoothd answers in milliseconds, so a longer wait is a wedged BlueZ.
+const SWEEP_TIMEOUT_MS: u64 = 2000;
+
+/// The wait before connecting again after the system bus was missing, the connection closed or a subscription failed.
+const SYSTEM_BUS_RETRY_MS: u64 = 5000;
+
+const BLUEZ: &str = "org.bluez";
+const DEVICE_INTERFACE: &str = "org.bluez.Device1";
+const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
+const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+
+const OWNER_RULE: &str = "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'";
+const OBJECTS_RULE: &str =
+    "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',path='/'";
+const PROPERTIES_RULE: &str = "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='/org/bluez',arg0='org.bluez.Device1'";
+
+/// The device properties whose change classifies a device again.
+const CLASSIFYING: [&str; 3] = ["Connected", "UUIDs", "ServicesResolved"];
+
+/// The changes that make a path not kept yet worth reading: its `Connected` comes before its `UUIDs`.
+const WORTH_A_READ: [&str; 2] = ["UUIDs", "ServicesResolved"];
+
+/// The body of `GetManagedObjects`: path, then interface, then property.
+type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>;
+
+/// Watches until aborted, or until the driver is gone.
+pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Receiver<Request>) {
+    let mut errors = ErrorLog::default();
+    loop {
+        match Connection::system().await {
+            Ok(connection) => {
+                errors.clear();
+                let mut watcher = Watcher {
+                    connection,
+                    inputs: &inputs,
+                    candidates: Candidates::default(),
+                    errors: &mut errors,
+                };
+                if watcher.run(&mut requests).await.is_break() {
+                    return;
+                }
+            }
+            Err(error) => errors.note(format!(
+                "bluez: cannot reach the system bus: {error}; trying again every {SYSTEM_BUS_RETRY_MS} ms"
+            )),
+        }
+        if send(&inputs, DeviceEvent::Lost).await.is_break()
+            || wait_to_retry(&inputs, &mut requests).await.is_break()
+        {
+            return;
+        }
+    }
+}
+
+/// What woke the watcher.
+enum Next {
+    Signal(Message),
+    Request(Request),
+    /// The connection to the system bus closed.
+    Closed,
+    /// The driver dropped its end of the request queue.
+    DriverGone,
+}
+
+/// One connection to the system bus and the devices seen on it.
+struct Watcher<'a> {
+    connection: Connection,
+    inputs: &'a mpsc::Sender<Input>,
+    candidates: Candidates,
+    errors: &'a mut ErrorLog,
+}
+
+impl Watcher<'_> {
+    /// Subscribes, sweeps, then follows BlueZ until the connection closes; `Break` once the driver is gone.
+    async fn run(&mut self, requests: &mut mpsc::Receiver<Request>) -> ControlFlow<()> {
+        let mut streams = Vec::new();
+        for rule in [OWNER_RULE, OBJECTS_RULE, PROPERTIES_RULE] {
+            match MessageStream::for_match_rule(rule, &self.connection, None).await {
+                Ok(stream) => streams.push(stream),
+                Err(error) => {
+                    self.errors
+                        .note(format!("bluez: cannot subscribe to BlueZ: {error}"));
+                    return ControlFlow::Continue(());
+                }
+            }
+        }
+        self.sweep().await?;
+        loop {
+            match next(&mut streams, requests).await {
+                Next::Signal(message) => self.take(&message).await?,
+                Next::Request(Request::Sweep) => self.sweep().await?,
+                Next::Request(Request::Call { action, .. }) => {
+                    send(self.inputs, DeviceEvent::CallFailed(action)).await?;
+                }
+                Next::Closed => return ControlFlow::Continue(()),
+                Next::DriverGone => return ControlFlow::Break(()),
+            }
+        }
+    }
+
+    async fn take(&mut self, message: &Message) -> ControlFlow<()> {
+        let header = message.header();
+        let change = match header.member().map(MemberName::as_str) {
+            Some("NameOwnerChanged") => match message.body().deserialize::<(&str, &str, &str)>() {
+                Ok((_, _, "")) => Some(Change::Lost),
+                Ok(_) => return self.sweep().await,
+                Err(_) => None,
+            },
+            Some("InterfacesAdded") => message
+                .body()
+                .deserialize::<(
+                    OwnedObjectPath,
+                    HashMap<String, HashMap<String, OwnedVariant>>,
+                )>()
+                .ok()
+                .and_then(|(path, interfaces)| {
+                    let properties = Properties::read(interfaces.get(DEVICE_INTERFACE)?);
+                    Some(Change::Device {
+                        path: path.to_string(),
+                        properties,
+                    })
+                }),
+            Some("InterfacesRemoved") => message
+                .body()
+                .deserialize::<(OwnedObjectPath, Vec<String>)>()
+                .ok()
+                .filter(|(_, interfaces)| interfaces.iter().any(|name| name == DEVICE_INTERFACE))
+                .map(|(path, _)| Change::Removed {
+                    path: path.to_string(),
+                }),
+            Some("PropertiesChanged") => match header.path() {
+                Some(path) => self.changed(path.as_str(), message).await,
+                None => None,
+            },
+            _ => None,
+        };
+        match change {
+            Some(change) => self.report(change).await,
+            None => ControlFlow::Continue(()),
+        }
+    }
+
+    /// A `PropertiesChanged` of `Device1`, read whole when it may make a candidate of a path not kept.
+    async fn changed(&mut self, path: &str, message: &Message) -> Option<Change> {
+        let (_, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
+            message.body().deserialize().ok()?;
+        let names = |list: &[&str]| list.iter().any(|name| changed.contains_key(*name));
+        if !names(&CLASSIFYING) {
+            return None;
+        }
+        let properties = if self.candidates.holds(path) {
+            Properties::read(&changed)
+        } else if names(&WORTH_A_READ) {
+            self.read(path).await?
+        } else {
+            return None;
+        };
+        Some(Change::Device {
+            path: path.to_owned(),
+            properties,
+        })
+    }
+
+    async fn read(&mut self, path: &str) -> Option<Properties> {
+        let call = self.connection.call_method(
+            Some(BLUEZ),
+            path,
+            Some(PROPERTIES),
+            "GetAll",
+            &(DEVICE_INTERFACE,),
+        );
+        let reply = reply::<HashMap<String, OwnedVariant>>(call).await;
+        let properties = self.noted(reply, "a device")?;
+        Some(Properties::read(&properties))
+    }
+
+    async fn sweep(&mut self) -> ControlFlow<()> {
+        let call = self.connection.call_method(
+            Some(BLUEZ),
+            "/",
+            Some(OBJECT_MANAGER),
+            "GetManagedObjects",
+            &(),
+        );
+        let reply = reply::<Managed>(call).await;
+        let Some(objects) = self.noted(reply, "BlueZ's devices") else {
+            return ControlFlow::Continue(());
+        };
+        self.errors.clear();
+        let devices = objects
+            .into_iter()
+            .filter_map(|(path, interfaces)| {
+                let properties = Properties::read(interfaces.get(DEVICE_INTERFACE)?);
+                Some((path.to_string(), properties))
+            })
+            .collect();
+        self.report(Change::Swept(devices)).await
+    }
+
+    /// The reply, or `None` with the failure logged once.
+    fn noted<T>(&mut self, reply: Result<T, String>, what: &str) -> Option<T> {
+        match reply {
+            Ok(body) => Some(body),
+            Err(failure) => {
+                self.errors
+                    .note(format!("bluez: cannot read {what}: {failure}"));
+                None
+            }
+        }
+    }
+
+    async fn report(&mut self, change: Change) -> ControlFlow<()> {
+        for event in self.candidates.apply(change) {
+            send(self.inputs, event).await?;
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// The reply body of `call` within `SWEEP_TIMEOUT_MS`, or the failure as a line for the log.
+async fn reply<T>(call: impl Future<Output = zbus::Result<Message>>) -> Result<T, String>
+where
+    T: for<'d> Deserialize<'d> + Type,
+{
+    match timeout(Duration::from_millis(SWEEP_TIMEOUT_MS), call).await {
+        Ok(Ok(reply)) => reply
+            .body()
+            .deserialize()
+            .map_err(|error| error.to_string()),
+        // The name alone: BlueZ may put the object path, and with it the address, in the message.
+        Ok(Err(zbus::Error::MethodError(name, _, _))) => Err(name.to_string()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err(format!("no answer within {SWEEP_TIMEOUT_MS} ms")),
+    }
+}
+
+/// The next signal of any stream, or the next request.
+async fn next(streams: &mut [MessageStream], requests: &mut mpsc::Receiver<Request>) -> Next {
+    poll_fn(|context| {
+        for stream in streams.iter_mut() {
+            match Pin::new(stream).poll_next(context) {
+                Poll::Ready(Some(Ok(message))) => return Poll::Ready(Next::Signal(message)),
+                // A read error ends the connection, and its streams end after it.
+                Poll::Ready(Some(Err(_)) | None) => return Poll::Ready(Next::Closed),
+                Poll::Pending => {}
+            }
+        }
+        requests.poll_recv(context).map(|request| match request {
+            Some(request) => Next::Request(request),
+            None => Next::DriverGone,
+        })
+    })
+    .await
+}
+
+/// Waits `SYSTEM_BUS_RETRY_MS`, failing every call meanwhile; `Break` once the driver is gone.
+async fn wait_to_retry(
+    inputs: &mpsc::Sender<Input>,
+    requests: &mut mpsc::Receiver<Request>,
+) -> ControlFlow<()> {
+    let mut pause = pin!(sleep(Duration::from_millis(SYSTEM_BUS_RETRY_MS)));
+    loop {
+        let woke = poll_fn(|context| {
+            if pause.as_mut().poll(context).is_ready() {
+                return Poll::Ready(None);
+            }
+            requests.poll_recv(context).map(Some)
+        })
+        .await;
+        match woke {
+            None => return ControlFlow::Continue(()),
+            Some(None) => return ControlFlow::Break(()),
+            Some(Some(Request::Sweep)) => {}
+            Some(Some(Request::Call { action, .. })) => {
+                send(inputs, DeviceEvent::CallFailed(action)).await?;
+            }
+        }
+    }
+}
+
+/// `Break` once the driver is gone.
+async fn send(inputs: &mpsc::Sender<Input>, event: DeviceEvent) -> ControlFlow<()> {
+    match inputs.send(Input::Device(event)).await {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(_) => ControlFlow::Break(()),
+    }
+}
+
+/// The last failure logged, so a repeat is not logged again until a success clears it, as the C++ `m_lastSweepError`.
+#[derive(Debug, Default)]
+struct ErrorLog {
+    last: Option<String>,
+}
+
+impl ErrorLog {
+    fn note(&mut self, line: String) {
+        if self.last.as_ref() != Some(&line) {
+            log(&line);
+            self.last = Some(line);
+        }
+    }
+
+    fn clear(&mut self) {
+        self.last = None;
+    }
+}

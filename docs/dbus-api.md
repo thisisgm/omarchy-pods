@@ -51,9 +51,14 @@ nothing, and a command that changes nothing sends none.
 
 ## Methods
 
-Each method returns `s`: `sent` when the pods have the command and have not
-answered yet, or `confirmed` when the state already shows it carried out. A
-method never waits for the pods. A refused command is an error reply instead.
+Each method returns `s`, with the meaning protocol 1 gives it: `confirmed`
+when the state shows the change, because it already did or because the pods
+reported it within 700 ms, or `sent` when the pods have the command and
+nothing will report it back, which today is only `SetAdaptiveLevel`. A setting
+method that waits for the pods is answered when they report the change or when
+its 700 ms pass. A refused command is an error reply instead, named after the
+protocol 1 code for the same refusal and sent in the same cases, which
+[protocol-1.md](protocol-1.md#errors) lists.
 A refused `Set` call may still have stored its value and counted the change:
 the properties and their signal are the truth, and the AirPods' own report
 replaces the value when they connect.
@@ -91,11 +96,12 @@ the message.
 | `io.github.thisisgm.Omapods1.Error.Timeout` | `timeout` |
 | `io.github.thisisgm.Omapods1.Error.Headless` | `headless` |
 
-No method of this interface names a setting, opens a window or waits for the
-pods, so none returns `UnknownKey` or `Headless`. Any method returns `Timeout`
-when the daemon's input queue, which the AirPods' packets share, is full, or
-when too many commands already wait for the AirPods to confirm them. A `Set`
-method given a word its key does not take returns `BadRequest`.
+No method of this interface names a setting or opens a window, so none returns
+`UnknownKey` or `Headless`. Any method returns `Timeout` when the AirPods do not
+report the change in time, when the daemon's input queue, which the AirPods'
+packets share, is full, or when too many commands already wait for the AirPods
+to confirm them. A `Set` method given a word its key does not take returns
+`BadRequest`.
 
 A call the bus layer refuses before it reaches the daemon, such as one with the
 wrong argument type or one that writes a property, gets a standard

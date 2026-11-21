@@ -285,6 +285,7 @@ dependencies = [
  "pods-proto",
  "pods-samples",
  "pods-sys",
+ "pods-trap",
  "proptest",
  "rustix",
  "serde_json",
