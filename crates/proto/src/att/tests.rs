@@ -192,10 +192,9 @@ fn information_with_128_bit_identifiers_lists_every_handle() {
 fn an_unknown_information_format_is_an_error() {
     for format in [0x00, 0x03, 0xff] {
         let pdu = [0x05, format, 0x01, 0x00, 0x00, 0x28];
-        assert_eq!(
-            AttPdu::parse(&pdu),
-            Err(unknown(Parser::AttFindInformation, "format", format))
-        );
+        let refused = unknown(Parser::AttFindInformation, "format", format);
+        assert_eq!(AttPdu::parse(&pdu), Err(refused));
+        assert_eq!(AttPdu::parse(&pdu[..2]), Err(refused), "with no list");
     }
     assert_eq!(
         unknown(Parser::AttFindInformation, "format", 0x03).to_string(),
@@ -226,6 +225,7 @@ fn a_zero_entry_length_is_an_error_not_a_loop() {
         let pdu = [0x09, entry_len, 0xaa, 0xbb, 0xcc, 0xdd];
         let refused = unknown(Parser::AttReadByType, "entry length", entry_len);
         assert_eq!(AttPdu::parse(&pdu), Err(refused));
+        assert_eq!(AttPdu::parse(&pdu[..2]), Err(refused), "with no list");
     }
     assert_eq!(
         unknown(Parser::AttReadByType, "entry length", 0x00).to_string(),
