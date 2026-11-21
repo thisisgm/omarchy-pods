@@ -73,6 +73,18 @@ impl Candidates {
         self.paths.contains_key(path)
     }
 
+    /// A path of `device`, a connected one first; `None` when BlueZ holds no object of it.
+    pub(super) fn path_of(&self, device: BdAddr) -> Option<&str> {
+        let mut paths = self
+            .paths
+            .iter()
+            .filter(|(_, entry)| entry.device == device);
+        let connected = paths.clone().find(|(_, entry)| entry.connected);
+        connected
+            .or_else(|| paths.next())
+            .map(|(path, _)| path.as_str())
+    }
+
     pub(super) fn apply(&mut self, change: Change) -> Vec<DeviceEvent> {
         match change {
             Change::Device { path, properties } => {

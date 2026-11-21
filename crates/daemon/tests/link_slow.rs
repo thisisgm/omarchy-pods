@@ -16,12 +16,15 @@ mod tests {
     use pods_fake::Profile;
     use pods_trap::Answer;
     use rustix::io::Errno;
+    use serde_json::Value;
     use zbus::OwnedVariant;
 
+    use super::support::bluez::DeviceMethod;
     use super::support::rig::{
-        DIAL_WAIT, Device, HELD_LADDER, Rig, assert_gap, connected, not_before,
+        ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Device, HELD_LADDER, REAL_TIME_SLACK, Rig,
+        assert_gap, connected, not_before, total,
     };
-    use super::support::{HANG_LIMIT, pause};
+    use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for, wait_within};
 
     /// The wait before the next dial once the held ladder is spent and the pods are parked.
     const PARKED_RETRY: Duration = Duration::from_secs(300);
@@ -31,6 +34,9 @@ mod tests {
 
     /// Where `cminflt`, the minor faults of the children a process waited for, sits among the `/proc/<pid>/stat` fields after the name.
     const REAPED_FAULTS_AFTER_NAME: usize = 8;
+
+    /// The daemon's limit on one BlueZ method call.
+    const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Pods that refuse every dial, the daemon started and BlueZ not yet reporting them connected.
     fn refused_pods() -> (Rig, Device) {
@@ -45,6 +51,10 @@ mod tests {
             },
         );
         (rig, device)
+    }
+
+    fn failures(status: &Value) -> usize {
+        usize::try_from(total(status, "connect_failures_total")).unwrap()
     }
 
     /// Waits for the eleven dials of the held ladder, each gap not before its step, then for the failure that parks the pods.
@@ -154,6 +164,55 @@ mod tests {
             &(Duration::ZERO..=DIAL_WAIT),
         );
         rig.wait_filled();
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "half a minute at real time; the slow job runs it"]
+    fn held_bluez_calls_fail_after_their_timeout_and_free_their_slots() {
+        let (rig, device) = Rig::with_known_pods();
+        rig.bluez().hold_replies(true);
+        let mut client = Proto1::connect(rig.session());
+        let asked = Instant::now();
+        for id in 1..=CALLS_IN_FLIGHT_MAX {
+            assert_eq!(outcome(&client.ask(&do_request(id, "connect"))), "sent");
+        }
+        let held = vec![device.call(DeviceMethod::Connect); CALLS_IN_FLIGHT_MAX];
+        wait_for("four calls at the fake BlueZ", || {
+            (rig.bluez().calls() == held).then_some(())
+        });
+        let failed = wait_within(
+            "the held connects counted as failed",
+            CALL_TIMEOUT.saturating_add(HANG_LIMIT),
+            || {
+                let started = Instant::now();
+                let status = rig.status();
+                assert_gap(
+                    "librepods status while the calls hang",
+                    started,
+                    Instant::now(),
+                    &(Duration::ZERO..=ANSWERED_WITHIN),
+                );
+                (failures(&status) >= CALLS_IN_FLIGHT_MAX).then_some((Instant::now(), status))
+            },
+        );
+        assert_gap(
+            "the failures after do connect",
+            asked,
+            failed.0,
+            &(CALL_TIMEOUT..=CALL_TIMEOUT.saturating_add(REAL_TIME_SLACK)),
+        );
+        assert_eq!(failures(&failed.1), CALLS_IN_FLIGHT_MAX);
+        let fifth = CALLS_IN_FLIGHT_MAX + 1;
+        let reply = Proto1::connect(rig.session()).ask(&do_request(fifth, "connect"));
+        assert_eq!(outcome(&reply), "sent");
+        let reached = vec![device.call(DeviceMethod::Connect); fifth];
+        wait_for("a fifth call at the fake BlueZ", || {
+            (rig.bluez().calls() == reached).then_some(())
+        });
+        let status = rig.status();
+        assert_eq!(failures(&status), CALLS_IN_FLIGHT_MAX);
+        assert!(!connected(&status));
         rig.finish();
     }
 }

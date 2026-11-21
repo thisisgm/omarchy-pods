@@ -82,10 +82,11 @@ pub enum CommandError {
     BadRequest,
     Timeout,
     Headless,
+    NoDevice,
 }
 
 impl CommandError {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::NotConnected,
         Self::NotSupported,
         Self::NotWorn,
@@ -94,6 +95,7 @@ impl CommandError {
         Self::BadRequest,
         Self::Timeout,
         Self::Headless,
+        Self::NoDevice,
     ];
 
     /// The snake case name a client sees.
@@ -108,6 +110,7 @@ impl CommandError {
             Self::BadRequest => "bad_request",
             Self::Timeout => "timeout",
             Self::Headless => "headless",
+            Self::NoDevice => "no_device",
         }
     }
 
@@ -123,6 +126,7 @@ impl CommandError {
             Self::BadRequest => "The daemon could not read the request.",
             Self::Timeout => "The AirPods did not answer in time.",
             Self::Headless => "This daemon runs headless and has no window.",
+            Self::NoDevice => "There are no AirPods to act on.",
         }
     }
 }

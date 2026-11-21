@@ -8,14 +8,12 @@ use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 
 use super::ladders::{PARKED_AT_MS, PARKED_WAIT_MS};
-use super::sim::{Answer, Input, Sim, addr, ms};
+use super::sim::{Answer, Input, NO_ACTIONS, Sim, addr, ms};
 use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::{Attempt, KNOWN_MAX};
-use crate::link::{Event, Machine, Phase};
+use crate::link::{DeviceAction, Event, Machine, Phase};
 use crate::state::{EarDetectionBehavior, LidState, State};
-
-const NO_ACTIONS: [&str; 0] = [];
 
 #[test]
 fn handshake_sends_the_three_requests_in_order_and_goes_up() {
@@ -409,7 +407,7 @@ fn commands_are_answered_in_every_phase_and_a_setting_in_up_waits_for_its_report
             let refused = Outcome::Refused(CommandError::NotConnected);
             assert_eq!(sim.outcomes(), [Outcome::Confirmed, refused], "{phase:?}");
         }
-        sim.feed(Input::CallFailed);
+        sim.feed(Input::CallFailed(DeviceAction::Connect));
         assert_eq!(sim.last(), NO_ACTIONS, "{phase:?}");
         assert_eq!(sim.machine.phase(), phase);
         assert_eq!(sim.state.connected, connected);
@@ -446,7 +444,7 @@ fn shutdown_closes_and_ignores_everything_after() {
         Input::Packet(pods_samples::handshake_ack()),
         Input::Tick,
         Input::Wait(ms(600_000)),
-        Input::CallFailed,
+        Input::CallFailed(DeviceAction::Connect),
         Input::Shutdown,
     ] {
         sim.feed(input);

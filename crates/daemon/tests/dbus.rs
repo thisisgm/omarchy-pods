@@ -26,7 +26,7 @@ mod tests {
     use zbus::export::futures_core::Stream;
     use zbus::{Connection, MessageStream, OwnedVariant};
 
-    use super::support::bus::{bus_address, start_bus};
+    use super::support::bus::{BUS_NAME, INTERFACE, OBJECT_PATH, bus_address, start_bus};
     use super::support::{BINARY, Daemon, HANG_LIMIT, Session, log_lines, wait_for};
 
     /// The whole bus conversation of one test, longer than any one wait inside it so that wait reports first.
@@ -34,11 +34,6 @@ mod tests {
 
     /// How often the async wait for the bus name asks again; the harness wait is blocking and cannot run here.
     const BUS_POLL: Duration = Duration::from_millis(10);
-
-    /// The names the daemon serves, from `src/daemon/dbus.rs`.
-    const BUS_NAME: &str = "io.github.thisisgm.Omapods";
-    const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
-    const INTERFACE: &str = "io.github.thisisgm.Omapods1";
 
     /// How the daemon's line about a missing bus or a taken name starts, from `serve` in `src/daemon/dbus.rs`.
     const NO_BUS_LOG: &str =

@@ -212,7 +212,7 @@ fn handling(
             pending,
         ),
         Command::SetAdaptiveLevel(level) => adaptive_level(state, known, features, level),
-        // corner: connect, disconnect and forget keep their answer without a link until device actions exist.
+        // Never reached for connect, disconnect and forget, which `step` answers in every phase.
         Command::SetEarDetection(_)
         | Command::Reopen
         | Command::Connect

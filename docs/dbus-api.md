@@ -53,11 +53,14 @@ nothing, and a command that changes nothing sends none.
 
 Each method returns `s`, with the meaning protocol 1 gives it: `confirmed`
 when the state shows the change, because it already did or because the pods
-reported it within 700 ms, or `sent` when the pods have the command and
-nothing will report it back, which today is only `SetAdaptiveLevel`. A setting
-method that waits for the pods is answered when they report the change or when
-its 700 ms pass. A refused command is an error reply instead, named after the
-protocol 1 code for the same refusal and sent in the same cases, which
+reported it within 700 ms, or `sent` when the command was handed on and the
+reply does not wait for its end. `SetAdaptiveLevel` shows its level in the
+state at once. `Connect`, `Disconnect` and `Forget` reply before BlueZ answers,
+so `sent` does not mean BlueZ accepted the call; protocol 1 describes under
+`do` how a call that fails or is not made shows. A setting method that waits
+for the pods is answered when they report the change or when its 700 ms pass.
+A refused command is an error reply instead, named after the protocol 1 code
+for the same refusal and sent in the same cases, which
 [protocol-1.md](protocol-1.md#errors) lists.
 A refused `Set` call may still have stored its value and counted the change:
 the properties and their signal are the truth, and the AirPods' own report
@@ -78,6 +81,10 @@ refuses the same way.
 | `Disconnect` | none | | |
 | `Forget` | none | | |
 
+`Connect`, `Disconnect` and `Forget` are the protocol 1 `do` request with the
+action `connect`, `disconnect` or `forget`: they act on the same AirPods and
+return `NoDevice` when there are none to act on.
+
 ## Errors
 
 A refused command's error reply carries one of these names. Its message is
@@ -95,6 +102,7 @@ the message.
 | `io.github.thisisgm.Omapods1.Error.BadRequest` | `bad_request` |
 | `io.github.thisisgm.Omapods1.Error.Timeout` | `timeout` |
 | `io.github.thisisgm.Omapods1.Error.Headless` | `headless` |
+| `io.github.thisisgm.Omapods1.Error.NoDevice` | `no_device` |
 
 No method of this interface names a setting or opens a window, so none returns
 `UnknownKey` or `Headless`. Any method returns `Timeout` when the AirPods do not

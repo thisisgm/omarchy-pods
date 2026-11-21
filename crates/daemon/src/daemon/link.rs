@@ -67,10 +67,6 @@ pub(super) enum Input {
 pub(super) enum Request {
     Sweep,
     Call {
-        #[expect(
-            dead_code,
-            reason = "the watcher fails every call until it calls the device's BlueZ object"
-        )]
         device: BdAddr,
         action: DeviceAction,
     },
