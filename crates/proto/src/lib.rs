@@ -8,6 +8,8 @@ pub mod control;
 pub mod dictation;
 pub mod ear;
 pub mod error;
+#[cfg(test)]
+mod fixture;
 pub mod model;
 pub mod noise;
 pub mod packets;

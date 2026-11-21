@@ -252,6 +252,7 @@ impl TryFrom<u8> for MicSide {
 mod tests {
     use super::*;
     use crate::control::ControlId;
+    use crate::fixture::hex;
 
     /// Stands in for header bytes 8 to 21, whose real meaning nobody knows.
     const OPAQUE: [u8; OPAQUE_LEN] = [
@@ -266,13 +267,6 @@ mod tests {
     const SUBTYPE_AT: usize = 6;
     /// How many data bytes of the last unit the truncation test keeps.
     const KEPT_DATA_BYTES: usize = 3;
-
-    // Sample input: "04 00 58", hex bytes separated by one space.
-    fn hex(text: &str) -> Vec<u8> {
-        text.split(' ')
-            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
-            .collect()
-    }
 
     // Sample output for (0x10, 3): 10 11 12, counting bytes that stand in for one coded unit.
     fn unit_bytes(first: u8, len: usize) -> Vec<u8> {
