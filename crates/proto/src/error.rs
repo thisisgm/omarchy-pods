@@ -38,8 +38,6 @@ pub enum Parser {
     AttNotification,
     /// `AttPdu::parse` reading an indication.
     AttIndication,
-    /// `DictationPacket::parse` reading a notification cut before its handle ends.
-    Dictation,
     /// `DictationPacket::parse` reading a notification on the audio handle.
     DictationAudio,
 }
@@ -62,7 +60,6 @@ impl fmt::Display for Parser {
             Self::AttError => "attribute protocol error response",
             Self::AttNotification => "attribute protocol notification",
             Self::AttIndication => "attribute protocol indication",
-            Self::Dictation => "dictation packet",
             Self::DictationAudio => "dictation audio notification",
         })
     }
@@ -232,7 +229,6 @@ mod tests {
             (Parser::AttError, "attribute protocol error response"),
             (Parser::AttNotification, "attribute protocol notification"),
             (Parser::AttIndication, "attribute protocol indication"),
-            (Parser::Dictation, "dictation packet"),
             (Parser::DictationAudio, "dictation audio notification"),
         ] {
             assert_eq!(parser.to_string(), name);

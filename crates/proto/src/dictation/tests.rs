@@ -1,6 +1,7 @@
 //! Every input here is built by the test: the fixed protocol bytes, and frames of the table of contents byte then counting bytes.
 
 use super::*;
+use crate::att::AttPdu;
 use crate::fixture::hex;
 
 /// Opcode, audio handle, marker, packet counter 0x2a, declared length 8, then one frame: flag 0x80, level 0xd5, counter 0x0104, length 3, three codec bytes.
@@ -11,6 +12,8 @@ const FLAGS: [u8; 2] = [0x80, 0x00];
 const FIRST_LEVEL: u8 = 0xb9;
 /// Offset of the low handle byte in an ATT PDU; the high byte follows it.
 const HANDLE_AT: usize = 1;
+/// Offset of the value in a notification, after the opcode and the handle; also the length of the shortest notification.
+const VALUE_AT: usize = 3;
 /// Offset of the packet counter in an audio notification.
 const PACKET_COUNTER_AT: usize = 5;
 /// Offset of the low byte of the declared length in an audio notification.
@@ -97,7 +100,7 @@ fn audio(pdu: &[u8]) -> AudioNotification<'_> {
 
 // Sample input: 52 07 00 01 00, whose handle is the little endian 0x0007 after the opcode.
 fn handle_of(pdu: &[u8]) -> u16 {
-    u16::from_le_bytes([pdu[HANDLE_AT], pdu[NOTIFICATION_MIN_LEN - 1]])
+    u16::from_le_bytes([pdu[HANDLE_AT], pdu[VALUE_AT - 1]])
 }
 
 #[test]
@@ -148,7 +151,7 @@ fn the_two_replies_parse_as_started_and_stopped() {
 #[test]
 fn a_reply_with_one_byte_changed_is_other() {
     let other = |pdu: &[u8]| {
-        let expected = Status::Other(&pdu[NOTIFICATION_MIN_LEN..]);
+        let expected = Status::Other(&pdu[VALUE_AT..]);
         assert_eq!(
             DictationPacket::parse(pdu),
             Ok(Some(DictationPacket::Status(expected))),
@@ -156,7 +159,7 @@ fn a_reply_with_one_byte_changed_is_other() {
         );
     };
     for reply in [&STARTED[..], &STOPPED[..]] {
-        for at in NOTIFICATION_MIN_LEN..reply.len() {
+        for at in VALUE_AT..reply.len() {
             let mut changed = reply.to_vec();
             changed[at] ^= 0x01;
             other(&changed);
@@ -165,7 +168,7 @@ fn a_reply_with_one_byte_changed_is_other() {
         let mut one_byte_more = reply.to_vec();
         one_byte_more.push(0x00);
         other(&one_byte_more);
-        other(&reply[..NOTIFICATION_MIN_LEN]);
+        other(&reply[..VALUE_AT]);
     }
 }
 
@@ -309,7 +312,7 @@ fn a_notification_on_another_handle_is_not_dictation() {
         0x0110,
     ] {
         let mut pdu = audio.clone();
-        pdu[HANDLE_AT..NOTIFICATION_MIN_LEN].copy_from_slice(&handle.to_le_bytes());
+        pdu[HANDLE_AT..VALUE_AT].copy_from_slice(&handle.to_le_bytes());
         assert_eq!(DictationPacket::parse(&pdu), Ok(None), "{handle:#06x}");
     }
     assert_eq!(DictationPacket::parse(&[]), Ok(None));
@@ -365,18 +368,40 @@ fn a_notification_cut_before_its_handle_is_too_short() {
     for pdu in [&[0x1b][..], &[0x1b, 0x0d], &[0x1b, 0x10]] {
         let error = DictationPacket::parse(pdu).unwrap_err();
         let expected = ParseError::TooShort {
-            parser: Parser::Dictation,
-            need: 3,
+            parser: Parser::AttNotification,
+            need: VALUE_AT,
             got: pdu.len(),
         };
         assert_eq!(error, expected, "{pdu:02x?}");
+        assert_eq!(AttPdu::parse(pdu), Err(error), "{pdu:02x?}");
     }
     assert_eq!(
         DictationPacket::parse(&[0x1b, 0x0d])
             .unwrap_err()
             .to_string(),
-        "dictation packet too short: need 3 bytes, got 2"
+        "attribute protocol notification too short: need 3 bytes, got 2"
     );
+}
+
+#[test]
+fn a_pdu_the_att_reader_refuses_as_another_kind_is_not_dictation() {
+    for refused in [
+        "05",
+        "05 03 0d 00 01 00",
+        "05 01 0d 00 01",
+        "09",
+        "09 01 0d 00 01 00",
+        "09 07 0d 00 01 00",
+        "01 1b 0d 00",
+        "01 1b 0d 00 01 00",
+        "1d",
+        "1d 0d",
+        "1d 10",
+    ] {
+        let pdu = hex(refused);
+        assert!(AttPdu::parse(&pdu).is_err(), "{refused} is not refused");
+        assert_eq!(DictationPacket::parse(&pdu), Ok(None), "{refused}");
+    }
 }
 
 #[test]
@@ -387,7 +412,7 @@ fn an_audio_handle_value_with_another_prefix_is_unknown() {
         hex("1b 0d 00 00 01 2a 08 00 80 d5 04 01 03 b8 10 11"),
     ] {
         let expected = DictationPacket::Unknown {
-            value: &pdu[NOTIFICATION_MIN_LEN..],
+            value: &pdu[VALUE_AT..],
         };
         assert_eq!(
             DictationPacket::parse(&pdu),
