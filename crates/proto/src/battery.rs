@@ -56,13 +56,10 @@ pub struct Charge {
     pub charging: bool,
 }
 
-/// A part left at `None` keeps its last reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BatteryReport {
-    pub left: Option<Charge>,
-    pub right: Option<Charge>,
-    pub case: Option<Charge>,
-    pub headset: Option<Charge>,
+    /// A part left at `None` keeps its last reading.
+    pub batteries: Batteries,
     /// The first bud or headset in the packet.
     pub primary: Option<Component>,
     /// The second bud in the packet.
@@ -117,7 +114,7 @@ impl BatteryReport {
             if status != STATUS_DISCONNECTED
                 && let Some(level) = known_level(level)
             {
-                *report.slot(component) = Some(Charge {
+                *report.batteries.slot(component) = Some(Charge {
                     level,
                     charging: status == STATUS_CHARGING,
                 });
@@ -143,7 +140,10 @@ impl BatteryReport {
         if headset {
             // The primary flag only renames byte 1, which always holds the headset.
             return Ok(Self {
-                headset: decrypted_charge(first),
+                batteries: Batteries {
+                    headset: decrypted_charge(first),
+                    ..Batteries::default()
+                },
                 primary: Some(Component::Headset),
                 ..Self::default()
             });
@@ -161,10 +161,12 @@ impl BatteryReport {
         // Only a docked bud can read the case, so a 0 with none docked is unknown.
         let case = decrypted_charge(case).filter(|c| c.level != 0 || pod_in_case);
         Ok(Self {
-            left: decrypted_charge(left),
-            right: decrypted_charge(right),
-            case,
-            headset: None,
+            batteries: Batteries {
+                left: decrypted_charge(left),
+                right: decrypted_charge(right),
+                case,
+                headset: None,
+            },
             primary: Some(primary),
             secondary: Some(secondary),
         })
@@ -177,18 +179,9 @@ impl BatteryReport {
             self.secondary = Some(component);
         }
     }
-
-    fn slot(&mut self, component: Component) -> &mut Option<Charge> {
-        match component {
-            Component::Left => &mut self.left,
-            Component::Right => &mut self.right,
-            Component::Case => &mut self.case,
-            Component::Headset => &mut self.headset,
-        }
-    }
 }
 
-/// The last known battery of every part; `None` if not read since the reset.
+/// One reading per part; in the state the last known, `None` if not read since the reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Batteries {
     pub left: Option<Charge>,
@@ -200,15 +193,24 @@ pub struct Batteries {
 impl Batteries {
     pub fn apply(&mut self, report: &BatteryReport) {
         let updates = [
-            (&mut self.left, report.left),
-            (&mut self.right, report.right),
-            (&mut self.case, report.case),
-            (&mut self.headset, report.headset),
+            (&mut self.left, report.batteries.left),
+            (&mut self.right, report.batteries.right),
+            (&mut self.case, report.batteries.case),
+            (&mut self.headset, report.batteries.headset),
         ];
         for (slot, update) in updates {
             if update.is_some() {
                 *slot = update;
             }
+        }
+    }
+
+    fn slot(&mut self, component: Component) -> &mut Option<Charge> {
+        match component {
+            Component::Left => &mut self.left,
+            Component::Right => &mut self.right,
+            Component::Case => &mut self.case,
+            Component::Headset => &mut self.headset,
         }
     }
 }
