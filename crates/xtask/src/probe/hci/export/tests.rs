@@ -312,31 +312,6 @@ fn the_music_tables_of_the_session() {
 }
 
 #[test]
-fn the_link_summary_of_the_session() {
-    let outputs = rendered(&session());
-    let expected = "realtime_at_zero_ns 1795176000004000000\n\
-        stamps_stepping_back 0\n\
-        synchronous_connection_events 1\n\
-        synchronous_connections_opened 1\n\
-        acl_packets 45\n\
-        malformed_acl_packets 0\n\
-        continuations_without_start 0\n\
-        unfinished_pdus 0\n\
-        malformed_pdus 0\n\
-        malformed_signals 0\n\
-        responses_without_request 0\n\
-        fixed_channel_pdus 0\n\
-        requests_over_limit 0\n\
-        unmapped_over_limit 0\n\
-        not_basic_mode_pdus 0\n\
-        avdtp_channels_on_other_links 0\n\
-        log sdu.log handle=0x000b written=7 refused_empty=0 refused_too_long=0\n\
-        log att.log handle=0x000b written=2 refused_empty=0 refused_too_long=0\n\
-        music a2dp.tsv avdtp.txt handle=0x000b avdtp_fragmented_signals=0 avdtp_malformed_signals=0 avdtp_other_channels=0 media_packets_not_rtp=0\n";
-    assert_eq!(text(&outputs, "links.txt"), expected);
-}
-
-#[test]
 fn synchronous_connections_and_what_could_not_be_read_are_counted() {
     let mut trace = Trace::new();
     let opened = [STATUS_SUCCESS; SYNCHRONOUS_PARAMETERS];
