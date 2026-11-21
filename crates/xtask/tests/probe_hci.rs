@@ -17,10 +17,10 @@ mod hci {
     use tempfile::TempDir;
 
     use super::fixture::{
-        ACCEPT, ATT_CIDS, AVDTP_PSM, AVDTP_START, CODEC_SBC, COMMAND, CONTROL_CIDS, DEVICE_NAME,
-        FIRST_SEID, GET_CAPABILITIES, HOST_ADDRESS, KEYBOARD_HANDLE, KEYSTROKES, LINK_KEY,
-        MEDIA_CIDS, PODS_ADDRESS, PODS_HANDLE, SET_CONFIGURATION, SIGNALLING_CIDS, Trace,
-        att_packets, avdtp, control_packets, media_codec, rtp, session,
+        ACCEPT, ATT_CIDS, AVDTP_PSM, AVDTP_START, CODEC_SBC, COMMAND, CONNECTION_REQUEST,
+        CONTROL_CIDS, DEVICE_NAME, FIRST_SEID, GET_CAPABILITIES, HOST_ADDRESS, KEYBOARD_HANDLE,
+        KEYSTROKES, LINK_KEY, MEDIA_CIDS, PODS_ADDRESS, PODS_HANDLE, SET_CONFIGURATION,
+        SIGNALLING_CIDS, Trace, att_packets, avdtp, control_packets, media_codec, rtp, session,
     };
 
     /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
@@ -99,6 +99,29 @@ mod hci {
     const START_PACKET: u8 = 0x04;
     /// What `links.txt` says of a link's music tables when nothing on its AVDTP channels was left unread.
     const ALL_READ: &str = "avdtp_fragmented_signals=0 avdtp_malformed_signals=0 avdtp_other_channels=0 media_packets_not_rtp=0";
+
+    /// The result of a connection response that refuses the PSM (Core 6.1 Vol 3 Part A 4.3).
+    const PSM_NOT_SUPPORTED: u16 = 0x0002;
+    /// The whole of `links.txt` for the session trace.
+    const SESSION_LINKS: &str = "realtime_at_zero_ns 1795176000004000000\n\
+        stamps_stepping_back 0\n\
+        synchronous_connection_events 1\n\
+        synchronous_connections_opened 1\n\
+        acl_packets 45\n\
+        malformed_acl_packets 0\n\
+        continuations_without_start 0\n\
+        unfinished_pdus 0\n\
+        malformed_pdus 0\n\
+        malformed_signals 0\n\
+        responses_without_request 0\n\
+        fixed_channel_pdus 0\n\
+        requests_over_limit 0\n\
+        unmapped_over_limit 0\n\
+        not_basic_mode_pdus 0\n\
+        avdtp_channels_on_other_links 0\n\
+        log sdu.log handle=0x000b written=7 refused_empty=0 refused_too_long=0\n\
+        log att.log handle=0x000b written=2 refused_empty=0 refused_too_long=0\n\
+        music a2dp.tsv avdtp.txt handle=0x000b avdtp_fragmented_signals=0 avdtp_malformed_signals=0 avdtp_other_channels=0 media_packets_not_rtp=0\n";
 
     /// A temporary home with a trace file beside the store, owner only as the bounded read demands.
     fn home_with_trace(trace: &[u8]) -> (TempDir, PathBuf) {
@@ -261,11 +284,7 @@ mod hci {
         assert_eq!(log(&dir, "att.log"), att_packets());
         let links = fs::read_to_string(dir.join("links.txt")).unwrap();
         assert_eq!(String::from_utf8(ran.stdout).unwrap(), links);
-        assert!(
-            links.contains(
-                "log sdu.log handle=0x000b written=7 refused_empty=0 refused_too_long=0\n"
-            )
-        );
+        assert_eq!(links, SESSION_LINKS);
         for name in SESSION_FILES {
             let mode = fs::metadata(dir.join(name)).unwrap().permissions().mode();
             assert_eq!(mode & PERMISSION_BITS, OWNER_FILE, "{name}");
@@ -641,6 +660,60 @@ mod hci {
             "music a2dp.tsv avdtp.txt handle=0x000b {ALL_READ}\n\
              music a2dp-2.tsv avdtp-2.txt handle=0x000d avdtp_fragmented_signals=1 avdtp_malformed_signals=2 avdtp_other_channels=3 media_packets_not_rtp=4\n"
         );
+        assert!(links.ends_with(&said), "{links}");
+    }
+
+    #[test]
+    fn a_control_request_refused_or_never_answered_marks_no_link_as_the_pods() {
+        let host = Direction::ToPods;
+        let mut trace = session();
+        trace.on(SECOND_HANDLE);
+        trace.connect(host, CONTROL_PSM, SPARE_CIDS[0], PSM_NOT_SUPPORTED);
+        let mut unanswered = CONTROL_PSM.to_le_bytes().to_vec();
+        unanswered.extend(SPARE_CIDS[1].0.to_le_bytes());
+        trace.signal(host, CONNECTION_REQUEST, &unanswered);
+        stream(&mut trace, SECOND_HANDLE, LATER_MS);
+        let (home, path) = home_with_trace(&trace.bytes());
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        let dir = run_dir(&home, RUN);
+        let requests = fs::read_to_string(dir.join("psm.tsv")).unwrap();
+        for asked in [
+            "\thost\t0x1001\t0x0002\t0x000d\t",
+            "\thost\t0x1001\t-\t0x000d\t",
+        ] {
+            assert_eq!(requests.matches(asked).count(), 1, "{asked:?}");
+        }
+        assert_eq!(names_in(&dir), SESSION_FILES);
+        let links = String::from_utf8(ran.stdout).unwrap();
+        let said = format!("music a2dp.tsv avdtp.txt handle=0x000b {ALL_READ}\n");
+        assert!(links.ends_with(&said), "{links}");
+        let left_out = "avdtp_channels_on_other_links 2\n";
+        assert!(links.contains(left_out), "{links}");
+    }
+
+    #[test]
+    fn a_control_channel_in_another_mode_still_marks_its_link_as_the_pods() {
+        let mut trace = Trace::new();
+        trace.open(Direction::ToPods, CONTROL_PSM, CONTROL_CIDS);
+        trace.offer_mode(Direction::FromPods, CONTROL_CIDS, ENHANCED_RETRANSMISSION);
+        stream(&mut trace, PODS_HANDLE, LATER_MS);
+        let (home, path) = home_with_trace(&trace.bytes());
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        let dir = run_dir(&home, RUN);
+        assert_eq!(
+            names_in(&dir),
+            ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv"]
+        );
+        let seconds = fs::read_to_string(dir.join("a2dp.tsv")).unwrap();
+        assert_eq!(seconds, STREAM_SECONDS);
+        let codecs = fs::read_to_string(dir.join("avdtp.txt")).unwrap();
+        assert_eq!(codecs, STREAM_CODECS);
+        let links = String::from_utf8(ran.stdout).unwrap();
+        let not_read = "channel_not_read handle=0x000b psm=0x1001 host_mode=- pods_mode=0x03 pdus=0 reason=l2cap_mode_is_not_basic\n";
+        assert!(links.contains(not_read), "{links}");
+        let said = format!("music a2dp.tsv avdtp.txt handle=0x000b {ALL_READ}\n");
         assert!(links.ends_with(&said), "{links}");
     }
 
