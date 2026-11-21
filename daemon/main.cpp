@@ -825,6 +825,7 @@ private slots:
     void onDeviceDisconnected(const QBluetoothAddress &address)
     {
         LOG_INFO("Device disconnected: " << address.toString());
+        mediaController->resetConversationVolume();
         // A retry still in flight would reactivate a profile for the device that just went away.
         mediaController->cancelPendingA2dpActivation();
         if (socket)
@@ -1248,6 +1249,7 @@ private slots:
         }
 
         LOG_WARN("AirPods control link lost: " << reason);
+        mediaController->resetConversationVolume();
         lostSocket->disconnect(this);
         lostSocket->close();
         lostSocket->deleteLater();

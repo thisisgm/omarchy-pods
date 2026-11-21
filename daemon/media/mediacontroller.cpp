@@ -6,6 +6,8 @@
 #include "playerstatuswatcher.h"
 #include "pulseaudiocontroller.h"
 #include "snaptogrid.hpp"
+#include "airpods_packets.h"
+#include "conversationvolume.hpp"
 
 #include <QDebug>
 #include <QProcess>
@@ -24,6 +26,8 @@ MediaController::MediaController(QObject *parent) : QObject(parent) {
   {
     LOG_ERROR("Failed to initialize PulseAudio controller");
   }
+  m_conversationVolume = new ConversationVolume(this);
+
 }
 
 void MediaController::handleEarDetection(EarDetection *earDetection)
@@ -145,59 +149,26 @@ void MediaController::followMediaChanges() {
 bool MediaController::isActiveOutputDeviceAirPods() {
   QString defaultSink = m_pulseAudio->getDefaultSink();
   LOG_DEBUG("Default sink: " << defaultSink);
-  return defaultSink.contains(connectedDeviceMacAddress);
+  return sourceNamesAddress(defaultSink, connectedDeviceMacAddress);
 }
 
 void MediaController::handleConversationalAwareness(const QByteArray &data) {
-    if (data.size() < 10) {
+    if (data.size() != 10 || !data.startsWith(AirPodsPackets::ConversationalAwareness::DATA_HEADER)) {
         LOG_ERROR("Invalid conversational awareness packet");
         return;
     }
 
-    uint8_t flag = (uint8_t)data[9];
-
-    switch (flag) {
-    case 0x01:
-        LOG_INFO("Conversational awareness event: voice detected");
-
-        if (initialVolume == -1 && isActiveOutputDeviceAirPods()) {
-            QString sink = m_pulseAudio->getDefaultSink();
-            initialVolume = m_pulseAudio->getSinkVolume(sink);
-            LOG_DEBUG("Initial volume saved: " << initialVolume << "%");
-        }
-
-        if (initialVolume != -1) {
-            QString sink = m_pulseAudio->getDefaultSink();
-            // Snap CA-duck target to nearest 5% so the volume label
-            // matches the Quickshell keyboard-shortcut grid. Without
-            // this `initialVolume * 0.20` produces off-grid values like
-            // 7, 14, 19 etc. depending on user's starting volume.
-            int target = snapToGrid(static_cast<int>(initialVolume * 0.20));
-            m_pulseAudio->setSinkVolume(sink, target);
-            LOG_INFO("Volume lowered to " << target << "%");
-        }
-        break;
-
-    case 0x08:
-        LOG_INFO("Conversational awareness disabled");
-        initialVolume = -1;
-        break;
-
-    case 0x09:
-        LOG_INFO("Conversational awareness enabled");
-        break;
-
-    default:
-        LOG_INFO("Conversational awareness event: voice ended");
-
-        if (initialVolume != -1 && isActiveOutputDeviceAirPods()) {
-            QString sink = m_pulseAudio->getDefaultSink();
-            m_pulseAudio->setSinkVolume(sink, initialVolume);
-            LOG_INFO("Volume restored to " << initialVolume << "%");
-            initialVolume = -1;
-        }
-        break;
+    LOG_INFO("Conversational awareness level: " << static_cast<quint8>(data[9]));
+    const auto speaking = AirPodsPackets::ConversationalAwareness::parseSpeaking(data);
+    if (!speaking.has_value())
+        return;
+    const QString sink = m_pulseAudio->getDefaultSink();
+    if (!sourceNamesAddress(sink, connectedDeviceMacAddress)) {
+        m_conversationVolume->reset();
+        return;
     }
+
+    m_conversationVolume->setSpeaking(speaking.value(), sink);
 }
 
 
@@ -359,7 +330,12 @@ QString MediaController::getActiveProfile() {
   return m_pulseAudio->getActiveCardProfile(m_deviceOutputName);
 }
 
+void MediaController::resetConversationVolume() {
+  m_conversationVolume->reset();
+}
+
 void MediaController::removeAudioOutputDevice() {
+  m_conversationVolume->reset();
   // A retry still in flight would resurrect the sink right after this tears it down.
   cancelPendingA2dpActivation();
 
@@ -383,6 +359,9 @@ void MediaController::removeAudioOutputDevice() {
 }
 
 void MediaController::setConnectedDeviceMacAddress(const QString &macAddress) {
+  if (connectedDeviceMacAddress != macAddress) {
+    m_conversationVolume->reset();
+  }
   connectedDeviceMacAddress = macAddress;
   m_deviceOutputName = getAudioDeviceName();
   m_cachedA2dpProfile.clear();
