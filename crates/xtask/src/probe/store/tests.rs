@@ -29,8 +29,8 @@ const SYSTEM_DIR: &str = "/usr";
 const SYSTEM_FILE: &str = "/etc/passwd";
 /// A read of a planted FIFO that has not returned by then is a hang, and the test fails.
 const FIFO_DEADLINE: Duration = Duration::from_secs(5);
-/// Generated device contents run past `MAX_DEVICE_BYTES` so the parser sees oversized input too.
-const DEVICE_SAMPLE_BYTES: usize = 80;
+/// How far past `MAX_DEVICE_BYTES` generated device contents run, so the parser sees oversized input too.
+const DEVICE_SAMPLE_OVERRUN: u64 = 16;
 
 fn mode_of(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & PERMISSION_BITS
@@ -594,6 +594,12 @@ fn no_code_path_removes_or_overwrites() {
     }
 }
 
+/// Device file contents from empty to `DEVICE_SAMPLE_OVERRUN` bytes past the device limit.
+fn device_contents() -> impl Strategy<Value = Vec<u8>> {
+    let longest = usize::try_from(MAX_DEVICE_BYTES + DEVICE_SAMPLE_OVERRUN).unwrap();
+    proptest::collection::vec(any::<u8>(), 0..=longest)
+}
+
 proptest! {
     #[test]
     fn stamp_check_never_panics(text in any::<String>()) {
@@ -620,7 +626,7 @@ proptest! {
     }
 
     #[test]
-    fn device_parse_never_panics(contents in proptest::collection::vec(any::<u8>(), 0..DEVICE_SAMPLE_BYTES)) {
+    fn device_parse_never_panics(contents in device_contents()) {
         if let Err(error) = parse_device(Path::new("/store/device"), &contents) {
             prop_assert!(!error.to_string().is_empty());
         }
