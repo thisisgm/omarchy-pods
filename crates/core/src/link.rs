@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
 use pods_proto::handshake::Handshake;
-use pods_proto::packets::REQUEST_NOTIFICATIONS;
+use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS};
 
 use crate::command::{self, Command, CommandError, Outcome};
 use crate::state::State;
@@ -300,7 +300,7 @@ impl Machine {
                     self.known_settings = commands::KnownSettings::default();
                     let until = after(now, HANDSHAKE_STEP_TIMEOUT_MS);
                     self.enter(state, P::AwaitHandshakeAck { attempt, until });
-                    vec![Action::Send(Handshake::first().to_vec())]
+                    vec![Action::Send(HANDSHAKE.to_vec())]
                 } else {
                     self.enter(
                         state,
