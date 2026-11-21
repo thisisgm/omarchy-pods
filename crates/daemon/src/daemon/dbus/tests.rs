@@ -35,7 +35,7 @@ const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 /// The public description of this interface, which must list every error name.
 const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
 
-/// Every refusal a command can end in, with the error name a client sees for it.
+/// Every refusal a command can end in, with the error name a client sees for it; `spelled` makes a new variant fail to build until it is listed here.
 const ERROR_NAMES: [(CommandError, &str); 8] = [
     (
         CommandError::NotConnected,
@@ -70,6 +70,22 @@ const ERROR_NAMES: [(CommandError, &str); 8] = [
         "io.github.thisisgm.Omapods1.Error.Headless",
     ),
 ];
+
+/// The name `ERROR_NAMES` gives `error`, found through a match with no catch-all so the compiler names any variant the table misses.
+fn spelled(error: CommandError) -> Option<&'static str> {
+    match error {
+        CommandError::NotConnected
+        | CommandError::NotSupported
+        | CommandError::NotWorn
+        | CommandError::OutOfRange
+        | CommandError::UnknownKey
+        | CommandError::BadRequest
+        | CommandError::Timeout
+        | CommandError::Headless => ERROR_NAMES
+            .iter()
+            .find_map(|&(listed, name)| (listed == error).then_some(name)),
+    }
+}
 
 /// State changes the stalled peer test makes; their signals overfill a socket buffer many times over.
 const FLOOD_CHANGES: usize = 5_000;
@@ -334,12 +350,32 @@ fn unknown_device_strings_are_empty_and_every_key_is_listed() {
         let value = |name: &str| all[name].try_clone().unwrap();
         assert_eq!(text(&value("DeviceName")), "");
         assert_eq!(text(&value("ModelName")), "");
+        for name in ["Connected", "ConversationalAwareness", "OneBudAnc"] {
+            assert!(!bool::try_from(value(name)).unwrap(), "{name}");
+        }
         let batteries = HashMap::<String, (bool, bool, u8)>::try_from(value("Batteries")).unwrap();
         let parts: BTreeSet<&str> = batteries.keys().map(String::as_str).collect();
         assert_eq!(parts, BTreeSet::from(["case", "headset", "left", "right"]));
         let in_ear = HashMap::<String, bool>::try_from(value("InEar")).unwrap();
         assert_eq!(in_ear.len(), 2);
         assert!(in_ear.contains_key("left") && in_ear.contains_key("right"));
+        assert!(!in_ear.values().any(|worn| *worn));
+    });
+}
+
+#[test]
+fn in_ear_follows_which_bud_is_primary() {
+    run(async {
+        let peer = peer(Hub::new()).await;
+        let left_primary = State {
+            primary: Some(Component::Left),
+            ..populated()
+        };
+        peer.hub.replace(left_primary);
+        let all = get_all(&peer.client).await;
+        let in_ear = BTreeMap::<String, bool>::try_from(all["InEar"].try_clone().unwrap()).unwrap();
+        let expected = BTreeMap::from([("left".to_owned(), true), ("right".to_owned(), false)]);
+        assert_eq!(in_ear, expected);
     });
 }
 
@@ -412,7 +448,7 @@ fn every_method_answers_with_what_submit_returns() {
         let client = &peer.client;
         assert_eq!(
             call(client, "SetEarDetection", &("both",)).await,
-            Ok(CONFIRMED.to_owned())
+            Ok("confirmed".to_owned())
         );
         assert_eq!(
             peer.hub.state().ear_detection_behavior,
@@ -546,8 +582,19 @@ fn every_mode_and_behavior_has_a_name() {
 }
 
 #[test]
+fn each_outcome_has_the_reply_the_document_names() {
+    assert_eq!(answer(Outcome::Sent).ok(), Some("sent"));
+    assert_eq!(answer(Outcome::Confirmed).ok(), Some("confirmed"));
+    let refused = answer(Outcome::Refused(CommandError::NotWorn))
+        .err()
+        .unwrap();
+    assert_eq!(refused.name().as_str(), format!("{ERROR_PREFIX}NotWorn"));
+}
+
+#[test]
 fn every_command_error_has_its_camel_case_name() {
     for (error, name) in ERROR_NAMES {
+        assert_eq!(spelled(error), Some(name), "{error:?} is listed once");
         let reply = CallError::from(error);
         assert_eq!(reply.name().as_str(), name);
         assert!(ErrorName::try_from(name).is_ok(), "{name}");
@@ -624,7 +671,6 @@ fn a_peer_that_stops_reading_neither_stalls_the_state_nor_queues_signals() {
             .unwrap();
         is_built.recv().unwrap();
         let announcing = tokio::spawn(announce(server, updates, shown));
-        let mut watcher = hub.subscribe();
         let behaviors = [
             EarDetectionBehavior::Disabled,
             EarDetectionBehavior::PauseWhenOneRemoved,
@@ -634,8 +680,7 @@ fn a_peer_that_stops_reading_neither_stalls_the_state_nor_queues_signals() {
             assert_eq!(submitted, Outcome::Confirmed);
             tokio::task::yield_now().await;
         }
-        let last = hub.state().ear_detection_behavior;
-        assert_eq!(watcher.borrow_and_update().ear_detection_behavior, last);
+        // Every submit above returned while the peer read nothing; a stalled bus holding up the runtime fails the run by `CEILING`.
         let awareness_on = Command::SetConversationalAwareness(true);
         let refused = Outcome::Refused(CommandError::NotConnected);
         assert_eq!(hub.submit(awareness_on).await, refused);

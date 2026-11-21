@@ -263,11 +263,16 @@ impl Omapods {
     }
 
     async fn submit(&self, command: Command) -> Result<&'static str, CallError> {
-        match self.hub.submit(command).await {
-            Outcome::Sent => Ok(SENT),
-            Outcome::Confirmed => Ok(CONFIRMED),
-            Outcome::Refused(error) => Err(error.into()),
-        }
+        answer(self.hub.submit(command).await)
+    }
+}
+
+/// A method's reply for how its command ended.
+fn answer(outcome: Outcome) -> Result<&'static str, CallError> {
+    match outcome {
+        Outcome::Sent => Ok(SENT),
+        Outcome::Confirmed => Ok(CONFIRMED),
+        Outcome::Refused(error) => Err(error.into()),
     }
 }
 
