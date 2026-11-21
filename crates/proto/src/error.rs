@@ -95,6 +95,9 @@ pub enum ParseError {
         expected: usize,
         got: usize,
     },
+    /// A list that must hold at least one entry holds no whole one.
+    #[error("{parser} has an empty list: its {list_len} bytes hold no whole entry")]
+    EmptyList { parser: Parser, list_len: usize },
 }
 
 /// Checks the minimum length, then returns the bytes after `header`.
@@ -125,6 +128,7 @@ pub(crate) fn strip_header(
 
 #[cfg(test)]
 mod tests {
+    use crate::att::AttPdu;
     use crate::battery::BatteryReport;
     use crate::control::ControlCommand;
     use crate::noise::NoiseMode;
@@ -171,6 +175,15 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "decrypted battery payload is 15 bytes, expected 16"
+        );
+    }
+
+    #[test]
+    fn empty_list_names_the_parser_and_the_bytes_it_got() {
+        let err = AttPdu::parse(&[0x09, 0x07, 0x02, 0x00, 0x14]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "attribute protocol packet has an empty list: its 3 bytes hold no whole entry"
         );
     }
 

@@ -96,6 +96,13 @@ fn unknown(field: &'static str, value: u8) -> ParseError {
     }
 }
 
+fn empty_list(list_len: usize) -> ParseError {
+    ParseError::EmptyList {
+        parser: Parser::Att,
+        list_len,
+    }
+}
+
 fn too_short(need: usize, got: usize) -> ParseError {
     ParseError::TooShort {
         parser: Parser::Att,
@@ -394,13 +401,29 @@ fn trailing_bytes_are_counted() {
 }
 
 #[test]
-fn a_list_reply_with_no_entry_yields_nothing() {
-    for prefix in [[0x05, 0x01], [0x05, 0x02]] {
-        let mut pairs = information(&prefix);
-        assert_eq!(pairs.next(), None);
-        assert_eq!(pairs.trailing(), 0);
+fn a_find_information_reply_with_no_whole_pair_is_refused() {
+    let long = long_pair(0x0004, &FAKE_LONG_UUID);
+    for (prefix, pair) in [([0x05, 0x01], &SHORT_PAIR[..]), ([0x05, 0x02], &long[..])] {
+        for kept in 0..pair.len() {
+            let pdu = [&prefix[..], &pair[..kept]].concat();
+            assert_eq!(AttPdu::parse(&pdu), Err(empty_list(kept)), "{pdu:02x?}");
+        }
+        let shortest = [&prefix[..], pair].concat();
+        assert_eq!(information(&shortest).count(), 1);
     }
-    let mut entries = by_type(&[0x09, 0x07]);
-    assert_eq!(entries.next(), None);
-    assert_eq!(entries.trailing(), 0);
+    assert_eq!(
+        empty_list(3).to_string(),
+        "attribute protocol packet has an empty list: its 3 bytes hold no whole entry"
+    );
+}
+
+#[test]
+fn a_read_by_type_reply_with_no_whole_entry_is_refused() {
+    let prefix = [0x09, 0x07];
+    for kept in 0..SHORT_DECLARATION.len() {
+        let pdu = [&prefix[..], &SHORT_DECLARATION[..kept]].concat();
+        assert_eq!(AttPdu::parse(&pdu), Err(empty_list(kept)), "{pdu:02x?}");
+    }
+    let shortest = [&prefix[..], &SHORT_DECLARATION[..]].concat();
+    assert_eq!(by_type(&shortest).count(), 1);
 }

@@ -103,6 +103,22 @@ fn att_pair_bytes(pair: HandleInfo<'_>) -> Vec<u8> {
     bytes
 }
 
+// Sample output: ([05, 01], 4), the two bytes that open a list reply and the length of one of its entries.
+fn att_list_prefix() -> impl Strategy<Value = ([u8; 2], usize)> {
+    prop_oneof![
+        Just((
+            [ATT_FIND_INFORMATION_REPLY, ATT_SHORT_FORMAT.0],
+            ATT_SHORT_FORMAT.1
+        )),
+        Just((
+            [ATT_FIND_INFORMATION_REPLY, ATT_LONG_FORMAT.0],
+            ATT_LONG_FORMAT.1
+        )),
+        (ATT_ENTRY_MIN_LEN..=u8::MAX)
+            .prop_map(|len| ([ATT_READ_BY_TYPE_REPLY, len], usize::from(len))),
+    ]
+}
+
 // Sample output: `AA:bb:CC:dd:EE:ff`, with about one part in ten replaced by text the format does not allow.
 fn address_text() -> impl Strategy<Value = String> {
     let pair = || prop_oneof![9 => "[0-9a-fA-F]{2}", 1 => "[ -~]{0,3}"];
@@ -261,14 +277,10 @@ proptest! {
         walk_att(&b);
     }
 
-    // A reply behind a valid two byte prefix yields every whole entry in order and counts a tail shorter than one.
+    // A reply behind a valid two byte prefix yields every whole entry in order and counts a tail shorter than one; with no whole entry it is refused.
     #[test]
     fn att_list_replies_account_for_every_byte(
-        (prefix, entry_len) in prop_oneof![
-            Just(([ATT_FIND_INFORMATION_REPLY, ATT_SHORT_FORMAT.0], ATT_SHORT_FORMAT.1)),
-            Just(([ATT_FIND_INFORMATION_REPLY, ATT_LONG_FORMAT.0], ATT_LONG_FORMAT.1)),
-            (ATT_ENTRY_MIN_LEN..=u8::MAX).prop_map(|len| ([ATT_READ_BY_TYPE_REPLY, len], usize::from(len))),
-        ],
+        (prefix, entry_len) in att_list_prefix(),
         body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
     ) {
         let mut pdu = prefix.to_vec();
@@ -278,19 +290,39 @@ proptest! {
         match AttPdu::parse(&pdu) {
             Ok(AttPdu::Information(mut pairs)) => {
                 let seen: Vec<Vec<u8>> = pairs.by_ref().map(att_pair_bytes).collect();
+                prop_assert!(!seen.is_empty());
                 prop_assert_eq!(seen, whole);
                 prop_assert_eq!(pairs.trailing(), tail);
             }
             Ok(AttPdu::ByType(mut entries)) => {
                 let seen: Vec<&[u8]> = entries.by_ref().collect();
+                prop_assert!(!seen.is_empty());
                 prop_assert_eq!(&seen, &whole);
                 prop_assert_eq!(entries.trailing(), tail);
                 for entry in seen {
                     prop_assert_eq!(att::characteristic(entry).is_some(), ATT_DECLARATION_LENS.contains(&entry_len));
                 }
             }
-            other => prop_assert!(false, "a list reply did not parse as one: {:?}", other),
+            other => {
+                prop_assert!(whole.is_empty(), "a list reply did not parse as one: {:?}", other);
+                let empty = ParseError::EmptyList { parser: Parser::Att, list_len: body.len() };
+                prop_assert_eq!(other, Err(empty));
+            }
         }
+    }
+
+    // A reply whose list holds no whole entry is refused, so nothing can walk it and learn no handle.
+    #[test]
+    fn att_list_reply_with_no_whole_entry_is_refused(
+        ((prefix, entry_len), body) in att_list_prefix().prop_flat_map(|(prefix, entry_len)| {
+            (Just((prefix, entry_len)), proptest::collection::vec(any::<u8>(), 0..entry_len))
+        }),
+    ) {
+        prop_assert!(body.len() < entry_len);
+        let mut pdu = prefix.to_vec();
+        pdu.extend(&body);
+        let empty = ParseError::EmptyList { parser: Parser::Att, list_len: body.len() };
+        prop_assert_eq!(AttPdu::parse(&pdu), Err(empty));
     }
 
     // A format other than the two defined ones is refused whatever follows it.
