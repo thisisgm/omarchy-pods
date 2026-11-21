@@ -1,4 +1,4 @@
-//! Workspace checks. `cargo xtask ci` runs the same gates as the hosted CI.
+//! Workspace checks. `cargo xtask ci` runs the Rust gates of the hosted CI; zizmor runs only there.
 
 use std::env;
 use std::process::{Command, ExitCode};
