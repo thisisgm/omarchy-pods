@@ -13,6 +13,10 @@ The first byte a client sends decides what it speaks. A connection that starts
 with `{` speaks protocol 1. Any other first byte is the older one-verb dialect
 of `librepods-ctl`, which keeps working on the same socket.
 
+A connection that sends no byte within 1 second is closed without a reply. The
+daemon serves at most 64 clients at once, in either protocol, and closes the
+next one as soon as it connects.
+
 ## Lines
 
 Each request and each reply is one JSON object on one line, ended by a newline

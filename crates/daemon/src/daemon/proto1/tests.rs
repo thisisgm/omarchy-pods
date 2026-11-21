@@ -22,6 +22,38 @@ fn a_line_is_taken_without_its_newline_and_the_rest_waits() {
 }
 
 #[test]
+fn the_protocol_document_states_the_limits_in_force() {
+    let document = include_str!("../../../../../docs/protocol-1.md");
+    let words = document.split_whitespace().collect::<Vec<_>>().join(" ");
+    let first_byte = crate::daemon::legacy_dialect::REQUEST_DEADLINE;
+    for deadline in [STALL_DEADLINE, first_byte] {
+        assert_eq!(
+            deadline.subsec_nanos(),
+            0,
+            "the document counts whole seconds"
+        );
+    }
+    let stall = STALL_DEADLINE.as_secs();
+    let clients = crate::daemon::socket::MAX_CONNECTIONS;
+    // Each number in the wording the document gives it; `second` also matches `seconds`.
+    for wanted in [
+        format!("holds at most {MAX_LINE_BYTES} bytes"),
+        format!("keeps at most {QUEUE_LINES} lines"),
+        format!("When a {}th would wait", QUEUE_LINES + 1),
+        format!("after {stall} second"),
+        format!("The {stall} second"),
+        format!("or {stall} second"),
+        format!("within {} second", first_byte.as_secs()),
+        format!("at most {clients} clients"),
+    ] {
+        assert!(
+            words.contains(&wanted),
+            "docs/protocol-1.md lacks `{wanted}`"
+        );
+    }
+}
+
+#[test]
 fn a_line_at_the_bound_is_taken_and_one_byte_more_is_refused() {
     let mut pending = vec![b'x'; MAX_LINE_BYTES];
     assert_eq!(take_line(&mut pending), Ok(None));
