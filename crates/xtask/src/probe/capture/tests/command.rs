@@ -46,14 +46,14 @@ fn run_command(
     near: Channel,
     command: impl FnOnce(&mut Host<'_>) -> ExitCode + Send + 'static,
 ) -> Ran {
-    let home = home.as_os_str().to_owned();
+    let home = home.to_str().unwrap().to_owned();
     let (done, result) = mpsc::channel();
     thread::spawn(move || {
         let near = Cell::new(Some(near));
         let connect = |_peer: BdAddr| near.take().ok_or(ChannelError::Connect(Errno::ALREADY));
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         let code = command(&mut Host {
-            home: Some(home),
+            home: &home,
             connect: &connect,
             stdout: &mut stdout,
             stderr: &mut stderr,
@@ -319,7 +319,7 @@ fn output_never_contains_the_device_address() {
     };
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let mut host = Host {
-        home: Some(home.path().as_os_str().to_owned()),
+        home: home.path().to_str().unwrap(),
         connect: &connect,
         stdout: &mut stdout,
         stderr: &mut stderr,

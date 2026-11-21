@@ -58,24 +58,55 @@ fn init_prints_the_session_path_and_nothing_else() {
     assert!(error.contains(&root.display().to_string()), "{error}");
 }
 
+/// The three commands, each with arguments that would otherwise get as far as the store.
+fn every_command() -> [Vec<&'static str>; 3] {
+    [
+        vec!["init", "--stamp", STAMP],
+        vec![
+            "capture", "--stamp", STAMP, "--run", "page", "--script", "knock",
+        ],
+        vec!["stop"],
+    ]
+}
+
 #[test]
-fn init_refuses_a_home_it_could_not_print_faithfully() {
+fn every_command_refuses_an_unset_home() {
+    for args in every_command() {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
+        command.arg("probe").args(&args).env_remove("HOME");
+        let refused = command.output().unwrap();
+        assert!(!refused.status.success(), "{args:?}: {refused:?}");
+        assert_eq!(refused.stdout, b"", "{args:?}");
+        assert_eq!(
+            error_of(&refused),
+            "xtask probe: HOME is not set, and the store lives under it\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn every_command_refuses_a_home_it_could_not_print_faithfully() {
     let parent = tempfile::tempdir().unwrap();
     let home = parent.path().join(OsStr::from_bytes(NOT_UTF8_NAME));
     fs::create_dir(&home).unwrap();
 
-    let refused = Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .args(["probe", "init", "--stamp", STAMP])
-        .env("HOME", &home)
-        .output()
-        .unwrap();
-
-    assert!(!refused.status.success(), "{refused:?}");
-    assert_eq!(refused.stdout, b"");
-    let error = String::from_utf8(refused.stderr).unwrap();
-    assert!(error.contains("is not valid UTF-8"), "{error}");
-    assert!(error.contains(&format!("HOME {home:?}")), "{error}");
-    assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+    let mut sentences = Vec::new();
+    for args in every_command() {
+        let refused = probe(&home, &args).output().unwrap();
+        assert!(!refused.status.success(), "{args:?}: {refused:?}");
+        assert_eq!(refused.stdout, b"", "{args:?}");
+        let error = String::from_utf8(refused.stderr).unwrap();
+        assert!(error.contains("is not valid UTF-8"), "{args:?}: {error}");
+        assert!(
+            error.contains(&format!("HOME {home:?}")),
+            "{args:?}: {error}"
+        );
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0, "{args:?}");
+        sentences.push(error);
+    }
+    sentences.dedup();
+    assert_eq!(sentences.len(), 1, "{sentences:?}");
 }
 
 #[test]
