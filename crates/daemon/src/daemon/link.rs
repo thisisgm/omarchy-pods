@@ -170,6 +170,8 @@ impl Driver {
             .deadline()
             .and_then(|at| self.started.checked_add(at));
         let received = match deadline {
+            // Served before the queue, which can stay full for as long as the pods keep talking.
+            Some(at) if at <= Instant::now() => return Turn::Tick,
             Some(at) => match timeout_at(at, inputs.recv()).await {
                 Ok(received) => received,
                 Err(_) => return Turn::Tick,
