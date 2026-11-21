@@ -1,4 +1,4 @@
-//! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, and `stop` ends an uplink a killed capture left running.
+//! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, `stop` ends an uplink a killed capture left running, and `hci` reads a btmon trace into a run.
 
 mod a2dp;
 mod capture;
