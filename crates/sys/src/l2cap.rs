@@ -136,7 +136,7 @@ impl Channel {
         set_socket_timeout(&self.fd, Timeout::Recv, Some(timeout)).map_err(ChannelError::Option)
     }
 
-    /// Reads one SDU into `buf`; a signal is `Err(ChannelError::Recv(Errno::INTR))` and is never retried here, so the caller can check its stop flag.
+    /// Reads one SDU into `buf`; with a receive timeout set, a signal ends the wait as `Err(ChannelError::Recv(Errno::INTR))` and is never retried here, so the caller can check its stop flag (with none set, the kernel restarts the read for a handler installed with `SA_RESTART`).
     pub fn recv(&self, buf: &mut [u8]) -> Result<Received, ChannelError> {
         // `TRUNC` makes the kernel return the length of the whole SDU, not of the part that fitted.
         match rustix::net::recv(&self.fd, buf, RecvFlags::TRUNC) {
