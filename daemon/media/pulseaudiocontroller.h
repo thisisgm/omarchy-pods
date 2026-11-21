@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QTimer>
 #include <atomic>
 #include <pulse/pulseaudio.h>
 
@@ -61,7 +62,12 @@ public:
 private:
     pa_threaded_mainloop *m_mainloop = nullptr;
     pa_context *m_context = nullptr;
-    bool m_initialized = false;
+    // Written from the PA mainloop thread on context death, read from the Qt thread by every query.
+    std::atomic<bool> m_initialized{false};
+
+    // A dead context is never revived by libpulse, so recovery builds a new one on the surviving mainloop.
+    QTimer *m_reconnectTimer = nullptr;
+    int m_reconnectAttempts = 0;
 
     // AVRCP 5%-grid snap state. m_snapSinkName empty disables.
     // m_expectedVolume tracks the last daemon-initiated set so the
@@ -85,4 +91,7 @@ private:
     static void snapSinkInfoCallback(pa_context *c, const pa_sink_info *info, int eol, void *userdata);
 
     bool waitForOperation(pa_operation *op);
+
+    void scheduleReconnect();
+    void attemptReconnect();
 };
