@@ -10,11 +10,11 @@ use std::time::Duration;
 
 use pods_proto::control::{ControlCommand, ControlId};
 use pods_proto::ear::EarReport;
+use pods_proto::handshake::{Handshake, Step};
 use pods_proto::uplink::{self, MicSide};
 use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 
-use super::handshake::{Handshake, Step};
 use super::script::{Action, Opening, Script};
 use guard::{Dropped, SideChange, Tail, Uplink};
 pub(crate) use record::{IoFailure, LOG_NAME, MARKS_NAME, Mark, Outputs, write_mark};

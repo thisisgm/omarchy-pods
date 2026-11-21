@@ -10,6 +10,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use pods_proto::addr::BdAddr;
+use pods_proto::handshake::Step;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
 use pods_proto::sdulog::{self, Direction};
 use pods_proto::uplink::{START, STOP};
@@ -17,7 +18,6 @@ use pods_sys::l2cap::{Channel, ChannelError};
 use rustix::io::Errno;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
-use super::super::super::handshake::Step;
 use super::super::super::script::ScriptName;
 use super::super::super::{CaptureArgs, Host, capture, exit_code, stop, summary, watch_signals};
 use super::super::{EndReason, IoFailure, Outcome};
