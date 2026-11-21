@@ -1,8 +1,13 @@
-//! Line framing at the bound, and that no bytes can make it panic or keep more than one line.
+//! Line framing at the bound, that no bytes can make it panic or keep more than one line, and the close after the client ends its side.
 
 use proptest::prelude::*;
+use tokio::io::AsyncReadExt;
+use tokio::runtime::Builder;
 
 use super::*;
+
+/// A set the daemon refuses with no link, which still counts as a change.
+const REFUSED_SET: &str = r#"{"v":1,"id":0,"op":"set","key":"noise","value":"anc"}"#;
 
 #[test]
 fn a_line_is_taken_without_its_newline_and_the_rest_waits() {
@@ -60,4 +65,36 @@ proptest! {
             }
         }
     }
+}
+
+#[test]
+fn a_client_that_ended_its_side_gets_every_line_and_change_it_is_owed() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    let received = runtime.block_on(async {
+        let hub = Hub::new();
+        let (served, mut client) = UnixStream::pair().unwrap();
+        let (_, changes) = hub.follow();
+        let Ok((_, Request::Submit(command))) = request::parse(REFUSED_SET.as_bytes()) else {
+            panic!("the refused set does not parse as a set");
+        };
+        drop(hub.submit(command));
+        let mut connection = Connection {
+            stream: served,
+            pending: format!("{REFUSED_SET}\n{REFUSED_SET}\n").into_bytes(),
+            chunk: [0; PENDING_BYTES],
+            queue: VecDeque::new(),
+            written: 0,
+            changes: Some(changes),
+            ended: true,
+            stall: None,
+        };
+        connection.run(&hub).await.unwrap();
+        drop(connection);
+        let mut received = String::new();
+        client.read_to_string(&mut received).await.unwrap();
+        received
+    });
+    let replies = received.matches(r#""ok":false"#).count();
+    let events = received.matches(r#"{"event""#).count();
+    assert_eq!((replies, events), (2, 3), "{received}");
 }
