@@ -600,9 +600,9 @@ mod tests {
         silent.send(b"{");
         kill_process(daemon.pid(), Signal::TERM).unwrap();
         assert!(daemon.wait_exit().success(), "{}", daemon.log());
-        for client in [&mut subscriber, &mut idle, &mut silent] {
-            assert!(client.closed());
-        }
+        // A connection that ended before the stop, by its stall deadline or otherwise, logs its own close.
+        let log = daemon.log();
+        assert!(!log.contains("protocol 1 client closed"), "{log}");
     }
 
     #[test]
