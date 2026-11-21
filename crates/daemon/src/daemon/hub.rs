@@ -53,6 +53,7 @@ impl Hub {
     }
 
     /// Applies `command` and tells subscribers when the state changed; with no link the outcome is ready at once.
+    /// Two calls at once would lose a change; none overlap because every writer runs on the one runtime thread and this never awaits between its read and its write.
     pub(crate) fn submit(&self, command: Command) -> impl Future<Output = Outcome> + use<> {
         let mut next = self.state();
         let outcome = apply(&mut next, &command);
