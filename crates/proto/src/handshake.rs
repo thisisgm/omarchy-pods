@@ -39,8 +39,7 @@ impl Handshake {
         &HANDSHAKE
     }
 
-    /// Takes one packet from the pods; the reply is the next request, and only the awaited acknowledgement gets one.
-    // Sample input: 01 00 04 00 acknowledges the handshake, 04 00 04 00 2b 00 acknowledges the features.
+    /// Takes one packet from the pods and replies with the next request only to the awaited acknowledgement: `01 00 04 00` for the handshake, then `04 00 04 00 2b 00` for the features.
     pub fn on_packet(&mut self, sdu: &[u8]) -> Option<&'static [u8]> {
         match self.step {
             Step::AwaitHandshakeAck if sdu.starts_with(&HANDSHAKE_ACK_PREFIX) => {

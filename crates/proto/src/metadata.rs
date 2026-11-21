@@ -23,8 +23,7 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// Reads the first three strings; a missing one is empty and invalid UTF-8 is replaced.
-    // 04 00 04 00 1d 00 01 02 03 04 05 4e 00 41 33 30 36 33 00 41 00 ..: header, five skipped bytes, then name, model number, manufacturer, each ended by 00.
+    /// Reads name, model number and manufacturer, each ended by 00, behind the header and five skipped bytes, as in `04 00 04 00 1d 00 01 02 03 04 05 4e 00 41 33 30 36 33 00 41 00`; a missing one is empty and invalid UTF-8 is replaced.
     pub fn parse(sdu: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(Parser::Metadata, sdu, HEADER, MIN_LEN)?;
         // strip_header refused anything under MIN_LEN, so the skipped bytes are always there.
@@ -61,8 +60,7 @@ mod tests {
     /// parseMetadata in daemon/main.cpp skips six bytes behind its five byte header.
     const CPP_SKIPPED_LEN: usize = 6;
 
-    /// A metadata packet: the header, the skipped bytes, then the string bytes as given.
-    // Sample output: 04 00 04 00 1d 00 01 02 03 04 05 41 00 for the strings `41 00`.
+    /// A metadata packet: the header, the skipped bytes, then the string bytes as given, so `04 00 04 00 1d 00 01 02 03 04 05 41 00` for the strings `41 00`.
     fn packet(strings: &[u8]) -> Vec<u8> {
         [&HEADER[..], &SKIPPED, strings].concat()
     }

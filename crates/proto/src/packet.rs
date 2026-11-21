@@ -33,8 +33,7 @@ pub enum Incoming<'a> {
     Foreign,
 }
 
-/// Sorts one SDU; an opcode with a parser returns that parser's error, and an accessory header cut before its two opcode bytes is a `Parser::Packet` error, never `Other` or `Foreign`.
-// 04 00 04 00 09 00 28 01 00 00 00: accessory header, opcode 0x0009 little endian, then the body its parser reads.
+/// Sorts one SDU such as `04 00 04 00 09 00 28 01 00 00 00` (accessory header, opcode 0x0009 little endian, body) to its parser and returns that parser's error; a header cut before its two opcode bytes is a `Parser::Packet` error, never `Other` or `Foreign`.
 pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
     let Some(after_header) = sdu.strip_prefix(&ACCESSORY_HEADER) else {
         return Ok(Incoming::Foreign);
