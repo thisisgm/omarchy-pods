@@ -70,7 +70,7 @@ fn any_state() -> impl Strategy<Value = State> {
 
 proptest! {
     #[test]
-    fn with_no_link_only_counters_and_the_ear_preference_change(
+    fn with_no_link_only_counters_and_the_values_the_cpp_stores_change(
         state in any_state(),
         command in any_command(),
     ) {
@@ -78,7 +78,16 @@ proptest! {
         apply(&mut after, &command);
         let mut expected = state.clone();
         expected.counters = after.counters;
-        expected.ear_detection_behavior = after.ear_detection_behavior;
+        match command {
+            Command::SetEarDetection(behavior) => expected.ear_detection_behavior = behavior,
+            Command::SetConversationalAwareness(enabled) => {
+                expected.conversational_awareness = enabled;
+            }
+            Command::SetAdaptiveLevel(level) if state.noise_mode == NoiseMode::Adaptive => {
+                expected.adaptive_noise_level = level.min(ADAPTIVE_LEVEL_MAX);
+            }
+            _ => {}
+        }
         prop_assert_eq!(after, expected);
     }
 
@@ -113,6 +122,56 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(outcome, Outcome::Confirmed);
     assert_eq!(state.ear_detection_behavior, EarDetectionBehavior::Disabled);
     assert_eq!(state.counters.ear_detection_changes, 1);
+}
+
+// The C++ setters store the value before they send, whether or not a packet goes out.
+#[test]
+fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
+    for (function, store) in [
+        (
+            "setConversationalAwareness",
+            "m_deviceInfo->setConversationalAwareness(enabled);",
+        ),
+        (
+            "setAdaptiveNoiseLevel",
+            "m_deviceInfo->setAdaptiveNoiseLevel(level);",
+        ),
+    ] {
+        let body = MAIN.body(&format!("void {function}("));
+        let (before, after) = body
+            .split_once(store)
+            .unwrap_or_else(|| panic!("{function} does not store through {store}: {body}"));
+        assert!(
+            before.contains("writePacketToSocket(") && !before.contains("if (writePacketToSocket("),
+            "{function}: the store does not follow an unchecked send: {body}"
+        );
+        assert!(
+            after.contains("++m_"),
+            "{function}: no counter after the store"
+        );
+    }
+
+    let mut state = State::default();
+    let outcome = apply(&mut state, &Command::SetConversationalAwareness(true));
+    assert_eq!(outcome, Outcome::Refused(CommandError::NotConnected));
+    assert!(state.conversational_awareness);
+
+    let mut state = State {
+        noise_mode: NoiseMode::Adaptive,
+        adaptive_noise_level: 0,
+        ..State::default()
+    };
+    let outcome = apply(&mut state, &Command::SetAdaptiveLevel(u8::MAX));
+    assert_eq!(outcome, Outcome::Refused(CommandError::NotConnected));
+    assert_eq!(state.adaptive_noise_level, ADAPTIVE_LEVEL_MAX);
+
+    let mut state = State {
+        noise_mode: NoiseMode::Anc,
+        adaptive_noise_level: 0,
+        ..State::default()
+    };
+    apply(&mut state, &Command::SetAdaptiveLevel(37));
+    assert_eq!(state.adaptive_noise_level, 0);
 }
 
 #[test]

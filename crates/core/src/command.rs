@@ -71,7 +71,7 @@ pub enum Outcome {
     Confirmed,
 }
 
-/// Applies `command` to `state` with no link: only the ear detection preference changes, and counters rise where the C++ raises them.
+/// Applies `command` to `state` with no link: values and counters change only where the C++ setters change them.
 pub fn apply(state: &mut State, command: &Command) -> Outcome {
     let counters = &mut state.counters;
     match *command {
@@ -95,6 +95,8 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         }
         Command::SetConversationalAwareness(enabled) => {
             if enabled != state.conversational_awareness {
+                // corner: the C++ stores before it sends, and the pods' own report overwrites it on connect.
+                state.conversational_awareness = enabled;
                 raise(&mut counters.conversational_awareness_changes);
             }
             Outcome::Refused(CommandError::NotConnected)
@@ -102,6 +104,8 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         Command::SetAdaptiveLevel(level) => {
             let level = level.min(ADAPTIVE_LEVEL_MAX);
             if level != state.adaptive_noise_level && state.noise_mode == NoiseMode::Adaptive {
+                // corner: the C++ stores before it sends, and the pods' own report overwrites it on connect.
+                state.adaptive_noise_level = level;
                 raise(&mut counters.adaptive_level_changes);
             }
             Outcome::Refused(CommandError::NotConnected)
