@@ -50,13 +50,12 @@ impl TryFrom<u8> for Component {
     }
 }
 
-/// One part's battery; the default is the unknown, unavailable state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// One part's battery reading; a part with no reading is `None` wherever a `Charge` is held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Charge {
-    /// Percent from 0 to 100, `None` when unknown.
-    pub level: Option<u8>,
+    /// Percent from 0 to 100.
+    pub level: u8,
     pub charging: bool,
-    pub available: bool,
 }
 
 /// What one packet says; a part left at `None` keeps its last reading.
@@ -73,7 +72,7 @@ pub struct BatteryReport {
 }
 
 impl BatteryReport {
-    /// Reads the control channel battery packet; entries for an unknown part are skipped.
+    /// Reads the control channel battery packet; an unknown part or a level above 100 is left out.
     // 04 00 04 00 04 00 01 01 01 55 02 01: header, count, then per entry kind, 01, level, status, 01.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(bytes, &HEADER, MIN_LEN)?;
@@ -111,11 +110,12 @@ impl BatteryReport {
             if component != Component::Case {
                 report.note_order(component);
             }
-            if status != STATUS_DISCONNECTED {
+            if status != STATUS_DISCONNECTED
+                && let Some(level) = known_level(level)
+            {
                 *report.slot(component) = Some(Charge {
-                    level: known_level(level),
+                    level,
                     charging: status == STATUS_CHARGING,
-                    available: true,
                 });
             }
         }
@@ -155,7 +155,7 @@ impl BatteryReport {
             (second, first)
         };
         // Only a docked bud can read the case, so a 0 with none docked is unknown.
-        let case = decrypted_charge(case).filter(|c| c.level != Some(0) || pod_in_case);
+        let case = decrypted_charge(case).filter(|c| c.level != 0 || pod_in_case);
         Ok(Self {
             left: decrypted_charge(left),
             right: decrypted_charge(right),
@@ -185,13 +185,13 @@ impl BatteryReport {
     }
 }
 
-/// The last known battery of every part, updated one report at a time.
+/// The last known battery of every part, `None` for a part not read since the reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Batteries {
-    pub left: Charge,
-    pub right: Charge,
-    pub case: Charge,
-    pub headset: Charge,
+    pub left: Option<Charge>,
+    pub right: Option<Charge>,
+    pub case: Option<Charge>,
+    pub headset: Option<Charge>,
 }
 
 impl Batteries {
@@ -204,8 +204,8 @@ impl Batteries {
             (&mut self.headset, report.headset),
         ];
         for (slot, update) in updates {
-            if let Some(charge) = update {
-                *slot = charge;
+            if update.is_some() {
+                *slot = update;
             }
         }
     }
@@ -219,9 +219,8 @@ fn known_level(level: u8) -> Option<u8> {
 // 0xDA: high bit set so charging, low seven bits 0x5A so 90 percent.
 fn decrypted_charge(byte: u8) -> Option<Charge> {
     known_level(byte & LEVEL_MASK).map(|level| Charge {
-        level: Some(level),
+        level,
         charging: byte & CHARGING_BIT != 0,
-        available: true,
     })
 }
 

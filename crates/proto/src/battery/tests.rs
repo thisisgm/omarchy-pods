@@ -83,8 +83,7 @@ fn parse_packet_accepts_single_headset() {
     let report = BatteryReport::parse(&buf).unwrap();
     let mut b = Batteries::default();
     b.apply(&report);
-    assert_eq!(b.headset.level, Some(85));
-    assert!(b.headset.available);
+    assert_eq!(b.headset.map(|c| c.level), Some(85));
 }
 
 #[test]
@@ -108,35 +107,32 @@ fn parse_encrypted_packet_rejects_wrong_size() {
 fn reset_clears_state() {
     let mut b = Batteries::default();
     b.apply(&BatteryReport::parse(&headset_packet(75)).unwrap());
-    assert_eq!(b.headset.level, Some(75));
+    assert_eq!(b.headset.map(|c| c.level), Some(75));
     b = Batteries::default();
-    assert_eq!(b.headset.level, None);
-    assert!(!b.headset.available);
+    assert_eq!(b.headset, None);
 }
 
 #[test]
 fn encrypted_case_zero_is_unknown_while_nothing_is_docked_to_read_it() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(80, 80, 0), true, false, false);
-    assert!(!b.case.available);
+    assert!(b.case.is_none());
 }
 
 #[test]
 fn encrypted_case_zero_is_trusted_when_a_pod_is_docked() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(80, 80, 0), true, true, false);
-    assert!(b.case.available);
-    assert_eq!(b.case.level, Some(0));
+    assert_eq!(b.case.map(|c| c.level), Some(0));
 }
 
 #[test]
 fn encrypted_case_level_survives_the_pods_leaving_the_case() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(80, 80, 80), true, true, false);
-    assert_eq!(b.case.level, Some(80));
+    assert_eq!(b.case.map(|c| c.level), Some(80));
     apply_decrypted(&mut b, payload(80, 80, 0), true, false, false);
-    assert!(b.case.available);
-    assert_eq!(b.case.level, Some(80));
+    assert_eq!(b.case.map(|c| c.level), Some(80));
 }
 
 // Observed on an AirPods Max (USB-C, A3184): byte 1 held 100 while the primary went left then right.
@@ -144,10 +140,9 @@ fn encrypted_case_level_survives_the_pods_leaving_the_case() {
 fn encrypted_headset_level_survives_the_primary_flip() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(100, 0, 0), true, false, true);
-    assert_eq!(b.headset.level, Some(100));
+    assert_eq!(b.headset.map(|c| c.level), Some(100));
     apply_decrypted(&mut b, payload(100, 0, 0), false, false, true);
-    assert!(b.headset.available);
-    assert_eq!(b.headset.level, Some(100));
+    assert_eq!(b.headset.map(|c| c.level), Some(100));
 }
 
 // The unused slot reads 0, so a real 0 must stay distinguishable from unknown.
@@ -155,46 +150,52 @@ fn encrypted_headset_level_survives_the_primary_flip() {
 fn encrypted_headset_zero_is_a_real_reading() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(0, 0, 0), true, false, true);
-    assert!(b.headset.available);
-    assert_eq!(b.headset.level, Some(0));
+    assert_eq!(b.headset.map(|c| c.level), Some(0));
 }
 
 #[test]
 fn encrypted_headset_unknown_leaves_the_headset_unavailable() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(0x7F, 0, 0), true, false, true);
-    assert!(!b.headset.available);
+    assert!(b.headset.is_none());
 }
 
 #[test]
 fn encrypted_headset_unknown_leaves_the_known_level_alone() {
     let mut b = Batteries::default();
     b.apply(&BatteryReport::parse(&headset_packet(100)).unwrap());
-    assert_eq!(b.headset.level, Some(100));
+    assert_eq!(b.headset.map(|c| c.level), Some(100));
     // 0x7F means unknown, and slot 2's 50 is what the old first non-unknown scan would have adopted.
     apply_decrypted(&mut b, payload(0x7F, 50, 0), true, false, true);
-    assert_eq!(b.headset.level, Some(100));
+    assert_eq!(b.headset.map(|c| c.level), Some(100));
 }
 
 #[test]
 fn encrypted_headset_charging_comes_from_the_high_bit() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(90, 0, 0), true, false, true);
-    assert_eq!(b.headset.level, Some(90));
-    assert!(!b.headset.charging);
+    assert_eq!(b.headset.map(|c| c.level), Some(90));
+    assert!(!b.headset.unwrap().charging);
     // 0x5A is 90 percent.
     let charging_90 = CHARGING_BIT | 0x5A;
     apply_decrypted(&mut b, payload(charging_90, 0, 0), true, false, true);
-    assert_eq!(b.headset.level, Some(90));
-    assert!(b.headset.charging);
+    assert_eq!(b.headset.map(|c| c.level), Some(90));
+    assert!(b.headset.unwrap().charging);
 }
 
 #[test]
-fn control_channel_level_above_100_is_unknown() {
+fn control_channel_level_above_100_keeps_the_last_reading() {
     let mut buf = HEADER.to_vec();
     buf.extend([1, 0x04, 0x01, 101, DISCHARGING, 0x01]);
     let report = BatteryReport::parse(&buf).unwrap();
-    assert_eq!(report.left.map(|c| c.level), Some(None));
+    assert_eq!(report.left, None);
+    let mut fresh = Batteries::default();
+    fresh.apply(&report);
+    assert!(fresh.left.is_none());
+    let mut known = Batteries::default();
+    apply_decrypted(&mut known, payload(60, 70, 0), true, false, false);
+    known.apply(&report);
+    assert_eq!(known.left.map(|c| c.level), Some(60));
 }
 
 #[test]
@@ -202,8 +203,8 @@ fn encrypted_pod_levels_above_100_keep_the_last_reading() {
     let mut b = Batteries::default();
     apply_decrypted(&mut b, payload(60, 70, 0), true, false, false);
     apply_decrypted(&mut b, payload(0x7F, 101, 0), true, false, false);
-    assert_eq!(b.left.level, Some(60));
-    assert_eq!(b.right.level, Some(70));
+    assert_eq!(b.left.map(|c| c.level), Some(60));
+    assert_eq!(b.right.map(|c| c.level), Some(70));
 }
 
 #[test]
@@ -228,9 +229,8 @@ fn control_channel_order_sets_primary_and_secondary() {
     assert_eq!(
         report.left,
         Some(Charge {
-            level: Some(50),
-            charging: true,
-            available: true
+            level: 50,
+            charging: true
         })
     );
 }
