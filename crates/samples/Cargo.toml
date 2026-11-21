@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# A dev-dependency only: never a normal dependency of any crate.
+# Test support only: a dev-dependency, or a dependency of another test-only crate, never of the product.
 
 [lints]
 workspace = true
