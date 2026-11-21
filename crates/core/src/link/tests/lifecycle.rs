@@ -7,7 +7,7 @@ use pods_proto::ear::{EarPlacement, EarReport};
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 
-use super::ladders::PARKED_AT_MS;
+use super::ladders::{PARKED_AT_MS, PARKED_WAIT_MS};
 use super::sim::{Answer, Input, Sim, addr, ms};
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::KNOWN_MAX;
@@ -361,7 +361,7 @@ fn phase_scripts() -> [(Answer, Vec<Input>, Phase); 9] {
             Answer::Refuse,
             vec![Input::Up(0), Input::Wait(ms(PARKED_AT_MS))],
             Phase::Parked {
-                until: ms(PARKED_AT_MS + 300_000),
+                until: ms(PARKED_AT_MS + PARKED_WAIT_MS),
             },
         ),
     ]

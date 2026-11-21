@@ -16,6 +16,12 @@ const HELD_OPENS_MS: [u64; 11] = [
 pub(super) const PARKED_AT_MS: u64 = 111_000;
 /// One hour of clock after the device parks.
 const HOUR_MS: u64 = 3_600_000;
+/// The wait between parked attempts, written out so a drifted ladder constant goes red.
+pub(super) const PARKED_WAIT_MS: u64 = 300_000;
+/// How long an absent device keeps its state.
+const GRACE_MS: u64 = 7750;
+/// How long an opened channel waits for each acknowledgement.
+const ACK_WAIT_MS: u64 = 2000;
 
 fn refused_until(until_ms: u64) -> Sim {
     let mut sim = Sim::answering(Answer::Refuse);
@@ -37,7 +43,7 @@ fn held_ladder_waits_match_the_table() {
     assert_eq!(
         sim.machine.phase(),
         Phase::Parked {
-            until: ms(PARKED_AT_MS + 300_000)
+            until: ms(PARKED_AT_MS + PARKED_WAIT_MS)
         }
     );
     assert_eq!(sim.state.counters.reconnect_attempts, 10);
@@ -54,7 +60,9 @@ fn a_device_that_refuses_the_channel_is_parked_after_the_ladder() {
     let opens = sim.times_of("Open(0)");
     println!("parked opens at {:?} ms", &opens[HELD_OPENS_MS.len()..]);
     assert_eq!(&opens[..HELD_OPENS_MS.len()], HELD_OPENS_MS);
-    let parked: Vec<u64> = (1..=12).map(|n| PARKED_AT_MS + n * 300_000).collect();
+    let parked: Vec<u64> = (1..=HOUR_MS / PARKED_WAIT_MS)
+        .map(|n| PARKED_AT_MS + n * PARKED_WAIT_MS)
+        .collect();
     assert_eq!(&opens[HELD_OPENS_MS.len()..], parked);
     assert_eq!(sim.state.counters.reconnect_failures, 13);
     assert_eq!(sim.state.counters.reconnect_attempts, 22);
@@ -72,7 +80,7 @@ fn a_channel_that_opens_and_never_acknowledges_counts_as_refused() {
     assert_eq!(opens.len(), HELD_OPENS_MS.len());
     assert_eq!(closes.len(), opens.len());
     for (open, close) in opens.iter().zip(&closes) {
-        assert_eq!(close - open, 2000);
+        assert_eq!(close - open, ACK_WAIT_MS);
     }
     for ((close, next), delay) in closes.iter().zip(&opens[1..]).zip(HELD_DELAYS_MS) {
         assert_eq!(next - close, delay);
@@ -86,7 +94,7 @@ fn a_channel_that_opens_and_never_acknowledges_counts_as_refused() {
 fn a_parked_attempt_carries_the_parked_number() {
     let mut sim = refused_until(PARKED_AT_MS);
     sim.feed(Input::NextOpen(Answer::Hold));
-    sim.run_until(ms(PARKED_AT_MS + 300_000));
+    sim.run_until(ms(PARKED_AT_MS + PARKED_WAIT_MS));
     assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 12 });
     assert_eq!(PARKED_ATTEMPT, 12);
 }
@@ -117,7 +125,7 @@ fn a_populated_device_parked_re_arms_through_the_grace() {
     assert_eq!(
         sim.machine.phase(),
         Phase::Grace {
-            until: ms(200_000 + 7750)
+            until: ms(200_000 + GRACE_MS)
         }
     );
     sim.feed(Input::NextOpen(Answer::Hold));
