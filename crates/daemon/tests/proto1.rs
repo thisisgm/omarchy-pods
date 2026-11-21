@@ -50,7 +50,7 @@ mod tests {
     /// How long a check that nothing more arrives waits.
     const QUIET_FOR: Duration = Duration::from_millis(300);
 
-    /// How long a waiting connection may go without progress, from `STALL_DEADLINE` in `src/daemon/proto1.rs`.
+    /// How long a client may leave a line unfinished, a reply unread or, unsubscribed, the connection idle, from `STALL_DEADLINE` in `src/daemon/proto1.rs`.
     const STALL_DEADLINE: Duration = Duration::from_millis(2000);
 
     /// The stall deadline plus slack for a shared host, well short of a deadline started again at each dripped byte.
