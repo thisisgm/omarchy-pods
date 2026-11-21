@@ -118,15 +118,55 @@ impl StateFile {
     }
 }
 
-/// Publishes every change `updates` announces until aborted; a failed write is logged and tried again.
-pub(super) async fn follow(mut updates: watch::Receiver<State>, file: StateFile) {
-    while updates.changed().await.is_ok() {
-        let line = to_status_line(&updates.borrow_and_update());
-        if let Err(error) = file.publish(line).await {
-            log(&error);
+/// The last write error, so a write that keeps failing is logged when it starts, when its error changes and when it recovers.
+#[derive(Debug, Default)]
+pub(super) struct WriteFailures {
+    last: Option<String>,
+}
+
+impl WriteFailures {
+    /// Takes the result of one write of `file`, and logs it if it starts, changes or ends a failure.
+    pub(super) fn note(&mut self, file: &StateFile, result: Result<(), String>) {
+        if let Some(message) = self.message(&file.path, result) {
+            log(&message);
+        }
+    }
+
+    fn message(&mut self, path: &Path, result: Result<(), String>) -> Option<String> {
+        match result {
+            Ok(()) => self
+                .last
+                .take()
+                .map(|_| format!("state file {} is published again", path.display())),
+            Err(error) if self.last.as_ref() == Some(&error) => None,
+            Err(error) => {
+                self.last = Some(error.clone());
+                Some(error)
+            }
+        }
+    }
+
+    fn failing(&self) -> bool {
+        self.last.is_some()
+    }
+}
+
+/// Publishes every change `updates` announces until aborted, and retries a failed write, the first one included, every `RETRY_DELAY`.
+pub(super) async fn follow(
+    mut updates: watch::Receiver<State>,
+    file: StateFile,
+    mut failures: WriteFailures,
+) {
+    loop {
+        if failures.failing() {
             sleep(RETRY_DELAY).await;
             updates.mark_changed();
         }
+        if updates.changed().await.is_err() {
+            return;
+        }
+        let line = to_status_line(&updates.borrow_and_update());
+        failures.note(&file, file.publish(line).await);
     }
 }
 
@@ -295,6 +335,22 @@ mod tests {
         assert!(error.contains(&path.display().to_string()), "{error}");
         assert!(!path.exists());
         write_atomically(&path, &"x".repeat(MAX_STATE_LINE_BYTES)).unwrap();
+    }
+
+    #[test]
+    fn a_failure_is_logged_when_it_starts_changes_and_ends() {
+        let path = Path::new("/state/librepods/status.json");
+        let mut failures = WriteFailures::default();
+        let fail = |text: &str| Err(text.to_owned());
+        assert_eq!(failures.message(path, Ok(())), None);
+        assert_eq!(failures.message(path, fail("one")), Some("one".to_owned()));
+        assert_eq!(failures.message(path, fail("one")), None);
+        assert!(failures.failing());
+        assert_eq!(failures.message(path, fail("two")), Some("two".to_owned()));
+        let recovered = "state file /state/librepods/status.json is published again";
+        assert_eq!(failures.message(path, Ok(())), Some(recovered.to_owned()));
+        assert!(!failures.failing());
+        assert_eq!(failures.message(path, Ok(())), None);
     }
 
     #[test]
