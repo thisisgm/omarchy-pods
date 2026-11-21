@@ -1,5 +1,7 @@
 //! The mapping by content, driven with `PacketLogger` traces the fixture builds.
 
+use pods_proto::packets::ATT_PSM;
+
 use super::super::fixture::{
     ATT_CIDS, CONTROL_CIDS, KEYBOARD_HANDLE, MEDIA_CIDS, PODS_HANDLE, SIGNALLING_CIDS, Trace,
     audio_notification, mac_accessory_packets, mac_att_packets, mac_session,
@@ -133,4 +135,38 @@ fn halves_past_the_limit_are_counted_and_keep_no_packet() {
         Some(&half(FIRST_CID + listed - 1, HOST, 2))
     );
     assert_eq!(accessory.sdus.len(), MAX_UNMAPPED * 2);
+}
+
+#[test]
+fn an_identifier_a_request_opens_again_stops_feeding_its_content_half() {
+    let mut trace = Trace::packet_logger();
+    trace.send(HOST, CONTROL_CIDS, &ACCESSORY_PACKET);
+    trace.send(PODS, CONTROL_CIDS, &ACCESSORY_PACKET);
+    trace.open(HOST, ATT_PSM, CONTROL_CIDS);
+    trace.send(HOST, CONTROL_CIDS, &dictation::START);
+    trace.send(PODS, CONTROL_CIDS, &audio_notification(0));
+    let found = read(&trace);
+    let [accessory] = found.by_content.as_slice() else {
+        panic!("{:?}", found.by_content);
+    };
+    assert_eq!(accessory.carries, Carries::Accessory);
+    assert_eq!(
+        accessory.halves,
+        [half(CONTROL_CIDS.1, HOST, 1), half(CONTROL_CIDS.0, PODS, 1)]
+    );
+    let [opened] = found.list.as_slice() else {
+        panic!("{:?}", found.list);
+    };
+    assert_eq!(opened.psm, ATT_PSM);
+    let sent = opened
+        .sdus
+        .iter()
+        .map(|sdu| (sdu.direction, sdu.sdu.clone()));
+    assert_eq!(
+        sent.collect::<Vec<_>>(),
+        [
+            (HOST, dictation::START.to_vec()),
+            (PODS, audio_notification(0))
+        ]
+    );
 }
