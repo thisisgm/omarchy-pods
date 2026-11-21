@@ -179,8 +179,10 @@ fn play(channel: Channel, part: &Pods, interrupted: &AtomicBool) -> Transcript {
             far.transcript.hung = true;
             break;
         }
-        // An error on the fake side means the loop is gone, which a close says too.
-        let received = far.channel.recv(&mut buf).unwrap_or(Received::Closed);
+        // A loop that closed with a packet of the pods unread shows here as one error, ahead of what it sent before that.
+        let Ok(received) = far.channel.recv(&mut buf) else {
+            continue;
+        };
         let sdu = match received {
             Received::Sdu(len) => buf[..len].to_vec(),
             Received::TimedOut => Vec::new(),
@@ -267,6 +269,17 @@ pub(super) fn queued(far: &Channel) -> Vec<Vec<u8>> {
         packets.push(buf[..len].to_vec());
     }
     packets
+}
+
+#[test]
+fn the_fake_pods_read_what_the_loop_sent_before_it_closed_with_a_packet_unread() {
+    let (near, far) = pair();
+    far.send(&EAR_PACKET).unwrap();
+    near.send(&STOP).unwrap();
+    drop(near);
+    let transcript = spawn(far, Pods::default(), Arc::new(AtomicBool::new(false)));
+    let transcript = transcript.recv_timeout(DEADLINE).unwrap();
+    assert_eq!(transcript.got(), [&STOP[..]]);
 }
 
 /// What the log writer of a run does at the first audio line.
