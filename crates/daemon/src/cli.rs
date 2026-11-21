@@ -42,6 +42,7 @@ enum Command {
 }
 
 /// Parses `argv[0]` and the arguments after it.
+// Sample input: `/home/gm/.local/bin/librepods-ctl` with `["noise:anc"]`, or `librepods` with `["ctl", "status"]`
 pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap::Error> {
     if Path::new(argv0).file_name() == Some(OsStr::new(LEGACY_CLIENT_NAME)) {
         return legacy(LEGACY_CLIENT_NAME, args);

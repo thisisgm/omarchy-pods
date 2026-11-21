@@ -193,6 +193,7 @@ name = "librepods"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "proptest",
  "tempfile",
 ]
 

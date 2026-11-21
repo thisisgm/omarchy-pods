@@ -137,6 +137,7 @@ fn connect(socket: &Path) -> Option<UnixStream> {
 }
 
 /// Reads one reply, bounded in size by `MAX_REPLY_BYTES` and in time by `REPLY_TIMEOUT` overall.
+// Sample input: `{"connected":false,"schema_version":1}\n`, or `error: this daemon runs headless and has no window\n`
 fn read_reply(stream: &mut UnixStream) -> Reply {
     let started = Instant::now();
     let mut reply = Vec::new();
@@ -194,7 +195,21 @@ mod tests {
     use std::process::ExitCode;
     use std::thread;
 
-    use super::{MAX_REPLY_BYTES, run_legacy};
+    use proptest::prelude::*;
+
+    use super::{ERROR_PREFIX, MAX_REPLY_BYTES, run_legacy};
+
+    /// Longest reply in the property that mixes newlines and error prefixes into short replies.
+    const SHORT_REPLY_BYTES: usize = 300;
+
+    /// How far either side of `MAX_REPLY_BYTES` the long replies reach.
+    const BOUND_MARGIN_BYTES: usize = 3;
+
+    /// Runs of the long reply property; each one moves `MAX_REPLY_BYTES` through a socket.
+    const LONG_REPLY_CASES: u32 = 16;
+
+    /// The byte that ends a reply.
+    const NEWLINE: u8 = b'\n';
 
     /// Runs `status` against a stub that writes `reply` and closes, and returns the exit code, stdout and stderr.
     fn status_with_reply(reply: Vec<u8>) -> (ExitCode, Vec<u8>, Vec<u8>) {
@@ -212,6 +227,60 @@ mod tests {
         let code = run_legacy("status", Path::new(&socket), &mut out, &mut err);
         stub.join().unwrap();
         (code, out, err)
+    }
+
+    /// Checks one `status` run against the contract: cut at the first newline or the size bound, routed by the error prefix.
+    fn assert_reply_contract(reply: &[u8]) -> Result<(), TestCaseError> {
+        let (code, out, err) = status_with_reply(reply.to_vec());
+        let newline = reply.iter().position(|&byte| byte == NEWLINE);
+        let end = newline
+            .map_or(reply.len(), |at| at.saturating_add(1))
+            .min(MAX_REPLY_BYTES);
+        let kept = &reply[..end];
+        if kept.is_empty() {
+            prop_assert_eq!(code, ExitCode::FAILURE);
+            prop_assert_eq!(out, b"");
+        } else if kept.starts_with(ERROR_PREFIX) {
+            prop_assert_eq!(code, ExitCode::FAILURE);
+            prop_assert_eq!(out, b"");
+            prop_assert_eq!(err, kept);
+        } else {
+            prop_assert_eq!(code, ExitCode::SUCCESS);
+            prop_assert_eq!(out, kept);
+            prop_assert_eq!(err, b"");
+        }
+        Ok(())
+    }
+
+    /// Short replies of any bytes, half of them behind the error prefix so that branch runs too.
+    fn short_reply() -> impl Strategy<Value = Vec<u8>> {
+        let body = proptest::collection::vec(any::<u8>(), 0..SHORT_REPLY_BYTES);
+        (any::<bool>(), body).prop_map(|(refusal, body)| {
+            let prefix: &[u8] = if refusal { ERROR_PREFIX } else { b"" };
+            [prefix, &body].concat()
+        })
+    }
+
+    /// Replies around the size bound with no newline before it, so only the bound can end them.
+    fn long_reply() -> impl Strategy<Value = Vec<u8>> {
+        let length = MAX_REPLY_BYTES - BOUND_MARGIN_BYTES..=MAX_REPLY_BYTES + BOUND_MARGIN_BYTES;
+        let byte = any::<u8>().prop_filter("no newline", |&byte| byte != NEWLINE);
+        length.prop_flat_map(move |length| proptest::collection::vec(byte.clone(), length))
+    }
+
+    proptest! {
+        #[test]
+        fn any_short_reply_is_cut_and_routed_by_the_contract(reply in short_reply()) {
+            assert_reply_contract(&reply)?;
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(LONG_REPLY_CASES))]
+        #[test]
+        fn any_long_reply_stops_at_the_size_bound(reply in long_reply()) {
+            assert_reply_contract(&reply)?;
+        }
     }
 
     #[test]
