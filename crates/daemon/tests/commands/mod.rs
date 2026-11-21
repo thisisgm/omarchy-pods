@@ -1,7 +1,7 @@
 //! The `status`, `watch`, `set` and `do` commands, run against the built daemon in a temp directory.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Stdio};
@@ -152,6 +152,20 @@ fn status_fails_like_watch_when_its_line_cannot_be_written_and_ctl_does_not() {
         let out = to_full(program, args);
         assert_eq!(out.status.code(), Some(0), "{}", program.display());
         assert_eq!(out.stderr, b"", "{}", program.display());
+    }
+}
+
+#[test]
+fn status_and_watch_end_quietly_when_nothing_reads_their_output() {
+    let session = Session::new();
+    let _daemon = session.start();
+    for args in [["status"], ["watch"]] {
+        let (reader, writer) = io::pipe().unwrap();
+        drop(reader);
+        let mut command = session.command(Path::new(BINARY), &args);
+        let out = run_to_end(command.stdout(writer).stderr(Stdio::piped()));
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert_eq!(out.stderr, b"", "{args:?}");
     }
 }
 
