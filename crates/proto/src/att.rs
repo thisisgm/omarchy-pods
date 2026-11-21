@@ -200,9 +200,9 @@ impl<'a> AttPdu<'a> {
             FIND_INFORMATION_RESPONSE => Information::parse(body, pdu.len()).map(Self::Information),
             READ_BY_TYPE_RESPONSE => ByType::parse(body, pdu.len()).map(Self::ByType),
             ERROR_RESPONSE => Self::parse_error(body, pdu.len()),
-            HANDLE_VALUE_NOTIFICATION => handle_value(body, pdu.len())
+            HANDLE_VALUE_NOTIFICATION => handle_value(Parser::AttNotification, body, pdu.len())
                 .map(|(handle, value)| Self::Notification { handle, value }),
-            HANDLE_VALUE_INDICATION => handle_value(body, pdu.len())
+            HANDLE_VALUE_INDICATION => handle_value(Parser::AttIndication, body, pdu.len())
                 .map(|(handle, value)| Self::Indication { handle, value }),
             opcode if REQUEST_OPCODES.contains(&opcode) => Ok(Self::Request { opcode }),
             opcode => Ok(Self::Other { opcode, body }),
@@ -213,7 +213,7 @@ impl<'a> AttPdu<'a> {
     fn parse_error(body: &[u8], pdu_len: usize) -> Result<Self, ParseError> {
         let Ok([request, handle @ .., code]) = <&[u8; ERROR_BODY_LEN]>::try_from(body) else {
             return Err(ParseError::WrongLength {
-                parser: Parser::Att,
+                parser: Parser::AttError,
                 expected: ERROR_LEN,
                 got: pdu_len,
             });
@@ -227,10 +227,10 @@ impl<'a> AttPdu<'a> {
 }
 
 // 21 43 b8 00: handle 0x4321 little endian, then the value, which may be empty.
-fn handle_value(body: &[u8], pdu_len: usize) -> Result<(u16, &[u8]), ParseError> {
+fn handle_value(parser: Parser, body: &[u8], pdu_len: usize) -> Result<(u16, &[u8]), ParseError> {
     let Some((handle, value)) = body.split_first_chunk::<HANDLE_LEN>() else {
         return Err(ParseError::TooShort {
-            parser: Parser::Att,
+            parser,
             need: HANDLE_VALUE_MIN_LEN,
             got: pdu_len,
         });
@@ -257,7 +257,7 @@ impl<'a> Information<'a> {
     fn parse(body: &'a [u8], pdu_len: usize) -> Result<Self, ParseError> {
         let Some((&format, rest)) = body.split_first() else {
             return Err(ParseError::TooShort {
-                parser: Parser::Att,
+                parser: Parser::AttFindInformation,
                 need: LIST_MIN_LEN,
                 got: pdu_len,
             });
@@ -267,8 +267,8 @@ impl<'a> Information<'a> {
             FORMAT_LONG => UuidSize::Long,
             value => {
                 return Err(ParseError::UnknownValue {
-                    parser: Parser::Att,
-                    field: "information format",
+                    parser: Parser::AttFindInformation,
+                    field: "format",
                     value,
                 });
             }
@@ -277,7 +277,7 @@ impl<'a> Information<'a> {
         // The information data holds at least one pair (Vol 3, Part F, 3.4.3.2, Table 3.8), and a walk has no next handle without one.
         if pairs.clone().next().is_none() {
             return Err(ParseError::EmptyList {
-                parser: Parser::Att,
+                parser: Parser::AttFindInformation,
                 list_len: rest.len(),
             });
         }
@@ -323,7 +323,7 @@ impl<'a> ByType<'a> {
     fn parse(body: &'a [u8], pdu_len: usize) -> Result<Self, ParseError> {
         let Some((&entry_len, rest)) = body.split_first() else {
             return Err(ParseError::TooShort {
-                parser: Parser::Att,
+                parser: Parser::AttReadByType,
                 need: LIST_MIN_LEN,
                 got: pdu_len,
             });
@@ -331,7 +331,7 @@ impl<'a> ByType<'a> {
         // An entry length of zero would make `next` yield empty entries without end.
         if entry_len < ENTRY_MIN_LEN {
             return Err(ParseError::UnknownValue {
-                parser: Parser::Att,
+                parser: Parser::AttReadByType,
                 field: "entry length",
                 value: entry_len,
             });
@@ -343,7 +343,7 @@ impl<'a> ByType<'a> {
         // The attribute data list holds at least one entry (Vol 3, Part F, 3.4.4.2, Table 3.16), and a walk has no next handle without one.
         if entries.clone().next().is_none() {
             return Err(ParseError::EmptyList {
-                parser: Parser::Att,
+                parser: Parser::AttReadByType,
                 list_len: rest.len(),
             });
         }

@@ -26,8 +26,18 @@ pub enum Parser {
     UplinkAudio,
     /// `UplinkPacket::parse` reading a control packet.
     UplinkControl,
-    /// `AttPdu::parse`.
+    /// `AttPdu::parse` reading an SDU with no opcode in it.
     Att,
+    /// `AttPdu::parse` reading a Find Information reply.
+    AttFindInformation,
+    /// `AttPdu::parse` reading a Read By Type reply.
+    AttReadByType,
+    /// `AttPdu::parse` reading an error response.
+    AttError,
+    /// `AttPdu::parse` reading a notification.
+    AttNotification,
+    /// `AttPdu::parse` reading an indication.
+    AttIndication,
 }
 
 impl fmt::Display for Parser {
@@ -43,6 +53,11 @@ impl fmt::Display for Parser {
             Self::UplinkAudio => "uplink audio packet",
             Self::UplinkControl => "uplink control packet",
             Self::Att => "attribute protocol packet",
+            Self::AttFindInformation => "attribute protocol find information response",
+            Self::AttReadByType => "attribute protocol read by type response",
+            Self::AttError => "attribute protocol error response",
+            Self::AttNotification => "attribute protocol notification",
+            Self::AttIndication => "attribute protocol indication",
         })
     }
 }
@@ -183,7 +198,7 @@ mod tests {
         let err = AttPdu::parse(&[0x09, 0x07, 0x02, 0x00, 0x14]).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "attribute protocol packet has an empty list: its 3 bytes hold no whole entry"
+            "attribute protocol read by type response has an empty list: its 3 bytes hold no whole entry"
         );
     }
 
@@ -200,6 +215,17 @@ mod tests {
             (Parser::UplinkAudio, "uplink audio packet"),
             (Parser::UplinkControl, "uplink control packet"),
             (Parser::Att, "attribute protocol packet"),
+            (
+                Parser::AttFindInformation,
+                "attribute protocol find information response",
+            ),
+            (
+                Parser::AttReadByType,
+                "attribute protocol read by type response",
+            ),
+            (Parser::AttError, "attribute protocol error response"),
+            (Parser::AttNotification, "attribute protocol notification"),
+            (Parser::AttIndication, "attribute protocol indication"),
         ] {
             assert_eq!(parser.to_string(), name);
         }
