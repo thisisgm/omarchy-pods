@@ -128,15 +128,16 @@ mod tests {
     }
 
     #[test]
-    fn sys_lint_table_matches_the_workspace_except_unsafe_code() {
+    fn the_two_unsafe_crates_match_the_workspace_lints_except_unsafe_code() {
         let workspace = lint_lines("../../Cargo.toml", "workspace.");
-        let sys = lint_lines("../sys/Cargo.toml", "");
         let forbids = workspace.iter().filter(|line| *line == FORBID_UNSAFE);
         assert_eq!(forbids.count(), 1, "the workspace forbids unsafe code once");
         let expected: Vec<String> = workspace
             .iter()
             .map(|line| line.replace(FORBID_UNSAFE, DENY_UNSAFE))
             .collect();
-        assert_eq!(sys, expected);
+        for manifest in ["../sys/Cargo.toml", "../trap/Cargo.toml"] {
+            assert_eq!(lint_lines(manifest, ""), expected, "{manifest}");
+        }
     }
 }

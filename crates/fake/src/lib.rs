@@ -80,6 +80,10 @@ pub struct Deadline {
     clippy::missing_panics_doc,
     reason = "a test tool: with no socket pair there is no test to run, and the one line says so"
 )]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test wraps both ends of a socket pair as channels"
+)]
 pub fn pair() -> (Channel, Channel) {
     let (host, pods) = socketpair(
         AddressFamily::UNIX,

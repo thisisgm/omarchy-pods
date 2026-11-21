@@ -34,6 +34,13 @@ impl BdAddr {
     }
 }
 
+impl From<[u8; OCTETS]> for BdAddr {
+    /// Octets in the order people read them, as `octets` returns them.
+    fn from(octets: [u8; OCTETS]) -> Self {
+        Self(octets)
+    }
+}
+
 impl fmt::Debug for BdAddr {
     // The address names its owner's device, so a log line or a panic message must not carry it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -125,6 +132,13 @@ mod tests {
             refusal("AA:BB:CC-DD:EE:FF").to_string(),
             "Bluetooth address has no colon after pair 3"
         );
+    }
+
+    #[test]
+    fn octets_come_back_as_they_went_in() {
+        let octets = [0x02, 0x00, 0x00, 0x00, 0x00, 0x09];
+        assert_eq!(BdAddr::from(octets).octets(), octets);
+        assert_eq!(BdAddr::from(octets), "02:00:00:00:00:09".parse().unwrap());
     }
 
     #[test]
