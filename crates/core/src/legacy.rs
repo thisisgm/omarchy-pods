@@ -7,18 +7,16 @@ use pods_proto::noise::NoiseMode;
 use crate::command::{ADAPTIVE_LEVEL_MAX, Command, CommandError, NoiseTarget};
 use crate::state::EarDetectionBehavior;
 
-/// What one legacy request asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyRequest {
-    /// Reply with the status line.
     Status,
     Command(Command),
 }
 
-/// The verb that asks the daemon to open its window, also what a second daemon sends the first.
+/// A second daemon sends this to the first to open its window.
 pub const REOPEN_VERB: &str = "reopen";
 
-/// Every whole-word verb of the C++ dispatch in `daemon/main.cpp`, in its order, with what it asks for.
+/// Every whole-word verb of the dispatch in `daemon/main.cpp`, in its order.
 pub(crate) const VERBS: [(&str, LegacyRequest); 17] = [
     (REOPEN_VERB, LegacyRequest::Command(Command::Reopen)),
     ("noise:off", noise(NoiseTarget::Mode(NoiseMode::Off))),
@@ -57,7 +55,6 @@ pub(crate) const VERBS: [(&str, LegacyRequest); 17] = [
     ("status", LegacyRequest::Status),
 ];
 
-/// The verb family whose payload is the adaptive noise level.
 const ADAPTIVE_PREFIX: &str = "adaptive:";
 
 /// Qt's `toInt` skips these after the digits, and `parseIntVerb` refuses them before.
@@ -71,8 +68,7 @@ const fn ear(behavior: EarDetectionBehavior) -> LegacyRequest {
     LegacyRequest::Command(Command::SetEarDetection(behavior))
 }
 
-/// The request in one connection's bytes, or `None` for anything the C++ daemon would log as unknown.
-// Sample input: `noise:anc`, `status` or `adaptive:37`, with no newline.
+// Sample input: `noise:anc`, `status`, `adaptive:37`; `None` for what C++ logs as unknown.
 #[must_use]
 pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
     let text = std::str::from_utf8(bytes).ok()?;
@@ -87,8 +83,7 @@ pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
         .map(|&(_, request)| request)
 }
 
-/// The level in an `adaptive:` payload, by the rule of `parseIntVerb` over Qt's `toInt`: not a whole number is a bad request, outside 0 to 100 is out of range.
-// Sample input: `37`, `+37`, `-0` or `37\n`; ` 37` and `37x` are bad, `101` and `3000000000` are out of range.
+// `parseIntVerb` over Qt `toInt`. Sample input: `+37`, `37\n`; `37x` bad, `101` out of range.
 pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
     let value = match payload.trim_end_matches(QT_TRAILING_SPACE).parse::<i32>() {
         Ok(value) => value,
@@ -108,7 +103,6 @@ pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
         .ok_or(CommandError::OutOfRange)
 }
 
-/// The command of the table verb `<family>:<word>`, the way protocol 1 names a setting and its value.
 // Sample input: family `noise` with word `anc`, which is the verb `noise:anc`.
 pub(crate) fn family_command(family: &str, word: &str) -> Option<Command> {
     VERBS.iter().find_map(|&(verb, request)| match request {
@@ -119,7 +113,6 @@ pub(crate) fn family_command(family: &str, word: &str) -> Option<Command> {
     })
 }
 
-/// The word after `<family>:` in the table verb that asks for `command`, the way protocol 1 shows a setting's value.
 // Sample input: family `noise` with `SetNoise(Mode(Anc))`, which is the verb `noise:anc`, so `anc`.
 pub(crate) fn family_word(family: &str, command: Command) -> Option<&'static str> {
     VERBS
@@ -134,7 +127,6 @@ pub(crate) fn family_word(family: &str, command: Command) -> Option<&'static str
         })
 }
 
-/// The command of a table verb that is one whole word, the way protocol 1 names an action.
 // Sample input: `disconnect`.
 pub(crate) fn word_command(word: &str) -> Option<Command> {
     VERBS.iter().find_map(|&(verb, request)| match request {

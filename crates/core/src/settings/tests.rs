@@ -8,7 +8,6 @@ use crate::command::NoiseTarget;
 use crate::legacy::VERBS;
 use crate::state::EarDetectionBehavior;
 
-/// The public description of protocol 1, which must name every key, value and action.
 const PROTOCOL_DOCUMENT: &str = include_str!("../../../../docs/protocol-1.md");
 
 fn noise(mode: NoiseMode) -> Command {
