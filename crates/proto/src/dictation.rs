@@ -1,15 +1,10 @@
 //! The dictation microphone stream: Opus frames in ATT notifications, read and built with no I/O.
 
+use crate::att::{AttPdu, HANDLE_VALUE_NOTIFICATION};
 use crate::error::{ParseError, Parser};
 
 // Every byte and layout here was observed between a Mac and one pair of AirPods; none is confirmed from a Linux host.
 
-/// Opcode of an ATT Handle Value Notification.
-const NOTIFICATION: u8 = 0x1b;
-/// The attribute handle is a little endian u16 right after the opcode.
-const HANDLE_LEN: usize = 2;
-/// Opcode plus the handle, the shortest notification.
-const NOTIFICATION_MIN_LEN: usize = 3;
 /// An audio value starts with these two bytes; their meaning is unknown.
 const AUDIO_MARKER: [u8; 2] = [0x01, 0x00];
 /// The marker, the packet counter and the declared length: the part of the audio prefix that sits in the value.
@@ -64,20 +59,21 @@ pub enum DictationPacket<'a> {
 }
 
 impl<'a> DictationPacket<'a> {
-    /// Reads one PDU of the ATT channel; `Ok(None)` is any other opcode or handle, which is ordinary traffic.
-    // 1b 0d 00 01 00 ...: notification opcode, handle little endian (0x000d audio, 0x0010 status), then the value.
+    /// Reads one PDU of the ATT channel; `Ok(None)` is anything but a notification on `AUDIO_HANDLE` or `STATUS_HANDLE`, which is ordinary traffic.
+    // 1b 0d 00 01 00 ...: a notification as `AttPdu::parse` reads it, on handle 0x000d (audio) or 0x0010 (status), then the value.
     pub fn parse(pdu: &'a [u8]) -> Result<Option<Self>, ParseError> {
-        let Some(after_opcode) = pdu.strip_prefix(&[NOTIFICATION]) else {
-            return Ok(None);
+        let (handle, value) = match AttPdu::parse(pdu) {
+            Ok(AttPdu::Notification { handle, value }) => (handle, value),
+            Err(
+                cut @ ParseError::TooShort {
+                    parser: Parser::AttNotification,
+                    ..
+                },
+            ) => return Err(cut),
+            // A PDU of any other kind is not dictation, and a malformed one is for its own reader to refuse.
+            Ok(_) | Err(_) => return Ok(None),
         };
-        let Some((handle, value)) = after_opcode.split_first_chunk::<HANDLE_LEN>() else {
-            return Err(ParseError::TooShort {
-                parser: Parser::Dictation,
-                need: NOTIFICATION_MIN_LEN,
-                got: pdu.len(),
-            });
-        };
-        match u16::from_le_bytes(*handle) {
+        match handle {
             AUDIO_HANDLE => match AudioNotification::parse(value, pdu.len())? {
                 Some(audio) => Ok(Some(Self::Audio(audio))),
                 None => Ok(Some(Self::Unknown { value })),
@@ -246,7 +242,7 @@ pub fn encode_audio(packet_counter: u8, frames: &[Frame<'_>]) -> Result<Vec<u8>,
     let Ok(declared_len) = u16::try_from(body.len()) else {
         return Err(EncodeError::PacketTooLong { len: body.len() });
     };
-    let mut pdu = vec![NOTIFICATION];
+    let mut pdu = vec![HANDLE_VALUE_NOTIFICATION];
     pdu.extend_from_slice(&AUDIO_HANDLE.to_le_bytes());
     pdu.extend_from_slice(&AUDIO_MARKER);
     pdu.push(packet_counter);

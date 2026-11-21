@@ -73,6 +73,13 @@ const DICTATION_AUDIO_GATE: [u8; 3] = [0x1b, 0x0d, 0x00];
 const DICTATION_AUDIO_MARKER: [u8; 2] = [0x01, 0x00];
 /// Notification opcode and the status handle 0x0010, little endian.
 const DICTATION_STATUS_GATE: [u8; 3] = [0x1b, 0x10, 0x00];
+/// Opcodes whose PDU the ATT reader refuses when it is malformed: the error response, both list replies and the indication.
+const ATT_REFUSED_WHEN_MALFORMED: [u8; 4] = [
+    ATT_ERROR.0,
+    ATT_FIND_INFORMATION_REPLY,
+    ATT_READ_BY_TYPE_REPLY,
+    ATT_INDICATION,
+];
 /// Where the length byte sits in a dictation frame, after the flag, the level and the two counter bytes.
 const FRAME_LENGTH_AT: usize = 4;
 /// One more than the most frames a generated notification carries.
@@ -646,6 +653,22 @@ proptest! {
             let unknown = DictationPacket::Unknown { value: &value };
             prop_assert_eq!(outcome, Ok(Some(unknown)));
         }
+    }
+
+    // A PDU with any other opcode is not dictation, whether the ATT reader accepts it or refuses it, even on the two handles.
+    #[test]
+    fn dictation_reads_nothing_but_a_notification(
+        opcode in prop_oneof![proptest::sample::select(&ATT_REFUSED_WHEN_MALFORMED), any::<u8>()]
+            .prop_filter("the opcode is a notification", |opcode| *opcode != ATT_NOTIFICATION),
+        gate in prop_oneof![Just(DICTATION_AUDIO_GATE), Just(DICTATION_STATUS_GATE), any::<[u8; 3]>()],
+        rest in proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND),
+        kept in any::<proptest::sample::Index>(),
+    ) {
+        let mut pdu = vec![opcode];
+        pdu.extend(gate.iter().skip(1));
+        pdu.extend(&rest);
+        pdu.truncate(kept.index(pdu.len()).saturating_add(1));
+        prop_assert_eq!(DictationPacket::parse(&pdu), Ok(None));
     }
 
     #[test]

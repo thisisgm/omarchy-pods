@@ -15,7 +15,7 @@ const READ_BY_TYPE_REQUEST: u8 = 0x08;
 /// `ATT_READ_BY_TYPE_RSP` (Vol 3, Part F, 3.4.4.2).
 const READ_BY_TYPE_RESPONSE: u8 = 0x09;
 /// `ATT_HANDLE_VALUE_NTF` (Vol 3, Part F, 3.4.7.1).
-const HANDLE_VALUE_NOTIFICATION: u8 = 0x1b;
+pub(crate) const HANDLE_VALUE_NOTIFICATION: u8 = 0x1b;
 /// `ATT_HANDLE_VALUE_IND` (Vol 3, Part F, 3.4.7.2).
 const HANDLE_VALUE_INDICATION: u8 = 0x1d;
 /// `ATT_HANDLE_VALUE_CFM` (Vol 3, Part F, 3.4.7.3).
