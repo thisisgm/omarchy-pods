@@ -1,6 +1,6 @@
 [package]
 name = "pods-proto"
-description = "Parsers and encoders for the AirPods control channel"
+description = "Parsers and encoders for the packets AirPods and a host exchange"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
