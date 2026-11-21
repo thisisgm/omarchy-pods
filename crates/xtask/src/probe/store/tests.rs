@@ -644,6 +644,12 @@ fn names_are_given_to_all_files_or_to_none() {
         fs::read(run_path.join("third.tsv")).unwrap(),
         b"not from this call"
     );
+    // No test can make a take back fail, so what one reports is built here: the refusal and every name that stays.
+    let stays = |name: &str| StoreError::io(&run_path.join(name), "remove", Errno::IO);
+    let both = error.with_names_left(vec![stays("first.tsv"), stays("second.tsv")]);
+    for name in ["first.tsv", "second.tsv", "third.tsv"] {
+        assert!(names_path(&both, &run_path.join(name)), "{both}");
+    }
 
     fs::remove_file(run_path.join("third.tsv")).unwrap();
     Unnamed::name_all(&written()).unwrap();
