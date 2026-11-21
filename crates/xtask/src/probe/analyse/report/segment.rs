@@ -18,7 +18,7 @@ use super::super::shape::{
     length_agrees, opaque_fields, stamps,
 };
 use super::super::stats::{NS_PER_MS, NS_PER_SECOND, millis, seconds, share};
-use super::{BYTES, MS, NONE, NOTE_SEPARATOR, PACKETS, Row, UNITS};
+use super::{BYTES, CLOCK_KEY, MS, NONE, NOTE_SEPARATOR, PACKETS, Row, UNITS};
 
 /// Samples in one unit, which turns the unit clock into a sample clock; no packet states it, so every row scaled by it says it is assumed.
 const SAMPLES_PER_UNIT: u32 = 480;
@@ -242,7 +242,7 @@ impl Segment {
                     flagged(clock, derivation),
                 )
             }),
-            self.rate("clock_hz", HZ, clock, |clock| {
+            self.rate(CLOCK_KEY, HZ, clock, |clock| {
                 let derivation = format!("slope x {} samples per unit", clock.samples_per_unit);
                 (format!("{:.3}", clock.hz()), scaled(clock, derivation))
             }),

@@ -2,21 +2,24 @@
 
 mod bands;
 mod census;
-mod input;
+pub(crate) mod input;
 mod lead;
 mod load;
 mod rates;
-mod report;
+pub(crate) mod report;
 mod shape;
 mod stats;
 #[cfg(test)]
-mod support;
+pub(crate) mod support;
 #[cfg(test)]
 mod synth;
 
 use std::path::Path;
 
 use super::store::{MAX_READ_BYTES, Run, StoreError, Unnamed};
+// The generator of logs names it as its neighbour, here and in the test of the built command.
+#[cfg(test)]
+use super::xorshift;
 use input::{
     CutLines, InputError, LOG_FILE, MARKS_FILE, META_FILE, parse_log, parse_marks, parse_meta,
     text_of, whole_lines,
@@ -29,7 +32,7 @@ pub(crate) const UNITS_FILE: &str = "units.tsv";
 /// The strings of the device information packet; they hold serial numbers and stay in the run.
 pub(crate) const DEVICE_INFO_FILE: &str = "device-info.txt";
 /// The packet log is read up to 256 MiB: two hours of 354 byte SDUs, 34 a second, written in hex, come to about 170 MiB.
-const MAX_LOG_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_LOG_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Why a run was not analysed.
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +62,7 @@ pub(crate) fn analyse_run(run_dir: &Path) -> Result<String, AnalyseError> {
     };
 
     let report = report::analyse(&records, &marks, &meta.script, cut);
-    let table = report.table();
+    let table = report::table(&report.rows);
     let device_info = report.device_strings.as_ref().map(|strings| {
         let lines: Vec<String> = strings.iter().map(|string| format!("{string}\n")).collect();
         lines.concat()

@@ -13,6 +13,7 @@ pods-core = { path = "../core" }
 pods-proto.workspace = true
 pods-sys.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }
+rusty_aac.workspace = true
 serde_json.workspace = true
 signal-hook.workspace = true
 tempfile.workspace = true

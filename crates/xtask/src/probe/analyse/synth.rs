@@ -3,6 +3,8 @@
 use pods_proto::sdulog::{Direction, Record};
 use pods_proto::uplink::{AccessUnit, OPAQUE_LEN, encode_audio};
 
+use super::xorshift::next_random;
+
 /// Filler for header bytes 8 to 21: it holds no true length, so the length rows of a generated stream agree with no SDU.
 pub(crate) const OPAQUE: [u8; OPAQUE_LEN] = [
     0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad,
@@ -11,16 +13,6 @@ pub(crate) const OPAQUE: [u8; OPAQUE_LEN] = [
 pub(crate) const SILENT_UNIT: [u8; 2] = [0x00, 0x00];
 pub(crate) const NS_PER_SECOND: u64 = 1_000_000_000;
 pub(crate) const NS_PER_MS: u64 = 1_000_000;
-
-/// One step of xorshift64, which never leaves zero, so the seed is made odd first.
-fn next_random(state: &mut u64) -> u64 {
-    let mut x = *state | 1;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
-}
 
 /// Silent audio SDUs from a peer clocked at `rate_hz`: SDU k arrives as its last unit ends plus a seeded delay under `jitter_ms`, which must not exceed one SDU or the arrivals leave their order.
 pub(crate) fn synth(

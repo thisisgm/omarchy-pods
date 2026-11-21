@@ -58,8 +58,8 @@ fn init_prints_the_session_path_and_nothing_else() {
     assert!(error.contains(&root.display().to_string()), "{error}");
 }
 
-/// The four commands, each with arguments that would otherwise get as far as the store.
-fn every_command() -> [Vec<&'static str>; 5] {
+/// Every command, each with arguments that would otherwise get as far as the store.
+fn every_command() -> [Vec<&'static str>; 6] {
     [
         vec!["init", "--stamp", STAMP],
         vec![
@@ -68,6 +68,7 @@ fn every_command() -> [Vec<&'static str>; 5] {
         vec!["stop"],
         vec!["hci", "trace.snoop", "--stamp", STAMP, "--run", "page"],
         vec!["analyse", "page"],
+        vec!["decode", "page"],
     ]
 }
 

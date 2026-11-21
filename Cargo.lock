@@ -513,6 +513,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty_aac"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3dbc43fb52354757803c3d465d3471b3ab344889e6df34ebcbdff18132a6f6f"
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -792,6 +798,7 @@ dependencies = [
  "pods-sys",
  "proptest",
  "rustix",
+ "rusty_aac",
  "serde_json",
  "signal-hook",
  "tempfile",
