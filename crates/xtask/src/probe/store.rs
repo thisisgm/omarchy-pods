@@ -3,8 +3,8 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use pods_proto::addr::{BdAddr, BdAddrError};
@@ -17,6 +17,10 @@ const ROOT_NAME: &str = "omapods-captures";
 const GIT_MARKER: &str = ".git";
 /// The device file's name inside the root.
 const DEVICE_NAME: &str = "device";
+/// The directory a file with no name is made in: the one the descriptor is open on.
+const HERE: &str = ".";
+/// Where the kernel lists the open descriptors of this process, each as a link to its file.
+const PROC_FD_DIR: &str = "/proc/self/fd";
 /// Root, session and run directories: owner read, write and search, nothing else.
 const DIR_MODE: Mode = Mode::from_raw_mode(0o700);
 /// Capture files and the device file: owner read and write, nothing else.
@@ -25,8 +29,8 @@ const FILE_MODE: Mode = Mode::from_raw_mode(0o600);
 const PERMISSION_BITS: u32 = 0o7777;
 /// Group and other permission bits; a capture read refuses a file with any of them.
 const GROUP_OTHER_BITS: u32 = 0o077;
-/// A capture read is refused above 64 MiB.
-const MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
+/// A capture read is refused above 64 MiB, unless the file has a larger bound of its own.
+pub(crate) const MAX_READ_BYTES: u64 = 64 * 1024 * 1024;
 /// The device file is refused above 64 bytes.
 const MAX_DEVICE_BYTES: u64 = 64;
 /// The shape of `date -u +%Y%m%dT%H%M%SZ`, where each `DIGIT_SLOT` stands for one ASCII digit.
@@ -191,13 +195,6 @@ impl Run {
     }
 
     /// Opens an existing `<root>/<stamp>/<name>`, checking the root, the session and the run on the way down.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "capture only creates runs; the commands that read one back open it"
-        )
-    )]
     pub(crate) fn open(path: &Path) -> Result<Run, StoreError> {
         let (root, stamp, name) = split_run_path(path)?;
         refuse_repository_ancestors(root)?;
@@ -229,24 +226,63 @@ impl Run {
         Ok(File::from(fd))
     }
 
-    /// Reads a capture file: a regular file, owner only, at most `MAX_READ_BYTES`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "capture only creates runs; the commands that read one back open it"
-        )
-    )]
-    pub(crate) fn read(&self, name: &str) -> Result<Vec<u8>, StoreError> {
+    /// Reads a capture file: a regular file, owner only, at most `limit` bytes.
+    pub(crate) fn read(&self, name: &str, limit: u64) -> Result<Vec<u8>, StoreError> {
         check_file_name(name)?;
         let path = self.path.join(name);
-        read_bounded(
-            self.dir.as_fd(),
+        read_bounded(self.dir.as_fd(), name, &path, ModeRule::OwnerOnly, limit)
+    }
+
+    /// Writes a new file with mode 0600 that has no name yet; an existing name is refused before a byte is written.
+    pub(crate) fn write_unnamed<'run>(
+        &'run self,
+        name: &'run str,
+        contents: &[u8],
+    ) -> Result<Unnamed<'run>, StoreError> {
+        check_file_name(name)?;
+        let path = self.path.join(name);
+        match rustix::fs::statat(self.dir.as_fd(), name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => return Err(StoreError::FileExists { path }),
+            Err(Errno::NOENT) => {}
+            Err(errno) => return Err(StoreError::io(&path, "inspect", errno)),
+        }
+        // O_TMPFILE makes the file inside the run directory with no name; the kernel frees one that never gets a name.
+        let flags = OFlags::WRONLY | OFlags::TMPFILE | OFlags::CLOEXEC;
+        let fd = rustix::fs::openat(self.dir.as_fd(), HERE, flags, FILE_MODE)
+            .map_err(|errno| StoreError::io(&path, "create", errno))?;
+        let mut file = File::from(fd);
+        // Synced before it can be named, so a power loss never leaves a name on a file that is not whole.
+        file.write_all(contents)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| StoreError::io(&path, "write", source))?;
+        Ok(Unnamed {
+            run: self,
             name,
-            &path,
-            ModeRule::OwnerOnly,
-            MAX_READ_BYTES,
-        )
+            file,
+        })
+    }
+}
+
+/// A file of a run written whole that has no name yet: dropped as it is, it leaves nothing in the run.
+#[derive(Debug)]
+pub(crate) struct Unnamed<'run> {
+    run: &'run Run,
+    name: &'run str,
+    file: File,
+}
+
+impl Unnamed<'_> {
+    /// Gives the file its name in the run; a name taken since it was written is refused, never replaced.
+    pub(crate) fn give_name(&self) -> Result<(), StoreError> {
+        let path = self.run.path.join(self.name);
+        // A file with no name is reached through its descriptor under /proc, which the link call follows.
+        let written = format!("{PROC_FD_DIR}/{}", self.file.as_raw_fd());
+        let dir = self.run.dir.as_fd();
+        match rustix::fs::linkat(CWD, written, dir, self.name, AtFlags::SYMLINK_FOLLOW) {
+            Ok(()) => Ok(()),
+            Err(Errno::EXIST) => Err(StoreError::FileExists { path }),
+            Err(errno) => Err(StoreError::io(&path, "name", errno)),
+        }
     }
 }
 
