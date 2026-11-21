@@ -7,5 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+clap.workspace = true
+pods-proto.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true
