@@ -224,30 +224,37 @@ pub enum EncodeError {
     PacketTooLong { len: usize },
 }
 
-/// Builds the audio notification the pods would send for these frames.
+// A frame of 3 data bytes gives 3; one of 256 is refused, because the length byte in front of it holds at most 255.
+fn frame_len(index: usize, frame: &Frame<'_>) -> Result<u8, EncodeError> {
+    let len = frame.data.len();
+    u8::try_from(len).or(Err(EncodeError::FrameTooLong { index, len }))
+}
+
+/// Builds the audio notification the pods would send for these frames; both limits are checked on the lengths, before a byte is copied.
 pub fn encode_audio(packet_counter: u8, frames: &[Frame<'_>]) -> Result<Vec<u8>, EncodeError> {
-    let mut body = Vec::new();
+    let mut body_len = 0_usize;
     for (index, frame) in frames.iter().enumerate() {
-        let Ok(len) = u8::try_from(frame.data.len()) else {
-            return Err(EncodeError::FrameTooLong {
-                index,
-                len: frame.data.len(),
-            });
-        };
-        body.extend_from_slice(&[frame.flag, frame.level]);
-        body.extend_from_slice(&frame.counter.to_le_bytes());
-        body.push(len);
-        body.extend_from_slice(frame.data);
+        let data_len = usize::from(frame_len(index, frame)?);
+        // Saturating, because a sum past `usize::MAX` is past the limit of the length field too.
+        body_len = body_len
+            .saturating_add(FRAME_PREFIX_LEN)
+            .saturating_add(data_len);
     }
-    let Ok(declared_len) = u16::try_from(body.len()) else {
-        return Err(EncodeError::PacketTooLong { len: body.len() });
+    let Ok(declared_len) = u16::try_from(body_len) else {
+        return Err(EncodeError::PacketTooLong { len: body_len });
     };
-    let mut pdu = vec![HANDLE_VALUE_NOTIFICATION];
+    let mut pdu = Vec::with_capacity(AUDIO_PREFIX_LEN.saturating_add(body_len));
+    pdu.push(HANDLE_VALUE_NOTIFICATION);
     pdu.extend_from_slice(&AUDIO_HANDLE.to_le_bytes());
     pdu.extend_from_slice(&AUDIO_MARKER);
     pdu.push(packet_counter);
     pdu.extend_from_slice(&declared_len.to_le_bytes());
-    pdu.extend_from_slice(&body);
+    for (index, frame) in frames.iter().enumerate() {
+        pdu.extend_from_slice(&[frame.flag, frame.level]);
+        pdu.extend_from_slice(&frame.counter.to_le_bytes());
+        pdu.push(frame_len(index, frame)?);
+        pdu.extend_from_slice(frame.data);
+    }
     Ok(pdu)
 }
 
