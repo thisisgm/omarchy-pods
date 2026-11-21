@@ -1,4 +1,4 @@
-//! The protocol 1 commands of the command line: `status`, `watch`, `set` and `do`, one request per connection.
+//! The protocol 1 commands `status`, `watch`, `set` and `do`, one request per connection.
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -12,37 +12,30 @@ use serde_json::{Map, Value};
 use super::{MAX_REPLY_BYTES, REPLY_TIMEOUT, WRITE_TIMEOUT, connect, emit, no_daemon, timed_out};
 use crate::protocol::VERSION;
 
-/// The id of the one request each command sends.
 const REQUEST_ID: u64 = 1;
 
-/// What a command prints when the daemon closes the connection before the command is done.
 const WENT_AWAY: &str = "The daemon went away.\n";
 
 /// The `result` a reply to `set` or `do` carries when the daemon took the command.
 const RESULTS: [&str; 2] = ["sent", "confirmed"];
 
-/// Why a command could not finish.
 #[derive(Debug)]
 enum Failure {
     NoDaemon,
     TimedOut,
     WentAway,
-    /// The daemon refused the request, with the message it gave.
     Refused(String),
-    /// A line from the daemon that is not the protocol 1 line expected for the request.
     NotUnderstood,
 }
 
-/// How a line being read takes one chunk from the socket.
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
-    /// The whole chunk joined the line, which goes on in the next chunk.
     Continues,
     /// The line ended in the chunk after this many of its bytes, the newline included.
     Ended(usize),
 }
 
-/// Prints the state line, as the legacy `status` verb does, but fails, as `watch` does, when standard output refuses the line; with nothing reading it, it ends quietly.
+/// Unlike the legacy `status` verb, fails on a write error other than a closed pipe.
 pub(crate) fn status(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
     match open(socket, &request("get", &[])).and_then(|(_, reply)| state_reply(&reply)) {
         Ok(line) => print_state(&line, out, err)
@@ -52,7 +45,6 @@ pub(crate) fn status(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) ->
     }
 }
 
-/// Prints the state line, then one per change until the daemon goes away or nothing reads the output.
 pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
     let opened = open(socket, &request("subscribe", &[]));
     let (mut reader, mut line) =
@@ -71,11 +63,10 @@ pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> 
     }
 }
 
-/// Writes one state line to standard output, or gives the exit code the command ends with when it cannot.
 fn print_state(line: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), ExitCode> {
     match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => Ok(()),
-        // Nothing reads the output any more, as under `librepods watch | head -1`, which ends the command normally.
+        // Nothing reads the output any more, as under `librepods watch | head -1`: a normal end.
         Err(error) if error.kind() == ErrorKind::BrokenPipe => Err(ExitCode::SUCCESS),
         Err(error) => {
             emit(
@@ -87,7 +78,6 @@ fn print_state(line: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<(
     }
 }
 
-/// Changes one setting, printing nothing unless the daemon refuses.
 pub(crate) fn set(key: &str, value: &str, socket: &Path, err: &mut dyn Write) -> ExitCode {
     let request = request("set", &[("key", key), ("value", value)]);
     match open(socket, &request).and_then(|(_, reply)| result_reply(&reply)) {
@@ -96,7 +86,6 @@ pub(crate) fn set(key: &str, value: &str, socket: &Path, err: &mut dyn Write) ->
     }
 }
 
-/// Asks for one action, printing nothing unless the daemon refuses.
 pub(crate) fn act(action: &str, socket: &Path, err: &mut dyn Write) -> ExitCode {
     let request = request("do", &[("action", action)]);
     match open(socket, &request).and_then(|(_, reply)| result_reply(&reply)) {
@@ -105,7 +94,6 @@ pub(crate) fn act(action: &str, socket: &Path, err: &mut dyn Write) -> ExitCode 
     }
 }
 
-/// The request line for `op` with string `members`.
 fn request(op: &str, members: &[(&str, &str)]) -> String {
     let mut request = Map::new();
     request.insert("v".to_owned(), Value::from(VERSION));
@@ -117,14 +105,13 @@ fn request(op: &str, members: &[(&str, &str)]) -> String {
     format!("{}\n", Value::Object(request))
 }
 
-/// Connects, sends `request` and reads its reply line within the reply timeout; the reader is left for any events.
 fn open(socket: &Path, request: &str) -> Result<(BufReader<UnixStream>, Vec<u8>), Failure> {
     let stream = connect(socket).ok_or(Failure::NoDaemon)?;
     let mut writer = &stream;
     let sent = stream
         .set_write_timeout(Some(WRITE_TIMEOUT))
         .and_then(|()| writer.write_all(request.as_bytes()));
-    // A daemon that accepted but takes no request has closed or stalled, and is gone for this command either way.
+    // A daemon that accepted but takes no request is gone for this command.
     if sent.is_err() {
         return Err(Failure::WentAway);
     }
@@ -134,7 +121,6 @@ fn open(socket: &Path, request: &str) -> Result<(BufReader<UnixStream>, Vec<u8>)
     Ok((reader, line))
 }
 
-/// One line from the daemon, newline excluded, by `deadline` when there is one.
 // Sample input: `{"id":1,"ok":true,"result":"confirmed"}\n`
 fn read_line(
     reader: &mut BufReader<UnixStream>,
@@ -172,7 +158,7 @@ fn read_line(
     }
 }
 
-/// Adds the part of `chunk` before its first newline to `line`, refusing a line over `MAX_REPLY_BYTES`, newline excluded.
+/// `MAX_REPLY_BYTES` bounds the line without its newline.
 // Sample input: `line` holds `{"id":1,"ok"` and `chunk` is `:true,"result":"sent"}\n{"event"`.
 fn take(line: &mut Vec<u8>, chunk: &[u8]) -> Result<Step, Failure> {
     let newline = chunk.iter().position(|&byte| byte == b'\n');
@@ -186,7 +172,6 @@ fn take(line: &mut Vec<u8>, chunk: &[u8]) -> Result<Step, Failure> {
     Ok(newline.map_or(Step::Continues, |at| Step::Ended(at.saturating_add(1))))
 }
 
-/// The members of the reply to the request sent, or the refusal it carries.
 // Sample input: `{"id":1,"ok":false,"error":{"code":"not_connected","message":"The AirPods are not connected."}}`
 fn reply(line: &[u8]) -> Result<Map<String, Value>, Failure> {
     let Ok(Value::Object(reply)) = serde_json::from_slice::<Value>(line) else {
@@ -200,13 +185,13 @@ fn reply(line: &[u8]) -> Result<Map<String, Value>, Failure> {
     }
 }
 
-/// The failure a reply with `ok` false gives, where `ours` says its `id` is the request's.
+/// `ours` says the reply's `id` is the request's.
 fn refusal(reply: &Map<String, Value>, ours: bool) -> Failure {
     let error = reply.get("error");
     let code = error
         .and_then(|error| error.get("code"))
         .and_then(Value::as_str);
-    // The daemon answers with a null `id` only a line it could not take an `id` from, and only with this code.
+    // The daemon sends a null `id` only with this code, for a line it could not read an `id` from.
     let unread =
         reply.get("id") == Some(&Value::Null) && code == Some(CommandError::BadRequest.code());
     match error
@@ -218,13 +203,11 @@ fn refusal(reply: &Map<String, Value>, ours: bool) -> Failure {
     }
 }
 
-/// The state line of the reply to `get` or `subscribe`.
 // Sample input: `{"id":1,"ok":true,"state":{"connected":false}}`
 fn state_reply(line: &[u8]) -> Result<String, Failure> {
     state_line(&reply(line)?)
 }
 
-/// Checks that the reply to `set` or `do` carries one of the `RESULTS`.
 // Sample input: `{"id":1,"ok":true,"result":"confirmed"}`
 fn result_reply(line: &[u8]) -> Result<(), Failure> {
     match reply(line)?.get("result").and_then(Value::as_str) {
@@ -233,7 +216,6 @@ fn result_reply(line: &[u8]) -> Result<(), Failure> {
     }
 }
 
-/// The state line a reply or an event carries in its `state` member.
 fn state_line(document: &Map<String, Value>) -> Result<String, Failure> {
     match document.get("state") {
         Some(state @ Value::Object(_)) => Ok(format!("{state}\n")),
@@ -241,7 +223,6 @@ fn state_line(document: &Map<String, Value>) -> Result<String, Failure> {
     }
 }
 
-/// The state line of one event line.
 // Sample input: `{"event":"state","state":{"connected":false}}`
 fn event_state_line(line: &[u8]) -> Result<String, Failure> {
     let Ok(Value::Object(event)) = serde_json::from_slice::<Value>(line) else {
@@ -253,7 +234,6 @@ fn event_state_line(line: &[u8]) -> Result<String, Failure> {
     state_line(&event)
 }
 
-/// Prints why `command` could not finish and fails.
 fn report(failure: Failure, command: &str, socket: &Path, err: &mut dyn Write) -> ExitCode {
     match failure {
         Failure::NoDaemon => return no_daemon(socket, err),
