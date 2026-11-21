@@ -1,11 +1,4 @@
 //! The private store for probe captures: owner only, outside any git repository, never through a symbolic link.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "init opens only a session; the capture commands use the rest"
-    )
-)]
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -198,6 +191,13 @@ impl Run {
     }
 
     /// Opens an existing `<root>/<stamp>/<name>`, checking the root, the session and the run on the way down.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "capture only creates runs; the commands that read one back open it"
+        )
+    )]
     pub(crate) fn open(path: &Path) -> Result<Run, StoreError> {
         let (root, stamp, name) = split_run_path(path)?;
         refuse_repository_ancestors(root)?;
@@ -230,6 +230,13 @@ impl Run {
     }
 
     /// Reads a capture file: a regular file, owner only, at most `MAX_READ_BYTES`.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "capture only creates runs; the commands that read one back open it"
+        )
+    )]
     pub(crate) fn read(&self, name: &str) -> Result<Vec<u8>, StoreError> {
         check_file_name(name)?;
         let path = self.path.join(name);

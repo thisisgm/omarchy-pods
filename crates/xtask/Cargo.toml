@@ -10,7 +10,9 @@ publish.workspace = true
 [dependencies]
 clap.workspace = true
 pods-proto.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
+pods-sys.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "time"] }
+signal-hook.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
