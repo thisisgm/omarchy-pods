@@ -46,8 +46,7 @@ const BURST_OTHER_OPCODES: [u16; 11] = [
     0x02, 0x08, 0x0c, 0x0c, 0x0c, 0x0e, 0x2e, 0x2e, 0x4e, 0x53, 0x63,
 ];
 
-/// One packet from the pods: the accessory header, the opcode little endian, then the body.
-// Sample output: 04 00 04 00 06 00 00 00 for opcode 0x0006 and body 00 00.
+/// One packet from the pods: the accessory header, the opcode little endian, then the body, so `04 00 04 00 06 00 00 00` for opcode 0x0006 and body `00 00`.
 fn packet(opcode: u16, body: &[u8]) -> Vec<u8> {
     let mut sdu = ACCESSORY_HEADER.to_vec();
     sdu.extend(opcode.to_le_bytes());
@@ -130,8 +129,7 @@ mod tests {
     /// The opcode is a little endian u16 right after the accessory header.
     const OPCODE_LEN: usize = 2;
 
-    /// The opcode of a packet that starts with the accessory header, read here without the parser under test.
-    // 04 00 04 00 06 00 00 00: accessory header, then opcode 0x0006 little endian; 01 00 04 00 .. has none.
+    /// The opcode of a packet that starts with the accessory header, read here without the parser under test: 0x0006 for `04 00 04 00 06 00 00 00`, none for `01 00 04 00 ..`.
     fn opcode(sdu: &[u8]) -> Option<u16> {
         let rest = sdu.strip_prefix(&ACCESSORY_HEADER)?;
         rest.first_chunk::<OPCODE_LEN>()
