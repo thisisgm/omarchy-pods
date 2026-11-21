@@ -1,6 +1,6 @@
 //! The protocol 1 commands of the command line: `status`, `watch`, `set` and `do`, one request per connection.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
@@ -42,13 +42,13 @@ enum Step {
     Ended(usize),
 }
 
-/// Prints the state line, as the legacy `status` verb does.
+/// Prints the state line, as the legacy `status` verb does, and unlike it fails when the line cannot be written.
 pub(crate) fn status(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
     match open(socket, &request("get", &[])).and_then(|(_, reply)| state_reply(&reply)) {
-        Ok(line) => {
-            emit(out, line.as_bytes());
-            ExitCode::SUCCESS
-        }
+        Ok(line) => match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => unwritten(&error, err),
+        },
         Err(failure) => report(failure, "status", socket, err),
     }
 }
@@ -66,19 +66,22 @@ pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> 
             Ok(()) => {}
             // Nothing reads the output any more, as under `librepods watch | head -1`, which ends the watch normally.
             Err(error) if error.kind() == ErrorKind::BrokenPipe => return ExitCode::SUCCESS,
-            Err(error) => {
-                emit(
-                    err,
-                    format!("Cannot write the state to standard output: {error}\n").as_bytes(),
-                );
-                return ExitCode::FAILURE;
-            }
+            Err(error) => return unwritten(&error, err),
         }
         line = match read_line(&mut reader, None).and_then(|event| event_state_line(&event)) {
             Ok(line) => line,
             Err(failure) => return report(failure, "watch", socket, err),
         };
     }
+}
+
+/// Says on stderr that the state line could not be written to standard output, and fails.
+fn unwritten(error: &io::Error, err: &mut dyn Write) -> ExitCode {
+    emit(
+        err,
+        format!("Cannot write the state to standard output: {error}\n").as_bytes(),
+    );
+    ExitCode::FAILURE
 }
 
 /// Changes one setting, printing nothing unless the daemon refuses.
