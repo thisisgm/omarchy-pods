@@ -453,16 +453,19 @@ mod tests {
         let mut getter = Client::connect(&session);
         thread::scope(|scope| {
             let reader = scope.spawn(move || (0..CHANGES).map(|_| fast.line()).collect::<Vec<_>>());
+            let mut changes_made = ear_changes(&first_reply);
             for id in 0..CHANGES {
                 // The set runs every subscriber's task before its reply, so it is timed too.
                 let started = Instant::now();
                 assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
-                getter.ask(GET);
+                let reply = getter.ask(GET);
                 let waited = started.elapsed();
                 assert!(
                     waited < OTHERS_ANSWERED_WITHIN,
                     "change {id} and a get took {waited:?}"
                 );
+                changes_made += 1;
+                assert_eq!(ear_changes(&reply), changes_made, "{reply}");
             }
             let events = reader.join().unwrap();
             let mut expected = ear_changes(&first_reply);
