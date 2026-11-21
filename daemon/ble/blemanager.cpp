@@ -1,4 +1,5 @@
 #include "blemanager.h"
+#include "advertisementmonitor.h"
 #include "enums.h"
 #include <QDebug>
 #include <QTimer>
@@ -99,6 +100,13 @@ BleManager::BleManager(QObject *parent) : QObject(parent)
             this, &BleManager::onScanFinished);
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::errorOccurred,
             this, &BleManager::onErrorOccurred);
+
+    advertisementMonitor = new AdvertisementMonitor(this);
+    connect(advertisementMonitor, &AdvertisementMonitor::deviceSeen,
+            this, &BleManager::onDeviceDiscovered);
+    connect(advertisementMonitor, &AdvertisementMonitor::registrationFailed, this, [this]() {
+        discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
+    });
 }
 
 BleManager::~BleManager()
@@ -113,18 +121,21 @@ BleManager::~BleManager()
 void BleManager::startScan()
 {
     LOG_DEBUG("Starting BLE scan...");
+    if (advertisementMonitor->start())
+        return;
     discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
 }
 
 void BleManager::stopScan()
 {
     LOG_DEBUG("Stopping BLE scan...");
+    advertisementMonitor->stop();
     discoveryAgent->stop();
 }
 
 bool BleManager::isScanning() const
 {
-    return discoveryAgent->isActive();
+    return advertisementMonitor->isActive() || discoveryAgent->isActive();
 }
 
 void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)

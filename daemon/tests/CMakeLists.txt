@@ -150,6 +150,8 @@ openpods_add_test(tst_blemanager
     tst_blemanager.cpp
     ../ble/blemanager.cpp
     ../ble/blemanager.h
+    ../ble/advertisementmonitor.cpp
+    ../ble/advertisementmonitor.h
 )
-# Only test that parses a QBluetoothDeviceInfo, so only one needing the module.
-target_link_libraries(tst_blemanager PRIVATE Qt6::Bluetooth)
+# Only test that parses a QBluetoothDeviceInfo; the monitor it owns needs DBus to link and never runs here.
+target_link_libraries(tst_blemanager PRIVATE Qt6::Bluetooth Qt6::DBus)

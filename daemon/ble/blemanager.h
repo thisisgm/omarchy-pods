@@ -9,6 +9,7 @@
 #include "enums.h"
 
 class QTimer;
+class AdvertisementMonitor;
 
 class BleInfo
 {
@@ -88,6 +89,7 @@ private:
     // that start/stop/isScan would dereference. Real assignment
     // happens in BleManager::BleManager() via parented `new`.
     QBluetoothDeviceDiscoveryAgent *discoveryAgent = nullptr;
+    AdvertisementMonitor *advertisementMonitor = nullptr;
 };
 
 #endif // BLEMANAGER_H
