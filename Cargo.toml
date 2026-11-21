@@ -12,6 +12,8 @@ publish = false
 
 [workspace.dependencies]
 clap = { version = "4.6", features = ["derive"] }
+proptest = { version = "1.12", default-features = false, features = ["std"] }
+thiserror = "2.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

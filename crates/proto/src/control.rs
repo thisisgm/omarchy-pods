@@ -1,0 +1,184 @@
+//! Control commands: the settings packets both sides send on the control channel.
+
+use crate::error::{ParseError, strip_header};
+
+/// Every control command starts with these bytes.
+const HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00];
+/// Header, identifier and the first value byte, the shortest command the peer sends.
+const MIN_LEN: usize = 8;
+/// Header, identifier and four value bytes, the length the host always sends.
+const FRAME_LEN: usize = 11;
+/// Value byte that switches a setting on.
+const STATE_ENABLED: u8 = 0x01;
+/// Value byte that switches a setting off.
+const STATE_DISABLED: u8 = 0x02;
+
+/// Which setting a control command carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ControlId(pub u8);
+
+impl ControlId {
+    /// Listening mode, value is the noise mode plus one.
+    pub const NOISE_CONTROL: Self = Self(0x0D);
+    /// Noise cancellation with one bud in.
+    pub const ONE_BUD_ANC: Self = Self(0x1B);
+    /// Conversation awareness.
+    pub const CONVERSATIONAL_AWARENESS: Self = Self(0x28);
+    /// Adaptive audio level, value 0 to 100.
+    pub const ADAPTIVE_NOISE_LEVEL: Self = Self(0x2E);
+    /// Whether the device offers the Off listening mode.
+    pub const ALLOW_OFF_OPTION: Self = Self(0x34);
+}
+
+/// One control command: an identifier and four value bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlCommand {
+    pub id: ControlId,
+    pub value: [u8; 4],
+}
+
+impl ControlCommand {
+    /// A setting switched on or off.
+    #[must_use]
+    pub fn switch(id: ControlId, enabled: bool) -> Self {
+        let state = if enabled {
+            STATE_ENABLED
+        } else {
+            STATE_DISABLED
+        };
+        Self {
+            id,
+            value: [state, 0, 0, 0],
+        }
+    }
+
+    /// Reads a command; missing value bytes read as 0 and bytes past the fourth are ignored.
+    // 04 00 04 00 09 00 28 01 00 00 00: header, identifier, then up to four value bytes.
+    pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
+        let body = strip_header(bytes, &HEADER, MIN_LEN)?;
+        let Some((&id, rest)) = body.split_first() else {
+            return Err(ParseError::TooShort {
+                need: MIN_LEN,
+                got: bytes.len(),
+            });
+        };
+        let mut value = [0; 4];
+        for (slot, byte) in value.iter_mut().zip(rest) {
+            *slot = *byte;
+        }
+        Ok(Self {
+            id: ControlId(id),
+            value,
+        })
+    }
+
+    /// The 11 byte frame for this command.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(FRAME_LEN);
+        frame.extend_from_slice(&HEADER);
+        frame.push(self.id.0);
+        frame.extend_from_slice(&self.value);
+        frame
+    }
+
+    /// The on or off state in the first value byte, or `None` for any other value.
+    #[must_use]
+    pub fn state(&self) -> Option<bool> {
+        match self.value {
+            [STATE_ENABLED, ..] => Some(true),
+            [STATE_DISABLED, ..] => Some(false),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_ID: ControlId = ControlId(0x42);
+
+    fn command(value: [u8; 4]) -> Vec<u8> {
+        ControlCommand { id: TEST_ID, value }.encode()
+    }
+
+    #[test]
+    fn parse_active_rejects_empty() {
+        assert!(ControlCommand::parse(&[]).is_err());
+    }
+
+    #[test]
+    fn parse_active_rejects_short_header_only() {
+        assert!(ControlCommand::parse(&HEADER).is_err());
+    }
+
+    #[test]
+    fn parse_active_rejects_seven_bytes() {
+        let mut buf = HEADER.to_vec();
+        buf.push(0x42);
+        assert_eq!(buf.len(), 7);
+        assert!(ControlCommand::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn parse_active_rejects_wrong_header() {
+        let buf = [0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x01, 0x01];
+        assert_eq!(ControlCommand::parse(&buf), Err(ParseError::BadHeader));
+    }
+
+    #[test]
+    fn parse_active_returns_byte_at7() {
+        let mut buf = HEADER.to_vec();
+        buf.push(0x42);
+        buf.push(0x01);
+        assert_eq!(ControlCommand::parse(&buf).unwrap().value[0], 0x01);
+    }
+
+    #[test]
+    fn parse_state_enabled() {
+        let pkt = command([0x01, 0x00, 0x00, 0x00]);
+        assert_eq!(ControlCommand::parse(&pkt).unwrap().state(), Some(true));
+    }
+
+    #[test]
+    fn parse_state_disabled() {
+        let pkt = command([0x02, 0x00, 0x00, 0x00]);
+        assert_eq!(ControlCommand::parse(&pkt).unwrap().state(), Some(false));
+    }
+
+    #[test]
+    fn parse_state_unknown_value_is_nullopt() {
+        let pkt = command([0x05, 0x00, 0x00, 0x00]);
+        assert_eq!(ControlCommand::parse(&pkt).unwrap().state(), None);
+    }
+
+    #[test]
+    fn create_builds_expected_shape() {
+        let pkt = command([0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(pkt.len(), 11);
+        assert!(pkt.starts_with(&HEADER));
+        assert_eq!(pkt[6], 0x42);
+        assert_eq!(pkt[7], 0xAA);
+        assert_eq!(pkt[8], 0xBB);
+        assert_eq!(pkt[9], 0xCC);
+        assert_eq!(pkt[10], 0xDD);
+    }
+
+    #[test]
+    fn switch_matches_the_cpp_enabled_and_disabled_packets() {
+        let one_bud = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x1b];
+        let mut enabled = one_bud.to_vec();
+        enabled.extend([0x01, 0x00, 0x00, 0x00]);
+        let mut disabled = one_bud.to_vec();
+        disabled.extend([0x02, 0x00, 0x00, 0x00]);
+        assert_eq!(
+            ControlCommand::switch(ControlId::ONE_BUD_ANC, true).encode(),
+            enabled
+        );
+        assert_eq!(
+            ControlCommand::switch(ControlId::ONE_BUD_ANC, false).encode(),
+            disabled
+        );
+    }
+}

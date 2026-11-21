@@ -1,0 +1,17 @@
+[package]
+name = "pods-proto"
+description = "Parsers and encoders for the AirPods control channel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
