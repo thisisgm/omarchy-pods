@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn line_over_4096_bytes_closes_the_connection() {
         let session = Session::new();
-        let _daemon = session.start();
+        let daemon = session.start();
         let state = legacy_state(&session);
         let mut client = Client::connect(&session);
         assert_eq!(
@@ -386,6 +386,10 @@ mod tests {
             "a line past the bound closes before its newline"
         );
         assert_eq!(Client::connect(&session).ask(GET), state_reply(7, &state));
+        // The daemon logs a close before it makes it, and a stall close would log its own reason instead.
+        let log = daemon.log();
+        let bound = format!("longer than {MAX_LINE_BYTES} bytes");
+        assert_eq!(log.matches(&bound).count(), 2, "{log}");
     }
 
     #[test]
