@@ -9,4 +9,5 @@ pub mod error;
 pub mod model;
 pub mod noise;
 pub mod packets;
+pub mod sdulog;
 pub mod uplink;
