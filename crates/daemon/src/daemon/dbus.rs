@@ -17,9 +17,10 @@ use pods_proto::noise::NoiseMode;
 use serde_json::Value;
 use tokio::sync::watch;
 use zbus::connection::Builder;
-use zbus::names::InterfaceName;
+use zbus::message::Header;
+use zbus::names::{ErrorName, InterfaceName};
 use zbus::object_server::SignalEmitter;
-use zbus::{Connection, Variant, fdo, interface};
+use zbus::{Connection, DBusError, Message, Variant, fdo, interface};
 
 use super::hub::Hub;
 use super::log;
@@ -32,6 +33,9 @@ const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
 
 /// The interface name; its trailing number is the interface version.
 const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+
+/// What every error name starts with: the interface name and `Error.`.
+const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
 
 /// The value of `ApiVersion`, the number in the interface name.
 const API_VERSION: u32 = 1;
@@ -369,34 +373,44 @@ impl Omapods {
     }
 }
 
-/// A refused command as a D-Bus error reply, named after its `CommandError` variant, carrying the error's sentence.
-#[derive(Debug, zbus::DBusError)]
-#[zbus(prefix = "io.github.thisisgm.Omapods1.Error")]
-enum CallError {
-    NotConnected(String),
-    NotSupported(String),
-    NotWorn(String),
-    OutOfRange(String),
-    UnknownKey(String),
-    BadRequest(String),
-    Timeout(String),
-    Headless(String),
-}
+/// A refused command as a D-Bus error reply: named after its `CommandError` variant, carrying the error's sentence.
+#[derive(Debug)]
+struct CallError(CommandError);
 
 impl From<CommandError> for CallError {
     fn from(error: CommandError) -> Self {
-        let message = error.message().to_owned();
-        match error {
-            CommandError::NotConnected => Self::NotConnected(message),
-            CommandError::NotSupported => Self::NotSupported(message),
-            CommandError::NotWorn => Self::NotWorn(message),
-            CommandError::OutOfRange => Self::OutOfRange(message),
-            CommandError::UnknownKey => Self::UnknownKey(message),
-            CommandError::BadRequest => Self::BadRequest(message),
-            CommandError::Timeout => Self::Timeout(message),
-            CommandError::Headless => Self::Headless(message),
+        Self(error)
+    }
+}
+
+impl DBusError for CallError {
+    fn create_reply(&self, call: &Header<'_>) -> zbus::Result<Message> {
+        // The name is checked here, so a name that broke the D-Bus rules would fail the reply, never send it.
+        Message::error(call, error_name(self.0.code())).build(&(self.0.message(),))
+    }
+
+    fn name(&self) -> ErrorName<'_> {
+        // A test pins every name against the D-Bus name rules, which the snake case codes always meet.
+        ErrorName::from_string_unchecked(error_name(self.0.code()))
+    }
+
+    fn description(&self) -> Option<&str> {
+        Some(self.0.message())
+    }
+}
+
+/// The error name of a refusal: the prefix and the code in CamelCase.
+// Sample input: `not_connected`, which names `io.github.thisisgm.Omapods1.Error.NotConnected`.
+fn error_name(code: &str) -> String {
+    let mut name = String::from(ERROR_PREFIX);
+    for word in code.split('_') {
+        let mut letters = word.chars();
+        if let Some(first) = letters.next() {
+            name.push(first.to_ascii_uppercase());
+            name.extend(letters);
         }
     }
+    name
 }
 
 #[cfg(test)]
