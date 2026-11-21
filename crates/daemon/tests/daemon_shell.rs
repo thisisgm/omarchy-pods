@@ -27,19 +27,19 @@ mod tests {
     /// How often a wait checks its condition again.
     const POLL: Duration = Duration::from_millis(10);
 
-    /// The silent client test's bound on another client's reply, from the plan.
+    /// The silent client test's bound on another client's reply.
     const SERVED_WHILE_SILENT_LIMIT: Duration = Duration::from_millis(200);
 
-    /// The daemon's 1000 ms request deadline, plus slack for a shared host, from the plan.
+    /// The daemon's 1000 ms request deadline, plus slack for a shared host.
     const SILENT_CLIENT_DROPPED_BY: Duration = Duration::from_millis(1500);
 
-    /// How long the state file must stay untouched when nothing changes, from the plan.
+    /// How long the state file must stay untouched when nothing changes.
     const UNCHANGED_FOR: Duration = Duration::from_secs(3);
 
-    /// The size of the oversized request, from the plan.
+    /// The size of the oversized request.
     const OVERSIZED_REQUEST_BYTES: usize = 1024 * 1024;
 
-    /// How much the daemon's resident memory may grow while refusing the oversized request, from the plan.
+    /// How much the daemon's resident memory may grow while refusing the oversized request.
     const OVERSIZED_RSS_GROWTH_KIB: u64 = 2 * 1024;
 
     /// The pause between bytes of a request sent one byte at a time, so each lands in its own read.
