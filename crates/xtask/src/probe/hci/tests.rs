@@ -76,18 +76,10 @@ fn reads_the_monitor_datalink_and_refuses_an_unknown_one() {
 
     for datalink in [0, 1001, 1002, 2000, 2002, u32::MAX] {
         let other = with_bytes(bytes.clone(), DATALINK_AT, &datalink.to_be_bytes());
-        assert_eq!(
-            records(&other),
-            Err(TraceError::UnknownDatalink { datalink })
-        );
+        assert_eq!(records(&other), Err(TraceError::UnknownDatalink));
     }
     let little_endian = with_bytes(bytes.clone(), DATALINK_AT, &2001_u32.to_le_bytes());
-    assert!(matches!(
-        records(&little_endian),
-        Err(TraceError::UnknownDatalink { .. })
-    ));
-    let error = TraceError::UnknownDatalink { datalink: 1001 }.to_string();
-    assert!(error.contains("1001") && error.contains("2001"), "{error}");
+    assert_eq!(records(&little_endian), Err(TraceError::UnknownDatalink));
 }
 
 #[test]
@@ -106,7 +98,7 @@ fn a_file_that_is_no_btsnoop_trace_is_refused() {
     }
     for version in [0, 2, u32::MAX] {
         let other = with_bytes(bytes.clone(), VERSION_AT, &version.to_be_bytes());
-        assert_eq!(records(&other), Err(TraceError::BadVersion { version }));
+        assert_eq!(records(&other), Err(TraceError::BadVersion));
     }
 }
 
@@ -175,7 +167,6 @@ fn a_record_length_past_65535_is_refused_and_one_past_the_file_is_a_cut() {
         let too_long = TraceError::RecordTooLong {
             record: 0,
             offset: FILE_HEADER,
-            len,
         };
         assert_eq!(records(&claims(len)), Err(too_long));
     }
@@ -266,20 +257,19 @@ fn every_error_names_the_record_and_the_rule() {
             "btsnoop trace does not start with the btsnoop identification pattern",
         ),
         (
-            TraceError::BadVersion { version: 2 },
-            "btsnoop trace has version 2, and only version 1 exists",
+            TraceError::BadVersion,
+            "btsnoop trace has a version other than 1, the only one that exists",
         ),
         (
-            TraceError::UnknownDatalink { datalink: 1002 },
-            "btsnoop trace has datalink type 1002; only the monitor datalink 2001, which btmon -w writes, is read",
+            TraceError::UnknownDatalink,
+            "btsnoop trace has a datalink type other than the monitor datalink 2001, which btmon -w writes",
         ),
         (
             TraceError::RecordTooLong {
                 record: 3,
                 offset: 90,
-                len: 65_536,
             },
-            "btsnoop record 3 at byte offset 90 claims 65536 bytes of data, and a record holds at most 65535",
+            "btsnoop record 3 at byte offset 90 claims more data than the 65535 bytes a record holds",
         ),
     ] {
         assert_eq!(error.to_string(), text);

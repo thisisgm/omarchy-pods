@@ -43,6 +43,8 @@ mod hci {
     const ENHANCED_RETRANSMISSION: u8 = 0x03;
     /// The identification pattern, the version and the datalink type.
     const FILE_HEADER: usize = 16;
+    /// A datalink type the reader refuses: HCI with no monitor header (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_FORMAT_HCI`).
+    const WRONG_DATALINK: u32 = 1001;
     /// Two lengths, flags, drops and the timestamp.
     const RECORD_HEADER: usize = 24;
     /// Where the first record's included length sits: after the file header and the original length.
@@ -234,7 +236,7 @@ mod hci {
         let mut wrong_magic = trace.clone();
         wrong_magic[0] = b'B';
         let mut wrong_datalink = trace.clone();
-        wrong_datalink[12..16].copy_from_slice(&1001_u32.to_be_bytes());
+        wrong_datalink[12..16].copy_from_slice(&WRONG_DATALINK.to_be_bytes());
         let mut long_record = trace.clone();
         long_record[FIRST_INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
         for (bytes, rule) in [
@@ -244,8 +246,8 @@ mod hci {
                 "shorter than its 16 byte file header",
             ),
             (&wrong_magic[..], "identification pattern"),
-            (&wrong_datalink[..], "datalink type 1001"),
-            (&long_record[..], "a record holds at most 65535"),
+            (&wrong_datalink[..], "other than the monitor datalink 2001"),
+            (&long_record[..], "the 65535 bytes a record holds"),
         ] {
             let (home, path) = home_with_trace(bytes);
             let refused = hci(&home, &path, RUN);
@@ -253,7 +255,12 @@ mod hci {
             assert_eq!(refused.stdout, b"", "{rule}");
             let error = String::from_utf8(refused.stderr).unwrap();
             assert!(error.contains(rule), "{rule}: {error}");
-            assert!(error.contains(&path.display().to_string()), "{error}");
+            let named = path.display().to_string();
+            assert!(error.contains(&named), "{error}");
+            let said = error.replace(&named, "");
+            for value in [WRONG_DATALINK.to_string(), u32::MAX.to_string()] {
+                assert!(!said.contains(&value), "{rule} echoes {value}: {said}");
+            }
             assert!(!home.path().join("omapods-captures").exists(), "{rule}");
         }
     }
