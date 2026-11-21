@@ -15,7 +15,7 @@ use pods_proto::sdulog::{self, Direction};
 use pods_proto::uplink::{START, STOP};
 use pods_sys::l2cap::{Channel, ChannelError};
 use rustix::io::Errno;
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
 use super::super::super::handshake::Step;
 use super::super::super::script::ScriptName;
@@ -127,10 +127,10 @@ fn only_a_script_that_ran_to_its_end_exits_zero() {
 }
 
 #[test]
-fn sigint_and_sigterm_raise_the_flag_the_loop_reads() {
+fn every_signal_that_would_end_a_capture_raises_the_flag_the_loop_reads() {
     let interrupted = watch_signals().unwrap();
     assert!(!interrupted.load(Ordering::SeqCst));
-    for signal in [SIGINT, SIGTERM] {
+    for signal in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
         interrupted.store(false, Ordering::SeqCst);
         // A raise is delivered to this thread before it returns, so no wait is needed.
         signal_hook::low_level::raise(signal).unwrap();

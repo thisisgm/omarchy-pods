@@ -6,7 +6,7 @@ mod script;
 mod store;
 
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsString, c_int};
 use std::fmt;
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -19,7 +19,7 @@ use pods_proto::addr::BdAddr;
 use pods_proto::packets::CONTROL_PSM;
 use pods_sys::l2cap::{self, Channel, ChannelError};
 use rustix::time::{ClockId, clock_gettime};
-use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
 use crate::{print_line, report};
 use capture::{EndReason, LOG_NAME, MARKS_NAME, Mark, Outcome, Outputs, STOP_TAIL_MS};
@@ -34,6 +34,8 @@ const META_NAME: &str = "meta.txt";
 const TOOL: &str = concat!("xtask probe capture ", env!("CARGO_PKG_VERSION"));
 /// Nanoseconds in the seconds a clock reading is split into.
 const NS_PER_SECOND: u64 = 1_000_000_000;
+/// What would otherwise kill a capture with its uplink running: the two keys, a polite kill, and a terminal or session that went away.
+const WATCHED_SIGNALS: [c_int; 4] = [SIGINT, SIGQUIT, SIGTERM, SIGHUP];
 
 /// Commands that prepare and record a microphone probe session.
 #[derive(Debug, Parser)]
@@ -100,7 +102,7 @@ enum ProbeError {
     Script(#[from] ScriptError),
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error("could not watch for SIGINT and SIGTERM: {0}")]
+    #[error("could not watch for the signals that end a capture: {0}")]
     Signals(io::Error),
     #[error("could not write {file}: {source}")]
     Write {
@@ -305,10 +307,10 @@ fn summary(outcome: &Outcome) -> String {
     format!("capture ended early: {end}{stop} ({counts})")
 }
 
-/// Raises the returned flag on SIGINT and SIGTERM, which the loop then sees within one receive timeout.
+/// Raises the returned flag on each of `WATCHED_SIGNALS`, which the loop then sees within one receive timeout.
 fn watch_signals() -> Result<Arc<AtomicBool>, ProbeError> {
     let interrupted = Arc::new(AtomicBool::new(false));
-    for signal in [SIGINT, SIGTERM] {
+    for signal in WATCHED_SIGNALS {
         signal_hook::flag::register(signal, Arc::clone(&interrupted))
             .map_err(ProbeError::Signals)?;
     }
