@@ -14,7 +14,7 @@ use rustix::net::{
 
 /// The size of `struct sockaddr_l2` in the kernel's include/net/bluetooth/l2cap.h.
 const SOCKADDR_L2_LEN: usize = 14;
-/// That size as the length the kernel is told; `TryFrom` is not const, so a test holds the two equal.
+/// `TryFrom` is not const, so a test holds this equal to `SOCKADDR_L2_LEN`.
 const SOCKADDR_L2_SOCKLEN: SocketAddrLen = 14;
 /// `l2_cid` is zero for a channel that is reached through a PSM.
 const NO_FIXED_CHANNEL: u8 = 0x00;
@@ -23,13 +23,11 @@ const BDADDR_BREDR: u8 = 0x00;
 /// The byte the compiler adds after `l2_bdaddr_type` to keep the struct two byte aligned.
 const PADDING: u8 = 0x00;
 
-/// A connected sequenced packet socket; closing it is dropping it.
 #[derive(Debug)]
 pub struct Channel {
     fd: OwnedFd,
 }
 
-/// What one `recv` found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Received {
     /// One whole SDU of this many bytes is in the buffer.
@@ -45,28 +43,22 @@ pub enum Received {
 /// The step that failed and the kernel's reason; never the peer address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ChannelError {
-    /// The kernel would not create the socket, as when it has no Bluetooth support.
     #[error("could not open the L2CAP socket: {0}")]
     Socket(Errno),
     /// The peer did not answer or refused; a connect that outlasts the timeout is `EINPROGRESS` (`bt_sock_wait_state` in `net/bluetooth/af_bluetooth.c`).
     #[error("could not connect the L2CAP channel: {0}")]
     Connect(Errno),
-    /// The send or the receive timeout could not be set.
     #[error("could not set a timeout on the L2CAP socket: {0}")]
     Option(Errno),
-    /// Any receive failure other than the timeout, a signal included.
     #[error("could not receive from the L2CAP channel: {0}")]
     Recv(Errno),
-    /// The kernel took none of the SDU.
     #[error("could not send on the L2CAP channel: {0}")]
     Send(Errno),
     /// The kernel took part of the SDU, which a sequenced packet socket must never do.
     #[error("could not send on the L2CAP channel: only {sent} of {len} bytes went out")]
     ShortSend { sent: usize, len: usize },
-    /// The wait on several channels failed, a signal included.
     #[error("could not wait on the L2CAP channels: {0}")]
     Wait(Errno),
-    /// The kernel refused to shut the channel down.
     #[error("could not shut down the L2CAP channel: {0}")]
     Shutdown(Errno),
 }
@@ -75,7 +67,7 @@ pub enum ChannelError {
 struct SockaddrL2([u8; SOCKADDR_L2_LEN]);
 
 impl SockaddrL2 {
-    // Sample output for 11:22:33:44:55:66 and PSM 0x1001: 1f 00 01 10 66 55 44 33 22 11 00 00 00 00.
+    // Sample output for 11:22:33:44:55:66 and PSM 0x1001: 1f 00 01 10 66 55 44 33 22 11 00 00 00 00
     #[expect(
         clippy::host_endian_bytes,
         reason = "the kernel reads sa_family_t in host order; the PSM is little endian on every host"
@@ -129,7 +121,7 @@ pub fn connect(peer: BdAddr, psm: u16, timeout: Duration) -> Result<Channel, Cha
     .map_err(ChannelError::Socket)?;
     // A blocking L2CAP connect waits no longer than the send timeout (l2cap_sock_connect in net/bluetooth/l2cap_sock.c).
     set_socket_timeout(&fd, Timeout::Send, Some(timeout)).map_err(ChannelError::Option)?;
-    // No test can see which PSM this line dials, since a host without the peer fails every connect alike; only a connect to a second PSM on hardware proves it.
+    // No test sees which PSM this dials; only a connect to a second PSM on hardware proves it.
     rustix::net::connect(&fd, &SockaddrL2::new(peer, psm)).map_err(ChannelError::Connect)?;
     Ok(Channel { fd })
 }
@@ -173,7 +165,6 @@ impl Channel {
         }
     }
 
-    /// Writes one SDU.
     pub fn send(&self, sdu: &[u8]) -> Result<(), ChannelError> {
         self.send_with(sdu, SendFlags::empty())
     }
@@ -222,7 +213,7 @@ mod tests {
     const LAST_HANDLE: u16 = 0xffff;
     /// The bound on a send that must not wait; a waiting send takes `SEND_TIMEOUT`.
     const AT_ONCE: Duration = Duration::from_secs(1);
-    /// Longer than `AT_ONCE`, so a send that waits fails the time check instead of hanging the test.
+    /// Longer than `AT_ONCE`, so a waiting send fails the time check instead of hanging.
     const SEND_TIMEOUT: Duration = Duration::from_secs(2);
     /// Far more one byte SDUs than a socket pair's send buffer holds.
     const FILL_LIMIT: usize = 100_000;
@@ -241,7 +232,7 @@ mod tests {
     #[test]
     fn sockaddr_bytes_are_the_kernel_layout() {
         let peer = "11:22:33:44:55:66".parse().unwrap();
-        // The family reads `1f 00` on a little endian host, which x86-64 and aarch64 Linux both are.
+        // The family reads `1f 00` on a little endian host: x86-64 and aarch64 Linux both are.
         for (psm, bytes) in [
             (
                 CONTROL_PSM,
@@ -453,7 +444,7 @@ mod tests {
         assert_eq!(AttPdu::parse(recv_sdu(&host, &mut buf)), Ok(end_of_table));
     }
 
-    /// Polls until the thread at `task` under `/proc` sleeps, which for a reader means blocked in `recv`; a failed read is returned with its path.
+    /// Polls `/proc` until thread `task` sleeps, which for a reader means blocked in `recv`.
     fn sleeps_within(task: &Path, wait: Duration) -> Result<bool, String> {
         let stat = Path::new("/proc").join(task).join("stat");
         let started = Instant::now();
@@ -491,7 +482,7 @@ mod tests {
             };
             let shut = far.shutdown();
             let woke = woke_rx.recv_timeout(READY_WAIT);
-            // A reader still blocked would hold the scope open forever, so closing the peer releases it before any assert.
+            // A reader still blocked would hang the scope, so drop the peer before any assert.
             drop(near);
             (blocked, shut, woke)
         });
@@ -561,7 +552,7 @@ mod tests {
     fn connect_without_bluetooth_is_an_error_not_a_panic() {
         let peer = "02:00:00:00:00:01".parse().unwrap();
         let error = connect(peer, CONTROL_PSM, Duration::from_secs(1)).unwrap_err();
-        // A host that cannot open a Bluetooth socket must fail at `Socket`, and one that can must fail at `Connect`.
+        // A host with no Bluetooth socket fails at `Socket`; one with it fails at `Connect`.
         match socket_with(
             AddressFamily::BLUETOOTH,
             SocketType::SEQPACKET,
