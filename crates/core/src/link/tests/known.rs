@@ -6,7 +6,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::reports::report;
 use super::sim::{Input, Sim, ms};
-use crate::command::{Command, NoiseTarget, Outcome};
+use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::Phase;
 use crate::link::ladder::FIRST_RETRY_MS;
 use crate::state::State;
@@ -142,6 +142,21 @@ fn an_adaptive_level_is_written_unless_stored_or_reported_on_this_channel() {
             Outcome::Sent,
             Outcome::Confirmed
         ]
+    );
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn an_adaptive_level_is_refused_until_this_channel_reports_adaptive() {
+    let mut sim = up_unreported(true);
+    sim.feed(Input::Packet(NoiseMode::Adaptive.command().encode()));
+    reopen(&mut sim);
+    assert_eq!(sim.state.noise_mode, NoiseMode::Adaptive);
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    assert_eq!(sim.last(), ["Resolve(0)"]);
+    assert_eq!(
+        sim.outcomes(),
+        [Outcome::Refused(CommandError::NotSupported)]
     );
     sim.check_all_tickets_resolved_once();
 }

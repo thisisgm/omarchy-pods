@@ -268,7 +268,7 @@ fn adaptive_level(
     features: Capabilities,
     level: u8,
 ) -> Handling {
-    if !features.adaptive || state.noise_mode != NoiseMode::Adaptive {
+    if !features.adaptive || known.noise.then_some(state.noise_mode) != Some(NoiseMode::Adaptive) {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
     let level = level.min(ADAPTIVE_LEVEL_MAX);
