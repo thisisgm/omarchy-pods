@@ -1,6 +1,6 @@
 //! The protocol 1 commands `status`, `watch`, `set` and `do`, one request per connection.
 
-use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
@@ -9,12 +9,18 @@ use std::time::Instant;
 use pods_core::command::CommandError;
 use serde_json::{Map, Value};
 
-use super::{MAX_REPLY_BYTES, REPLY_TIMEOUT, WRITE_TIMEOUT, connect, emit, no_daemon, timed_out};
+use super::{
+    End, MAX_REPLY_BYTES, REPLY_TIMEOUT, WRITE_TIMEOUT, connect, emit, no_daemon, read_line,
+    timed_out,
+};
 use crate::protocol::VERSION;
 
 const REQUEST_ID: u64 = 1;
 
 const WENT_AWAY: &str = "The daemon went away.\n";
+
+/// `MAX_REPLY_BYTES` and the newline, which protocol 1 leaves out of its bound.
+const LINE_WITH_NEWLINE_BYTES: usize = MAX_REPLY_BYTES + 1;
 
 /// The `result` a reply to `set` or `do` carries when the daemon took the command.
 const RESULTS: [&str; 2] = ["sent", "confirmed"];
@@ -26,13 +32,6 @@ enum Failure {
     WentAway,
     Refused(String),
     NotUnderstood,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Step {
-    Continues,
-    /// The line ended in the chunk after this many of its bytes, the newline included.
-    Ended(usize),
 }
 
 /// Unlike the legacy `status` verb, fails on a write error other than a closed pipe.
@@ -56,7 +55,7 @@ pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> 
         if let Err(code) = print_state(&line, out, err) {
             return code;
         }
-        line = match read_line(&mut reader, None).and_then(|event| event_state_line(&event)) {
+        line = match next_line(&mut reader, None).and_then(|event| event_state_line(&event)) {
             Ok(line) => line,
             Err(failure) => return report(failure, "watch", socket, err),
         };
@@ -117,59 +116,24 @@ fn open(socket: &Path, request: &str) -> Result<(BufReader<UnixStream>, Vec<u8>)
     }
     let mut reader = BufReader::new(stream);
     let deadline = Instant::now().checked_add(REPLY_TIMEOUT);
-    let line = read_line(&mut reader, deadline)?;
+    let line = next_line(&mut reader, deadline)?;
     Ok((reader, line))
 }
 
-// Sample input: `{"id":1,"ok":true,"result":"confirmed"}\n`
-fn read_line(
+/// One line without its newline.
+fn next_line(
     reader: &mut BufReader<UnixStream>,
     deadline: Option<Instant>,
 ) -> Result<Vec<u8>, Failure> {
-    let mut line = Vec::new();
-    loop {
-        let wait = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-        // A zero wait is refused by the socket, and it means the deadline has passed.
-        if wait.is_some_and(|wait| wait.is_zero())
-            || reader.get_ref().set_read_timeout(wait).is_err()
-        {
-            return Err(Failure::TimedOut);
+    match read_line(reader, deadline, LINE_WITH_NEWLINE_BYTES) {
+        (mut line, End::Newline) => {
+            line.pop();
+            Ok(line)
         }
-        let available = match reader.fill_buf() {
-            Ok(available) => available,
-            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                return Err(Failure::TimedOut);
-            }
-            // A reset is the daemon going away as much as an end of stream is.
-            Err(_) => return Err(Failure::WentAway),
-        };
-        if available.is_empty() {
-            return Err(Failure::WentAway);
-        }
-        let length = available.len();
-        match take(&mut line, available)? {
-            Step::Continues => reader.consume(length),
-            Step::Ended(used) => {
-                reader.consume(used);
-                return Ok(line);
-            }
-        }
+        (_, End::Full) => Err(Failure::NotUnderstood),
+        (_, End::Closed) => Err(Failure::WentAway),
+        (_, End::TimedOut) => Err(Failure::TimedOut),
     }
-}
-
-/// `MAX_REPLY_BYTES` bounds the line without its newline.
-// Sample input: `line` holds `{"id":1,"ok"` and `chunk` is `:true,"result":"sent"}\n{"event"`.
-fn take(line: &mut Vec<u8>, chunk: &[u8]) -> Result<Step, Failure> {
-    let newline = chunk.iter().position(|&byte| byte == b'\n');
-    let part = chunk
-        .get(..newline.unwrap_or(chunk.len()))
-        .unwrap_or_default();
-    if line.len().saturating_add(part.len()) > MAX_REPLY_BYTES {
-        return Err(Failure::NotUnderstood);
-    }
-    line.extend_from_slice(part);
-    Ok(newline.map_or(Step::Continues, |at| Step::Ended(at.saturating_add(1))))
 }
 
 // Sample input: `{"id":1,"ok":false,"error":{"code":"not_connected","message":"The AirPods are not connected."}}`
