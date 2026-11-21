@@ -245,7 +245,7 @@ enum UuidSize {
     Long,
 }
 
-/// Walks the handle and type pairs of one Find Information reply and stops at the first one that is cut short.
+/// Walks the handle and type pairs of one Find Information reply, which holds at least one, and stops at the first one that is cut short.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Information<'a> {
     size: UuidSize,
@@ -273,7 +273,15 @@ impl<'a> Information<'a> {
                 });
             }
         };
-        Ok(Self { size, rest })
+        let pairs = Self { size, rest };
+        // The information data holds at least one pair (Vol 3, Part F, 3.4.3.2, Table 3.8), and a walk has no next handle without one.
+        if pairs.clone().next().is_none() {
+            return Err(ParseError::EmptyList {
+                parser: Parser::Att,
+                list_len: rest.len(),
+            });
+        }
+        Ok(pairs)
     }
 
     /// The bytes not yielded yet; once `next` returns `None`, the bytes that hold no whole pair.
@@ -303,7 +311,7 @@ impl<'a> Iterator for Information<'a> {
     }
 }
 
-/// Walks the entries of one Read By Type reply, each a handle and a value, and stops at the first one that is cut short.
+/// Walks the entries of one Read By Type reply, at least one and each a handle and a value, and stops at the first one that is cut short.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ByType<'a> {
     entry_len: usize,
@@ -328,10 +336,18 @@ impl<'a> ByType<'a> {
                 value: entry_len,
             });
         }
-        Ok(Self {
+        let entries = Self {
             entry_len: usize::from(entry_len),
             rest,
-        })
+        };
+        // The attribute data list holds at least one entry (Vol 3, Part F, 3.4.4.2, Table 3.16), and a walk has no next handle without one.
+        if entries.clone().next().is_none() {
+            return Err(ParseError::EmptyList {
+                parser: Parser::Att,
+                list_len: rest.len(),
+            });
+        }
+        Ok(entries)
     }
 
     /// The bytes not yielded yet; once `next` returns `None`, the bytes that hold no whole entry.
