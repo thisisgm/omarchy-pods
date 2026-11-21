@@ -51,10 +51,7 @@ fn handshake_sends_the_three_requests_in_order_and_goes_up() {
     );
     assert!(sim.state.connected);
     assert!(sim.machine.populated);
-    assert_eq!(
-        sim.machine.last_linked.map(BdAddr::octets),
-        Some(addr(0).octets())
-    );
+    assert_eq!(sim.machine.last_linked, Some(addr(0)));
     sim.check();
 }
 
@@ -146,12 +143,7 @@ fn a_second_device_waits_for_the_first() {
     let mut sim = Sim::new();
     sim.bring_up(0);
     sim.state.device_name = "Test AirPods".into();
-    let knows_the_second = |sim: &Sim| {
-        sim.machine
-            .known
-            .iter()
-            .any(|known| known.octets() == addr(1).octets())
-    };
+    let knows_the_second = |sim: &Sim| sim.machine.known.contains(&addr(1));
     sim.feed(Input::Up(1));
     assert_eq!(sim.last(), NO_ACTIONS);
     assert!(knows_the_second(&sim));
@@ -174,12 +166,7 @@ fn a_second_device_waits_for_the_first() {
         .unwrap();
     assert!(opened > ended);
     assert_eq!(sim.state.device_name, "");
-    assert!(
-        !sim.machine
-            .known
-            .iter()
-            .any(|known| known.octets() == addr(0).octets())
-    );
+    assert!(!sim.machine.known.contains(&addr(0)));
     assert!(matches!(
         sim.machine.phase(),
         Phase::AwaitHandshakeAck { attempt: 1, .. }
@@ -248,7 +235,7 @@ fn device_gone_resets_at_once() {
     assert_eq!(sim.state.device_name, "");
     assert!(!sim.state.connected);
     assert!(sim.machine.last_linked.is_none());
-    assert!(sim.machine.known.is_empty());
+    assert_eq!(sim.machine.known, []);
 
     let mut sim = Sim::answering(Answer::Refuse);
     sim.feed(Input::Up(0));

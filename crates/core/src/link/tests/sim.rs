@@ -415,7 +415,7 @@ pub(super) fn addr(device: usize) -> BdAddr {
 
 fn index(peer: BdAddr) -> usize {
     (0..DEVICES.len())
-        .find(|device| addr(*device).octets() == peer.octets())
+        .find(|device| addr(*device) == peer)
         .unwrap()
 }
 
