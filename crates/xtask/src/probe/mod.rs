@@ -1,7 +1,6 @@
 //! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, and `stop` ends an uplink a killed capture left running.
 
 mod capture;
-mod handshake;
 mod script;
 mod store;
 
