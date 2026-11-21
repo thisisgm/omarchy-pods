@@ -122,9 +122,17 @@ impl Connection {
         }
     }
 
-    /// Answers each complete line in `pending` while the queue has room for the reply.
+    /// Answers each complete line in `pending` while the queue has room for the reply and no change waits to be queued.
     async fn answer(&mut self, hub: &Hub) -> Result<(), String> {
         while self.queue.len() < QUEUE_LINES {
+            // A subscriber's own sets would otherwise fill its hand-off from the hub before it is drained.
+            if self
+                .changes
+                .as_ref()
+                .is_some_and(|changes| !changes.is_empty())
+            {
+                return Ok(());
+            }
             let Some(line) = take_line(&mut self.pending)? else {
                 return Ok(());
             };

@@ -442,6 +442,32 @@ mod tests {
     }
 
     #[test]
+    fn a_subscriber_pipelining_its_own_changes_gets_every_reply_and_event() {
+        let session = Session::new();
+        let _daemon = session.start();
+        let mut subscriber = Client::connect(&session);
+        subscriber.ask(SUBSCRIBE);
+        // A refused set still counts a change, and lines this short put more changes in one read than the hub holds.
+        let refused = r#"{"v":1,"id":0,"op":"set","key":"noise","value":"anc"}"#;
+        subscriber.send(format!("{refused}\n").repeat(CHANGES).as_bytes());
+        let mut replies = 0;
+        let mut events = 0;
+        while replies < CHANGES || events < CHANGES {
+            let line = subscriber.line();
+            if line.starts_with(r#"{"event""#) {
+                events += 1;
+            } else {
+                assert_eq!(
+                    line,
+                    error_reply("0", NOT_CONNECTED),
+                    "after {replies} replies and {events} events"
+                );
+                replies += 1;
+            }
+        }
+    }
+
+    #[test]
     fn slow_subscriber_is_dropped_and_others_keep_receiving() {
         let session = Session::new();
         let _daemon = session.start();
