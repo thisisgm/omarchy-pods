@@ -15,7 +15,7 @@ use pods_core::status::to_status_line;
 use tokio::runtime::Builder;
 
 use hub::Hub;
-use state_file::StateFile;
+use state_file::{StateFile, WriteFailures};
 
 /// What `daemon/main.cpp` logs when the session has no runtime directory.
 pub(crate) const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot place the control socket";
@@ -76,12 +76,10 @@ async fn serve(paths: Paths) -> ExitCode {
     let hub = Hub::new();
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
-    // Before the socket exists, so a client that can connect always finds the state file.
+    // Before the socket exists, so a client that can connect finds the state file unless the write failed.
     let first = to_status_line(&updates.borrow());
-    if let Err(error) = file.publish_now(&first) {
-        log(&error);
-        return ExitCode::FAILURE;
-    }
+    let mut failures = WriteFailures::default();
+    failures.note(&file, file.publish_now(&first));
     let listener = match socket::bind(&paths.socket) {
         Ok(listener) => listener,
         Err(error) => {
@@ -92,7 +90,7 @@ async fn serve(paths: Paths) -> ExitCode {
     };
 
     let accept = tokio::spawn(socket::accept_loop(listener, hub.clone()));
-    let follow = tokio::spawn(state_file::follow(updates, file.clone()));
+    let follow = tokio::spawn(state_file::follow(updates, file.clone(), failures));
     let signal = stop.first().await;
     log(&format!("{signal} received, stopping"));
     accept.abort();

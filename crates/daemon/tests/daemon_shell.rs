@@ -51,6 +51,9 @@ mod tests {
     /// Half the daemon's 1000 ms request deadline: a client closed sooner was closed at accept, not by the deadline.
     const CLOSED_AT_ACCEPT_WITHIN: Duration = Duration::from_millis(500);
 
+    /// Two and a half of the daemon's one second write retries, long enough to see a repeated log line.
+    const RETRIES_WATCHED: Duration = Duration::from_millis(2500);
+
     /// The level the adaptive verb sends.
     const ADAPTIVE_VERB: &str = "adaptive:37";
 
@@ -274,10 +277,34 @@ mod tests {
                 .then_some(())
         });
         assert_ne!(fs::read_to_string(session.state_file()).unwrap(), changed);
+        pause(RETRIES_WATCHED);
+        let failures = daemon
+            .log()
+            .matches("cannot publish the state file")
+            .count();
+        assert_eq!(failures, 1, "{}", daemon.log());
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         wait_for("the retried write", || {
             (fs::read_to_string(session.state_file()).unwrap() == changed).then_some(())
         });
+        let recovered = format!(
+            "state file {} is published again",
+            session.state_file().display()
+        );
+        wait_for("the recovery in the log", || {
+            daemon.log().contains(&recovered).then_some(())
+        });
+        assert_eq!(session.send(b"ear:one"), b"");
+        let next = session.status();
+        wait_for("the next write", || {
+            (fs::read_to_string(session.state_file()).unwrap() == next).then_some(())
+        });
+        assert_eq!(
+            daemon.log().matches(&recovered).count(),
+            1,
+            "{}",
+            daemon.log()
+        );
     }
 
     #[test]
@@ -545,6 +572,22 @@ mod tests {
         );
     }
 
+    /// Waits until the daemon has logged a failed write naming the state file, then checks it still serves.
+    fn assert_failed_write_logged_and_serving(session: &Session, daemon: &mut Daemon) {
+        let named = format!(
+            "cannot publish the state file {}:",
+            session.state_file().display()
+        );
+        wait_for("the failed write in the log", || {
+            daemon.log().contains(&named).then_some(())
+        });
+        wait_for("the daemon socket", || {
+            UnixStream::connect(session.socket()).ok()
+        });
+        assert_eq!(session.status(), to_status_line(&State::default()));
+        assert!(daemon.running());
+    }
+
     #[test]
     fn read_only_state_dir_fails_with_the_path_named() {
         let session = Session::new();
@@ -552,13 +595,12 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
         let mut daemon = session.spawn(&["daemon"], "daemon.log");
-        assert_eq!(daemon.wait_exit().code(), Some(1));
-        let log = daemon.log();
-        assert!(
-            log.contains(&session.state_file().display().to_string()),
-            "{log}"
-        );
-        assert!(!session.socket().exists());
+        assert_failed_write_logged_and_serving(&session, &mut daemon);
+        assert!(!session.state_file().exists());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        wait_for("the retried first write", || {
+            fs::read_to_string(session.state_file()).ok()
+        });
     }
 
     #[test]
@@ -584,17 +626,12 @@ mod tests {
         fs::create_dir(session.state_file().parent().unwrap()).unwrap();
         symlink(&target, session.state_file()).unwrap();
         let mut daemon = session.spawn(&["daemon"], "daemon.log");
-        assert_eq!(daemon.wait_exit().code(), Some(1));
+        assert_failed_write_logged_and_serving(&session, &mut daemon);
         assert_eq!(fs::read_to_string(&target).unwrap(), "original");
         assert!(
             fs::symlink_metadata(session.state_file())
                 .unwrap()
                 .is_symlink()
-        );
-        let log = daemon.log();
-        assert!(
-            log.contains(&session.state_file().display().to_string()),
-            "{log}"
         );
     }
 
