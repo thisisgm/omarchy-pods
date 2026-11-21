@@ -118,7 +118,7 @@ pub struct Machine {
     held: bool,
     /// The link reached `Up` since the last device reset.
     populated: bool,
-    /// Paired AirPods seen, oldest first, at most `KNOWN_MAX`.
+    /// Paired AirPods seen, first seen first, at most `KNOWN_MAX`; once full, a new address is not kept.
     known: Vec<BdAddr>,
     last_linked: Option<BdAddr>,
     handshake: Handshake,
@@ -567,11 +567,9 @@ impl Machine {
     }
 
     fn remember(&mut self, device: BdAddr) {
-        if self.known.contains(&device) {
+        // A stranger never pushes out a known device, the active one or the last one linked.
+        if self.known.contains(&device) || self.known.len() >= KNOWN_MAX {
             return;
-        }
-        if self.known.len() >= KNOWN_MAX {
-            self.known.remove(0);
         }
         self.known.push(device);
     }
