@@ -325,27 +325,26 @@ mod tests {
     fn clients_past_the_limit_are_closed_at_once() {
         let session = Session::new();
         let daemon = session.start();
-        // The start probe's own connection may still hold a slot, so the client past the limit is the last or the one before.
+        // One finished exchange first: the daemon reaps finished clients at each accept, so the start probe's slot is free.
+        assert_eq!(session.status(), to_status_line(&State::default()));
         let clients: Vec<UnixStream> = (0..=MAX_CONNECTIONS)
             .map(|_| UnixStream::connect(session.socket()).unwrap())
             .collect();
         let connected = Instant::now();
-        for client in &clients {
-            client.set_nonblocking(true).unwrap();
-        }
+        let (within, past) = clients.split_at(MAX_CONNECTIONS);
+        let mut past = &past[0];
+        past.set_read_timeout(Some(CLOSED_AT_ACCEPT_WITHIN))
+            .unwrap();
         let mut byte = [0_u8; 1];
-        while !clients
-            .iter()
-            .any(|mut client| matches!(client.read(&mut byte), Ok(0)))
-        {
-            let waited = connected.elapsed();
-            assert!(
-                waited < CLOSED_AT_ACCEPT_WITHIN,
-                "no client closed after {waited:?}"
-            );
-            pause(POLL);
-        }
-        for (index, mut client) in clients.iter().take(MAX_CONNECTIONS - 1).enumerate() {
+        assert_eq!(
+            past.read(&mut byte).unwrap(),
+            0,
+            "the client past the limit"
+        );
+        let waited = connected.elapsed();
+        assert!(waited < CLOSED_AT_ACCEPT_WITHIN, "{waited:?}");
+        for (index, mut client) in within.iter().enumerate() {
+            client.set_nonblocking(true).unwrap();
             let read = client.read(&mut byte);
             assert!(
                 matches!(&read, Err(error) if error.kind() == ErrorKind::WouldBlock),
