@@ -470,8 +470,9 @@ CaptureState PulseAudioController::captureState(const QString &macAddress)
             pa_threaded_mainloop_signal(d->mainloop, 0);
             return;
         }
-        // A corked stream is an app holding the mic open without capturing, which must not pin the card.
-        if (info && !info->corked && d->indexes.contains(info->source)) {
+        // Neither a corked stream (mic held open, not capturing) nor a mixer's level meter may pin the card.
+        if (info && !info->corked && d->indexes.contains(info->source)
+            && !isLevelMeter(pa_proplist_gets(info->proplist, "resample.peaks"))) {
             d->capturing = true;
         }
     };

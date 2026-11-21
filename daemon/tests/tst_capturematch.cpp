@@ -15,6 +15,8 @@ private slots:
     void matchesTheMonitorNameToo();
     void anAnsweredQueryClearsTheUnansweredCount();
     void onlyAnUnknownQuerySpendsTheUnansweredCount();
+    void treatsAPeakStreamAsALevelMeter();
+    void countsAnyOtherStreamAsACapture();
 };
 
 void TestCaptureMatch::matchesTheWirePlumberLoopbackName()
@@ -60,6 +62,20 @@ void TestCaptureMatch::onlyAnUnknownQuerySpendsTheUnansweredCount()
     // Otherwise a PulseAudio that never answers re-checks forever instead of giving up.
     QCOMPARE(unansweredChecksAfter(CaptureState::Unknown, 0), 1);
     QCOMPARE(unansweredChecksAfter(CaptureState::Unknown, 5), 6);
+}
+
+void TestCaptureMatch::treatsAPeakStreamAsALevelMeter()
+{
+    // wiremix and pavucontrol open one of these on every source to draw their meters.
+    QVERIFY(isLevelMeter("true"));
+}
+
+void TestCaptureMatch::countsAnyOtherStreamAsACapture()
+{
+    // A recorder or a call carries no resample.peaks at all, which is the null case.
+    QVERIFY(!isLevelMeter(nullptr));
+    QVERIFY(!isLevelMeter("false"));
+    QVERIFY(!isLevelMeter(""));
 }
 
 QTEST_GUILESS_MAIN(TestCaptureMatch)

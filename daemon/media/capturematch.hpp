@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QString>
 
 // What PulseAudio could tell us about a capture on the AirPods.
@@ -20,4 +21,10 @@ inline bool sourceNamesAddress(const QString &sourceName, const QString &macAddr
 inline int unansweredChecksAfter(CaptureState state, int unanswered)
 {
     return state == CaptureState::Unknown ? unanswered + 1 : 0;
+}
+
+// Sample input: the resample.peaks property of a source output, "true" on a mixer's level meter.
+inline bool isLevelMeter(const char *resamplePeaks)
+{
+    return qstrcmp(resamplePeaks, "true") == 0;
 }
