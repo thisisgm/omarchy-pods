@@ -5,8 +5,9 @@ use pods_proto::sdulog::{Direction, Record};
 
 use super::super::fixture::{
     AVDTP_PSM, CONFIGURATION_REQUEST, CONNECTION_REQUEST, CONNECTION_RESPONSE, CONTINUATION,
-    EVENT_DISCONNECTION_COMPLETE, KEYBOARD_HANDLE, PODS_HANDLE, SIGNALLING_CID, START_UNIX_MICROS,
-    Trace, counting_bytes, mode_option, receiver_cid, start_flag,
+    EVENT_DISCONNECTION_COMPLETE, FIRST_FLUSHABLE, FIRST_NON_FLUSHABLE, KEYBOARD_HANDLE,
+    PODS_HANDLE, SIGNALLING_CID, START_UNIX_MICROS, Trace, counting_bytes, mode_option,
+    receiver_cid, start_flag,
 };
 use super::super::records;
 use super::*;
@@ -27,6 +28,8 @@ const DISCONNECTION_REQUEST: u8 = 0x06;
 const PENDING: u16 = 0x0001;
 /// The connection response result for a PSM nobody listens on.
 const PSM_NOT_SUPPORTED: u16 = 0x0002;
+/// The fourth packet boundary flag, a whole PDU on other transports (Core 6.1 Vol 4 Part E 5.4.2).
+const COMPLETE_PDU: u16 = 0b11;
 
 fn read(trace: &Trace) -> Channels {
     channels(&records(&trace.bytes()).unwrap().kept)
@@ -141,6 +144,28 @@ fn a_continuation_with_no_start_is_dropped_and_counted() {
     );
     assert_eq!(found.counts.malformed_pdus, 0);
     assert_eq!(found.counts.unfinished_pdus, 0);
+}
+
+#[test]
+fn every_flag_but_the_continuing_one_starts_a_pdu_from_either_side() {
+    for flag in [FIRST_NON_FLUSHABLE, FIRST_FLUSHABLE, COMPLETE_PDU] {
+        let mut trace = Trace::new();
+        trace.open(HOST, CONTROL_PSM, FIRST);
+        for (sender, payload) in [(HOST, [0x11, 0x12, 0x13]), (PODS, [0x21, 0x22, 0x23])] {
+            let mut pdu = pdu_header(3, receiver_cid(sender, FIRST));
+            pdu.extend(payload);
+            trace.acl(sender, flag, &pdu[..5]);
+            trace.acl(sender, CONTINUATION, &pdu[5..]);
+        }
+        let found = read(&trace);
+        let both = [
+            (HOST, vec![0x11, 0x12, 0x13]),
+            (PODS, vec![0x21, 0x22, 0x23]),
+        ];
+        assert_eq!(sdus(&found.list[0]), both, "flag {flag:#04b}");
+        let counts = found.counts;
+        assert_eq!(counts.continuations_without_start, 0, "flag {flag:#04b}");
+    }
 }
 
 #[test]
