@@ -25,9 +25,9 @@ never lets another process take it.
 Every property is read only. Every property except `ApiVersion` emits
 `org.freedesktop.DBus.Properties.PropertiesChanged` with its new value. A
 signal lists exactly the properties whose value differs from the previous
-signal. Changes that land before the daemon sends the signal arrive together
-with their latest values, a change undone before then sends nothing, and a
-command that changes nothing sends none.
+signal. Changes that land before the daemon reads the state for a signal
+arrive together with their latest values, a change undone before then sends
+nothing, and a command that changes nothing sends none.
 
 | Property | Type | Value |
 |---|---|---|
