@@ -58,6 +58,7 @@ fn init_refuses_a_home_it_could_not_print_faithfully() {
     assert!(!refused.status.success(), "{refused:?}");
     assert_eq!(refused.stdout, b"");
     let error = String::from_utf8(refused.stderr).unwrap();
-    assert!(error.contains("HOME is not valid UTF-8"), "{error}");
+    assert!(error.contains("is not valid UTF-8"), "{error}");
+    assert!(error.contains(&format!("HOME {home:?}")), "{error}");
     assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
 }
