@@ -1,28 +1,31 @@
 //! The one owner of the daemon state: the socket and the state file read it here and ask it to change here.
 
-use std::future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use pods_core::command::{Command, Outcome, apply};
+use pods_core::command::{Command, CommandError, Outcome};
 use pods_core::state::State;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::SUBSCRIBER_BACKLOG;
+use super::link::Input;
 
-/// A handle on the state; every clone shares it, and only `submit` changes it.
+/// A handle on the state; every clone shares it, and only the link driver changes it, through `publish`.
 #[derive(Debug, Clone)]
 pub(crate) struct Hub {
     state: watch::Sender<State>,
     /// One sender per subscriber, each getting every change in order; only taken inside the state's lock.
     subscribers: Arc<Mutex<Vec<mpsc::Sender<State>>>>,
+    /// The link driver's input queue, which every command goes through.
+    link: mpsc::Sender<Input>,
 }
 
 impl Hub {
     /// A hub holding the state of a daemon with no pods connected.
-    pub(crate) fn new() -> Self {
+    pub(super) fn new(link: mpsc::Sender<Input>) -> Self {
         Self {
             state: watch::Sender::new(State::default()),
             subscribers: Arc::default(),
+            link,
         }
     }
 
@@ -49,11 +52,25 @@ impl Hub {
         (current.clone(), receiver)
     }
 
-    /// Applies `command` and tells subscribers when the state changed; with no link the outcome is ready at once.
-    /// Two calls at once would lose a change; none overlap because every writer runs on the one runtime thread and this never awaits between its read and its write.
+    /// Hands `command` to the link driver now and resolves with its outcome; a full queue or a driver that is gone is `Timeout`.
     pub(crate) fn submit(&self, command: Command) -> impl Future<Output = Outcome> + use<> {
-        let mut next = self.state();
-        let outcome = apply(&mut next, &command);
+        let (reply, outcome) = oneshot::channel();
+        // Queued before the first poll, so commands reach the driver in the order they are submitted.
+        let queued = self
+            .link
+            .try_send(Input::Command { command, reply })
+            .is_ok();
+        async move {
+            let timed_out = Outcome::Refused(CommandError::Timeout);
+            if !queued {
+                return timed_out;
+            }
+            outcome.await.unwrap_or(timed_out)
+        }
+    }
+
+    /// Makes `next` the state and tells subscribers when it differs; two calls at once would lose a change, and the one driver is the only caller.
+    pub(super) fn publish(&self, next: State) {
         self.state.send_if_modified(|state| {
             if *state == next {
                 return false;
@@ -65,7 +82,6 @@ impl Hub {
             *state = next;
             true
         });
-        future::ready(outcome)
     }
 
     /// The subscriber list; a panic while it was held left it whole, since every change to it is one call.
@@ -86,15 +102,15 @@ impl Hub {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use pods_core::command::CommandError;
     use pods_core::legacy::{LegacyRequest, parse_verb};
     use pods_core::state::EarDetectionBehavior;
-    use tokio::runtime::Builder;
     use tokio::sync::mpsc::error::TryRecvError;
 
     use super::*;
+    use crate::daemon::link::tests::{HANG_LIMIT, Running, block_on};
 
     /// Subscriptions the ordering test takes while another thread changes the state.
     const FOLLOWS: usize = 2000;
@@ -107,9 +123,6 @@ mod tests {
             Command::SetEarDetection(EarDetectionBehavior::PauseWhenOneRemoved)
         }
     }
-
-    /// A change that has not arrived after this long never will, and the test fails instead of hanging.
-    const HANG_LIMIT: Duration = Duration::from_secs(10);
 
     /// The next change, failing the test once `HANG_LIMIT` passes without one.
     fn next_change(changes: &mut mpsc::Receiver<State>) -> State {
@@ -132,16 +145,10 @@ mod tests {
         }
     }
 
-    fn block_on<F: Future>(future: F) -> F::Output {
-        Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(future)
-    }
-
     #[test]
     fn a_change_reaches_subscribers_and_the_state() {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         let mut updates = hub.subscribe();
         let ear_off = Command::SetEarDetection(EarDetectionBehavior::Disabled);
         assert_eq!(block_on(hub.submit(ear_off)), Outcome::Confirmed);
@@ -153,7 +160,8 @@ mod tests {
 
     #[test]
     fn a_command_that_changes_nothing_wakes_nobody() {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         let updates = hub.subscribe();
         let Some(LegacyRequest::Command(noise_off)) = parse_verb(b"noise:off") else {
             panic!("noise:off is not a command");
@@ -166,7 +174,8 @@ mod tests {
 
     #[test]
     fn follow_gets_every_change_after_its_copy_exactly_once() {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         let done = AtomicBool::new(false);
         thread::scope(|scope| {
             scope.spawn(|| {
@@ -188,7 +197,8 @@ mod tests {
 
     #[test]
     fn a_subscriber_that_falls_behind_is_closed_after_its_backlog() {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         let (copy, mut changes) = hub.follow();
         let (_, departed) = hub.follow();
         drop(departed);
@@ -210,7 +220,8 @@ mod tests {
 
     #[test]
     fn subscribers_that_left_are_not_kept_while_the_state_stands_still() {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         for _ in 0..FOLLOWS {
             drop(hub.follow());
         }

@@ -1,0 +1,123 @@
+//! A driver on a thread of its own, so a test calls `submit` from any thread or runtime and blocks on the fake pods freely.
+
+mod driver;
+
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use pods_sys::l2cap::ChannelError;
+use rustix::io::Errno;
+use tokio::runtime::Builder;
+use tokio::sync::{mpsc, oneshot};
+
+use super::{Connector, Input, REQUEST_QUEUE, drive, queue};
+use crate::daemon::hub::Hub;
+
+/// A wait in a test still running after this long has hung, and the test fails.
+pub(in crate::daemon) const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+/// Runs `future` on a fresh current thread runtime with a clock, as the daemon's own runtime has.
+pub(in crate::daemon) fn block_on<F: Future>(future: F) -> F::Output {
+    Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+/// Sees each input a reader sends, before the driver does.
+pub(super) type Tap = Box<dyn Fn(&Input) + Send>;
+
+/// A running driver and its hub; dropping it aborts the driver and joins its thread.
+#[derive(Debug)]
+pub(in crate::daemon) struct Running {
+    hub: Hub,
+    inputs: mpsc::Sender<Input>,
+    halt: Option<oneshot::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Running {
+    /// A driver whose connector refuses every connect, for tests that never bring a link up.
+    pub(in crate::daemon) fn new() -> Self {
+        let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
+        Self::start(refuse, None)
+    }
+
+    /// Starts `drive` with `connector`; with `tap`, every input a reader sends passes through it before the driver gets it.
+    pub(super) fn start(connector: Connector, tap: Option<Tap>) -> Self {
+        let (link, inputs) = queue();
+        let hub = Hub::new(link.clone());
+        let fed = link.clone();
+        let (halt, asked) = oneshot::channel::<()>();
+        let shared = hub.clone();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let body = move || {
+            runtime.block_on(async move {
+                let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
+                let feedback = match tap {
+                    None => link,
+                    Some(tap) => forward_through(tap, link),
+                };
+                let driver = tokio::spawn(drive(shared, inputs, feedback, requests, connector));
+                // An error is a dropped `Running`, which stops the driver all the same.
+                asked.await.ok();
+                driver.abort();
+                // A driver that panicked fails the test through this thread's join.
+                if let Err(error) = driver.await
+                    && error.is_panic()
+                {
+                    std::panic::resume_unwind(error.into_panic());
+                }
+            });
+        };
+        let thread = thread::Builder::new()
+            .name("link-driver".to_owned())
+            .spawn(body)
+            .unwrap();
+        Self {
+            inputs: fed,
+            hub,
+            halt: Some(halt),
+            thread: Some(thread),
+        }
+    }
+
+    pub(in crate::daemon) fn hub(&self) -> Hub {
+        self.hub.clone()
+    }
+
+    pub(super) fn inputs(&self) -> &mpsc::Sender<Input> {
+        &self.inputs
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(halt) = self.halt.take() {
+            // A driver thread that already ended has dropped its receiver, which is the end wanted.
+            halt.send(()).ok();
+        }
+        if let Some(thread) = self.thread.take() {
+            let joined = thread.join();
+            if !thread::panicking() {
+                joined.unwrap();
+            }
+        }
+    }
+}
+
+/// A sender whose inputs `tap` sees, then the driver gets, in order.
+fn forward_through(tap: Tap, link: mpsc::Sender<Input>) -> mpsc::Sender<Input> {
+    let (tapped, mut taken) = mpsc::channel(super::INPUT_QUEUE);
+    tokio::spawn(async move {
+        while let Some(input) = taken.recv().await {
+            tap(&input);
+            if link.send(input).await.is_err() {
+                return;
+            }
+        }
+    });
+    tapped
+}

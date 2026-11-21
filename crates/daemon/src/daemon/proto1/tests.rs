@@ -5,6 +5,7 @@ use tokio::io::AsyncReadExt;
 use tokio::runtime::Builder;
 
 use super::*;
+use crate::daemon::link::tests::Running;
 
 /// A set the daemon refuses with no link, which still counts as a change.
 const REFUSED_SET: &str = r#"{"v":1,"id":0,"op":"set","key":"noise","value":"anc"}"#;
@@ -103,7 +104,8 @@ proptest! {
 fn a_client_that_ended_its_side_gets_every_line_and_change_it_is_owed() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     let received = runtime.block_on(async {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         let (served, mut client) = UnixStream::pair().unwrap();
         let (_, changes) = hub.follow();
         let Ok((_, Request::Submit(command))) = request::parse(REFUSED_SET.as_bytes()) else {

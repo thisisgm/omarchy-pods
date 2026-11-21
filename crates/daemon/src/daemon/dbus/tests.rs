@@ -25,6 +25,7 @@ use zbus::names::MemberName;
 use zbus::{DBusError, DynamicType, Guid, MessageStream, OwnedVariant};
 
 use super::*;
+use crate::daemon::link::tests::Running;
 
 /// A test still waiting after this long has hung, and fails.
 const CEILING: Duration = Duration::from_secs(10);
@@ -124,6 +125,7 @@ struct Peer {
     hub: Hub,
     client: Connection,
     announcing: JoinHandle<()>,
+    _link: Running,
 }
 
 impl Drop for Peer {
@@ -139,7 +141,8 @@ fn subscribe(hub: &Hub) -> (watch::Receiver<State>, Properties) {
     (updates, shown)
 }
 
-async fn peer(hub: Hub) -> Peer {
+async fn peer(link: Running) -> Peer {
+    let hub = link.hub();
     let (updates, shown) = subscribe(&hub);
     let (server_end, client_end) = UnixStream::pair().unwrap();
     let server = tokio::spawn(
@@ -160,6 +163,7 @@ async fn peer(hub: Hub) -> Peer {
         hub,
         client,
         announcing,
+        _link: link,
     }
 }
 
@@ -261,7 +265,7 @@ fn populated() -> State {
 #[test]
 fn properties_reflect_the_state() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         peer.hub.replace(populated());
         let all = get_all(&peer.client).await;
         let value = |name: &str| all[name].try_clone().unwrap();
@@ -312,7 +316,7 @@ fn properties_reflect_the_state() {
 #[test]
 fn unknown_device_strings_are_empty_and_every_key_is_listed() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let all = get_all(&peer.client).await;
         let value = |name: &str| all[name].try_clone().unwrap();
         assert_eq!(text(&value("DeviceName")), "");
@@ -333,7 +337,7 @@ fn unknown_device_strings_are_empty_and_every_key_is_listed() {
 #[test]
 fn in_ear_follows_which_bud_is_primary() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let left_primary = State {
             primary: Some(Component::Left),
             ..populated()
@@ -349,7 +353,7 @@ fn in_ear_follows_which_bud_is_primary() {
 #[test]
 fn ear_detection_change_emits_properties_changed_once() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let mut stream = MessageStream::from(&peer.client);
         let ear_off = Command::SetEarDetection(EarDetectionBehavior::Disabled);
         assert_eq!(peer.hub.submit(ear_off).await, Outcome::Confirmed);
@@ -384,7 +388,7 @@ fn ear_detection_change_emits_properties_changed_once() {
 #[test]
 fn set_noise_mode_while_disconnected_returns_the_not_connected_error_name() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let reply = call(&peer.client, "SetNoiseMode", &("anc",)).await;
         assert_eq!(reply, Err(format!("{ERROR_PREFIX}NotConnected")));
         let refused = peer
@@ -410,7 +414,7 @@ fn set_noise_mode_while_disconnected_returns_the_not_connected_error_name() {
 #[test]
 fn every_method_answers_with_what_submit_returns() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let not_connected = Err(format!("{ERROR_PREFIX}NotConnected"));
         let client = &peer.client;
         assert_eq!(
@@ -443,7 +447,7 @@ fn every_method_answers_with_what_submit_returns() {
 #[test]
 fn set_adaptive_level_accepts_0_and_100() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let adaptive = State {
             noise_mode: NoiseMode::Adaptive,
             ..State::default()
@@ -464,7 +468,7 @@ fn set_adaptive_level_accepts_0_and_100() {
 #[test]
 fn a_word_the_setting_does_not_take_is_bad_request_as_on_the_socket() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let bad_request = Err(format!("{ERROR_PREFIX}BadRequest"));
         for mode in ["ANC", "", "noise:anc", "anc ", "one", "true"] {
             let reply = call(&peer.client, "SetNoiseMode", &(mode,)).await;
@@ -489,7 +493,7 @@ fn a_word_the_setting_does_not_take_is_bad_request_as_on_the_socket() {
 #[test]
 fn introspection_xml_snapshot() {
     run(async {
-        let peer = peer(Hub::new()).await;
+        let peer = peer(Running::new()).await;
         let xml: String = peer
             .client
             .call_method(
@@ -561,7 +565,7 @@ fn the_interface_document_lists_every_error_name_with_its_code() {
 #[test]
 fn announcing_ends_when_the_peer_goes_away() {
     run(async {
-        let mut peer = peer(Hub::new()).await;
+        let mut peer = peer(Running::new()).await;
         let client = peer.client.clone();
         client.close().await.unwrap();
         (&mut peer.announcing).await.unwrap();
@@ -608,7 +612,8 @@ fn a_peer_that_stops_reading_neither_stalls_the_state_nor_queues_signals() {
         })
     });
     run(async {
-        let hub = Hub::new();
+        let link = Running::new();
+        let hub = link.hub();
         let (updates, shown) = subscribe(&hub);
         let server = Builder::unix_stream(server_end)
             .server(Guid::generate())
