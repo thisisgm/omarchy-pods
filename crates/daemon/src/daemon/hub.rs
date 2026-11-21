@@ -42,7 +42,11 @@ impl Hub {
         // The read lock on the state is held until the sender is listed, so no change lands between the copy and the listing.
         let current = self.state.borrow();
         let (sender, receiver) = mpsc::channel(SUBSCRIBER_BACKLOG);
-        self.subscribers().push(sender);
+        let mut subscribers = self.subscribers();
+        // Departed subscribers leave here too, so the list stays at the live ones while the state stands still.
+        subscribers.retain(|subscriber| !subscriber.is_closed());
+        subscribers.push(sender);
+        drop(subscribers);
         (current.clone(), receiver)
     }
 
@@ -194,5 +198,15 @@ mod tests {
         drop(kept);
         block_on(hub.submit(ear_change(SUBSCRIBER_BACKLOG + 1)));
         assert!(hub.subscribers().is_empty());
+    }
+
+    #[test]
+    fn subscribers_that_left_are_not_kept_while_the_state_stands_still() {
+        let hub = Hub::new();
+        for _ in 0..FOLLOWS {
+            drop(hub.follow());
+        }
+        let (_, _live) = hub.follow();
+        assert_eq!(hub.subscribers().len(), 1);
     }
 }
