@@ -6,13 +6,25 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Output};
+    use std::process::{Command, Output, Stdio};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
     use tempfile::TempDir;
 
     const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
+
+    /// The client's 1000 ms reply timeout, less slack for scheduling.
+    const REPLY_TIMEOUT_FLOOR: Duration = Duration::from_millis(900);
+
+    /// The client's 1000 ms reply timeout, plus slack for starting the process on a shared host.
+    const REPLY_TIMEOUT_CEILING: Duration = Duration::from_millis(1600);
+
+    /// A client still running after this long is hung, and the test kills it and fails.
+    const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+    /// How often `run` checks whether the client has exited.
+    const EXIT_POLL: Duration = Duration::from_millis(10);
 
     /// The usage block of `daemon/librepods-ctl.cpp`, after its first line.
     const USAGE_COMMANDS: &str = "Commands:
@@ -96,13 +108,31 @@ mod tests {
         StubDaemon { socket, thread }
     }
 
+    /// Runs the client to completion, or kills it and fails the test once it passes `HANG_LIMIT`.
     fn run(program: &Path, args: &[&str], runtime_dir: Option<&Path>) -> Output {
         let mut command = Command::new(program);
         command.args(args).env_remove("XDG_RUNTIME_DIR");
         if let Some(dir) = runtime_dir {
             command.env("XDG_RUNTIME_DIR", dir);
         }
-        command.output().unwrap()
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() > HANG_LIMIT {
+                child.kill().unwrap();
+                panic!("client {args:?} still running after {HANG_LIMIT:?}, killed");
+            }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "std has no timed wait for a child process, and this is the test harness, not the core"
+            )]
+            thread::sleep(EXIT_POLL);
+        }
+        child.wait_with_output().unwrap()
     }
 
     fn run_ctl(dir: &TempDir, verb: &str) -> Output {
@@ -226,6 +256,17 @@ mod tests {
     }
 
     #[test]
+    fn error_reply_to_status_goes_to_stderr_and_exits_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = serve_one(&dir, Stub::Reply(HEADLESS_REFUSAL));
+        let out = run_ctl(&dir, "status");
+        assert_eq!(stub.received(), b"status");
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(text(&out.stdout), "");
+        assert_eq!(out.stderr, HEADLESS_REFUSAL);
+    }
+
+    #[test]
     fn reopen_with_closed_peer_exits_zero() {
         let dir = tempfile::tempdir().unwrap();
         let stub = serve_one(&dir, Stub::Close);
@@ -254,7 +295,9 @@ mod tests {
     fn status_closed_without_reply_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let stub = serve_one(&dir, Stub::Close);
+        let started = Instant::now();
         let out = run_ctl(&dir, "status");
+        let elapsed = started.elapsed();
         assert_eq!(stub.received(), b"status");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
@@ -262,6 +305,8 @@ mod tests {
             text(&out.stderr),
             "Timed out waiting for a reply to status\n"
         );
+        // The close is seen at once, so the reply timeout never runs.
+        assert!(elapsed < REPLY_TIMEOUT_FLOOR, "{elapsed:?}");
     }
 
     #[test]
@@ -278,9 +323,9 @@ mod tests {
             text(&out.stderr),
             "Timed out waiting for a reply to status\n"
         );
-        // The bounds are loose on purpose: the floor proves the wait, the ceiling only catches a hang.
-        assert!(elapsed >= Duration::from_millis(900), "{elapsed:?}");
-        assert!(elapsed <= Duration::from_millis(1600), "{elapsed:?}");
+        // The floor proves the wait; the ceiling catches a wait well past the deadline, and `run` catches a hang.
+        assert!(elapsed >= REPLY_TIMEOUT_FLOOR, "{elapsed:?}");
+        assert!(elapsed <= REPLY_TIMEOUT_CEILING, "{elapsed:?}");
     }
 
     #[test]
