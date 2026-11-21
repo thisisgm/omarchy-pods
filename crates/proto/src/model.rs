@@ -3,14 +3,14 @@
 /// Declares `Model` and `Model::ALL` from one list of variants, so `ALL` cannot leave one out.
 macro_rules! models {
     ($($(#[$attr:meta])* $variant:ident,)+) => {
-        /// A supported model, named as the C++ `AirPodsModel` enum names it.
+        /// Named as the C++ `AirPodsModel` enum names it.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
         pub enum Model {
             $($(#[$attr])* $variant,)+
         }
 
         impl Model {
-            /// Every model, in `model_int` order.
+            /// In `model_int` order.
             #[cfg(test)]
             const ALL: &[Self] = &[$(Self::$variant,)+];
         }
@@ -34,7 +34,6 @@ models! {
     AirPodsMax2,
 }
 
-/// What a model can do, one flag per status document key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -81,8 +80,7 @@ const MODEL_NUMBERS: &[(&str, Model)] = &[
 ];
 
 impl Model {
-    /// The model a metadata packet's model number names, `Unknown` for a number not in the table.
-    // Sample input: `A3064`, matched exactly.
+    /// Sample input: `A3064`, matched exactly.
     #[must_use]
     pub fn from_number(number: &str) -> Self {
         MODEL_NUMBERS
@@ -91,7 +89,7 @@ impl Model {
             .map_or(Self::Unknown, |&(_, model)| model)
     }
 
-    /// The number the status document publishes as `model_int`; persisted, so never renumbered.
+    /// Published as `model_int` and persisted, so never renumbered.
     #[must_use]
     pub fn as_int(self) -> i64 {
         match self {
@@ -111,7 +109,7 @@ impl Model {
         }
     }
 
-    /// The name the status document publishes as `model_name`, empty for `Unknown`.
+    /// Published as `model_name`.
     #[must_use]
     pub fn display_name(self) -> &'static str {
         match self {
@@ -131,7 +129,7 @@ impl Model {
         }
     }
 
-    /// The model's features, by Apple's compare table; `Unknown` keeps the listening modes and gains nothing else.
+    /// By Apple's compare table; `Unknown` keeps the listening modes and gains nothing else.
     #[must_use]
     pub fn capabilities(self) -> Capabilities {
         let listening_modes = Capabilities {

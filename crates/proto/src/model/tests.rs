@@ -3,7 +3,6 @@
 use super::*;
 use cpp_source::{DEVICE_INFO, ENUMS};
 
-/// One capability flag read out of `Capabilities`.
 type Flag = fn(Capabilities) -> bool;
 
 /// The C++ enumerator name, which the Rust variant name copies.
@@ -11,8 +10,7 @@ fn cpp_name(model: Model) -> String {
     format!("{model:?}")
 }
 
-/// The models a C++ capability function answers true for.
-// Sample input: `case AirPodsModel::AirPodsMaxUSBC:` lines above the first `return true;` of a switch.
+/// Sample input: `case AirPodsModel::AirPodsMaxUSBC:` lines above a switch's first `return true;`.
 fn cpp_true_cases(function: &str) -> Vec<String> {
     let body = ENUMS.scope(&format!("inline bool {function}(AirPodsModel model)"));
     let (cases, _) = body
@@ -30,7 +28,6 @@ fn cpp_true_cases(function: &str) -> Vec<String> {
         .collect()
 }
 
-/// The models whose flag is set, by C++ name.
 fn rust_true_cases(flag: Flag) -> Vec<String> {
     Model::ALL
         .iter()
@@ -40,7 +37,7 @@ fn rust_true_cases(flag: Flag) -> Vec<String> {
         .collect()
 }
 
-/// Names in byte order, so a comparison ignores the order of the C++ case labels.
+/// So a comparison ignores the order of the C++ case labels.
 fn sorted(mut names: Vec<String>) -> Vec<String> {
     names.sort();
     names
@@ -104,7 +101,7 @@ fn model_display_name_exhaustive() {
     }
     assert_eq!(Model::Unknown.display_name(), "");
     assert_eq!(Model::AirPodsMax2.display_name(), "AirPods Max 2");
-    // Both AirPods 4 variants say AirPods 4 on purpose, so a reviewer cannot read the match as a slip.
+    // Both AirPods 4 variants say AirPods 4 on purpose, so the match is not a slip.
     assert_eq!(Model::AirPods4.display_name(), "AirPods 4");
     assert_eq!(Model::AirPods4ANC.display_name(), "AirPods 4");
 }
@@ -191,7 +188,7 @@ fn capabilities_match_apple_compare_table() {
         (Model::AirPodsMaxLightning, true, false, false, false),
         (Model::AirPodsMaxUSBC, true, false, false, false),
         (Model::AirPodsMax2, true, true, true, false),
-        // Unknown fails open on modes so an unmapped model keeps what it had, and gains nothing else.
+        // Unknown fails open on modes: an unmapped model keeps what it had and gains nothing else.
         (Model::Unknown, true, false, false, false),
     ];
     for (model, noise_control, adaptive, conversational_awareness, one_bud_anc) in rows {
@@ -270,7 +267,7 @@ fn model_numbers_match_the_cpp_model_number_map() {
 
 #[test]
 fn model_ints_match_the_cpp_enum_order() {
-    // Sample input: `{ Unknown, AirPods1, ... // comment ... AirPodsMax2 }`, one enumerator per line.
+    // Sample input: `{ Unknown, AirPods1, ... // comment ... AirPodsMax2 }`, one per line.
     let cpp: Vec<&str> = ENUMS
         .scope("enum class AirPodsModel")
         .lines()

@@ -5,7 +5,7 @@ use cpp_source::{BATTERY, PACKETS};
 
 const DISCHARGING: u8 = 0x02;
 
-// Sample input: a 16 byte decrypted payload, byte 1 primary, byte 2 secondary, byte 3 case, high bit charging.
+// Decrypted payload: byte 1 primary, byte 2 secondary, byte 3 case, high bit charging.
 fn payload(primary: u8, secondary: u8, case: u8) -> [u8; 16] {
     let mut p = [0; 16];
     p[1] = primary;
@@ -149,7 +149,7 @@ fn encrypted_case_level_survives_the_pods_leaving_the_case() {
     assert_eq!(b.case.map(|c| c.level), Some(80));
 }
 
-// Observed on an AirPods Max (USB-C, A3184): byte 1 held 100 while the primary went left then right.
+// Seen on an AirPods Max (USB-C, A3184): byte 1 held 100 while the primary went left then right.
 #[test]
 fn encrypted_headset_level_survives_the_primary_flip() {
     let mut b = Batteries::default();
@@ -179,7 +179,7 @@ fn encrypted_headset_unknown_leaves_the_known_level_alone() {
     let mut b = Batteries::default();
     b.apply(&BatteryReport::parse(&headset_packet(100)).unwrap());
     assert_eq!(b.headset.map(|c| c.level), Some(100));
-    // 0x7F means unknown, and slot 2's 50 is what the old first non-unknown scan would have adopted.
+    // 0x7F means unknown; slot 2's 50 is what the old first non-unknown scan would have adopted.
     apply_decrypted(&mut b, payload(0x7F, 50, 0), true, false, true);
     assert_eq!(b.headset.map(|c| c.level), Some(100));
 }

@@ -2,37 +2,29 @@
 
 use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
-/// Every control command starts with these bytes.
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00];
-/// Header, identifier and the first value byte, the shortest command the peer sends.
+/// Header, identifier and one value byte: the shortest command the peer sends.
 const MIN_LEN: usize = 8;
 /// Header, identifier and four value bytes, the length the host always sends.
 const FRAME_LEN: usize = 11;
-/// Value byte that switches a setting on.
 const STATE_ENABLED: u8 = 0x01;
-/// Value byte that switches a setting off.
 const STATE_DISABLED: u8 = 0x02;
 
-/// Which setting a control command carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ControlId(pub u8);
 
 impl ControlId {
-    /// Which bud's microphone is used; the C++ daemon does not define it, the value is from `docs/control_commands.md` of librepods-org/librepods.
+    /// From `docs/control_commands.md` of librepods-org/librepods; the C++ daemon lacks it.
     pub const MIC_SIDE: Self = Self(0x01);
-    /// Listening mode, value is the noise mode plus one.
+    /// Value is the noise mode plus one.
     pub const NOISE_CONTROL: Self = Self(0x0D);
-    /// Noise cancellation with one bud in.
     pub const ONE_BUD_ANC: Self = Self(0x1B);
-    /// Conversation awareness.
     pub const CONVERSATIONAL_AWARENESS: Self = Self(0x28);
-    /// Adaptive audio level, value 0 to 100.
+    /// Value 0 to 100.
     pub const ADAPTIVE_NOISE_LEVEL: Self = Self(0x2E);
-    /// Whether the device offers the Off listening mode.
     pub const ALLOW_OFF_OPTION: Self = Self(0x34);
 }
 
-/// One control command: an identifier and four value bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlCommand {
     pub id: ControlId,
@@ -40,7 +32,6 @@ pub struct ControlCommand {
 }
 
 impl ControlCommand {
-    /// A setting switched on or off.
     #[must_use]
     pub fn switch(id: ControlId, enabled: bool) -> Self {
         let state = if enabled {
@@ -54,8 +45,7 @@ impl ControlCommand {
         }
     }
 
-    /// Reads a command; missing value bytes read as 0 and bytes past the fourth are ignored.
-    // 04 00 04 00 09 00 28 01 00 00 00: header, identifier, then up to four value bytes.
+    /// Sample input: `04 00 04 00 09 00 28 01 00 00 00`, header, id, up to four value bytes.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(Parser::Control, bytes, HEADER, MIN_LEN)?;
         let Some((&id, rest)) = body.split_first() else {
@@ -75,7 +65,6 @@ impl ControlCommand {
         })
     }
 
-    /// The 11 byte frame for this command.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut frame = Vec::with_capacity(FRAME_LEN);
@@ -85,7 +74,6 @@ impl ControlCommand {
         frame
     }
 
-    /// The on or off state in the first value byte, or `None` for any other value.
     #[must_use]
     pub fn state(&self) -> Option<bool> {
         match self.value {

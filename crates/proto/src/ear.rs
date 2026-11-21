@@ -2,12 +2,10 @@
 
 use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
-/// Every ear detection packet starts with these bytes.
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00];
 /// Header plus the primary and secondary placement bytes.
 const MIN_LEN: usize = 8;
 
-/// Where one bud is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EarPlacement {
     InEar,
@@ -30,7 +28,6 @@ impl EarPlacement {
     }
 }
 
-/// The placement of the primary and the secondary bud.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EarReport {
     pub primary: EarPlacement,
@@ -38,8 +35,7 @@ pub struct EarReport {
 }
 
 impl EarReport {
-    /// Reads an ear detection packet; bytes past the eighth are ignored.
-    // 04 00 04 00 06 00 00 01: header, primary placement, secondary placement.
+    /// Sample input: `04 00 04 00 06 00 00 01`, header, primary, secondary; later bytes ignored.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(Parser::Ear, bytes, HEADER, MIN_LEN)?;
         let Some(&[primary, secondary]) = body.first_chunk::<2>() else {
@@ -55,7 +51,7 @@ impl EarReport {
         })
     }
 
-    /// A report built from in ear flags, for a source that knows only in or out.
+    /// For a source that knows only in or out.
     #[must_use]
     pub fn from_in_ear(primary_in_ear: bool, secondary_in_ear: bool) -> Self {
         let placement = |in_ear| {

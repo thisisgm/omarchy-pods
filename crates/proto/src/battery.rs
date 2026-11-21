@@ -2,7 +2,6 @@
 
 use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
-/// Every control channel battery packet starts with these bytes.
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x04, 0x00];
 /// Header plus the entry count byte.
 const MIN_LEN: usize = 7;
@@ -13,16 +12,14 @@ const MAX_ENTRIES: u8 = 3;
 /// The spacer and end byte of every entry.
 const ENTRY_MARK: u8 = 0x01;
 const STATUS_CHARGING: u8 = 0x01;
-/// An entry for a part that is not connected, which leaves the last reading alone.
+/// A part that is not connected; its entry leaves the last reading alone.
 const STATUS_DISCONNECTED: u8 = 0x04;
 /// Levels above this are unknown; 0x7F is the unknown sentinel of the proximity payload.
 const MAX_LEVEL: u8 = 100;
-/// The decrypted proximity payload is always this long.
 const DECRYPTED_LEN: usize = 16;
 const CHARGING_BIT: u8 = 0x80;
 const LEVEL_MASK: u8 = 0x7F;
 
-/// A part that has a battery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Component {
     Left,
@@ -51,7 +48,7 @@ impl TryFrom<u8> for Component {
     }
 }
 
-/// One part's battery reading; a part with no reading is `None` wherever a `Charge` is held.
+/// A part with no reading is `None` wherever a `Charge` is held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Charge {
     /// Percent from 0 to 100.
@@ -59,22 +56,21 @@ pub struct Charge {
     pub charging: bool,
 }
 
-/// What one packet says; a part left at `None` keeps its last reading.
+/// A part left at `None` keeps its last reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BatteryReport {
     pub left: Option<Charge>,
     pub right: Option<Charge>,
     pub case: Option<Charge>,
     pub headset: Option<Charge>,
-    /// The first bud or headset in the packet, `None` when the packet does not say.
+    /// The first bud or headset in the packet.
     pub primary: Option<Component>,
-    /// The second bud in the packet, `None` when the packet does not say.
+    /// The second bud in the packet.
     pub secondary: Option<Component>,
 }
 
 impl BatteryReport {
-    /// Reads the control channel battery packet; an unknown part or a level above 100 is left out.
-    // 04 00 04 00 04 00 01 01 01 55 02 01: header, count, then per entry kind, 01, level, status, 01.
+    /// Sample input: `04 00 04 00 04 00 01 01 01 55 02 01`, header, count, then entries.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(Parser::Battery, bytes, HEADER, MIN_LEN)?;
         let Some((&count, rest)) = body.split_first() else {
@@ -130,8 +126,7 @@ impl BatteryReport {
         Ok(report)
     }
 
-    /// Reads the decrypted proximity payload; an unknown level leaves that part out.
-    // 00 50 50 D0 00 00 00 00 00 00 00 00 00 00 00 00: primary bud or headset 80, secondary bud 80, case 80 charging.
+    /// Sample input: `00 50 50 D0` and 12 zero bytes, primary 80, secondary 80, case 80 charging.
     pub fn parse_decrypted(
         payload: &[u8],
         primary_left: bool,
@@ -175,7 +170,6 @@ impl BatteryReport {
         })
     }
 
-    /// Records a bud or headset in packet order, first primary then secondary.
     fn note_order(&mut self, component: Component) {
         if self.primary.is_none() {
             self.primary = Some(component);
@@ -194,7 +188,7 @@ impl BatteryReport {
     }
 }
 
-/// The last known battery of every part, `None` for a part not read since the reset.
+/// The last known battery of every part; `None` if not read since the reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Batteries {
     pub left: Option<Charge>,
@@ -204,7 +198,6 @@ pub struct Batteries {
 }
 
 impl Batteries {
-    /// Takes every part the report names and keeps the rest.
     pub fn apply(&mut self, report: &BatteryReport) {
         let updates = [
             (&mut self.left, report.left),
@@ -220,7 +213,6 @@ impl Batteries {
     }
 }
 
-/// A level byte as a percent, `None` above 100.
 fn known_level(level: u8) -> Option<u8> {
     (level <= MAX_LEVEL).then_some(level)
 }

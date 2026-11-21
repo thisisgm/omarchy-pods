@@ -1,4 +1,4 @@
-//! The three requests that open the control channel, each sent once the pods acknowledge the one before.
+//! The three requests that open the control channel, each after the pods acknowledge the last.
 
 use std::fmt;
 
@@ -7,7 +7,6 @@ use crate::packets::{
     SET_SPECIFIC_FEATURES,
 };
 
-/// What the handshake waits for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Step {
     #[default]
@@ -33,13 +32,12 @@ pub struct Handshake {
 }
 
 impl Handshake {
-    /// The request the host sends first.
     #[must_use]
     pub fn first() -> &'static [u8] {
         &HANDSHAKE
     }
 
-    /// Takes one packet from the pods and replies with the next request only to the awaited acknowledgement: `01 00 04 00` for the handshake, then `04 00 04 00 2b 00` for the features.
+    /// Replies only to the awaited acknowledgement, `01 00 04 00` then `04 00 04 00 2b 00`.
     pub fn on_packet(&mut self, sdu: &[u8]) -> Option<&'static [u8]> {
         match self.step {
             Step::AwaitHandshakeAck if sdu.starts_with(&HANDSHAKE_ACK_PREFIX) => {
@@ -66,12 +64,11 @@ mod tests {
 
     use super::*;
 
-    /// An ear detection packet, which is ordinary traffic during a handshake.
+    /// Ordinary traffic during a handshake.
     const EAR_PACKET: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00];
-    /// The longest packet the property test feeds, one receive buffer.
+    /// One receive buffer.
     const LONGEST_PACKET: usize = 4096;
 
-    /// An acknowledgement as the pods send it: the prefix, then bytes the handshake does not read.
     fn with_tail(prefix: &[u8]) -> Vec<u8> {
         [prefix, &[0x00, 0x11, 0x22]].concat()
     }
