@@ -1,5 +1,8 @@
 //! The temp session, the daemon process and the waits that the tests against the built binary share.
 
+pub(crate) mod bluez;
+pub(crate) mod bus;
+
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
