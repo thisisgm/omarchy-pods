@@ -161,6 +161,9 @@ fn battery_ear_noise_and_metadata_reach_the_state() {
 fn the_first_burst_fills_the_state() {
     let mut sim = Sim::new();
     sim.feed(Input::Up(0));
+    // Anc first, so the burst's Off below is the burst's own report and not the default.
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
     for packet in pods_samples::first_burst() {
         sim.feed(Input::Packet(packet));
     }
@@ -229,6 +232,7 @@ fn one_packet_makes_at_most_one_change() {
         let before = sim.state.clone();
         sim.feed(Input::Packet(packet.clone()));
         let fields = changed(&before, &sim.state);
+        assert_eq!(fields.is_empty(), before == sim.state, "{packet:02x?}");
         assert!(
             fields.is_empty()
                 || ONE_CHANGE
@@ -249,13 +253,19 @@ fn one_packet_makes_at_most_one_change() {
 fn unknown_opcodes_and_bad_packets_change_nothing() {
     let mut sim = Sim::new();
     sim.bring_up(0);
+    // Each switch on and the mode not Off, so a bad value read as off or Off shows as a change.
     for packet in [
         pods_samples::battery(),
         pods_samples::ear(),
         pods_samples::metadata(),
+        pods_samples::control(),
+        report(ControlId::ONE_BUD_ANC, 0x01),
+        report(ControlId::NOISE_CONTROL, 0x03),
     ] {
         sim.feed(Input::Packet(packet));
     }
+    assert!(sim.state.conversational_awareness && sim.state.one_bud_anc_mode);
+    assert_eq!(sim.state.noise_mode, NoiseMode::Transparency);
     let mut packets: Vec<Vec<u8>> = pods_samples::first_burst()
         .into_iter()
         .filter(|packet| matches!(classify(packet), Ok(Incoming::Other { .. })))
