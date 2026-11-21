@@ -2,6 +2,8 @@
 
 // Layouts from daemon/airpods_packets.h and parseMetadata in daemon/main.cpp; no real device bytes.
 
+pub mod host;
+
 /// Starts every packet the pods send after the handshake; the opcode follows.
 const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
 /// `Parse::HANDSHAKE_ACK`.
@@ -18,22 +20,72 @@ const OPCODE_FEATURES_ACK: u16 = 0x002b;
 /// Synthetic body of an acknowledgement or a packet nobody parses.
 const FILLER: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
-/// Battery count 3, then right 100% not charging, left 99% charging, case 50% not charging.
-const BATTERY_BODY: [u8; 16] = [
-    0x03, 0x02, 0x01, 0x64, 0x02, 0x01, 0x04, 0x01, 0x63, 0x01, 0x01, 0x08, 0x01, 0x32, 0x02, 0x01,
-];
-/// Primary and secondary bud both in the ear.
-const EAR_BODY: [u8; 2] = [0x00, 0x00];
-/// Conversation awareness 0x28, switched on, then three zero value bytes.
-const CONTROL_BODY: [u8; 5] = [0x28, 0x01, 0x00, 0x00, 0x00];
-/// Every setting in the first burst: on, then three zero bytes.
-const SETTING_ON: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+/// Listening mode; value 1 off, 2 noise cancelling, 3 transparency, 4 adaptive.
+pub const NOISE: u8 = 0x0d;
+/// Noise cancelling with one bud in; value 1 on, 2 off.
+pub const ONE_BUD_ANC: u8 = 0x1b;
+/// Value 1 on, 2 off.
+pub const CONVERSATION_AWARENESS: u8 = 0x28;
+/// Adaptive audio level; value 0 to 100.
+pub const ADAPTIVE_LEVEL: u8 = 0x2e;
+
+/// One part's battery: percent, and whether it charges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    pub level: u8,
+    pub charging: bool,
+}
+
+/// Where a bud is: `00`, `01` and `02` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placed {
+    InEar,
+    OutOfEar,
+    InCase,
+}
+
+impl Placed {
+    fn wire(self) -> u8 {
+        match self {
+            Self::InEar => 0x00,
+            Self::OutOfEar => 0x01,
+            Self::InCase => 0x02,
+        }
+    }
+}
+
+pub const NAME: &str = "Test\u{2019}s AirPods Pro";
+pub const MODEL_NUMBER: &str = "A3063";
+pub const LEFT: Cell = Cell {
+    level: 99,
+    charging: true,
+};
+pub const RIGHT: Cell = Cell {
+    level: 100,
+    charging: false,
+};
+pub const CASE: Cell = Cell {
+    level: 50,
+    charging: false,
+};
+
+/// Battery entry kinds and marks: `kind 01 level status 01`.
+const BATTERY_RIGHT: u8 = 0x02;
+const BATTERY_LEFT: u8 = 0x04;
+const BATTERY_CASE: u8 = 0x08;
+const BATTERY_MARK: u8 = 0x01;
+const BATTERY_CHARGING: u8 = 0x01;
+const BATTERY_NOT_CHARGING: u8 = 0x02;
+const BATTERY_ENTRIES: u8 = 3;
+
+/// The three value bytes behind the first one of a setting.
+const SETTING_TAIL: [u8; 3] = [0x00, 0x00, 0x00];
 const BURST_SETTINGS: u8 = 22;
+/// The value of every setting of the first burst that is not overridden.
+const BURST_SETTING_VALUE: u8 = 0x01;
 
 /// Synthetic bytes between the metadata header and the name, which no parser reads.
 const METADATA_SKIPPED: [u8; 5] = [0x01, 0x02, 0x03, 0x04, 0x05];
-const METADATA_NAME: &str = "Test\u{2019}s AirPods Pro";
-const METADATA_MODEL_NUMBER: &str = "A3063";
 const METADATA_MANUFACTURER: &str = "Apple Inc.";
 /// A synthetic serial number in the fourth string, where the real packet carries one.
 const METADATA_SERIAL: &str = "SERIAL0001";
@@ -66,34 +118,91 @@ pub fn features_ack() -> Vec<u8> {
 
 #[must_use]
 pub fn battery() -> Vec<u8> {
-    packet(OPCODE_BATTERY, &BATTERY_BODY)
+    battery_of(LEFT, RIGHT, CASE)
+}
+
+/// Entries in the order right, left, case.
+#[must_use]
+pub fn battery_of(left: Cell, right: Cell, case: Cell) -> Vec<u8> {
+    let mut body = vec![BATTERY_ENTRIES];
+    for (kind, cell) in [
+        (BATTERY_RIGHT, right),
+        (BATTERY_LEFT, left),
+        (BATTERY_CASE, case),
+    ] {
+        let status = if cell.charging {
+            BATTERY_CHARGING
+        } else {
+            BATTERY_NOT_CHARGING
+        };
+        body.extend([kind, BATTERY_MARK, cell.level, status, BATTERY_MARK]);
+    }
+    packet(OPCODE_BATTERY, &body)
 }
 
 #[must_use]
 pub fn ear() -> Vec<u8> {
-    packet(OPCODE_EAR, &EAR_BODY)
+    ear_of(Placed::InEar, Placed::InEar)
 }
 
 #[must_use]
+pub fn ear_of(primary: Placed, secondary: Placed) -> Vec<u8> {
+    packet(OPCODE_EAR, &[primary.wire(), secondary.wire()])
+}
+
+/// Conversation awareness switched on.
+#[must_use]
 pub fn control() -> Vec<u8> {
-    packet(OPCODE_CONTROL, &CONTROL_BODY)
+    setting(CONVERSATION_AWARENESS, BURST_SETTING_VALUE)
+}
+
+/// `04 00 04 00 09 00 <identifier> <value> 00 00 00`, from either side.
+#[must_use]
+pub fn setting(identifier: u8, value: u8) -> Vec<u8> {
+    let body = [&[identifier, value][..], &SETTING_TAIL].concat();
+    packet(OPCODE_CONTROL, &body)
 }
 
 #[must_use]
 pub fn metadata() -> Vec<u8> {
+    metadata_of(NAME, MODEL_NUMBER)
+}
+
+/// Padded with zero bytes to the measured length, never cut below the fields it carries.
+#[must_use]
+pub fn metadata_of(name: &str, model_number: &str) -> Vec<u8> {
     let mut body = METADATA_SKIPPED.to_vec();
-    for field in [
-        METADATA_NAME,
-        METADATA_MODEL_NUMBER,
-        METADATA_MANUFACTURER,
-        METADATA_SERIAL,
-    ] {
+    for field in [name, model_number, METADATA_MANUFACTURER, METADATA_SERIAL] {
         body.extend(field.as_bytes());
         body.push(0);
     }
     let mut sdu = packet(OPCODE_METADATA, &body);
-    sdu.resize(METADATA_LEN, 0);
+    sdu.resize(sdu.len().max(METADATA_LEN), 0);
     sdu
+}
+
+/// Identifiers 1 to 22 in order, each with value 1 unless `overrides` names it.
+#[must_use]
+pub fn burst_settings(overrides: &[(u8, u8)]) -> Vec<Vec<u8>> {
+    (1..=BURST_SETTINGS)
+        .map(|identifier| {
+            let value = overrides
+                .iter()
+                .rev()
+                .find(|(overridden, _)| *overridden == identifier)
+                .map_or(BURST_SETTING_VALUE, |(_, value)| *value);
+            setting(identifier, value)
+        })
+        .collect()
+}
+
+/// The 11 packets of the first burst that no parser reads.
+#[must_use]
+pub fn burst_others() -> Vec<Vec<u8>> {
+    BURST_OTHER_OPCODES
+        .iter()
+        .map(|opcode| packet(*opcode, &FILLER))
+        .collect()
 }
 
 /// 38 packets: opcode counts and first two match a real device; later order and bodies are made up.
@@ -106,13 +215,8 @@ pub fn first_burst() -> Vec<Vec<u8>> {
         ear(),
         metadata(),
     ];
-    for id in 1..=BURST_SETTINGS {
-        let body = [&[id][..], &SETTING_ON].concat();
-        burst.push(packet(OPCODE_CONTROL, &body));
-    }
-    for opcode in BURST_OTHER_OPCODES {
-        burst.push(packet(opcode, &FILLER));
-    }
+    burst.extend(burst_settings(&[]));
+    burst.extend(burst_others());
     burst
 }
 
@@ -167,5 +271,43 @@ mod tests {
     #[test]
     fn the_control_command_has_the_length_the_host_sends() {
         assert_eq!(control().len(), 11);
+    }
+
+    #[test]
+    fn a_host_setting_is_the_eleven_bytes_the_cpp_daemon_writes() {
+        // What `ControlCommand::createCommand` in daemon/BasicControlCommand.hpp returns.
+        let written = [
+            [
+                0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x28, 0x02, 0x00, 0x00, 0x00,
+            ],
+            [
+                0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x1b, 0x01, 0x00, 0x00, 0x00,
+            ],
+        ];
+        assert_eq!(host::setting(CONVERSATION_AWARENESS, 2), written[0]);
+        assert_eq!(host::setting(ONE_BUD_ANC, 1), written[1]);
+    }
+
+    #[test]
+    fn no_opening_frame_carries_the_setting_opcode() {
+        for frame in [
+            host::handshake(),
+            host::set_specific_features(),
+            host::request_notifications(),
+        ] {
+            assert_ne!(opcode(&frame), Some(OPCODE_CONTROL));
+        }
+    }
+
+    #[test]
+    fn burst_settings_take_overrides_inside_their_identifiers_only() {
+        let plain = burst_settings(&[]);
+        let overridden = burst_settings(&[(NOISE, 3), (ADAPTIVE_LEVEL, 50)]);
+        let noise = usize::from(NOISE) - 1;
+        assert_eq!(overridden[noise], setting(NOISE, 3));
+        assert_eq!(plain[noise], setting(NOISE, 1));
+        let mut rest = overridden.clone();
+        rest[noise] = plain[noise].clone();
+        assert_eq!(rest, plain);
     }
 }
