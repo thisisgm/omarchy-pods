@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 
-use super::sim::{Answer, Input, Sim, ms};
+use super::sim::{Answer, DEVICES, Input, Sim, ms};
 use crate::command::tests::any_command;
 
 /// The longest random packet, one receive buffer.
@@ -11,9 +11,11 @@ const PACKET_MAX: usize = 4096;
 const WAIT_MAX_MS: u64 = 400_000;
 /// The longest step that stays inside a handshake step or a grace, so the link also gets up.
 const SHORT_WAIT_MAX_MS: u64 = 3000;
+/// Inputs in one script, enough to climb a ladder and come back.
+const SCRIPT_MAX: usize = 200;
 
 fn device() -> impl Strategy<Value = usize> {
-    0_usize..2
+    0..DEVICES.len()
 }
 
 fn packet() -> impl Strategy<Value = Vec<u8>> {
@@ -55,7 +57,7 @@ fn events(len: std::ops::Range<usize>) -> impl Strategy<Value = Vec<Input>> {
 
 proptest! {
     #[test]
-    fn any_event_sequence_keeps_the_invariants(script in events(0..200)) {
+    fn any_event_sequence_keeps_the_invariants(script in events(0..SCRIPT_MAX)) {
         let mut sim = Sim::new();
         for item in script {
             sim.feed(item);
