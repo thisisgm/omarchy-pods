@@ -249,6 +249,10 @@ pub(super) fn spawn(
 }
 
 /// Both ends of a channel that no thread plays; what one end sends waits in the other end's queue.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test wraps both ends of a socket pair as channels"
+)]
 pub(super) fn pair() -> (Channel, Channel) {
     let (near, far) = socketpair(
         AddressFamily::UNIX,

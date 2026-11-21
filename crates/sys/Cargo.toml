@@ -69,7 +69,7 @@ let_underscore_must_use = "deny"
 large_futures = "warn"
 unused_async = "warn"
 
-# the unsafe fence (these bite only in the sys crate)
+# the unsafe fence (these bite only in the two crates that allow unsafe code)
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
 missing_safety_doc = "deny"

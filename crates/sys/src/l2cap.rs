@@ -218,6 +218,10 @@ mod tests {
     /// Far more one byte SDUs than a socket pair's send buffer holds.
     const FILL_LIMIT: usize = 100_000;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a test wraps both ends of a socket pair as channels"
+    )]
     fn channel_pair() -> (Channel, Channel) {
         let (near, far) = socketpair(
             AddressFamily::UNIX,
@@ -356,6 +360,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a test wraps a pipe to get a channel that raises ERR alone"
+    )]
     fn wait_any_reports_an_error_with_nothing_to_read_as_ready() {
         let (_near, far) = channel_pair();
         // A socket pair raises IN with every hang up, so a pipe's write end with no reader stands in for a channel that raises ERR alone.
@@ -509,6 +517,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a test wraps a pipe to get a channel that is not a socket"
+    )]
     fn shutdown_of_a_non_socket_is_an_error_naming_shutdown() {
         let (reader, _writer) = std::io::pipe().unwrap();
         let error = from_fd(OwnedFd::from(reader)).shutdown().unwrap_err();

@@ -6,6 +6,7 @@ disallowed-methods = [
     { path = "std::env::set_var", reason = "not thread safe once threads exist" },
     { path = "std::process::exit", reason = "skips destructors; return an ExitCode" },
     { path = "std::thread::sleep", reason = "the core takes time as an input" },
+    { path = "pods_sys::l2cap::from_fd", reason = "only a test wraps a socket; the daemon opens its channel with connect" },
 ]
 disallowed-types = [
     { path = "std::time::SystemTime", reason = "use the injected clock" },
