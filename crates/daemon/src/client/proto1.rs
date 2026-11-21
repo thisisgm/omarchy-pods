@@ -42,7 +42,7 @@ enum Step {
     Ended(usize),
 }
 
-/// Prints the state line, as the legacy `status` verb does, and unlike it fails, as `watch` does, when the line cannot be written.
+/// Prints the state line, as the legacy `status` verb does, but fails, as `watch` does, when standard output refuses the line; with nothing reading it, it ends quietly.
 pub(crate) fn status(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
     match open(socket, &request("get", &[])).and_then(|(_, reply)| state_reply(&reply)) {
         Ok(line) => print_state(&line, out, err)
