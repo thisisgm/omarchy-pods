@@ -261,11 +261,18 @@ mod tests {
         })
     }
 
-    /// Replies around the size bound with no newline before it, so only the bound can end them.
+    /// Replies around the size bound with no newline, half behind the error prefix, so only the bound can end them.
     fn long_reply() -> impl Strategy<Value = Vec<u8>> {
         let length = MAX_REPLY_BYTES - BOUND_MARGIN_BYTES..=MAX_REPLY_BYTES + BOUND_MARGIN_BYTES;
         let byte = any::<u8>().prop_filter("no newline", |&byte| byte != NEWLINE);
-        length.prop_flat_map(move |length| proptest::collection::vec(byte.clone(), length))
+        let body =
+            length.prop_flat_map(move |length| proptest::collection::vec(byte.clone(), length));
+        (any::<bool>(), body).prop_map(|(refusal, mut reply)| {
+            if refusal {
+                reply[..ERROR_PREFIX.len()].copy_from_slice(ERROR_PREFIX);
+            }
+            reply
+        })
     }
 
     proptest! {
