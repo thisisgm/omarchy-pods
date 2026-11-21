@@ -323,10 +323,12 @@ impl Shared {
     /// One channel's thread: serves it, closes it, then marks it closed whatever ended it.
     fn run(&self, id: usize, fault: Fault, channel: Channel) {
         let ended = self.serve_line(id, fault, &channel);
+        // Stamped before the drop, so the host never sees the close before its stamp.
+        let closed = Instant::now();
         drop(channel);
         let mut state = self.lock();
         state.lines.retain(|line| line.id != id);
-        state.closed.push(Instant::now());
+        state.closed.push(closed);
         if let Err(error) = ended {
             state
                 .failures
