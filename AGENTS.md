@@ -36,6 +36,9 @@ Two traps that have cost real time here:
   a real timing or race constraint.
 - **A green suite offered as proof.** Run the failing case first and show it red.
   If you cannot drive the defect, say that instead of implying you did.
+- **A direct test offered as proof.** Proof is end to end: the behaviour driven
+  through `librepods-ctl`, the control socket, the D-Bus interface or the state
+  file, against the real daemon binary. Direct tests support pure logic only.
 - **Invented abbreviations and em dashes.** Both are in CONTRIBUTING.md and both
   are checked.
 - **AI attribution.** No `Co-Authored-By` for a tool, no "Generated with" line,
