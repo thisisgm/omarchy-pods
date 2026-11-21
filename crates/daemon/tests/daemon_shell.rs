@@ -403,12 +403,20 @@ mod tests {
     fn second_instance_exits_zero_and_first_keeps_serving() {
         let session = Session::new();
         let mut first = session.start();
+        // Paused, the first daemon reads `reopen` only after the second has exited, so its reply always meets a closed peer.
+        kill_process(first.pid(), Signal::STOP).unwrap();
         let mut second = session.spawn(&["--headless"], "second.log");
         assert_eq!(second.wait_exit().code(), Some(0));
+        kill_process(first.pid(), Signal::CONT).unwrap();
         assert!(first.running());
         wait_for("the second instance's reopen", || {
             (total(&session.status(), "reopen_calls_total") == 1).then_some(())
         });
+        assert_eq!(
+            first.log(),
+            "",
+            "a normal second launch logged on the first daemon"
+        );
     }
 
     #[test]
