@@ -166,6 +166,7 @@ impl Session {
         refuse_git_marker(&root_dir, root)?;
         let path = root.join(stamp);
         let dir = make_dir(root_dir.as_fd(), Path::new(stamp), &path)?;
+        refuse_git_marker(&dir, &path)?;
         Ok(Session { path, dir })
     }
 
@@ -202,7 +203,9 @@ impl Run {
         refuse_repository_ancestors(root)?;
         let root_dir = open_dir(CWD, root, root)?;
         refuse_git_marker(&root_dir, root)?;
-        let session_dir = open_dir(root_dir.as_fd(), Path::new(stamp), &root.join(stamp))?;
+        let session_path = root.join(stamp);
+        let session_dir = open_dir(root_dir.as_fd(), Path::new(stamp), &session_path)?;
+        refuse_git_marker(&session_dir, &session_path)?;
         let dir = open_dir(session_dir.as_fd(), Path::new(name), path)?;
         refuse_git_marker(&dir, path)?;
         Ok(Run {
