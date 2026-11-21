@@ -124,6 +124,7 @@ pub fn connect(peer: BdAddr, psm: u16, timeout: Duration) -> Result<Channel, Cha
     .map_err(ChannelError::Socket)?;
     // A blocking L2CAP connect waits no longer than the send timeout (l2cap_sock_connect in net/bluetooth/l2cap_sock.c).
     set_socket_timeout(&fd, Timeout::Send, Some(timeout)).map_err(ChannelError::Option)?;
+    // No test can see which PSM this line dials, since a host without the peer fails every connect alike; only a connect to a second PSM on hardware proves it.
     rustix::net::connect(&fd, &SockaddrL2::new(peer, psm)).map_err(ChannelError::Connect)?;
     Ok(Channel { fd })
 }
