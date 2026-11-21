@@ -2,38 +2,30 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "these tests run the client against a stub, so the daemon helpers the other suites share go unused"
+)]
+mod support;
+
+#[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Output, Stdio};
+    use std::process::{Output, Stdio};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
-    use tempfile::TempDir;
+    use cpp_source::{CTL, IPC_PATH, MAIN};
 
-    const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
+    use super::support::{BINARY, Session, run_to_end};
 
     /// The client's 1000 ms reply timeout, less slack for scheduling.
     const REPLY_TIMEOUT_FLOOR: Duration = Duration::from_millis(900);
 
     /// The client's 1000 ms reply timeout, plus slack for starting the process on a shared host.
     const REPLY_TIMEOUT_CEILING: Duration = Duration::from_millis(1600);
-
-    /// A client still running after this long is hung, and the test kills it and fails.
-    const HANG_LIMIT: Duration = Duration::from_secs(10);
-
-    /// How often `run` checks whether the client has exited.
-    const EXIT_POLL: Duration = Duration::from_millis(10);
-
-    /// The C++ client, read at build time so each message expected here is built from its statement.
-    const CPP_CLIENT: &str = include_str!("../../../daemon/librepods-ctl.cpp");
-
-    /// The C++ daemon, read at build time for the one reply the tests quote from it.
-    const CPP_DAEMON: &str = include_str!("../../../daemon/main.cpp");
-
-    /// The C++ socket path, read at build time for the name it appends to the runtime directory.
-    const CPP_IPC_PATH: &str = include_str!("../../../daemon/ipcpath.hpp");
 
     /// The first literal of the C++ client's usage statement.
     const USAGE_START: &str = "Usage: ";
@@ -66,11 +58,7 @@ mod tests {
         Hold,
     }
 
-    fn socket_in(dir: &TempDir) -> PathBuf {
-        dir.path().join("librepods.sock")
-    }
-
-    /// A stub daemon serving one client on the temp socket.
+    /// A stub daemon serving one client on the session's socket.
     struct StubDaemon {
         socket: PathBuf,
         thread: JoinHandle<Vec<u8>>,
@@ -86,8 +74,8 @@ mod tests {
     }
 
     /// Starts a stub daemon that serves one client the way `stub` says.
-    fn serve_one(dir: &TempDir, stub: Stub) -> StubDaemon {
-        let socket = socket_in(dir);
+    fn serve_one(session: &Session, stub: Stub) -> StubDaemon {
+        let socket = session.socket();
         let listener = UnixListener::bind(&socket).unwrap();
         let thread = thread::spawn(move || {
             let (mut client, _) = listener.accept().unwrap();
@@ -112,40 +100,23 @@ mod tests {
         StubDaemon { socket, thread }
     }
 
-    /// Runs the client to completion, or kills it and fails the test once it passes `HANG_LIMIT`.
-    fn run(program: &Path, args: &[&str], runtime_dir: Option<&Path>) -> Output {
-        let mut command = Command::new(program);
-        command.args(args).env_remove("XDG_RUNTIME_DIR");
-        if let Some(dir) = runtime_dir {
-            command.env("XDG_RUNTIME_DIR", dir);
-        }
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let started = Instant::now();
-        while child.try_wait().unwrap().is_none() {
-            if started.elapsed() > HANG_LIMIT {
-                child.kill().unwrap();
-                panic!("client {args:?} still running after {HANG_LIMIT:?}, killed");
-            }
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "std has no timed wait for a child process, and this is the test harness, not the core"
-            )]
-            thread::sleep(EXIT_POLL);
-        }
-        child.wait_with_output().unwrap()
+    fn run_ctl(session: &Session, verb: &str) -> Output {
+        session.run_client(Path::new(BINARY), &["ctl", verb])
     }
 
-    fn run_ctl(dir: &TempDir, verb: &str) -> Output {
-        run(Path::new(BINARY), &["ctl", verb], Some(dir.path()))
+    /// `librepods ctl status` with `XDG_RUNTIME_DIR` set to `runtime_dir`, or unset when it is `None`.
+    fn status_with_runtime_dir(session: &Session, runtime_dir: Option<&str>) -> Output {
+        let mut command = session.command(Path::new(BINARY), &["ctl", "status"]);
+        match runtime_dir {
+            Some(dir) => command.env("XDG_RUNTIME_DIR", dir),
+            None => command.env_remove("XDG_RUNTIME_DIR"),
+        };
+        run_to_end(command.stdout(Stdio::piped()).stderr(Stdio::piped()))
     }
 
     /// A link named `librepods-ctl` to the built binary, the way an install provides the old name.
-    fn legacy_link(dir: &TempDir) -> PathBuf {
-        let link = dir.path().join("librepods-ctl");
+    fn legacy_link(session: &Session) -> PathBuf {
+        let link = session.dir.path().join("librepods-ctl");
         std::os::unix::fs::symlink(BINARY, &link).unwrap();
         link
     }
@@ -209,74 +180,79 @@ mod tests {
     #[test]
     fn expected_messages_are_the_cpp_literals() {
         let refusal = text(HEADLESS_REFUSAL);
-        assert_eq!(cpp_message(CPP_DAEMON, refusal, &[]), refusal);
-        assert_eq!(cpp_message(CPP_IPC_PATH, SOCKET_SUFFIX, &[]), SOCKET_SUFFIX);
+        assert_eq!(cpp_message(MAIN.text(), refusal, &[]), refusal);
+        assert_eq!(
+            cpp_message(IPC_PATH.text(), SOCKET_SUFFIX, &[]),
+            SOCKET_SUFFIX
+        );
     }
 
     #[test]
     fn usage_when_no_verb() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = run(Path::new(BINARY), &["ctl"], Some(dir.path()));
+        let session = Session::new();
+        let out = session.run_client(Path::new(BINARY), &["ctl"]);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, USAGE_START, &["librepods ctl"])
+            cpp_message(CTL.text(), USAGE_START, &["librepods ctl"])
         );
     }
 
     #[test]
     fn usage_when_started_as_librepods_ctl() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = run(&legacy_link(&dir), &[], Some(dir.path()));
+        let session = Session::new();
+        let out = session.run_client(&legacy_link(&session), &[]);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, USAGE_START, &["librepods-ctl"])
+            cpp_message(CTL.text(), USAGE_START, &["librepods-ctl"])
         );
     }
 
     #[test]
     fn unset_runtime_dir_is_an_error() {
-        let out = run(Path::new(BINARY), &["ctl", "status"], None);
+        let session = Session::new();
+        let out = status_with_runtime_dir(&session, None);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, NO_RUNTIME_DIR_START, &[])
+            cpp_message(CTL.text(), NO_RUNTIME_DIR_START, &[])
         );
     }
 
     #[test]
     fn empty_runtime_dir_is_an_error() {
-        let out = run(Path::new(BINARY), &["ctl", "status"], Some(Path::new("")));
+        let session = Session::new();
+        let out = status_with_runtime_dir(&session, Some(""));
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, NO_RUNTIME_DIR_START, &[])
+            cpp_message(CTL.text(), NO_RUNTIME_DIR_START, &[])
         );
     }
 
     #[test]
     fn connect_failure_names_the_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = run_ctl(&dir, "status");
+        let session = Session::new();
+        let out = run_ctl(&session, "status");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
-        let path = format!("{}{SOCKET_SUFFIX}", dir.path().display());
+        let path = format!("{}{SOCKET_SUFFIX}", session.runtime_dir().display());
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, CONNECT_FAILED_START, &[&path])
+            cpp_message(CTL.text(), CONNECT_FAILED_START, &[&path])
         );
     }
 
     #[test]
     fn control_verb_writes_bytes_and_exits_zero() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Drain);
-        let out = run_ctl(&dir, "noise:anc");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Drain);
+        let out = run_ctl(&session, "noise:anc");
         assert_eq!(stub.received(), b"noise:anc");
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(text(&out.stdout), "");
@@ -285,9 +261,9 @@ mod tests {
 
     #[test]
     fn unknown_verb_is_sent_and_exits_zero() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Drain);
-        let out = run_ctl(&dir, "bogusverb");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Drain);
+        let out = run_ctl(&session, "bogusverb");
         assert_eq!(stub.received(), b"bogusverb");
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(text(&out.stdout), "");
@@ -296,9 +272,9 @@ mod tests {
 
     #[test]
     fn status_reply_goes_to_stdout() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Reply(b"{\"connected\":true}\n"));
-        let out = run_ctl(&dir, "status");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Reply(b"{\"connected\":true}\n"));
+        let out = run_ctl(&session, "status");
         assert_eq!(stub.received(), b"status");
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(out.stdout, b"{\"connected\":true}\n");
@@ -307,9 +283,9 @@ mod tests {
 
     #[test]
     fn error_reply_goes_to_stderr_and_exits_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Reply(HEADLESS_REFUSAL));
-        let out = run_ctl(&dir, "reopen");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Reply(HEADLESS_REFUSAL));
+        let out = run_ctl(&session, "reopen");
         assert_eq!(stub.received(), b"reopen");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
@@ -318,9 +294,9 @@ mod tests {
 
     #[test]
     fn error_reply_to_status_goes_to_stderr_and_exits_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Reply(HEADLESS_REFUSAL));
-        let out = run_ctl(&dir, "status");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Reply(HEADLESS_REFUSAL));
+        let out = run_ctl(&session, "status");
         assert_eq!(stub.received(), b"status");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
@@ -329,9 +305,9 @@ mod tests {
 
     #[test]
     fn reopen_with_closed_peer_exits_zero() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Close);
-        let out = run_ctl(&dir, "reopen");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Close);
+        let out = run_ctl(&session, "reopen");
         assert_eq!(stub.received(), b"reopen");
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(text(&out.stdout), "");
@@ -340,31 +316,31 @@ mod tests {
 
     #[test]
     fn reopen_left_hanging_times_out() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Hold);
-        let out = run_ctl(&dir, "reopen");
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Hold);
+        let out = run_ctl(&session, "reopen");
         assert_eq!(stub.received(), b"reopen");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, TIMED_OUT_START, &["reopen"])
+            cpp_message(CTL.text(), TIMED_OUT_START, &["reopen"])
         );
     }
 
     #[test]
     fn status_closed_without_reply_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Close);
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Close);
         let started = Instant::now();
-        let out = run_ctl(&dir, "status");
+        let out = run_ctl(&session, "status");
         let elapsed = started.elapsed();
         assert_eq!(stub.received(), b"status");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, TIMED_OUT_START, &["status"])
+            cpp_message(CTL.text(), TIMED_OUT_START, &["status"])
         );
         // The close is seen at once, so the reply timeout never runs.
         assert!(elapsed < REPLY_TIMEOUT_FLOOR, "{elapsed:?}");
@@ -372,29 +348,29 @@ mod tests {
 
     #[test]
     fn status_times_out_after_one_second() {
-        let dir = tempfile::tempdir().unwrap();
-        let stub = serve_one(&dir, Stub::Hold);
+        let session = Session::new();
+        let stub = serve_one(&session, Stub::Hold);
         let started = Instant::now();
-        let out = run_ctl(&dir, "status");
+        let out = run_ctl(&session, "status");
         let elapsed = started.elapsed();
         assert_eq!(stub.received(), b"status");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            cpp_message(CPP_CLIENT, TIMED_OUT_START, &["status"])
+            cpp_message(CTL.text(), TIMED_OUT_START, &["status"])
         );
-        // The floor proves the wait; the ceiling catches a wait well past the deadline, and `run` catches a hang.
+        // The floor proves the wait; the ceiling catches a wait well past the deadline, and `run_client` catches a hang.
         assert!(elapsed >= REPLY_TIMEOUT_FLOOR, "{elapsed:?}");
         assert!(elapsed <= REPLY_TIMEOUT_CEILING, "{elapsed:?}");
     }
 
     #[test]
     fn symlink_named_librepods_ctl_dispatches_to_client() {
-        let dir = tempfile::tempdir().unwrap();
-        let link = legacy_link(&dir);
-        let stub = serve_one(&dir, Stub::Drain);
-        let out = run(&link, &["noise:anc"], Some(dir.path()));
+        let session = Session::new();
+        let link = legacy_link(&session);
+        let stub = serve_one(&session, Stub::Drain);
+        let out = session.run_client(&link, &["noise:anc"]);
         assert_eq!(stub.received(), b"noise:anc");
         assert_eq!(out.status.code(), Some(0));
         assert_eq!(text(&out.stdout), "");
