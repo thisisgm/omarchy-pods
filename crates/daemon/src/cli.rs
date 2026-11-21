@@ -20,6 +20,8 @@ pub(crate) enum Invocation {
     LegacyClient { verb: String },
     /// Print the client usage under this program name and fail, as `librepods-ctl` with no verb does.
     LegacyUsage { program: &'static str },
+    /// Run the daemon.
+    Daemon,
 }
 
 /// Daemon for the Omarchy bar plugin, and its command line client.
@@ -39,10 +41,13 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         words: Vec<OsString>,
     },
+    /// Run the daemon; `--headless` is the name the C++ daemon's service file starts it under
+    #[command(long_flag = "headless")]
+    Daemon,
 }
 
 /// Parses `argv[0]` and the arguments after it.
-// Sample input: `/home/gm/.local/bin/librepods-ctl` with `["noise:anc"]`, or `librepods` with `["ctl", "status"]`
+// Sample input: `~/.local/bin/librepods-ctl` with `["noise:anc"]`, `librepods` with `["ctl", "status"]`, or `librepods` with `["--headless"]`
 pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap::Error> {
     if Path::new(argv0).file_name() == Some(OsStr::new(LEGACY_CLIENT_NAME)) {
         return legacy(LEGACY_CLIENT_NAME, args);
@@ -50,6 +55,7 @@ pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap
     let cli = Cli::try_parse_from(iter::once(argv0).chain(args.iter().map(OsString::as_os_str)))?;
     match cli.command {
         Command::Ctl { words } => legacy(CTL_SUBCOMMAND_PROGRAM, &words),
+        Command::Daemon => Ok(Invocation::Daemon),
     }
 }
 
@@ -144,6 +150,20 @@ mod tests {
             parsed.unwrap_err().kind(),
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
         );
+    }
+
+    #[test]
+    fn daemon_subcommand_and_headless_flag_both_start_the_daemon() {
+        for words in [["daemon"], ["--headless"]] {
+            let parsed = parse(OsStr::new("librepods"), &args(&words));
+            assert_eq!(parsed.unwrap(), Invocation::Daemon, "{words:?}");
+        }
+    }
+
+    #[test]
+    fn headless_flag_takes_no_further_arguments() {
+        let parsed = parse(OsStr::new("librepods"), &args(&["--headless", "--debug"]));
+        assert_eq!(parsed.unwrap_err().kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
