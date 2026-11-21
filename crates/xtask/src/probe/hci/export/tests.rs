@@ -16,6 +16,8 @@ const SECOND: (u16, u16) = (0x0048, 0x0058);
 /// The L2CAP modes the tests ask for: basic and enhanced retransmission.
 const BASIC: u8 = 0x00;
 const ENHANCED_RETRANSMISSION: u8 = 0x03;
+/// A regular file every Linux host has, owned by uid 0.
+const SYSTEM_FILE: &str = "/etc/passwd";
 /// The event code of a completed synchronous connection.
 const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
 /// One millisecond, the step of the fixture's clock.
@@ -371,6 +373,22 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
     }
     assert!(text(&outputs, "a2dp.tsv").lines().count() > 1);
     assert!(text(&before, "links.txt").starts_with("realtime_at_zero_ns "));
+}
+
+#[test]
+fn a_trace_of_another_owner_is_refused_with_what_to_do_about_it() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("omapods-captures");
+    let refused = export(&root, Path::new(SYSTEM_FILE), "20261120T120000Z", "trace-1");
+    let error = refused.unwrap_err().to_string();
+    assert_eq!(
+        error,
+        format!(
+            "{SYSTEM_FILE} is owned by uid 0, not by the caller, uid {}; create the file yourself with mode 600 before btmon -w writes into it, or make this one yours with chown and chmod 600",
+            rustix::process::geteuid().as_raw()
+        )
+    );
+    assert!(!root.exists());
 }
 
 #[test]

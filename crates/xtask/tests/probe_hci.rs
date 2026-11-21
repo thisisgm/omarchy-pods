@@ -377,6 +377,8 @@ mod hci {
         assert!(!refused.status.success(), "{refused:?}");
         let error = String::from_utf8(refused.stderr).unwrap();
         assert!(error.contains("group and others have no access"), "{error}");
+        let advice = "; create the file yourself with mode 600 before btmon -w writes into it, or make this one yours with chown and chmod 600\n";
+        assert!(error.ends_with(advice), "{error}");
 
         let link = home.path().join("link.btsnoop");
         std::os::unix::fs::symlink(&path, &link).unwrap();
@@ -388,6 +390,8 @@ mod hci {
 
         let missing = hci(&home, &home.path().join("absent.btsnoop"), RUN);
         assert!(!missing.status.success(), "{missing:?}");
+        assert!(holds(&missing.stderr, b"absent.btsnoop"), "{missing:?}");
+        assert!(!holds(&missing.stderr, b"btmon"), "{missing:?}");
         assert!(!home.path().join("omapods-captures").exists());
 
         let bad_stamp = Command::new(env!("CARGO_BIN_EXE_xtask"))

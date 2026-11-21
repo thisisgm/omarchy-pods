@@ -56,6 +56,10 @@ pub(crate) struct Output {
 pub(crate) enum ExportError {
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(
+        "{source}; create the file yourself with mode 600 before btmon -w writes into it, or make this one yours with chown and chmod 600"
+    )]
+    NotPrivate { source: StoreError },
     #[error("{}: {source}", .path.display())]
     Trace { path: PathBuf, source: TraceError },
     #[error("could not write {}: {source}", .path.display())]
@@ -334,6 +338,19 @@ pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
     Ok(outputs)
 }
 
+/// Adds what to do to the two refusals a trace made by btmon alone runs into: a file of root's, or one others can read.
+fn refused_read(source: StoreError) -> ExportError {
+    let not_private = matches!(
+        source,
+        StoreError::WrongOwner { .. } | StoreError::NotOwnerOnly { .. }
+    );
+    if not_private {
+        ExportError::NotPrivate { source }
+    } else {
+        ExportError::Store(source)
+    }
+}
+
 /// Reads `trace`, then creates the run and writes its files; a trace that is refused creates nothing.
 pub(crate) fn export(
     root: &Path,
@@ -341,7 +358,7 @@ pub(crate) fn export(
     stamp: &str,
     run: &str,
 ) -> Result<Exported, ExportError> {
-    let bytes = store::read_trace(trace, MAX_TRACE_BYTES)?;
+    let bytes = store::read_trace(trace, MAX_TRACE_BYTES).map_err(refused_read)?;
     let read = records(&bytes).map_err(|source| ExportError::Trace {
         path: trace.to_path_buf(),
         source,
