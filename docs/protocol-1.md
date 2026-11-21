@@ -1,0 +1,141 @@
+# Protocol 1
+
+The daemon listens on `$XDG_RUNTIME_DIR/librepods.sock`. Protocol 1 is the
+daemon's own line protocol on that socket: a client can read the state, change
+a setting, ask for an action and follow every change of the state. The
+`librepods status`, `watch`, `set` and `do` commands speak it.
+
+This protocol may change until the first release that ships it.
+
+## Choosing the protocol
+
+The first byte a client sends decides what it speaks. A connection that starts
+with `{` speaks protocol 1. Any other first byte is the older one-verb dialect
+of `librepods-ctl`, which keeps working on the same socket.
+
+## Lines
+
+Each request and each reply is one JSON object on one line, ended by a newline
+(`\n`). A connection can carry any number of requests, and the daemon answers
+them in the order they arrive.
+
+- A request line holds at most 4096 bytes, newline excluded. A longer line
+  closes the connection without a reply.
+- Bytes after the last newline wait for the rest of their line. When the client
+  ends its side of the connection, the daemon answers the complete lines it has,
+  drops an unfinished one and closes.
+- Members a request does not use are ignored. A member given twice takes its
+  last value.
+
+## Requests
+
+Every request has `v`, the protocol version, `id`, a number the reply echoes,
+and `op`, what it asks for.
+
+```
+{"v":1,"id":7,"op":"get"}
+{"v":1,"id":8,"op":"subscribe"}
+{"v":1,"id":9,"op":"set","key":"noise","value":"anc"}
+{"v":1,"id":10,"op":"do","action":"disconnect"}
+```
+
+- `v` is `1`, the only version this daemon speaks.
+- `id` is a whole number from 0 to 18446744073709551615. A string, a fraction,
+  a negative number or a larger number is not a usable `id`.
+- `op` is one of `get`, `subscribe`, `set` and `do`.
+
+### `get`
+
+Replies with the current state.
+
+### `subscribe`
+
+Replies with the current state, exactly as `get` does, then sends one event
+line for every change of the state after it, in order. The first event is the
+first change after the state in the reply, so no change is missed and none is
+sent twice. Subscribing again on the same connection replies with the state
+again and keeps the one subscription.
+
+### `set`
+
+Changes one setting. `key` names it and `value` is always a JSON string, the
+level included.
+
+| `key` | `value` |
+|---|---|
+| `noise` | `off`, `anc`, `transparency`, `adaptive` or `cycle` (the next mode after the current one) |
+| `ear_detection` | `off`, `one` (pause when either bud comes out) or `both` (pause when both are out) |
+| `conversational_awareness` | `true` or `false` |
+| `one_bud_anc` | `true` or `false` |
+| `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
+
+### `do`
+
+Asks for one action, named by `action`: `connect`, `disconnect` or `forget`.
+
+## Replies
+
+A reply carries the request's `id` and `ok`.
+
+```
+{"id":7,"ok":true,"state":{ ...the state object... }}
+{"id":9,"ok":true,"result":"sent"}
+{"id":9,"ok":false,"error":{"code":"not_connected","message":"The AirPods are not connected."}}
+{"id":3,"ok":false,"error":{"code":"unsupported_version","message":"This daemon speaks protocol version 1 only.","supported":[1]}}
+```
+
+- `get` and `subscribe` reply with `state`, the same object `librepods status`
+  prints and the state file holds.
+- `set` and `do` reply with `result`: `sent` when the command went to the
+  AirPods with no answer yet, `confirmed` when it took effect and the state
+  shows it.
+- A refused request replies with `error`: `code` for programs and `message`, one
+  sentence for people.
+
+## Events
+
+After `subscribe`, the daemon sends one line per change of the state:
+
+```
+{"event":"state","state":{ ...the state object... }}
+```
+
+The daemon keeps at most 16 lines waiting for a client that reads slowly. When
+a 17th would wait, it closes that connection rather than skip a change. A
+subscriber therefore sees every change in order, or its connection closes.
+
+## Errors
+
+| `code` | `message` | When |
+|---|---|---|
+| `not_connected` | The AirPods are not connected. | The command needs the AirPods and they are not connected. |
+| `not_supported` | These AirPods do not support that. | The model has no such feature. |
+| `not_worn` | The AirPods are not in an ear. | The command needs the AirPods in an ear. |
+| `out_of_range` | The value is outside the range the setting takes. | `adaptive_level` outside 0 to 100. |
+| `unknown_key` | There is no setting by that name. | `set` with a `key` the table above does not list. |
+| `bad_request` | The daemon could not read the request. | See below. |
+| `timeout` | The AirPods did not answer in time. | The AirPods did not answer. |
+| `headless` | This daemon runs headless and has no window. | Not sent in protocol 1. |
+| `unsupported_version` | This daemon speaks protocol version 1 only. | `v` is present and is not `1`. The error lists the versions the daemon speaks in `supported`. |
+
+`bad_request` covers:
+
+- a line that is not a JSON object, or that has no `v`, no usable `id` or no
+  `op`, which gets `"id":null`;
+- an `op` that is not one of the four, a `set` without a string `key` and a
+  string `value`, a `value` the key does not take, a `do` without a string
+  `action` or with an action not listed, each of which echoes the `id`.
+
+The connection stays open after any error reply.
+
+## Command line
+
+- `librepods status` prints the state line.
+- `librepods watch` prints the state line, then one line per change. When the
+  daemon stops it prints `The daemon went away.` on stderr and exits 1. When
+  nothing reads its output any more, it exits 0 at the next line it cannot
+  write, so `librepods watch | head -1` succeeds.
+- `librepods set <key> <value>` and `librepods do <action>` print nothing and
+  exit 0 on success, or print the error message on stderr and exit 1.
+- When no daemon answers, each prints `Could not connect to OpenPods daemon at
+  <socket> (is it running?)` on stderr and exits 1.

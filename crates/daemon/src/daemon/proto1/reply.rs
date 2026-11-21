@@ -93,4 +93,24 @@ mod tests {
             format!("{{\"event\":\"state\",\"state\":{status}}}\n")
         );
     }
+
+    #[test]
+    fn the_protocol_document_lists_every_code_with_its_message() {
+        let document = include_str!("../../../../../docs/protocol-1.md");
+        for error in [
+            CommandError::NotConnected,
+            CommandError::NotSupported,
+            CommandError::NotWorn,
+            CommandError::OutOfRange,
+            CommandError::UnknownKey,
+            CommandError::BadRequest,
+            CommandError::Timeout,
+            CommandError::Headless,
+        ] {
+            let row = format!("| `{}` | {} |", error.code(), error.message());
+            assert!(document.contains(&row), "no row {row}");
+        }
+        let row = format!("| `{UNSUPPORTED_VERSION}` | {UNSUPPORTED_VERSION_MESSAGE} |");
+        assert!(document.contains(&row), "no row {row}");
+    }
 }
