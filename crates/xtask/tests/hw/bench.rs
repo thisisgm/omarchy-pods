@@ -38,6 +38,9 @@ fn daemon_lines() -> String {
     )
 }
 
+/// How long a half typed line sits at the prompt before the stop signal follows it.
+const HALF_LINE_LEAD: Duration = Duration::from_millis(500);
+
 /// Shared by every stub: the call log, the device named on stderr, and the scripted daemon.
 pub(crate) const LIB: &str = r#"
 log() { printf '%s\n' "$*" >> "$STUB/calls"; }
@@ -196,6 +199,7 @@ watch) echo $$ > "$STUB/watch-pid"
     [ -e "$STUB/watch-silent" ] && exec sleep "$watch_seconds"
     [ -e "$STUB/watch-wakes-daemon" ] && { kill -STOP "$(read_file main-pid)"; kill -CONT "$(read_file main-pid)"; }
     line; line
+    [ -e "$STUB/watch-ends" ] && exit 0
     if [ -e "$STUB/daemon-busy" ]; then sleep "$busy_wake_seconds"; kill -STOP "$(read_file main-pid)"; kill -CONT "$(read_file main-pid)"; fi
     exec sleep "$watch_seconds" ;;
 do)
@@ -410,9 +414,10 @@ impl Bench {
         })
     }
 
-    /// A run serving `set`, attended with the adapter cycle unless `attended-only` or `unattended`, where the buds come out and Enter is pressed when the prompt appears, or SIGINT sent under `interrupt-at-prompt`.
+    /// A run serving `set`, attended with the adapter cycle unless `attended-only` or `unattended`, where the buds come out and Enter is pressed when the prompt appears, or SIGINT sent under `interrupt-at-prompt`, after a line left unfinished under `half-line-at-prompt`.
     pub(crate) fn run_attended(&self) -> (Output, Served) {
-        let interrupt = self.root.path().join("interrupt-at-prompt").exists();
+        let half_line = self.root.path().join("half-line-at-prompt").exists();
+        let interrupt = half_line || self.root.path().join("interrupt-at-prompt").exists();
         let link_drops = self.root.path().join("link-down-after-prompt").exists();
         let connected = self.path("connected");
         let flags: &[&str] = if self.root.path().join("unattended").exists() {
@@ -442,6 +447,11 @@ impl Bench {
                     buds_out.store(true, Ordering::SeqCst);
                     if link_drops {
                         fs::write(&connected, "false").unwrap();
+                    }
+                    if half_line {
+                        drop(stdin.write_all(b"y"));
+                        // Long enough for the run to have taken the byte before the signal lands.
+                        thread::sleep(HALF_LINE_LEAD);
                     }
                     if interrupt {
                         kill_process(run, Signal::INT).ok();

@@ -76,9 +76,17 @@ impl WatchLines {
         wait_until(STATUS_TIMEOUT, || self.lines.load(Ordering::Relaxed) > 0)
     }
 
-    /// Ends the watch and returns the lines it printed after its first.
-    fn finish(mut self) -> usize {
-        self.stop().saturating_sub(1)
+    /// Ends the watch and returns the lines it printed after its first; a watch that had already ended is an error.
+    fn finish(mut self) -> Result<usize, String> {
+        let ended = self.child.try_wait();
+        let lines = self.stop().saturating_sub(1);
+        match ended {
+            Ok(None) => Ok(lines),
+            Ok(Some(status)) => Err(format!(
+                "librepods watch ended before the window did: {status}"
+            )),
+            Err(error) => Err(format!("librepods watch could not be checked: {error}")),
+        }
     }
 
     fn stop(&mut self) -> usize {
@@ -189,7 +197,13 @@ fn idle_window(
     }
     let mut wakeups = Wakeups::start(pid);
     sample_through(lab.idle_window, &mut wakeups)?;
-    let lines = watch.finish();
+    let lines = match watch.finish() {
+        Ok(lines) => lines,
+        Err(error) => {
+            check.fail(format!("{name}: {error}"));
+            return Ok(());
+        }
+    };
     let discovering_after = lab.adapter_state().map(|(_, discovering)| discovering);
     let seconds = lab.idle_window.as_secs().max(1);
     match wakeups {

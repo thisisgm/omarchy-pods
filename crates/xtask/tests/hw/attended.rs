@@ -67,6 +67,19 @@ fn a_command_short_of_confirmed_or_a_worn_bud_fails_the_census() {
 }
 
 #[test]
+fn a_stop_signal_after_a_half_typed_line_still_restores() {
+    let bench = Bench::new();
+    bench.set("half-line-at-prompt", "");
+    let (output, sets) = bench.run_attended();
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(!stdout.contains("C6 commands:"), "{stdout}");
+    assert_eq!(sets.after_prompt, Vec::<String>::new());
+    assert!(bench.installed_is("active"));
+}
+
+#[test]
 fn a_setting_left_changed_is_reported_when_a_signal_ends_the_census() {
     let bench = Bench::new();
     bench.set("refuse-one-bud-off", "");
