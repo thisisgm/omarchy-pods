@@ -498,11 +498,11 @@ mod tests {
         wait_for("the sweep error", || {
             rig.daemon().log().contains(SWEEP_FAILED).then_some(())
         });
-        let swept = rig.bluez().sweeps();
+        let swept = rig.bluez().sweeps().len();
         bluez_restarts(&rig);
         // The repeat must reach the fake before the hold, or it is held instead of failing again.
         wait_for("the repeated sweep", || {
-            (rig.bluez().sweeps() > swept).then_some(())
+            (rig.bluez().sweeps().len() > swept).then_some(())
         });
         rig.bluez().hold_replies(true);
         bluez_restarts(&rig);
@@ -527,12 +527,12 @@ mod tests {
         rig.bluez().remove(&pods.path);
         rig.start();
         wait_for("the first sweep", || {
-            (rig.bluez().sweeps() > 0).then_some(())
+            (!rig.bluez().sweeps().is_empty()).then_some(())
         });
         rig.bluez().hold_replies(true);
         bluez_restarts(&rig);
         wait_for("the held sweep", || {
-            (rig.bluez().sweeps() > 1).then_some(())
+            (rig.bluez().sweeps().len() > 1).then_some(())
         });
         rig.bluez()
             .add_device(rig.adapter(), pods.address, &[AAP_UUID], true);
@@ -552,9 +552,17 @@ mod tests {
         rig.link_up(&device);
         rig.bluez().fail_calls(true);
         rig.start();
-        wait_for("a second failed sweep", || {
-            (rig.bluez().sweeps() > 1).then_some(())
+        // A third sweep is sent only after the second one's failure was handled.
+        let sweeps = wait_for("a third failed sweep", || {
+            let sweeps = rig.bluez().sweeps();
+            (sweeps.len() > 2).then_some(sweeps)
         });
+        let gap = sweeps[1].duration_since(sweeps[0]);
+        let latest = SWEEP_RETRY + REAL_TIME_SLACK;
+        assert!(
+            gap >= SWEEP_RETRY && gap <= latest,
+            "the second sweep came {gap:?} after the first, wanted {SWEEP_RETRY:?} to {latest:?}"
+        );
         let log = rig.daemon().log();
         assert_eq!(log.matches(SWEEP_FAILED).count(), 1, "{log}");
         rig.bluez().fail_calls(false);

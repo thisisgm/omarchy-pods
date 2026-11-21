@@ -61,8 +61,8 @@ struct Objects {
     edges: Vec<Edge>,
     hold: bool,
     fail: bool,
-    /// The `GetManagedObjects` calls that reached the fake, held ones included.
-    sweeps: usize,
+    /// When each `GetManagedObjects` call reached the fake, held ones included.
+    sweeps: Vec<Instant>,
 }
 
 struct Device {
@@ -208,9 +208,9 @@ impl FakeBluez {
         self.lock().fail = fail;
     }
 
-    /// How many sweeps reached the fake so far.
-    pub(crate) fn sweeps(&self) -> usize {
-        self.lock().sweeps
+    /// When each sweep reached the fake, oldest first.
+    pub(crate) fn sweeps(&self) -> Vec<Instant> {
+        self.lock().sweeps.clone()
     }
 
     /// Whether any object of `address` was connected at `at` or within `slack` before it.
@@ -307,7 +307,7 @@ impl Objects {
     fn answer(&mut self, call: &Message) -> Option<Message> {
         let header = call.header();
         if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
-            self.sweeps = self.sweeps.saturating_add(1);
+            self.sweeps.push(Instant::now());
         }
         if self.hold {
             return None;
