@@ -23,6 +23,9 @@ pub const HANDSHAKE_ACK_PREFIX: [u8; 4] = [0x01, 0x00, 0x04, 0x00];
 /// A packet starting with these bytes acknowledges `SET_SPECIFIC_FEATURES`.
 pub const FEATURES_ACK_PREFIX: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x2b, 0x00];
 
+/// The L2CAP PSM of the control channel, the one upstream librepods connects to.
+pub const CONTROL_PSM: u16 = 0x1001;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +57,14 @@ mod tests {
             FEATURES_ACK_PREFIX.to_vec(),
             PACKETS.hex(PARSE, "FEATURES_ACK")
         );
+    }
+
+    // Bluetooth Core, Vol 3 Part A 4.2: a PSM is odd, its upper octet is even, and dynamic ones start at 0x1001.
+    #[test]
+    fn control_psm_is_a_valid_dynamic_psm() {
+        let [upper, lower] = CONTROL_PSM.to_be_bytes();
+        assert_eq!(lower % 2, 1);
+        assert_eq!(upper % 2, 0);
+        assert!(upper >= 0x10);
     }
 }
