@@ -508,6 +508,48 @@ fn a_script_restore_puts_back_the_side_the_pods_reported() {
 }
 
 #[test]
+fn the_automatic_segment_is_sent_when_the_pods_start_on_a_fixed_side() {
+    // The shape of the `side` script: three settings with the uplink running, the restore after the STOP.
+    let events = [
+        at(0, Action::Start),
+        at(0, Action::SetSide(MicSide::Left)),
+        at(10, Action::SetSide(MicSide::Right)),
+        at(20, Action::SetSide(MicSide::Automatic)),
+        at(30, Action::Stop),
+        at(40, Action::RestoreSide),
+        at(50, Action::End),
+    ];
+    let mut case = Case::new(Opening::Handshake, &events);
+    case.script.needs_initial_side = true;
+    // A fixed side to begin with, so a restore in place of the automatic setting would send it twice more.
+    case.pods.side = Some(MicSide::Left);
+    let report = case.run();
+
+    let [left, right, automatic] =
+        [MicSide::Left, MicSide::Right, MicSide::Automatic].map(|side| side.command().encode());
+    let got = report.pods.got();
+    let sides: Vec<&[u8]> = got
+        .iter()
+        .map(|sdu| &sdu[..])
+        .filter(|sdu| [&left[..], &right[..], &automatic[..]].contains(sdu))
+        .collect();
+    assert_eq!(sides, [&left[..], &right, &automatic, &left], "{got:02x?}");
+    let automatic_at = got.iter().position(|sdu| *sdu == automatic);
+    let stopped_at = got.iter().position(|sdu| *sdu == STOP);
+    let restored_at = got.iter().rposition(|sdu| *sdu == left);
+    assert!(
+        automatic_at < stopped_at && stopped_at < restored_at,
+        "{got:02x?}"
+    );
+    let texts: Vec<&str> = report.marks("side").iter().map(|mark| mark.1).collect();
+    assert_eq!(
+        texts,
+        ["set left", "set right", "set automatic", "restored"]
+    );
+    assert_eq!(report.outcome().end, EndReason::ScriptDone);
+}
+
+#[test]
 fn a_truncated_sdu_is_marked_and_counted_not_logged() {
     let mut case = Case::new(Opening::Handshake, &[at(30, Action::End)]);
     case.pods.greeting = vec![vec![0x11; OVERSIZED_LEN], vec![0x22; 3]];
