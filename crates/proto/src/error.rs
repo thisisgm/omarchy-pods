@@ -2,45 +2,30 @@
 
 use std::fmt;
 
-/// Every control channel packet this crate reads starts with a header this long.
 pub const HEADER_LEN: usize = 6;
 
-/// The parser that refused its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Parser {
     /// `BatteryReport::parse` and the component byte it reads.
     Battery,
-    /// `BatteryReport::parse_decrypted`.
     DecryptedBattery,
-    /// `EarReport::parse`.
     Ear,
     /// `ControlCommand::parse` and the value byte `MicSide::try_from` reads.
     Control,
-    /// `NoiseMode::from_command`.
     NoiseCommand,
-    /// `NoiseMode::try_from`.
     NoiseMode,
     /// `UplinkPacket::parse` reading a 0x58 packet cut before its subtype.
     Uplink,
-    /// `UplinkPacket::parse` reading an audio SDU.
     UplinkAudio,
-    /// `UplinkPacket::parse` reading a control packet.
     UplinkControl,
     /// `AttPdu::parse` reading an SDU with no opcode in it.
     Att,
-    /// `AttPdu::parse` reading a Find Information reply.
     AttFindInformation,
-    /// `AttPdu::parse` reading a Read By Type reply.
     AttReadByType,
-    /// `AttPdu::parse` reading an error response.
     AttError,
-    /// `AttPdu::parse` reading a notification.
     AttNotification,
-    /// `AttPdu::parse` reading an indication.
     AttIndication,
-    /// `DictationPacket::parse` reading a notification on the audio handle.
     DictationAudio,
-    /// `Metadata::parse`.
     Metadata,
     /// `classify` reading an SDU cut inside its opcode.
     Packet,
@@ -71,12 +56,12 @@ impl fmt::Display for Parser {
     }
 }
 
-/// The first six bytes of a control channel packet in hex; the protocol puts the packet type there, never an address.
+/// Hex of a packet's first six bytes; the protocol puts the packet type there, never an address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header(pub [u8; HEADER_LEN]);
 
 impl fmt::Display for Header {
-    // Sample output: 04 00 04 00 09 00
+    // Sample output: `04 00 04 00 09 00`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (at, byte) in self.0.iter().enumerate() {
             if at > 0 {
@@ -88,43 +73,36 @@ impl fmt::Display for Header {
     }
 }
 
-/// Why a packet was refused, naming the parser that refused it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ParseError {
-    /// Fewer bytes than the shortest valid packet.
     #[error("{parser} too short: need {need} bytes, got {got}")]
     TooShort {
         parser: Parser,
         need: usize,
         got: usize,
     },
-    /// The packet does not start with the header this parser reads.
     #[error("{parser} has the wrong header: expected {expected}, got {got}")]
     BadHeader {
         parser: Parser,
         expected: Header,
         got: Header,
     },
-    /// A byte holds a value the protocol does not define for that field.
     #[error("{parser} has an unknown {field} value {value:#04x}")]
     UnknownValue {
         parser: Parser,
         field: &'static str,
         value: u8,
     },
-    /// The length disagrees with the length the packet must have.
     #[error("{parser} is {got} bytes, expected {expected}")]
     WrongLength {
         parser: Parser,
         expected: usize,
         got: usize,
     },
-    /// A list that must hold at least one entry holds no whole one.
     #[error("{parser} has an empty list: its {list_len} bytes hold no whole entry")]
     EmptyList { parser: Parser, list_len: usize },
 }
 
-/// Checks the minimum length, then returns the bytes after `header`.
 pub(crate) fn strip_header(
     parser: Parser,
     bytes: &[u8],

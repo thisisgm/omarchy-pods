@@ -1,4 +1,4 @@
-//! Fixed requests the host sends while it opens the control channel, and the replies that pace them.
+//! Fixed requests the host sends to open the control channel, and the replies that pace them.
 
 // Request bytes are Connection in daemon/airpods_packets.h, reply prefixes are Parse.
 
@@ -23,10 +23,10 @@ pub const HANDSHAKE_ACK_PREFIX: [u8; 4] = [0x01, 0x00, 0x04, 0x00];
 /// A packet starting with these bytes acknowledges `SET_SPECIFIC_FEATURES`.
 pub const FEATURES_ACK_PREFIX: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x2b, 0x00];
 
-/// The L2CAP PSM of the control channel, the one upstream librepods connects to.
+/// The one upstream librepods connects to.
 pub const CONTROL_PSM: u16 = 0x1001;
 
-/// The L2CAP PSM of the attribute protocol on a classic link, `ATT` in the Bluetooth Assigned Numbers list of PSMs.
+/// `ATT` in the Bluetooth Assigned Numbers list of PSMs.
 pub const ATT_PSM: u16 = 0x001F;
 
 #[cfg(test)]
@@ -62,7 +62,7 @@ mod tests {
         );
     }
 
-    // Bluetooth Core, Vol 3 Part A 4.2: a PSM is odd, its upper octet is even, and dynamic ones start at 0x1001.
+    // Bluetooth Core, Vol 3 Part A 4.2: PSMs are odd, upper octet even, dynamic ones from 0x1001.
     #[test]
     fn control_psm_is_a_valid_dynamic_psm() {
         let [upper, lower] = CONTROL_PSM.to_be_bytes();
@@ -71,7 +71,7 @@ mod tests {
         assert!(upper >= 0x10);
     }
 
-    // Bluetooth Core, Vol 3 Part A 4.2: a PSM is odd, its upper octet is even, and those the SIG assigns end at 0x0EFF.
+    // Bluetooth Core, Vol 3 Part A 4.2: PSMs are odd, upper octet even, SIG ones end at 0x0EFF.
     #[test]
     fn att_psm_is_a_valid_assigned_psm() {
         let [upper, lower] = ATT_PSM.to_be_bytes();

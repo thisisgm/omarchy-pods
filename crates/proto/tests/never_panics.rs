@@ -13,7 +13,7 @@ use pods_proto::uplink::{
 };
 use proptest::prelude::*;
 
-// Sample output: 04 00 04 00 09 00 <id> <v0> <v1> <v2> <v3>, the control channel frame shape.
+// Sample output: `04 00 04 00 09 00 <id> <v0> <v1> <v2> <v3>`, the control channel frame.
 fn sample_frame(id: u8, v: [u8; 4]) -> Vec<u8> {
     let mut frame = vec![0x04, 0x00, 0x04, 0x00, 0x09, 0x00, id];
     frame.extend(v);
@@ -57,39 +57,39 @@ const DECLARED_LEN_BYTES: usize = 2;
 const UPLINK_CONTROL_MIN_LEN: usize = 10;
 /// Where the length byte sits in an access unit, after the four stamp bytes.
 const UNIT_LENGTH_AT: usize = 4;
-/// One more than the most access units a generated SDU carries, and how many stamps are drawn for them.
+/// One more than the most access units a generated SDU carries; also the stamps drawn.
 const UNIT_COUNT_BOUND: usize = 8;
 /// Length bound of a generated capture line, longer than any line `parse_line` accepts.
 const MAX_LINE_CHARS: usize = 9000;
-/// Most bytes in a line that gets one character changed, short so the change often lands in the stamp or the direction.
+/// Short so the one changed character often lands in the stamp or the direction.
 const CHANGED_SDU_MAX: usize = 16;
-/// What one character of a valid line is changed to: digits, both marks, a space, signs, hex in both cases, and text no field holds.
+/// Digits, both marks, a space, signs, hex in both cases, and text no field holds.
 const CHANGED_TO: &[char] = &[
     '0', '9', ' ', '<', '>', '+', '-', 'a', 'f', 'A', 'F', 'g', '\n', '\u{e9}',
 ];
-/// Notification opcode and the audio handle 0x000d, little endian: the gate of a dictation audio notification.
+/// Notification opcode and audio handle 0x000d, little endian: a dictation audio gate.
 const DICTATION_AUDIO_GATE: [u8; 3] = [0x1b, 0x0d, 0x00];
 /// The two bytes every dictation audio value starts with.
 const DICTATION_AUDIO_MARKER: [u8; 2] = [0x01, 0x00];
 /// Notification opcode and the status handle 0x0010, little endian.
 const DICTATION_STATUS_GATE: [u8; 3] = [0x1b, 0x10, 0x00];
-/// Opcodes whose PDU the ATT reader refuses when it is malformed: the error response, both list replies and the indication.
+/// Opcodes the ATT reader refuses when malformed: error response, list replies, indication.
 const ATT_REFUSED_WHEN_MALFORMED: [u8; 4] = [
     ATT_ERROR.0,
     ATT_FIND_INFORMATION_REPLY,
     ATT_READ_BY_TYPE_REPLY,
     ATT_INDICATION,
 ];
-/// Where the length byte sits in a dictation frame, after the flag, the level and the two counter bytes.
+/// After the flag, the level and the two counter bytes.
 const FRAME_LENGTH_AT: usize = 4;
 /// One more than the most frames a generated notification carries.
 const FRAME_COUNT_BOUND: usize = 8;
 /// Length bound of a generated value that is noise, longer than both known status replies.
 const VALUE_NOISE_BOUND: usize = 16;
-/// Noise bytes after the marker of a cut audio notification: the packet counter, the two length bytes, then one frame prefix.
+/// After a cut audio notification's marker: packet counter, two length bytes, a frame prefix.
 const CUT_NOISE_LEN: usize = 8;
 
-// Sample output: [04, 01, 55, 02, 01], kind, spacer, level, status, end; marks are mostly 0x01 so the entry loop runs.
+// Sample output: `[04, 01, 55, 02, 01]`, kind, spacer, level, status, end; marks mostly 0x01.
 fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
     let kind = prop_oneof![
         Just(0x01_u8),
@@ -104,7 +104,7 @@ fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
         .prop_map(|(kind, spacer, level, status, end)| [kind, spacer, level, status, end])
 }
 
-/// Parses one PDU and walks whatever list it holds to its end, reading every entry as a declaration.
+/// Walks whatever list the PDU holds to its end, reading every entry as a declaration.
 fn walk_att(pdu: &[u8]) {
     match AttPdu::parse(pdu) {
         Ok(AttPdu::Information(pairs)) => assert!(pairs.count() <= pdu.len()),
@@ -115,7 +115,7 @@ fn walk_att(pdu: &[u8]) {
     }
 }
 
-// Sample output: [01, 00, 00, 28] for handle 0x0001 and identifier 0x2800, the pair as a Find Information reply carries it.
+// Sample output: `[01, 00, 00, 28]` for handle 0x0001 and identifier 0x2800.
 fn att_pair_bytes(pair: HandleInfo<'_>) -> Vec<u8> {
     let mut bytes = pair.handle.to_le_bytes().to_vec();
     match pair.uuid {
@@ -125,7 +125,7 @@ fn att_pair_bytes(pair: HandleInfo<'_>) -> Vec<u8> {
     bytes
 }
 
-// Sample output: (AttFindInformation, [05, 01], 4), the reader of a list reply, the two bytes that open it and the length of one of its entries.
+// Sample output: `(AttFindInformation, [05, 01], 4)`, reader, opening bytes, entry length.
 fn att_list_prefix() -> impl Strategy<Value = (Parser, [u8; 2], usize)> {
     prop_oneof![
         Just((
@@ -148,7 +148,7 @@ fn att_list_prefix() -> impl Strategy<Value = (Parser, [u8; 2], usize)> {
     ]
 }
 
-// Sample output: `AA:bb:CC:dd:EE:ff`, with about one part in ten replaced by text the format does not allow.
+// Sample output: `AA:bb:CC:dd:EE:ff`, about one part in ten replaced by text not allowed.
 fn address_text() -> impl Strategy<Value = String> {
     let pair = || prop_oneof![9 => "[0-9a-fA-F]{2}", 1 => "[ -~]{0,3}"];
     let colon = || prop_oneof![9 => Just(":".to_owned()), 1 => "[ -~]{0,2}"];
@@ -166,7 +166,7 @@ fn address_text() -> impl Strategy<Value = String> {
         })
 }
 
-// The address shape, checked one byte at a time: colons at 2, 5, 8, 11 and 14, hex digits elsewhere.
+// Checked one byte at a time: colons at 2, 5, 8, 11 and 14, hex digits elsewhere.
 fn octets_of(text: &str) -> Option<Vec<u8>> {
     let shaped = text.len() == 17
         && text.bytes().enumerate().all(|(at, byte)| {
@@ -184,7 +184,7 @@ fn octets_of(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-// Sample output: (0x80, 0xd5, 0x0104, [b8, 10, 11]), one frame's flag, level, counter and data; counters and lengths lean on their edges.
+// Sample output: `(0x80, 0xd5, 0x0104, [b8, 10, 11])`; counters and lengths lean on their edges.
 fn dictation_frame() -> impl Strategy<Value = (u8, u8, u16, Vec<u8>)> {
     let longest = usize::from(u8::MAX);
     let counter = prop_oneof![Just(0_u16), Just(u16::MAX), any::<u16>()];
@@ -196,7 +196,7 @@ fn dictation_frame() -> impl Strategy<Value = (u8, u8, u16, Vec<u8>)> {
     (any::<u8>(), any::<u8>(), counter, data)
 }
 
-// Sample output: 01 00 03 00, a status value: a known reply, one with a bit flipped, one a byte longer or shorter, or noise.
+// Sample output: `01 00 03 00`: a known reply, one bit flipped, a byte longer or shorter, or noise.
 fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
     let value_of = |reply: &[u8]| -> Vec<u8> {
         let after_the_gate = reply.iter().skip(DICTATION_STATUS_GATE.len());
@@ -224,7 +224,7 @@ fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![known(), flipped, longer, shorter, noise]
 }
 
-// Sample output: 1b 0d 00 01 00 2a, the audio gate and marker then noise, cut at any length from nothing to one frame prefix past the audio prefix.
+// Sample output: `1b 0d 00 01 00 2a`, cut anywhere up to one frame prefix past the audio prefix.
 fn dictation_cut_audio_notification() -> impl Strategy<Value = Vec<u8>> {
     let noise = proptest::collection::vec(any::<u8>(), CUT_NOISE_LEN);
     (noise, any::<proptest::sample::Index>()).prop_map(|(noise, kept)| {
@@ -268,7 +268,7 @@ proptest! {
         let _outcome = BatteryReport::parse(&packet);
     }
 
-    // A count that agrees with the entries and marks of 0x01 parses; a nearby count or length is refused.
+    // A count agreeing with the entries and 0x01 marks parses; a nearby count or length is refused.
     #[test]
     fn battery_parse_walks_the_entries(
         entries in proptest::collection::vec(battery_entry(), 0..=4),
@@ -329,7 +329,7 @@ proptest! {
         prop_assert!(BatteryReport::parse_decrypted(&payload, primary_left, pod_in_case, headset).is_ok());
     }
 
-    // tst_stress parseActive_fuzzShape: pure random, header plus tail, and a short prefix of the header.
+    // tst_stress parseActive_fuzzShape: random, header plus tail, and a short prefix of the header.
     #[test]
     fn parse_active_fuzz_shape(
         random in proptest::collection::vec(any::<u8>(), 0..=20),
@@ -366,7 +366,7 @@ proptest! {
         walk_att(&b);
     }
 
-    // A reply behind a valid two byte prefix yields every whole entry in order and counts a tail shorter than one; with no whole entry it is refused.
+    // Every whole entry is yielded in order and a short tail counted; no whole entry is refused.
     #[test]
     fn att_list_replies_account_for_every_byte(
         (parser, prefix, entry_len) in att_list_prefix(),
@@ -400,7 +400,7 @@ proptest! {
         }
     }
 
-    // A reply whose list holds no whole entry is refused, so nothing can walk it and learn no handle.
+    // A reply whose list holds no whole entry is refused, so no walk learns a handle from it.
     #[test]
     fn att_list_reply_with_no_whole_entry_is_refused(
         ((parser, prefix, entry_len), body) in att_list_prefix().prop_flat_map(|list| {
@@ -414,7 +414,6 @@ proptest! {
         prop_assert_eq!(AttPdu::parse(&pdu), Err(empty));
     }
 
-    // A format other than the two defined ones is refused whatever follows it.
     #[test]
     fn att_find_information_with_an_undefined_format_is_refused(
         format in any::<u8>().prop_filter("the format is a defined one", |format| ![ATT_SHORT_FORMAT.0, ATT_LONG_FORMAT.0].contains(format)),
@@ -426,7 +425,7 @@ proptest! {
         prop_assert_eq!(AttPdu::parse(&pdu), Err(refused));
     }
 
-    // An entry length that cannot hold a handle is refused whatever follows it, the zero that would never end included.
+    // The zero entry length, which would never end, is included.
     #[test]
     fn att_read_by_type_with_an_entry_shorter_than_a_handle_is_refused(
         entry_len in 0..ATT_ENTRY_MIN_LEN,
@@ -492,7 +491,7 @@ proptest! {
         let _outcome = UplinkPacket::parse(&b);
     }
 
-    // The yielded units encode back to the front of the SDU, and trailing counts a tail that holds no whole unit.
+    // Yielded units encode back to the SDU's front; trailing counts a tail of no whole unit.
     #[test]
     fn uplink_parse_past_the_header_never_panics(body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU)) {
         let mut sdu = UPLINK_AUDIO_GATE.to_vec();
@@ -534,7 +533,7 @@ proptest! {
         }
     }
 
-    // Whole units survive a round trip; a cut SDU yields every unit that still fits and counts the rest.
+    // Whole units survive a round trip; a cut SDU yields every unit that fits and counts the rest.
     #[test]
     fn uplink_audio_round_trips_and_counts_a_cut_tail(
         opaque in any::<[u8; OPAQUE_LEN]>(),
@@ -572,7 +571,7 @@ proptest! {
         let _outcome = parse_line(&line);
     }
 
-    // A written line with one character changed is refused, or it is still exactly what format_line writes for the record read.
+    // A changed line is refused, or it is exactly what format_line writes for the record read.
     #[test]
     fn parse_line_reads_a_changed_line_only_as_format_line_writes_it(
         at_ns in any::<u64>(),
@@ -590,7 +589,7 @@ proptest! {
         }
     }
 
-    // A uniform length under MAX_SDU almost never draws a notification cut inside its prefix, so half the cases are an audio notification cut that short.
+    // Uniform lengths rarely cut a notification inside its prefix, so half the cases are such cuts.
     #[test]
     fn dictation_parse_never_panics(b in prop_oneof![
         proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
@@ -599,7 +598,7 @@ proptest! {
         let _outcome = DictationPacket::parse(&b);
     }
 
-    // The yielded frames encode back to the front of the body, and trailing counts a tail that holds no whole frame.
+    // Yielded frames encode back to the body's front; trailing counts a tail of no whole frame.
     #[test]
     fn dictation_parse_past_the_prefix_never_panics(
         packet_counter in any::<u8>(),
@@ -631,7 +630,7 @@ proptest! {
         prop_assert!(cut_short, "a whole frame was left in the tail {:02x?}", tail);
     }
 
-    // A value on the audio handle is too short before its length bytes end, unknown without the marker, and audio otherwise.
+    // Audio handle: too short before the length bytes end, unknown without the marker, else audio.
     #[test]
     fn dictation_audio_handle_sorts_every_value(
         marker in prop_oneof![Just(DICTATION_AUDIO_MARKER), dictation_near_marker(), any::<[u8; 2]>()],
@@ -655,7 +654,7 @@ proptest! {
         }
     }
 
-    // A PDU with any other opcode is not dictation, whether the ATT reader accepts it or refuses it, even on the two handles.
+    // Any other opcode is not dictation, valid ATT or not, even on the two handles.
     #[test]
     fn dictation_reads_nothing_but_a_notification(
         opcode in prop_oneof![proptest::sample::select(&ATT_REFUSED_WHEN_MALFORMED), any::<u8>()]
@@ -685,7 +684,7 @@ proptest! {
         prop_assert_eq!(DictationPacket::parse(&pdu), Ok(Some(DictationPacket::Status(expected))));
     }
 
-    // Whole frames survive a round trip; a cut notification yields every frame that still fits and counts the rest.
+    // Whole frames round trip; a cut notification yields each frame that fits and counts the rest.
     #[test]
     fn dictation_audio_round_trips_and_counts_a_cut_tail(
         packet_counter in prop_oneof![Just(0_u8), Just(u8::MAX), any::<u8>()],
