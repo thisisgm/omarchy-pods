@@ -61,6 +61,11 @@ how you know. Before you open a PR:
 3. **Where the defect is testable, write the failing case first** and check that
    it goes red without your fix. A case that passes either way is worth nothing,
    and reviewers do check.
+4. **The proof is end to end.** Drive the behaviour through a path a user
+   reaches (`librepods-ctl`, the control socket, the D-Bus interface, the state
+   file the plugin reads) against the real daemon binary. A direct test (a
+   `tst_*.cpp`, a Rust unit test) is welcome for pure logic and is support, not
+   proof. Code with no user path yet says so in the PR.
 
 If something genuinely cannot be driven (a suspend cycle, a controller quirk you
 do not own), say so plainly in the PR and describe what you did instead. That is
