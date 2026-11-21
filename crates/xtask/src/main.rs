@@ -1,5 +1,6 @@
 //! Workspace checks and tools. `cargo xtask ci` runs the Rust gates of the hosted CI; zizmor runs only there.
 
+mod hw;
 mod probe;
 
 use std::env;
@@ -29,8 +30,11 @@ fn main() -> ExitCode {
     match env::args_os().nth(1) {
         Some(command) if command == "ci" => run_ci(),
         Some(command) if command == "probe" => probe::run(env::args_os().skip(1)),
+        Some(command) if command == "hw" => hw::run(env::args_os().skip(1)),
         _ => {
-            report("usage: cargo xtask ci | cargo xtask probe <command>");
+            report(
+                "usage: cargo xtask ci | cargo xtask probe <command> | cargo xtask hw link --binary <path>",
+            );
             ExitCode::FAILURE
         }
     }

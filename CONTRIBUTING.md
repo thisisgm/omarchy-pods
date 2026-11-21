@@ -71,6 +71,9 @@ If something genuinely cannot be driven (a suspend cycle, a controller quirk you
 do not own), say so plainly in the PR and describe what you did instead. That is
 an accepted answer here. Claiming a test you did not run is not.
 
+The Rust daemon's link has its own hardware checks, `cargo xtask hw link`, run by
+hand on a machine with AirPods; [docs/hardware-tests.md](docs/hardware-tests.md) says how.
+
 ## House style
 
 The bar for this code is that somebody woken at 3am can read it. Boring beats
