@@ -52,16 +52,16 @@ fn each_op_reads_to_its_request() {
 }
 
 #[test]
-fn a_line_without_a_usable_id_v_or_op_is_refused_with_no_id() {
+fn a_line_without_a_usable_id_is_refused_with_no_id() {
     for line in [
         "",
         "{",
         "null",
         "[1]",
         r#""get""#,
-        r#"{"id":4,"op":"get"}"#,
-        r#"{"v":1,"id":4}"#,
         r#"{"v":1,"op":"get"}"#,
+        r#"{"v":2}"#,
+        "{}",
         r#"{"v":1,"id":"4","op":"get"}"#,
         r#"{"v":1,"id":4.0,"op":"get"}"#,
         r#"{"v":1,"id":-4,"op":"get"}"#,
@@ -81,6 +81,11 @@ fn a_line_with_a_usable_id_echoes_it_in_the_refusal() {
         error: RequestError::UnsupportedVersion,
     });
     for (line, expected) in [
+        (r#"{"id":4,"op":"get"}"#, bad(Some(4))),
+        (r#"{"id":4}"#, bad(Some(4))),
+        (r#"{"v":1,"id":4}"#, bad(Some(4))),
+        (r#"{"v":1,"id":4,"op":null}"#, bad(Some(4))),
+        (r#"{"v":2,"id":4}"#, unsupported),
         (r#"{"v":2,"id":4,"op":"get"}"#, unsupported),
         (r#"{"v":"1","id":4,"op":"get"}"#, unsupported),
         (r#"{"v":null,"id":4,"op":"get"}"#, unsupported),
@@ -196,19 +201,22 @@ fn check_against_members(value: &Value) -> Result<(), TestCaseError> {
             prop_assert_eq!(op, Some(expected_op));
         }
         Err(Refusal {
-            id: Some(echoed), ..
+            id: Some(echoed),
+            error,
         }) => {
             prop_assert_eq!(Some(echoed), id);
-            prop_assert!(
-                value.get("v").is_some() && value.get("op").is_some(),
-                "{}",
-                line
-            );
+            let version = value.get("v");
+            if error == RequestError::UnsupportedVersion {
+                prop_assert!(
+                    version.is_some_and(|v| v.as_u64() != Some(VERSION)),
+                    "{}",
+                    line
+                );
+            }
         }
         Err(Refusal { id: None, error }) => {
             prop_assert_eq!(error, RequestError::Command(CommandError::BadRequest));
-            let complete = id.is_some() && value.get("v").is_some() && value.get("op").is_some();
-            prop_assert!(!complete, "{}", line);
+            prop_assert_eq!(id, None, "{}", line);
         }
     }
     Ok(())

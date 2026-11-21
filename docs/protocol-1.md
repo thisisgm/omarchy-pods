@@ -120,11 +120,18 @@ subscriber therefore sees every change in order, or its connection closes.
 
 `bad_request` covers:
 
-- a line that is not a JSON object, or that has no `v`, no usable `id` or no
-  `op`, which gets `"id":null`;
-- an `op` that is not one of the four, a `set` without a string `key` and a
-  string `value`, a `value` the key does not take, a `do` without a string
-  `action` or with an action not listed, each of which echoes the `id`.
+- a line that is not valid JSON, is not a JSON object, or has no usable `id`,
+  which gets `"id":null`;
+- a line with a usable `id` but no `v`, an `op` that is missing or not one of
+  the four, a `set` without a string `key` and a string `value`, a `value` the
+  key does not take, a `do` without a string `action` or with an action not
+  listed, each of which echoes the `id`.
+
+Every reply to a line with a usable `id` echoes that `id`, refusals included.
+The daemon checks a line in this order and replies to the first rule it breaks:
+a usable `id`, then `v` present, then `v` is `1`, then the rest. A line whose
+`v` is present and is not `1` therefore gets `unsupported_version` whatever
+else it holds.
 
 The connection stays open after any error reply.
 

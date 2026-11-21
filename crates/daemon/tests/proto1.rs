@@ -330,6 +330,7 @@ mod tests {
             r#"{"v":2,"id":3,"op":"get"}"#,
             r#"{"v":"1","id":3,"op":"get"}"#,
             r#"{"v":1.0,"id":3,"op":"get"}"#,
+            r#"{"v":2,"id":3}"#,
         ] {
             assert_eq!(
                 client.ask(request),
@@ -349,8 +350,8 @@ mod tests {
             ("{garbage", "null"),
             ("", "null"),
             ("[1]", "null"),
-            (r#"{"id":4,"op":"get"}"#, "null"),
-            (r#"{"v":1,"id":4}"#, "null"),
+            (r#"{"id":4,"op":"get"}"#, "4"),
+            (r#"{"v":1,"id":4}"#, "4"),
             (r#"{"v":1,"op":"get"}"#, "null"),
             (r#"{"v":1,"id":"4","op":"get"}"#, "null"),
             (r#"{"v":1,"id":4.5,"op":"get"}"#, "null"),
