@@ -215,3 +215,41 @@ proptest! {
         );
     }
 }
+
+#[test]
+fn every_mode_and_behavior_has_the_word_that_sets_it() {
+    for mode in [
+        NoiseMode::Off,
+        NoiseMode::Anc,
+        NoiseMode::Transparency,
+        NoiseMode::Adaptive,
+    ] {
+        let shown = word(NOISE, noise(mode)).unwrap();
+        assert_eq!(setting(NOISE, shown), Ok(noise(mode)), "{mode:?}");
+    }
+    for behavior in [
+        EarDetectionBehavior::PauseWhenOneRemoved,
+        EarDetectionBehavior::PauseWhenBothRemoved,
+        EarDetectionBehavior::Disabled,
+    ] {
+        let command = Command::SetEarDetection(behavior);
+        let shown = word(EAR_DETECTION, command).unwrap();
+        assert_eq!(setting(EAR_DETECTION, shown), Ok(command), "{behavior:?}");
+    }
+}
+
+#[test]
+fn a_key_whose_values_are_not_words_has_no_word() {
+    for (key, command) in [
+        (
+            CONVERSATIONAL_AWARENESS,
+            Command::SetConversationalAwareness(true),
+        ),
+        (ONE_BUD_ANC, Command::SetOneBudAnc(true)),
+        (ADAPTIVE_LEVEL, Command::SetAdaptiveLevel(37)),
+        ("volume", noise(NoiseMode::Anc)),
+        (EAR_DETECTION, noise(NoiseMode::Anc)),
+    ] {
+        assert_eq!(word(key, command), None, "{key} {command:?}");
+    }
+}

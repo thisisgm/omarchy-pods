@@ -263,18 +263,3 @@ fn level_of(bytes: &[u8]) -> Option<u8> {
         }
     }
 }
-
-#[test]
-fn every_whole_word_verb_is_the_verb_for_its_request() {
-    for (verb, request) in VERBS {
-        assert_eq!(verb_for(request), Some(verb), "{verb}");
-    }
-}
-
-#[test]
-fn an_adaptive_level_has_no_whole_word_verb() {
-    assert_eq!(
-        verb_for(LegacyRequest::Command(Command::SetAdaptiveLevel(37))),
-        None
-    );
-}
