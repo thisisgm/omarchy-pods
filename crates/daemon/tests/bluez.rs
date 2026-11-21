@@ -59,6 +59,9 @@ mod tests {
     /// How that line goes on when BlueZ never answered, from `reply` in `src/daemon/bluez.rs`.
     const SWEEP_HELD: &str = "no answer within";
 
+    /// The daemon's line about a signal it could not read, from `body` in `src/daemon/bluez.rs`.
+    const SIGNAL_UNREAD: &str = "bluez: cannot read a PropertiesChanged signal of signature (su)";
+
     /// Words every line of the daemon about the system bus holds.
     const SYSTEM_BUS_LINE: &str = "system bus";
 
@@ -516,6 +519,21 @@ mod tests {
         rig.wait_dials(1, SWEEP_TIMEOUT + DIAL_WAIT);
         let log = rig.daemon().log();
         assert_eq!(log.matches(SWEEP_FAILED).count(), 2, "{log}");
+        up(&rig);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_signal_the_watcher_cannot_read_is_logged_and_the_link_stays() {
+        let mut rig = Rig::new();
+        let device = rig.add_pods(Profile::default());
+        rig.start();
+        rig.link_up(&device);
+        up(&rig);
+        rig.bluez().emit_unreadable(&device.path);
+        wait_for("the unreadable signal's line", || {
+            rig.daemon().log().contains(SIGNAL_UNREAD).then_some(())
+        });
         up(&rig);
         rig.finish();
     }

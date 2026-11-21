@@ -142,18 +142,18 @@ impl Watcher<'_> {
     async fn take(&mut self, message: &Message) -> ControlFlow<()> {
         let header = message.header();
         let change = match header.member().map(MemberName::as_str) {
-            Some("NameOwnerChanged") => match message.body().deserialize::<(&str, &str, &str)>() {
-                Ok((_, _, "")) => Some(Change::Lost),
-                Ok(_) => return self.sweep().await,
-                Err(_) => None,
-            },
-            Some("InterfacesAdded") => message
-                .body()
-                .deserialize::<(
+            Some("NameOwnerChanged") => {
+                match self.body::<(String, String, String)>(message, "NameOwnerChanged") {
+                    Some((_, _, owner)) if owner.is_empty() => Some(Change::Lost),
+                    Some(_) => return self.sweep().await,
+                    None => None,
+                }
+            }
+            Some("InterfacesAdded") => self
+                .body::<(
                     OwnedObjectPath,
                     HashMap<String, HashMap<String, OwnedVariant>>,
-                )>()
-                .ok()
+                )>(message, "InterfacesAdded")
                 .and_then(|(path, interfaces)| {
                     let properties = Properties::read(interfaces.get(DEVICE_INTERFACE)?);
                     Some(Change::Device {
@@ -161,10 +161,8 @@ impl Watcher<'_> {
                         properties,
                     })
                 }),
-            Some("InterfacesRemoved") => message
-                .body()
-                .deserialize::<(OwnedObjectPath, Vec<String>)>()
-                .ok()
+            Some("InterfacesRemoved") => self
+                .body::<(OwnedObjectPath, Vec<String>)>(message, "InterfacesRemoved")
                 .filter(|(_, interfaces)| interfaces.iter().any(|name| name == DEVICE_INTERFACE))
                 .map(|(path, _)| Change::Removed {
                     path: path.to_string(),
@@ -184,7 +182,7 @@ impl Watcher<'_> {
     /// A `PropertiesChanged` of `Device1` such as `("org.bluez.Device1", {"Connected": <true>}, ["Alias"])`, read whole when it may make a candidate of a path not kept.
     async fn changed(&mut self, path: &str, message: &Message) -> Option<Change> {
         let (_, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
-            message.body().deserialize().ok()?;
+            self.body(message, "PropertiesChanged")?;
         let names = |list: &[&str]| list.iter().any(|name| changed.contains_key(*name));
         if !names(&CLASSIFYING) {
             return None;
@@ -251,6 +249,22 @@ impl Watcher<'_> {
             &(BLUEZ,),
         );
         reply::<bool>(call).await == Ok(true)
+    }
+
+    /// The body of the signal `member`, or `None` with its signature logged once: a signature holds no device data.
+    fn body<T>(&mut self, message: &Message, member: &str) -> Option<T>
+    where
+        T: for<'d> Deserialize<'d> + Type,
+    {
+        let body = message.body();
+        let read = body.deserialize().ok();
+        if read.is_none() {
+            let signature = body.signature();
+            self.errors.note(format!(
+                "bluez: cannot read a {member} signal of signature {signature}"
+            ));
+        }
+        read
     }
 
     /// The reply, or `None` with the failure logged once.

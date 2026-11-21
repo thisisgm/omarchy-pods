@@ -171,6 +171,12 @@ impl FakeBluez {
         self.emit(&path.0, PROPERTIES, "PropertiesChanged", &body);
     }
 
+    /// Emits a `PropertiesChanged` for a device whose body is not the one the interface defines.
+    pub(crate) fn emit_unreadable(&self, path: &DevicePath) {
+        let body = (DEVICE_INTERFACE, 7_u32);
+        self.emit(&path.0, PROPERTIES, "PropertiesChanged", &body);
+    }
+
     /// Removes a device and emits `InterfacesRemoved` for it.
     pub(crate) fn remove(&self, path: &DevicePath) {
         {
