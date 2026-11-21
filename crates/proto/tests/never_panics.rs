@@ -5,6 +5,7 @@ use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
 use pods_proto::ear::EarReport;
 use pods_proto::error::{ParseError, Parser};
+use pods_proto::sdulog::{Direction, format_line, parse_line};
 use pods_proto::uplink::{
     AUDIO_HEADER_LEN, AccessUnit, OPAQUE_LEN, UNIT_PREFIX_LEN, UplinkPacket, encode_audio,
 };
@@ -32,6 +33,14 @@ const UPLINK_CONTROL_MIN_LEN: usize = 10;
 const UNIT_LENGTH_AT: usize = 4;
 /// One more than the most access units a generated SDU carries, and how many stamps are drawn for them.
 const UNIT_COUNT_BOUND: usize = 8;
+/// Length bound of a generated capture line, longer than any line `parse_line` accepts.
+const MAX_LINE_CHARS: usize = 9000;
+/// Most bytes in a line that gets one character changed, short so the change often lands in the stamp or the direction.
+const CHANGED_SDU_MAX: usize = 16;
+/// What one character of a valid line is changed to: digits, both marks, a space, signs, hex in both cases, and text no field holds.
+const CHANGED_TO: &[char] = &[
+    '0', '9', ' ', '<', '>', '+', '-', 'a', 'f', 'A', 'F', 'g', '\n', '\u{e9}',
+];
 
 // Sample output: [04, 01, 55, 02, 01], kind, spacer, level, status, end; marks are mostly 0x01 so the entry loop runs.
 fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
@@ -277,6 +286,30 @@ proptest! {
         prop_assert_eq!(kept.checked_sub(rebuilt.len()), Some(cut_units.trailing()));
         if let Some(one_more) = units.get(..=whole.len()) {
             prop_assert!(encode_audio(&opaque, one_more).unwrap().len() > kept, "a unit that fits was not yielded");
+        }
+    }
+
+    #[test]
+    fn parse_line_never_panics(chars in proptest::collection::vec(any::<char>(), 0..=MAX_LINE_CHARS)) {
+        let line: String = chars.into_iter().collect();
+        let _outcome = parse_line(&line);
+    }
+
+    // A valid line with one character changed is refused, or it is still exactly what format_line writes for the record read.
+    #[test]
+    fn parse_line_reads_a_changed_line_only_as_format_line_writes_it(
+        at_ns in any::<u64>(),
+        direction in prop_oneof![Just(Direction::FromPods), Just(Direction::ToPods)],
+        sdu in proptest::collection::vec(any::<u8>(), 0..=CHANGED_SDU_MAX),
+        at in any::<proptest::sample::Index>(),
+        changed_to in proptest::sample::select(CHANGED_TO),
+    ) {
+        let mut chars: Vec<char> = format_line(at_ns, direction, &sdu).chars().collect();
+        let at = at.index(chars.len());
+        chars[at] = changed_to;
+        let line: String = chars.into_iter().collect();
+        if let Ok(record) = parse_line(&line) {
+            prop_assert_eq!(format_line(record.at_ns, record.direction, &record.sdu), line);
         }
     }
 }
