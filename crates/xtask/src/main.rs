@@ -4,7 +4,7 @@ use std::env;
 use std::process::{Command, ExitCode};
 
 /// The gates of `cargo xtask ci`, in the order they run.
-const CI_STEPS: [&[&str]; 4] = [
+const CI_STEPS: [&[&str]; 5] = [
     &["fmt", "--all", "--check"],
     &[
         "clippy",
@@ -16,6 +16,7 @@ const CI_STEPS: [&[&str]; 4] = [
         "warnings",
     ],
     &["nextest", "run", "--workspace", "--locked"],
+    &["test", "--doc", "--workspace"],
     &["deny", "check"],
 ];
 

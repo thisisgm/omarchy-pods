@@ -51,7 +51,7 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked
-      # cargo test --doc fails on a workspace with no library crate, so doc tests join with the first one.
+      - run: cargo test --doc --workspace
 
   deny:
     runs-on: ubuntu-24.04
