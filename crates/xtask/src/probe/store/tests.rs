@@ -148,7 +148,7 @@ fn refuses_a_root_with_group_or_other_bits() {
 #[test]
 fn refuses_a_directory_or_file_owned_by_another_user() {
     let system_dir = Path::new(SYSTEM_DIR);
-    let error = Run::open(system_dir).unwrap_err();
+    let error = read_device(system_dir).unwrap_err();
     assert!(matches!(error, StoreError::WrongOwner { .. }), "{error}");
     assert!(names_path(&error, system_dir), "{error}");
 
@@ -194,8 +194,9 @@ fn symlinked_session_is_refused() {
     assert!(matches!(error, StoreError::Symlink { .. }), "{error}");
     assert!(names_path(&error, &session), "{error}");
 
-    let error = Run::open(&session).unwrap_err();
+    let error = Run::open(&session.join("run")).unwrap_err();
     assert!(matches!(error, StoreError::Symlink { .. }), "{error}");
+    assert!(names_path(&error, &session), "{error}");
 }
 
 #[test]
@@ -233,31 +234,52 @@ fn refuses_a_directory_inside_a_git_work_tree() {
     assert!(!root.join(STAMP).exists());
 }
 
+/// `<home>/omapods-captures/<STAMP>/run`, each level made 0700 by hand so no store check runs.
+fn hand_made_run(home: &Path) -> PathBuf {
+    let run = root(home.as_os_str()).join(STAMP).join("run");
+    fs::create_dir_all(&run).unwrap();
+    for dir in run.ancestors().take(3) {
+        set_mode(dir, OWNER_DIR);
+    }
+    run
+}
+
 #[test]
 fn run_opened_inside_a_git_work_tree_is_refused() {
     let repo = tempfile::tempdir().unwrap();
     fs::create_dir(repo.path().join(".git")).unwrap();
-    let run = repo.path().join("run");
-    fs::create_dir(&run).unwrap();
-    set_mode(&run, OWNER_DIR);
+    let run = hand_made_run(&repo.path().join("home"));
     let error = Run::open(&run).unwrap_err();
     assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
-    assert!(names_path(&error, &run), "{error}");
 
     let home = tempfile::tempdir().unwrap();
-    let root = made_root(&home, OWNER_DIR);
-    symlink(repo.path(), root.join(STAMP)).unwrap();
-    let error = Run::open(&root.join(STAMP).join("run")).unwrap_err();
-    assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
-
-    let plain = tempfile::tempdir().unwrap();
-    let run = plain.path().join("run");
-    fs::create_dir(&run).unwrap();
-    set_mode(&run, OWNER_DIR);
+    let run = hand_made_run(home.path());
     fs::create_dir(run.join(".git")).unwrap();
     let error = Run::open(&run).unwrap_err();
     assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
+    assert!(names_path(&error, &run), "{error}");
     assert_eq!(fs::read_dir(&run).unwrap().count(), 1);
+}
+
+#[test]
+fn run_is_opened_only_inside_the_store_and_never_through_a_link() {
+    let elsewhere = tempfile::tempdir().unwrap();
+    let real_run = hand_made_run(elsewhere.path());
+    Run::open(&real_run).unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let session = made_root(&home, OWNER_DIR).join(STAMP);
+    symlink(real_run.parent().unwrap(), &session).unwrap();
+    let error = Run::open(&session.join("run")).unwrap_err();
+    assert!(matches!(error, StoreError::Symlink { .. }), "{error}");
+    assert!(names_path(&error, &session), "{error}");
+
+    let outside = elsewhere.path().join("run");
+    fs::create_dir(&outside).unwrap();
+    set_mode(&outside, OWNER_DIR);
+    let error = Run::open(&outside).unwrap_err();
+    assert!(matches!(error, StoreError::NotARun { .. }), "{error}");
+    assert!(names_path(&error, &outside), "{error}");
 }
 
 #[test]
