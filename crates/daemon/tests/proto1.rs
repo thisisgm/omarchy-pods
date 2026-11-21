@@ -562,9 +562,11 @@ mod tests {
         thread::scope(|scope| {
             // The write fails once the daemon closes the connection, which is the outcome under test.
             scope.spawn(move || drop(writer.write_all(flood.as_bytes())));
-            scope.spawn(|| {
+            let state = &state;
+            // Moved in, so the steady client hangs up when done instead of staying for a stall close of its own.
+            scope.spawn(move || {
                 for _ in 0..STEADY_REQUESTS {
-                    assert_eq!(steady.ask(GET), state_reply(7, &state));
+                    assert_eq!(steady.ask(GET), state_reply(7, state));
                     pause(STALL_DEADLINE / 2);
                 }
             });
