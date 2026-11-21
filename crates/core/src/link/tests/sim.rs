@@ -12,7 +12,7 @@ use crate::link::{Action, End, Event, Machine, Phase, Ticket};
 use crate::state::State;
 
 /// Synthetic device addresses, never a real one.
-const DEVICES: [&str; 2] = ["02:00:00:00:00:01", "02:00:00:00:00:02"];
+pub(super) const DEVICES: [&str; 2] = ["02:00:00:00:00:01", "02:00:00:00:00:02"];
 /// Actions one step may return: every pending command resolved, plus the lifecycle's own.
 const ACTIONS_MAX: usize = PENDING_MAX + 4;
 /// Steps one input may cause before the simulation calls it a livelock.
@@ -242,10 +242,9 @@ impl Sim {
     /// Asserts every ticket handed in was resolved exactly once.
     pub(super) fn check_all_tickets_resolved_once(&self) {
         self.check();
-        assert_eq!(
-            self.resolves.len(),
-            usize::try_from(self.next_ticket).unwrap()
-        );
+        let resolved: Vec<u64> = self.resolves.keys().copied().collect();
+        let handed_in: Vec<u64> = (0..self.next_ticket).collect();
+        assert_eq!(resolved, handed_in);
         for (ticket, outcomes) in &self.resolves {
             assert_eq!(outcomes.len(), 1, "ticket {ticket} resolved {outcomes:?}");
         }
