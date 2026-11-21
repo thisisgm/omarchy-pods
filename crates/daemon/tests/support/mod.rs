@@ -5,7 +5,7 @@ pub(crate) mod bus;
 pub(crate) mod rig;
 
 use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rustix::process::Pid;
+use serde_json::Value;
 use tempfile::TempDir;
 
 pub(crate) const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
@@ -220,6 +221,51 @@ fn read_until_close(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
             Err(error) => return Err(error),
         }
     }
+}
+
+/// One protocol 1 connection: request lines out, reply lines back.
+pub(crate) struct Proto1 {
+    reader: BufReader<UnixStream>,
+}
+
+impl Proto1 {
+    pub(crate) fn connect(session: &Session) -> Self {
+        let stream = UnixStream::connect(session.socket()).unwrap();
+        stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+        Self {
+            reader: BufReader::new(stream),
+        }
+    }
+
+    pub(crate) fn send(&mut self, request: &str) {
+        let line = format!("{request}\n");
+        self.reader.get_mut().write_all(line.as_bytes()).unwrap();
+    }
+
+    /// The next line, parsed, failing once `HANG_LIMIT` passes or the daemon closes; sample input `{"id":1,"ok":true,"result":"confirmed"}`.
+    pub(crate) fn reply(&mut self) -> Value {
+        let mut line = String::new();
+        let read = self.reader.read_line(&mut line).unwrap();
+        assert_ne!(read, 0, "the daemon closed the connection");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    pub(crate) fn ask(&mut self, request: &str) -> Value {
+        self.send(request);
+        self.reply()
+    }
+}
+
+pub(crate) fn set_request(id: usize, key: &str, value: &str) -> String {
+    format!(r#"{{"v":1,"id":{id},"op":"set","key":"{key}","value":"{value}"}}"#)
+}
+
+/// A reply's `result`, or the `code` of its `error`.
+pub(crate) fn outcome(reply: &Value) -> &str {
+    reply["result"]
+        .as_str()
+        .or_else(|| reply["error"]["code"].as_str())
+        .unwrap_or_else(|| panic!("a reply with neither a result nor an error: {reply}"))
 }
 
 /// A daemon process, killed when the test ends if it is still running.

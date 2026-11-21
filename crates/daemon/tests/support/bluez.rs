@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use pods_proto::addr::BdAddr;
 use tokio::runtime::{Builder as RuntimeBuilder, Handle};
 use tokio::sync::oneshot;
+use tokio::time::timeout;
 use zbus::connection::Builder;
 use zbus::export::futures_core::Stream;
 use zbus::export::serde::Serialize;
@@ -43,6 +44,21 @@ pub(crate) struct AdapterPath(pub(crate) String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DevicePath(pub(crate) String);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeviceMethod {
+    Connect,
+    Disconnect,
+    RemoveDevice,
+}
+
+/// A method call on a device or an adapter; `argument` is the device path a `RemoveDevice` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Call {
+    pub(crate) object: String,
+    pub(crate) method: DeviceMethod,
+    pub(crate) argument: Option<String>,
+}
+
 /// The serving thread and the sender that ends it.
 type Server = (oneshot::Sender<()>, JoinHandle<()>);
 
@@ -59,6 +75,7 @@ struct Objects {
     devices: HashMap<String, Device>,
     /// Every change of a device object's connection, its adding and its removal included, oldest first.
     edges: Vec<Edge>,
+    calls: Vec<Call>,
     hold: bool,
     fail: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
@@ -219,6 +236,26 @@ impl FakeBluez {
         self.lock().sweeps.clone()
     }
 
+    /// Every `Device1` and `Adapter1` method call, oldest first.
+    pub(crate) fn calls(&self) -> Vec<Call> {
+        self.lock().calls.clone()
+    }
+
+    /// Calls `method` on the device's `Device1` over the bus, as the daemon would.
+    pub(crate) fn call_device(&self, path: &DevicePath, method: &str) {
+        let call = self.connection.call_method(
+            Some(BLUEZ_NAME),
+            path.0.as_str(),
+            Some(DEVICE_INTERFACE),
+            method,
+            &(),
+        );
+        self.handle
+            .block_on(async { timeout(HANG_LIMIT, call).await })
+            .unwrap_or_else(|_| panic!("{method} unanswered after {HANG_LIMIT:?}"))
+            .unwrap();
+    }
+
     /// Whether any object of `address` was connected at `at` or within `slack` before it.
     pub(crate) fn connected_at(&self, address: BdAddr, at: Instant, slack: Duration) -> bool {
         let from = at.checked_sub(slack).unwrap_or(at);
@@ -309,11 +346,15 @@ impl Objects {
         adapters.chain(devices).collect()
     }
 
-    /// The reply to `call`, or none while replies are held.
+    /// The reply to `call`, or none while replies are held; a sweep's arrival and a device or adapter method are recorded first.
     fn answer(&mut self, call: &Message) -> Option<Message> {
         let header = call.header();
         if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
             self.sweeps.push(Instant::now());
+        }
+        let recorded = record(call);
+        if let Some(recorded) = &recorded {
+            self.calls.push(recorded.clone());
         }
         if self.hold {
             return None;
@@ -328,6 +369,7 @@ impl Objects {
             (Some(OBJECT_MANAGER), Some("GetManagedObjects"), Some("/")) => {
                 Message::method_return(&header).build(&self.managed())
             }
+            _ if recorded.is_some() => Message::method_return(&header).build(&()),
             (Some(PROPERTIES), Some("GetAll"), Some(path)) => match self.devices.get(path) {
                 Some(device) => Message::method_return(&header).build(&device.properties()),
                 None => Message::error(&header, UNKNOWN).build(&("No such object",)),
@@ -376,6 +418,27 @@ impl Edge {
             connected,
         }
     }
+}
+
+/// The call as `calls` lists it, when it is `Connect` or `Disconnect` on `Device1` or `RemoveDevice` on `Adapter1`.
+fn record(call: &Message) -> Option<Call> {
+    let header = call.header();
+    let interface = header.interface().map(InterfaceName::as_str);
+    let member = header.member().map(MemberName::as_str);
+    let (method, argument) = match (interface, member) {
+        (Some(DEVICE_INTERFACE), Some("Connect")) => (DeviceMethod::Connect, None),
+        (Some(DEVICE_INTERFACE), Some("Disconnect")) => (DeviceMethod::Disconnect, None),
+        (Some(ADAPTER_INTERFACE), Some("RemoveDevice")) => {
+            let device: OwnedObjectPath = call.body().deserialize().ok()?;
+            (DeviceMethod::RemoveDevice, Some(device.as_str().to_owned()))
+        }
+        _ => return None,
+    };
+    Some(Call {
+        object: header.path()?.as_str().to_owned(),
+        method,
+        argument,
+    })
 }
 
 fn object(path: &str) -> ObjectPath<'static> {

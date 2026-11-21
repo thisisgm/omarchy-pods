@@ -1,10 +1,14 @@
 //! The built daemon under the trap, a private system bus with the fake BlueZ, a private session bus and the fake pods, joined.
 
 use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::ops::RangeInclusive;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use pods_fake::{Pods, Profile};
 use pods_proto::addr::BdAddr;
@@ -15,16 +19,43 @@ use serde_json::Value;
 
 use super::bluez::{AAP_UUID, AdapterPath, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, start_bus};
-use super::{BINARY, DAEMON_LOG, Daemon, Session, wait_for};
+use super::{BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Session, wait_for, wait_within};
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
 /// A dial may leave just as `Connected` falls.
 pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
 /// A dial that should come at once.
 pub(crate) const DIAL_WAIT: Duration = Duration::from_secs(1);
+/// How long the daemon waits for the pods to report a setting back.
+pub(crate) const CONFIRM_TIMEOUT: Duration = Duration::from_millis(700);
+/// The wait after each failed dial to pods BlueZ holds connected, the C++ `delayMs(1..=10)` without its jitter.
+pub(crate) const HELD_LADDER: [Duration; 10] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(16),
+    Duration::from_secs(16),
+    Duration::from_secs(16),
+    Duration::from_secs(16),
+    Duration::from_secs(16),
+    Duration::from_secs(16),
+];
+
+/// A listening mode as the pods carry it on the wire and as the status document numbers it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Mode {
+    pub(crate) wire: u8,
+    pub(crate) status: u8,
+}
+
+pub(crate) const ANC: Mode = Mode { wire: 2, status: 1 };
+pub(crate) const TRANSPARENCY: Mode = Mode { wire: 3, status: 2 };
+pub(crate) const ADAPTIVE: Mode = Mode { wire: 4, status: 3 };
 
 const SYSTEM_BUS: &str = "system";
 const SESSION_BUS: &str = "session";
+const WATCH_LOG_NAME: &str = "watch.log";
 /// Every fixture address is this prefix and one more octet; the daemon's log may hold neither form.
 const ADDRESS_PREFIX: [u8; 5] = [0x02, 0x00, 0x00, 0x00, 0x00];
 const LOGGED_ADDRESS: [&str; 2] = ["02:00:00", "02_00_00"];
@@ -40,6 +71,8 @@ type Prepare = Box<dyn FnOnce(&mut Command)>;
 /// Declared in the order they must end: the daemon before the trap, the fake BlueZ before its bus.
 pub(crate) struct Rig {
     daemon: Option<Daemon>,
+    /// Set once the test itself has ended the daemon, the one exit before `finish` that is no failure.
+    stopped: bool,
     trap: Option<Trap>,
     bluez: Option<FakeBluez>,
     adapter: Option<AdapterPath>,
@@ -77,6 +110,7 @@ impl Rig {
         let session_bus = start_bus(&session, SESSION_BUS);
         Self {
             daemon: None,
+            stopped: false,
             trap: None,
             bluez: None,
             adapter: None,
@@ -125,7 +159,7 @@ impl Rig {
             .bluez()
             .add_device(self.adapter(), address, &[AAP_UUID], false);
         if let Some(trap) = &self.trap {
-            trap.route(address, CONTROL_PSM, serve(&pods));
+            trap.route(address, CONTROL_PSM, serve(&pods, Duration::ZERO));
         }
         self.pods.push((address, pods.clone()));
         Device {
@@ -148,7 +182,7 @@ impl Rig {
             .map(|(address, pods)| Route {
                 device: *address,
                 psm: CONTROL_PSM,
-                answer: serve(pods),
+                answer: serve(pods, Duration::ZERO),
             })
             .collect();
         let command = self.command();
@@ -202,6 +236,18 @@ impl Rig {
             .set(&device.path, "Connected", zbus::OwnedVariant::from(true));
     }
 
+    /// BlueZ reports the device gone and its pods hang up, as a lost link does.
+    pub(crate) fn link_down(&self, device: &Device) {
+        self.bluez()
+            .set(&device.path, "Connected", zbus::OwnedVariant::from(false));
+        device.pods.hang_up();
+    }
+
+    /// The address of the session bus the daemon serves its D-Bus interface on.
+    pub(crate) fn session_bus(&self) -> &str {
+        &self.session_bus.address
+    }
+
     /// Replaces the device's route, for the next dials.
     pub(crate) fn answer(&self, device: &Device, answer: Answer) {
         self.trap().route(device.address, CONTROL_PSM, answer);
@@ -209,8 +255,11 @@ impl Rig {
 
     /// Routes the device back to its fake pods.
     pub(crate) fn accept(&self, device: &Device) {
-        self.trap()
-            .route(device.address, CONTROL_PSM, serve(&device.pods));
+        self.trap().route(
+            device.address,
+            CONTROL_PSM,
+            serve(&device.pods, Duration::ZERO),
+        );
     }
 
     pub(crate) fn dials(&self) -> Vec<Dial> {
@@ -242,11 +291,48 @@ impl Rig {
         }
     }
 
+    /// The `librepods` client in this session, run to its end.
+    pub(crate) fn client(&self, args: &[&str]) -> Output {
+        self.session.run_client(Path::new(BINARY), args)
+    }
+
     /// `librepods status`, parsed.
     pub(crate) fn status(&self) -> Value {
-        let output = self.session.run_client(Path::new(BINARY), &["status"]);
+        let output = self.client(&["status"]);
         assert!(output.status.success(), "librepods status: {output:?}");
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    /// `librepods watch` in this session, its lines read as they come.
+    pub(crate) fn watch(&self) -> Watch {
+        let log = File::create(self.session.dir.path().join(WATCH_LOG_NAME)).unwrap();
+        let mut child = self
+            .session
+            .command(Path::new(BINARY), &["watch"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(log)
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let process = Daemon {
+            child,
+            log: self.session.dir.path().join(WATCH_LOG_NAME),
+        };
+        let (sender, lines) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { return };
+                if sender.send((Instant::now(), line)).is_err() {
+                    return;
+                }
+            }
+        });
+        Watch {
+            process,
+            lines,
+            reader: Some(reader),
+        }
     }
 
     /// Asks `librepods status` until `ready` holds, failing at `HANG_LIMIT`.
@@ -254,6 +340,13 @@ impl Rig {
         wait_for(what, || {
             let status = self.status();
             ready(&status).then_some(status)
+        })
+    }
+
+    /// Waits for the link up and the pods' name in the status, which the burst brings after the batteries and the ears.
+    pub(crate) fn wait_filled(&self) -> Value {
+        self.wait_status("the link up and the pods' name", |status| {
+            connected(status) && named(status)
         })
     }
 
@@ -265,29 +358,43 @@ impl Rig {
         self.trap.as_ref().expect("a daemon started under the trap")
     }
 
-    /// Stops the daemon, then fails the test unless every check of the rig holds.
+    /// Sends SIGTERM as a test's own step and gives the exit status, which must come within `limit`.
+    pub(crate) fn stop(&mut self, limit: Duration) -> ExitStatus {
+        let daemon = self.daemon();
+        kill_process(daemon.pid(), Signal::TERM).unwrap();
+        let status = wait_within("the daemon to exit", limit, || {
+            daemon.child.try_wait().unwrap()
+        });
+        self.stopped = true;
+        status
+    }
+
+    /// Stops the daemon unless the test did, then fails the test unless every check of the rig holds.
     pub(crate) fn finish(self) {
         let Self {
             daemon,
+            stopped,
             trap,
             bluez,
             pods,
             ..
         } = self;
         if let Some(mut daemon) = daemon {
-            if let Some(status) = daemon.child.try_wait().unwrap() {
-                panic!(
-                    "the daemon exited with {status} before the end of the test: {}",
+            if !stopped {
+                if let Some(status) = daemon.child.try_wait().unwrap() {
+                    panic!(
+                        "the daemon exited with {status} before the end of the test: {}",
+                        daemon.log()
+                    );
+                }
+                kill_process(daemon.pid(), Signal::TERM).unwrap();
+                let status = daemon.wait_exit();
+                assert!(
+                    status.success(),
+                    "the daemon exited with {status}: {}",
                     daemon.log()
                 );
             }
-            kill_process(daemon.pid(), Signal::TERM).unwrap();
-            let status = daemon.wait_exit();
-            assert!(
-                status.success(),
-                "the daemon exited with {status}: {}",
-                daemon.log()
-            );
             let log = daemon.log();
             for form in LOGGED_ADDRESS {
                 assert!(
@@ -317,10 +424,97 @@ impl Rig {
     }
 }
 
-fn serve(pods: &Pods) -> Answer {
+/// An answer that hands each dial to `pods`, `after` it was made.
+pub(crate) fn serve(pods: &Pods, after: Duration) -> Answer {
     let pods = pods.clone();
     Answer::Accept {
-        after: Duration::ZERO,
+        after,
         serve: Arc::new(move |channel| pods.serve(channel)),
     }
+}
+
+/// One line `librepods watch` printed, and when the test's reader took it.
+#[derive(Debug)]
+pub(crate) struct Printed {
+    pub(crate) at: Instant,
+    pub(crate) state: Value,
+}
+
+/// `librepods watch` in a guard, its output read on a thread the guard joins.
+pub(crate) struct Watch {
+    process: Daemon,
+    lines: Receiver<(Instant, String)>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl Watch {
+    /// The next line, or none at the deadline, a watch that ended failing the test; sample input `{"adaptive_noise_level":50,"case":{"available":true,"charging":false,"level":50},"connected":true,...}`.
+    pub(crate) fn next(&self, deadline: Duration) -> Option<Printed> {
+        let (at, line) = match self.lines.recv_timeout(deadline) {
+            Ok(printed) => printed,
+            Err(RecvTimeoutError::Timeout) => return None,
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("watch ended: {}", self.process.log())
+            }
+        };
+        let state = serde_json::from_str(&line)
+            .unwrap_or_else(|error| panic!("watch printed {line:?}: {error}"));
+        Some(Printed { at, state })
+    }
+
+    /// Every line up to and including the first equal to `last`, failing once `HANG_LIMIT` passes in all.
+    pub(crate) fn lines_until(&self, last: &Value) -> Vec<Value> {
+        let started = Instant::now();
+        let mut lines = Vec::new();
+        while lines.last() != Some(last) {
+            let left = HANG_LIMIT.saturating_sub(started.elapsed());
+            let Some(printed) = self.next(left) else {
+                panic!("watch never printed {last}; it printed {lines:#?}");
+            };
+            lines.push(printed.state);
+        }
+        lines
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        // A watch that already exited refuses the kill, which is the outcome wanted.
+        drop(self.process.child.kill());
+        drop(self.process.child.wait());
+        if let Some(reader) = self.reader.take() {
+            // The kill closed the pipe, so the reader is at its end; one that panicked has nothing left to clean up.
+            drop(reader.join());
+        }
+    }
+}
+
+pub(crate) fn connected(status: &Value) -> bool {
+    status["connected"].as_bool().unwrap()
+}
+
+/// The status carries a device name, which a missing key does not.
+pub(crate) fn named(status: &Value) -> bool {
+    status["device_name"]
+        .as_str()
+        .is_some_and(|name| !name.is_empty())
+}
+
+/// From `wanted` to `wanted` plus `REAL_TIME_SLACK`, the range a real time check takes.
+pub(crate) fn not_before(wanted: Duration) -> RangeInclusive<Duration> {
+    wanted..=wanted.saturating_add(REAL_TIME_SLACK)
+}
+
+/// Fails unless `to` came within `range` after `from`, and prints the gap it saw either way.
+#[expect(
+    clippy::print_stderr,
+    reason = "the gap a time check saw goes into the test's output"
+)]
+pub(crate) fn assert_gap(what: &str, from: Instant, to: Instant, range: &RangeInclusive<Duration>) {
+    let gap = to.checked_duration_since(from);
+    eprintln!("{what}: {gap:?}, wanted {range:?}");
+    assert!(
+        gap.is_some_and(|gap| range.contains(&gap)),
+        "{what}: {gap:?}, wanted {range:?}"
+    );
 }
