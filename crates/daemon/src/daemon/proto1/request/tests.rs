@@ -2,10 +2,8 @@
 
 use proptest::prelude::*;
 
+use super::super::MAX_LINE_BYTES;
 use super::*;
-
-/// The longest request line, so the properties reach the daemon's bound.
-const LONGEST_LINE: usize = 4096;
 
 /// Arrays nested in a request object at the deepest JSON `serde_json` reads, 127 levels with the object.
 const ARRAYS_AT_THE_DEPTH_LIMIT: usize = 126;
@@ -231,7 +229,7 @@ fn check_against_members(value: &Value) -> Result<(), TestCaseError> {
 
 proptest! {
     #[test]
-    fn any_bytes_parse_without_panic(bytes in proptest::collection::vec(any::<u8>(), 0..LONGEST_LINE)) {
+    fn any_bytes_parse_without_panic(bytes in proptest::collection::vec(any::<u8>(), 0..=MAX_LINE_BYTES)) {
         if let Err(refusal) = parse(&bytes) {
             prop_assert!(matches!(refusal.error, RequestError::Command(_) | RequestError::UnsupportedVersion));
         }
