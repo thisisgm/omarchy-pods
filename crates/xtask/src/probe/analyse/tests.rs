@@ -243,6 +243,32 @@ fn a_name_that_is_taken_refuses_the_analysis_before_any_file_is_made() {
     }
 }
 
+#[test]
+fn a_name_refused_after_others_were_given_leaves_the_run_as_it_was() {
+    let home = tempfile::tempdir().unwrap();
+    let records = [audio(30 * NS_PER_MS, &OPAQUE, &[(0, &SILENT_UNIT)])];
+    let run_path = soak_run(&home, "half-named", &records);
+    let before = names_in(&run_path);
+    let run = Run::open(&run_path).unwrap();
+
+    // Both units files are written while the name is free, so the second is refused only as it is named, after two names were given.
+    let files = [
+        (ANALYSIS_FILE, "table"),
+        (UNITS_FILE, "units"),
+        (UNITS_FILE, "units again"),
+    ];
+    let error = write_new(&run, &files).unwrap_err();
+    assert!(matches!(error, StoreError::FileExists { .. }), "{error}");
+    assert!(error.to_string().contains("units.tsv"), "{error}");
+    assert_eq!(names_in(&run_path), before);
+
+    let table = analyse_run(&run_path).unwrap();
+    assert_eq!(
+        fs::read_to_string(run_path.join(ANALYSIS_FILE)).unwrap(),
+        table
+    );
+}
+
 /// Makes `file` of `run` exactly `len` bytes: NUL bytes, which are text, closed by one newline.
 fn grow(run: &Path, file: &str, len: u64) {
     let mut grown = fs::OpenOptions::new()

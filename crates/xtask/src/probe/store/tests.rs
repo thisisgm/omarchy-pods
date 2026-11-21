@@ -617,6 +617,44 @@ fn an_unnamed_file_never_takes_a_name_that_exists() {
 }
 
 #[test]
+fn names_are_given_to_all_files_or_to_none() {
+    let home = tempfile::tempdir().unwrap();
+    let session = Session::open(&root_of(&home), STAMP).unwrap();
+    let run = Run::create(&session, "all-or-none").unwrap();
+    let run_path = session.path().join("all-or-none");
+    let names = || {
+        let entries = fs::read_dir(&run_path).unwrap();
+        let mut names: Vec<_> = entries.map(|entry| entry.unwrap().file_name()).collect();
+        names.sort();
+        names
+    };
+    let written = || {
+        ["first.tsv", "second.tsv", "third.tsv"]
+            .map(|name| run.write_unnamed(name, name.as_bytes()).unwrap())
+    };
+
+    // Made after all three were written and before any has its name, as a second writer could.
+    let files = written();
+    fs::write(run_path.join("third.tsv"), b"not from this call").unwrap();
+    let error = Unnamed::name_all(&files).unwrap_err();
+    assert!(matches!(error, StoreError::FileExists { .. }), "{error}");
+    assert!(names_path(&error, &run_path.join("third.tsv")), "{error}");
+    assert_eq!(names(), ["third.tsv"]);
+    assert_eq!(
+        fs::read(run_path.join("third.tsv")).unwrap(),
+        b"not from this call"
+    );
+
+    fs::remove_file(run_path.join("third.tsv")).unwrap();
+    Unnamed::name_all(&written()).unwrap();
+    assert_eq!(names(), ["first.tsv", "second.tsv", "third.tsv"]);
+    assert_eq!(
+        fs::read(run_path.join("second.tsv")).unwrap(),
+        b"second.tsv"
+    );
+}
+
+#[test]
 fn a_trace_is_read_up_to_the_bound_it_is_given() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("hci.btsnoop");
@@ -637,7 +675,7 @@ fn a_trace_is_read_up_to_the_bound_it_is_given() {
     assert!(matches!(error, StoreError::WrongOwner { .. }), "{error}");
 }
 
-/// Calls that remove, rename or overwrite; the code before the tests holds none of them.
+/// Calls that remove, rename or overwrite; the code before the tests holds none of them but the one take back.
 const FORBIDDEN: [&str; 12] = [
     "remove_",
     "unlink",
@@ -652,6 +690,11 @@ const FORBIDDEN: [&str; 12] = [
     "fs::write",
     "fs::copy",
 ];
+
+/// The one removal: the store takes back a name that its own refused naming gave.
+const TAKE_BACK: &str = "rustix::fs::unlinkat(";
+/// The file that holds it.
+const STORE_FILE: &str = "store.rs";
 
 /// An inline tests module, which clippy's `items_after_test_module` keeps last, so the scan stops there.
 const TESTS_MODULE: &str = "#[cfg(test)]\nmod tests {";
@@ -677,7 +720,7 @@ fn crate_sources() -> Vec<(PathBuf, String)> {
 }
 
 #[test]
-fn no_code_path_removes_or_overwrites() {
+fn no_code_path_removes_or_overwrites_but_the_one_take_back() {
     let sources = crate_sources();
     for known in ["main.rs", "mod.rs", "store.rs"] {
         let found = sources.iter().any(|(path, _)| path.ends_with(known));
@@ -687,6 +730,13 @@ fn no_code_path_removes_or_overwrites() {
         let code = source
             .split_once(TESTS_MODULE)
             .map_or(source.as_str(), |(code, _)| code);
+        // Taken out once and only from the store, so a second removal there or a first one elsewhere is still found.
+        let code = if path.ends_with(STORE_FILE) {
+            assert!(code.contains(TAKE_BACK), "the take back is gone");
+            code.replacen(TAKE_BACK, "", 1)
+        } else {
+            code.to_owned()
+        };
         for call in FORBIDDEN {
             assert!(!code.contains(call), "{} holds {call}", path.display());
         }
