@@ -11,10 +11,9 @@ use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
 use pods_core::settings::{
     self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, NOISE, ONE_BUD_ANC,
 };
-use pods_core::state::{EarDetectionBehavior, State};
+use pods_core::state::State;
 use pods_core::status::{battery_reading, in_ear, to_status_object};
 use pods_proto::battery::Component;
-use pods_proto::noise::NoiseMode;
 use serde_json::Value;
 use tokio::sync::watch;
 use zbus::connection::Builder;
@@ -177,8 +176,8 @@ impl Properties {
             connected: state.connected,
             device_name: state.device_name.clone(),
             model_name: state.model.display_name(),
-            noise_mode: noise_mode_name(state.noise_mode),
-            ear_detection: ear_detection_name(state.ear_detection_behavior),
+            noise_mode: NoiseTarget::Mode(state.noise_mode).word(),
+            ear_detection: state.ear_detection_behavior.word(),
             conversational_awareness: state.conversational_awareness,
             one_bud_anc: state.one_bud_anc_mode,
             adaptive_level: state.adaptive_noise_level.percent(),
@@ -227,17 +226,6 @@ impl Properties {
             .map(|(change, _)| change)
             .collect()
     }
-}
-
-/// The word `set noise` takes for `mode`, such as `anc`.
-fn noise_mode_name(mode: NoiseMode) -> &'static str {
-    let command = Command::SetNoise(NoiseTarget::Mode(mode));
-    settings::word(NOISE, command).unwrap_or_default()
-}
-
-/// The word `set ear_detection` takes for `behavior`, such as `both`; a test pins that every behaviour and mode has one.
-fn ear_detection_name(behavior: EarDetectionBehavior) -> &'static str {
-    settings::word(EAR_DETECTION, Command::SetEarDetection(behavior)).unwrap_or_default()
 }
 
 /// The object at `OBJECT_PATH`: properties read the hub's state, and methods submit commands to it.

@@ -6,6 +6,14 @@ use proptest::prelude::*;
 use super::*;
 use crate::command::ADAPTIVE_LEVEL_MAX;
 
+/// The message the C++ dispatch compares with `verb`.
+fn text(verb: Verb) -> String {
+    match verb {
+        Verb::Whole(whole) => whole.to_owned(),
+        Verb::Family(family, word) => format!("{family}:{word}"),
+    }
+}
+
 fn level(verb: &str) -> Option<u8> {
     match parse_verb(verb.as_bytes()) {
         Some(LegacyRequest::Command(Command::SetAdaptiveLevel(level))) => Some(level.percent()),
@@ -20,7 +28,7 @@ fn level(verb: &str) -> Option<u8> {
 fn wrong_prefix_is_not_a_level() {
     assert_eq!(
         parse_verb(b"noise:adaptive"),
-        Some(noise(NoiseTarget::Mode(NoiseMode::Adaptive)))
+        Some(noise(NoiseTarget::Mode(NoiseMode::Adaptive)).1)
     );
 }
 
@@ -150,6 +158,7 @@ fn cpp_call(request: LegacyRequest) -> String {
 #[test]
 fn every_verb_parses_to_the_request_whose_call_its_cpp_handler_makes() {
     for (verb, request) in VERBS {
+        let verb = text(verb);
         assert_eq!(parse_verb(verb.as_bytes()), Some(request), "{verb}");
         let handler = MAIN.body(&format!("msg == \"{verb}\")"));
         let call = cpp_call(request);
@@ -164,7 +173,7 @@ fn every_verb_parses_to_the_request_whose_call_its_cpp_handler_makes() {
 
 #[test]
 fn verb_table_is_exactly_the_cpp_dispatch() {
-    let rust: Vec<&str> = VERBS.iter().map(|(verb, _)| *verb).collect();
+    let rust: Vec<String> = VERBS.iter().map(|&(verb, _)| text(verb)).collect();
     assert_eq!(rust, MAIN.all_between("msg == \"", "\""));
     assert_eq!(
         MAIN.all_between("msg.startsWith(\"", "\""),
@@ -235,7 +244,7 @@ proptest! {
                 prop_assert!(level.percent() <= ADAPTIVE_LEVEL_MAX);
             }
             Some(request) => {
-                prop_assert!(VERBS.iter().any(|&(verb, known)| verb.as_bytes() == bytes && known == request));
+                prop_assert!(VERBS.iter().any(|&(verb, known)| text(verb).as_bytes() == bytes && known == request));
             }
         }
     }

@@ -57,6 +57,20 @@ pub enum NoiseTarget {
     Cycle,
 }
 
+impl NoiseTarget {
+    /// The word after `noise:` in a legacy verb, which `set noise` takes and the `NoiseMode` property shows.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Mode(NoiseMode::Off) => "off",
+            Self::Mode(NoiseMode::Anc) => "anc",
+            Self::Mode(NoiseMode::Transparency) => "transparency",
+            Self::Mode(NoiseMode::Adaptive) => "adaptive",
+            Self::Cycle => "cycle",
+        }
+    }
+}
+
 /// Why the daemon did not carry out a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandError {

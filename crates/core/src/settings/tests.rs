@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use super::*;
 use crate::command::NoiseTarget;
 use crate::command::tests::level;
-use crate::legacy::VERBS;
+use crate::legacy::{VERBS, Verb};
 use crate::state::EarDetectionBehavior;
 
 const PROTOCOL_DOCUMENT: &str = include_str!("../../../../docs/protocol-1.md");
@@ -167,9 +167,10 @@ fn the_protocol_document_names_every_key_value_and_action() {
         let phrases: Vec<String> = match family {
             Family::Words(prefix) => VERBS
                 .iter()
-                .filter_map(|(verb, _)| verb.split_once(':'))
-                .filter(|(at, _)| *at == prefix)
-                .map(|(_, word)| format!("`{word}`"))
+                .filter_map(|&(verb, _)| match verb {
+                    Verb::Family(at, word) if at == prefix => Some(format!("`{word}`")),
+                    Verb::Family(..) | Verb::Whole(_) => None,
+                })
                 .collect(),
             Family::Switch(_) => SWITCH_WORDS
                 .iter()
@@ -254,7 +255,7 @@ fn every_mode_and_behavior_has_the_word_that_sets_it() {
         NoiseMode::Transparency,
         NoiseMode::Adaptive,
     ] {
-        let shown = word(NOISE, noise(mode)).unwrap();
+        let shown = NoiseTarget::Mode(mode).word();
         assert_eq!(setting(NOISE, shown), Ok(noise(mode)), "{mode:?}");
     }
     for behavior in [
@@ -263,23 +264,10 @@ fn every_mode_and_behavior_has_the_word_that_sets_it() {
         EarDetectionBehavior::Disabled,
     ] {
         let command = Command::SetEarDetection(behavior);
-        let shown = word(EAR_DETECTION, command).unwrap();
-        assert_eq!(setting(EAR_DETECTION, shown), Ok(command), "{behavior:?}");
-    }
-}
-
-#[test]
-fn a_key_whose_values_are_not_words_has_no_word() {
-    for (key, command) in [
-        (
-            CONVERSATIONAL_AWARENESS,
-            Command::SetConversationalAwareness(true),
-        ),
-        (ONE_BUD_ANC, Command::SetOneBudAnc(true)),
-        (ADAPTIVE_LEVEL, Command::SetAdaptiveLevel(level(37))),
-        ("volume", noise(NoiseMode::Anc)),
-        (EAR_DETECTION, noise(NoiseMode::Anc)),
-    ] {
-        assert_eq!(word(key, command), None, "{key} {command:?}");
+        assert_eq!(
+            setting(EAR_DETECTION, behavior.word()),
+            Ok(command),
+            "{behavior:?}"
+        );
     }
 }
