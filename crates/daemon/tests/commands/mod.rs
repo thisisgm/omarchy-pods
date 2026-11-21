@@ -1,6 +1,8 @@
 //! The `status`, `watch`, `set` and `do` commands, run against the built daemon in a temp directory.
 
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -9,7 +11,10 @@ use std::thread::{self, JoinHandle};
 
 use rustix::process::{Signal, kill_process};
 
-use super::support::{BINARY, HANG_LIMIT, Session, wait_for};
+use super::support::{BINARY, HANG_LIMIT, Session, run_to_end, wait_for};
+
+/// A device on which every write fails with no space left.
+const FULL_DEVICE: &str = "/dev/full";
 
 /// A running `librepods watch`, killed once `HANG_LIMIT` passes so a read of its output ends, and killed and reaped when dropped.
 struct Watch {
@@ -116,6 +121,38 @@ fn watch_ends_quietly_when_nothing_reads_its_output() {
     drop(stdout);
     assert_eq!(session.send(b"ear:both"), b"");
     assert_eq!(finish(&watch), (Some(0), String::new()));
+}
+
+#[test]
+fn status_fails_like_watch_when_its_line_cannot_be_written_and_ctl_does_not() {
+    let session = Session::new();
+    let _daemon = session.start();
+    let link = session.dir.path().join("librepods-ctl");
+    symlink(BINARY, &link).unwrap();
+    let to_full = |program: &Path, args: &[&str]| {
+        let full = File::options().write(true).open(FULL_DEVICE).unwrap();
+        let mut command = session.command(program, args);
+        run_to_end(command.stdout(full).stderr(Stdio::piped()))
+    };
+    let watch = to_full(Path::new(BINARY), &["watch"]);
+    assert_eq!(watch.status.code(), Some(1));
+    let message = String::from_utf8(watch.stderr).unwrap();
+    assert!(
+        message.starts_with("Cannot write the state to standard output: "),
+        "{message}"
+    );
+    let status = to_full(Path::new(BINARY), &["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    assert_eq!(String::from_utf8(status.stderr).unwrap(), message);
+    // The legacy client ignores the failed write, as the C++ `librepods-ctl` does.
+    for (program, args) in [
+        (Path::new(BINARY), &["ctl", "status"][..]),
+        (link.as_path(), &["status"]),
+    ] {
+        let out = to_full(program, args);
+        assert_eq!(out.status.code(), Some(0), "{}", program.display());
+        assert_eq!(out.stderr, b"", "{}", program.display());
+    }
 }
 
 #[test]

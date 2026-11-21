@@ -132,26 +132,27 @@ impl Session {
         String::from_utf8(self.ask(b"status")).unwrap()
     }
 
-    /// Runs the client to completion, or kills it and fails once it passes `HANG_LIMIT`.
+    /// Runs the client to completion with its output piped back, or kills it and fails once it passes `HANG_LIMIT`.
     pub(crate) fn run_client(&self, program: &Path, args: &[&str]) -> Output {
-        let mut child = self
-            .command(program, args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let started = Instant::now();
-        while child.try_wait().unwrap().is_none() {
-            if started.elapsed() >= HANG_LIMIT {
-                // Dropping a Child leaves it running; a client that exited meanwhile refuses the kill, which is fine.
-                drop(child.kill());
-                drop(child.wait());
-                panic!("the client {program:?} {args:?} still running after {HANG_LIMIT:?}");
-            }
-            pause(POLL);
-        }
-        child.wait_with_output().unwrap()
+        let mut command = self.command(program, args);
+        run_to_end(command.stdout(Stdio::piped()).stderr(Stdio::piped()))
     }
+}
+
+/// Runs `command` to completion, or kills it and fails once it passes `HANG_LIMIT`; only output set to piped comes back.
+pub(crate) fn run_to_end(command: &mut Command) -> Output {
+    let mut child = command.spawn().unwrap();
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() >= HANG_LIMIT {
+            // Dropping a Child leaves it running; a client that exited meanwhile refuses the kill, which is fine.
+            drop(child.kill());
+            drop(child.wait());
+            panic!("{command:?} still running after {HANG_LIMIT:?}");
+        }
+        pause(POLL);
+    }
+    child.wait_with_output().unwrap()
 }
 
 /// Reads until the peer closes, failing the test once `HANG_LIMIT` passes.
