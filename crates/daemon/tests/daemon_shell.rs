@@ -26,7 +26,7 @@ mod tests {
     use rustix::process::{Signal, kill_process};
 
     use super::support::{
-        BINARY, Daemon, HANG_LIMIT, Session, pause, read_to_close, wait_for, wait_within,
+        BINARY, Daemon, HANG_LIMIT, Session, log_lines, pause, read_to_close, wait_for, wait_within,
     };
 
     /// Half the daemon's 1000 ms request deadline: a reply slower than this waited on the silent client.
@@ -115,11 +115,11 @@ mod tests {
         }
     }
 
-    /// The log without the one line a daemon writes when it has no session bus, which these tests never give it.
-    fn log_without_the_bus_line(log: &str) -> Vec<&str> {
-        log.lines()
-            .filter(|line| !line.starts_with(NO_BUS_LOG_PREFIX))
-            .collect()
+    /// The log without the daemon's lines about its missing buses, which these tests never give it.
+    fn log_without_the_bus_lines(log: &str) -> Vec<&str> {
+        let mut lines = log_lines(log);
+        lines.retain(|line| !line.starts_with(NO_BUS_LOG_PREFIX));
+        lines
     }
 
     /// The reply a headless daemon gives to `reopen`, read from `daemon/main.cpp`.
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(status, to_status_line(&expected));
         assert_eq!(total(&status, "reopen_calls_total"), 1);
         assert_eq!(total(&status, "ear_detection_changes_total"), 3);
-        assert_eq!(log_without_the_bus_line(&daemon.log()), Vec::<&str>::new());
+        assert_eq!(log_without_the_bus_lines(&daemon.log()), Vec::<&str>::new());
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
             (total(&session.status(), "reopen_calls_total") == 1).then_some(())
         });
         assert_eq!(
-            log_without_the_bus_line(&first.log()),
+            log_without_the_bus_lines(&first.log()),
             Vec::<&str>::new(),
             "a normal second launch logged on the first daemon"
         );
@@ -404,9 +404,9 @@ mod tests {
         kill_process(daemon.pid(), Signal::TERM).unwrap();
         let reader = open(&lock, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).unwrap();
         assert_eq!(daemon.wait_exit().code(), Some(0));
-        // The D-Bus task starts at the end of startup and may log its missing bus before the stop is read.
+        // The bus tasks start at the end of startup and may log their missing buses before the stop is read.
         assert_eq!(
-            log_without_the_bus_line(&daemon.log()),
+            log_without_the_bus_lines(&daemon.log()),
             ["SIGTERM received, stopping"]
         );
         assert!(!session.socket().exists());
@@ -668,7 +668,7 @@ mod tests {
                     socket.display()
                 )
             };
-            assert_eq!(log_without_the_bus_line(&loser.log()), [wanted.as_str()]);
+            assert_eq!(log_without_the_bus_lines(&loser.log()), [wanted.as_str()]);
             let kept = fs::read(&state_file).unwrap_or_default();
             assert_eq!(kept, SURVIVOR_STATE, "{exit}");
             let after = fs::metadata(&state_file).unwrap();

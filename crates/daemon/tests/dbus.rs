@@ -27,7 +27,7 @@ mod tests {
     use zbus::{Connection, MessageStream, OwnedVariant};
 
     use super::support::bus::{bus_address, start_bus};
-    use super::support::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
+    use super::support::{BINARY, Daemon, HANG_LIMIT, Session, log_lines, wait_for};
 
     /// The whole bus conversation of one test, longer than any one wait inside it so that wait reports first.
     const CONVERSATION_LIMIT: Duration = Duration::from_secs(30);
@@ -262,7 +262,7 @@ mod tests {
         let log = other.log();
         assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
         assert_eq!(stop(&mut daemon).code(), Some(0));
-        assert_eq!(daemon.log(), "SIGTERM received, stopping\n");
+        assert_eq!(log_lines(&daemon.log()), ["SIGTERM received, stopping"]);
     }
 
     #[test]
@@ -288,7 +288,7 @@ mod tests {
             assert_ne!(session.status(), status);
             assert_eq!(stop(&mut daemon).code(), Some(0));
             let log = daemon.log();
-            assert_eq!(log.lines().count(), 2, "{log}");
+            assert_eq!(log_lines(&log).len(), 2, "{log}");
             assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
             let unreachable = format!("{NO_BUS_LOG} {CONNECT_FAILED} `{address}`:");
             assert!(log.contains(&unreachable), "{log}");
