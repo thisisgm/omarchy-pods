@@ -212,18 +212,21 @@ fn a_level_over_the_maximum_counts_as_the_maximum() {
     assert_eq!(state.counters.adaptive_level_changes, 0);
 }
 
+/// Every refusal, for the tests that cover them all.
+const EVERY_ERROR: [CommandError; 8] = [
+    CommandError::NotConnected,
+    CommandError::NotSupported,
+    CommandError::NotWorn,
+    CommandError::OutOfRange,
+    CommandError::UnknownKey,
+    CommandError::BadRequest,
+    CommandError::Timeout,
+    CommandError::Headless,
+];
+
 #[test]
 fn codes_are_the_snake_case_variant_names() {
-    for error in [
-        CommandError::NotConnected,
-        CommandError::NotSupported,
-        CommandError::NotWorn,
-        CommandError::OutOfRange,
-        CommandError::UnknownKey,
-        CommandError::BadRequest,
-        CommandError::Timeout,
-        CommandError::Headless,
-    ] {
+    for error in EVERY_ERROR {
         let mut snake = String::new();
         for character in format!("{error:?}").chars() {
             if character.is_ascii_uppercase() && !snake.is_empty() {
@@ -233,6 +236,26 @@ fn codes_are_the_snake_case_variant_names() {
         }
         assert_eq!(error.code(), snake);
     }
+}
+
+#[test]
+fn every_error_has_its_own_sentence() {
+    let mut seen = Vec::new();
+    for error in EVERY_ERROR {
+        let message = error.message();
+        assert!(message.len() > 1, "{error:?}");
+        assert!(message.ends_with('.'), "{error:?}: {message}");
+        assert!(
+            message.starts_with(char::is_uppercase),
+            "{error:?}: {message}"
+        );
+        assert!(!seen.contains(&message), "{error:?} repeats {message}");
+        seen.push(message);
+    }
+    assert_eq!(
+        CommandError::NotConnected.message(),
+        "The AirPods are not connected."
+    );
 }
 
 /// The command a legacy verb carries.

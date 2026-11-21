@@ -13,10 +13,16 @@ const SCHEMA_VERSION: u8 = 1;
 /// The status document as compact JSON with a trailing newline, keys in ascending byte order like the C++ `QJsonObject`.
 #[must_use]
 pub fn to_status_line(state: &State) -> String {
+    format!("{}\n", to_status_object(state))
+}
+
+/// The status document as a JSON object, which protocol 1 replies and events carry as their `state`.
+#[must_use]
+pub fn to_status_object(state: &State) -> Value {
     let counters = &state.counters;
     let capabilities = state.model.capabilities();
     let batteries = &state.batteries;
-    let status = object(BTreeMap::from([
+    object(BTreeMap::from([
         ("schema_version", Value::from(SCHEMA_VERSION)),
         ("connected", Value::from(state.connected)),
         ("device_name", Value::from(state.device_name.as_str())),
@@ -107,8 +113,7 @@ pub fn to_status_line(state: &State) -> String {
             Value::from(state.ear_detection_behavior.number()),
         ),
         ("lid_state", Value::from(state.lid_state.number())),
-    ]));
-    format!("{status}\n")
+    ]))
 }
 
 /// A JSON object whose keys come out in the map's byte order, whatever `serde_json` features are on.
