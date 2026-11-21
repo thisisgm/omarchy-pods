@@ -22,8 +22,8 @@ mod tests {
 
     use super::support::{BINARY, Daemon, HANG_LIMIT, Session, pause, read_to_close, wait_for};
 
-    /// The silent client test's bound on another client's reply.
-    const SERVED_WHILE_SILENT_LIMIT: Duration = Duration::from_millis(200);
+    /// Half the daemon's 1000 ms request deadline: a reply slower than this waited on the silent client.
+    const SERVED_WHILE_SILENT_LIMIT: Duration = Duration::from_millis(500);
 
     /// The daemon's 1000 ms request deadline, plus slack for a shared host.
     const SILENT_CLIENT_DROPPED_BY: Duration = Duration::from_millis(1500);
@@ -372,7 +372,11 @@ mod tests {
         kill_process(daemon.pid(), Signal::TERM).unwrap();
         let reader = open(&lock, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).unwrap();
         assert_eq!(daemon.wait_exit().code(), Some(0));
-        assert_eq!(daemon.log(), "SIGTERM received, stopping\n");
+        // The D-Bus task starts at the end of startup and may log its missing bus before the stop is read.
+        assert_eq!(
+            log_without_the_bus_line(&daemon.log()),
+            ["SIGTERM received, stopping"]
+        );
         assert!(!session.socket().exists());
         assert!(!session.state_file().exists());
         drop(reader);
