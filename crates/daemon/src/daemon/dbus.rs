@@ -79,7 +79,7 @@ pub(super) async fn serve(hub: Hub) {
     }
 }
 
-/// Sends one `PropertiesChanged` per state change with the properties that differ from `shown`, until the bus goes away.
+/// Sends `PropertiesChanged` with the properties that differ from the last signal each time the state moves, until the bus goes away.
 async fn announce(
     connection: Connection,
     mut updates: watch::Receiver<State>,
