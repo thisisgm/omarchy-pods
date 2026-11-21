@@ -82,7 +82,7 @@ fn on_a_bench<T>(
 
 #[test]
 fn a_timeout_and_a_signal_wake_the_loop_and_no_other_error_does() {
-    let buf = [0x09_u8; 4];
+    let buf = [0x09_u8, 0x0a, 0x0b, 0x0c];
     for idle in [Ok(Received::TimedOut), Err(ChannelError::Recv(Errno::INTR))] {
         assert!(matches!(wake_of(idle, &buf), Wake::Idle), "{idle:?}");
     }
@@ -99,7 +99,9 @@ fn a_timeout_and_a_signal_wake_the_loop_and_no_other_error_does() {
     }
     assert!(matches!(wake_of(Ok(Received::Closed), &buf), Wake::Closed));
     let whole = wake_of(Ok(Received::Sdu(3)), &buf);
-    assert!(matches!(whole, Wake::Sdu(sdu) if sdu == [0x09; 3]));
+    assert!(matches!(whole, Wake::Sdu(sdu) if sdu == [0x09, 0x0a, 0x0b]));
+    let filling_the_buffer = wake_of(Ok(Received::Sdu(4)), &buf);
+    assert!(matches!(filling_the_buffer, Wake::Sdu(sdu) if sdu == buf));
     let cut = wake_of(Ok(Received::Truncated { full_len: 9 }), &buf);
     assert!(matches!(cut, Wake::TooLong { full_len: 9 }));
     let past_the_buffer = wake_of(Ok(Received::Sdu(5)), &buf);
@@ -210,6 +212,11 @@ fn the_side_is_read_only_before_the_gate() {
         assert_eq!(bench.got, Vec::<Vec<u8>>::new());
         bench.result
     };
+    let handshaking = Phase::Handshaking {
+        handshake: Handshake::default(),
+        asked_at_ns: 0,
+    };
+    assert_eq!(read(handshaking).as_ref(), Some(&reported));
     assert_eq!(
         read(Phase::Settling { asked_at_ns: 0 }).as_ref(),
         Some(&reported)
