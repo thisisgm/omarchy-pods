@@ -1,6 +1,8 @@
 //! The control channel's lifecycle as a pure machine: events and the time go in, actions come out.
 
+mod commands;
 pub mod ladder;
+mod reports;
 
 use std::time::Duration;
 
@@ -122,6 +124,10 @@ pub struct Machine {
     known: Vec<BdAddr>,
     last_linked: Option<BdAddr>,
     handshake: Handshake,
+    /// Commands written to the pods and waiting for their report, oldest first, at most `PENDING_MAX`.
+    pending: Vec<commands::Pending>,
+    /// A battery report came on this channel, so the notification request needs no repeat.
+    battery_seen: bool,
 }
 
 impl Machine {
@@ -139,7 +145,7 @@ impl Machine {
     pub fn step(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
         use Event as E;
         use Phase as P;
-        match (self.phase, event) {
+        let mut actions = match (self.phase, event) {
             (P::Stopped, E::Command { ticket, .. }) => {
                 // corner: every ticket resolves exactly once, so a stopped machine still refuses one.
                 vec![resolve(
@@ -152,13 +158,15 @@ impl Machine {
                 | P::Opening { .. }
                 | P::AwaitHandshakeAck { .. }
                 | P::AwaitFeaturesAck { .. }
-                | P::Up { .. }
                 | P::Closing { .. }
                 | P::Backoff { .. }
                 | P::Parked { .. }
                 | P::Grace { .. },
                 E::Command { ticket, command },
             ) => vec![resolve(ticket, command::apply(state, &command))],
+            (P::Up { .. }, E::Command { ticket, command }) => {
+                self.command(state, ticket, command, now)
+            }
             (
                 P::AwaitHandshakeAck { .. } | P::AwaitFeaturesAck { .. } | P::Up { .. },
                 E::Shutdown,
@@ -286,6 +294,7 @@ impl Machine {
             (P::Opening { attempt }, E::ChannelOpened) => {
                 if self.held {
                     self.handshake = Handshake::default();
+                    self.battery_seen = false;
                     let until = after(now, HANDSHAKE_STEP_TIMEOUT_MS);
                     self.enter(state, P::AwaitHandshakeAck { attempt, until });
                     vec![Action::Send(Handshake::first().to_vec())]
@@ -317,7 +326,7 @@ impl Machine {
             (P::Closing { attempt }, E::ChannelEnded(_)) => self.ended(state, attempt, now),
             (P::AwaitHandshakeAck { attempt, .. }, E::Packet(sdu)) => {
                 let Some(reply) = self.handshake.on_packet(sdu) else {
-                    return Vec::new();
+                    return self.report(state, sdu);
                 };
                 let until = after(now, HANDSHAKE_STEP_TIMEOUT_MS);
                 self.enter(state, P::AwaitFeaturesAck { attempt, until });
@@ -325,14 +334,15 @@ impl Machine {
             }
             (P::AwaitFeaturesAck { .. }, E::Packet(sdu)) => {
                 let Some(reply) = self.handshake.on_packet(sdu) else {
-                    return Vec::new();
+                    return self.report(state, sdu);
                 };
-                let rerequest = Some(after(now, NOTIFY_REREQUEST_MS));
+                let rerequest = (!self.battery_seen).then(|| after(now, NOTIFY_REREQUEST_MS));
                 self.enter(state, P::Up { rerequest });
                 self.populated = true;
                 self.last_linked = self.active;
                 vec![Action::Send(reply.to_vec())]
             }
+            (P::Up { .. }, E::Packet(sdu)) => self.report(state, sdu),
             (
                 P::AwaitHandshakeAck { attempt, until } | P::AwaitFeaturesAck { attempt, until },
                 E::Tick,
@@ -364,7 +374,7 @@ impl Machine {
                 raise(&mut state.counters.reconnect_failures);
                 self.idle(state)
             }
-            // Nothing to do: stopped, calls and reports not handled yet, events the shell rules out, ticks with no deadline.
+            // Nothing to do: stopped, calls not handled yet, packets outside the handshake and `Up`, events the shell rules out, ticks with no deadline.
             (
                 P::Stopped,
                 E::DeviceUp(_)
@@ -406,7 +416,6 @@ impl Machine {
             | (
                 P::Idle
                 | P::Opening { .. }
-                | P::Up { .. }
                 | P::Closing { .. }
                 | P::Backoff { .. }
                 | P::Parked { .. }
@@ -414,7 +423,9 @@ impl Machine {
                 E::Packet(_),
             )
             | (P::Idle | P::Opening { .. } | P::Closing { .. }, E::Tick) => Vec::new(),
-        }
+        };
+        self.settle(state, now, &mut actions);
+        actions
     }
 
     /// When the driver must send `Tick` next, if anything is waiting on the clock.
@@ -426,7 +437,7 @@ impl Machine {
             | Phase::Backoff { until, .. }
             | Phase::Parked { until }
             | Phase::Grace { until } => Some(until),
-            Phase::Up { rerequest } => rerequest,
+            Phase::Up { rerequest } => rerequest.into_iter().chain(self.confirm_deadline()).min(),
             Phase::Idle | Phase::Opening { .. } | Phase::Closing { .. } | Phase::Stopped => None,
         }
     }
@@ -608,9 +619,11 @@ fn raise(counter: &mut u64) {
 
 #[cfg(test)]
 mod tests {
+    mod commands;
     mod cpp_ladder;
     mod invariants;
     mod ladders;
     mod lifecycle;
+    mod reports;
     mod sim;
 }
