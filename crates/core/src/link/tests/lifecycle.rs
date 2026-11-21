@@ -7,8 +7,9 @@ use pods_proto::ear::{EarPlacement, EarReport};
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 
+use super::ladders::PARKED_AT_MS;
 use super::sim::{Answer, Input, Sim, addr, ms};
-use crate::command::{Command, CommandError, NoiseTarget, Outcome};
+use crate::command::{Command, CommandError, Outcome};
 use crate::link::ladder::KNOWN_MAX;
 use crate::link::{Event, Machine, Phase};
 use crate::state::{EarDetectionBehavior, LidState, State};
@@ -299,28 +300,97 @@ fn a_channel_that_opens_after_the_device_left_is_closed() {
     sim.check();
 }
 
+/// One script for each phase short of `Stopped`, with the phase it ends in.
+fn phase_scripts() -> [(Answer, Vec<Input>, Phase); 9] {
+    let handshake_ack = || Input::Packet(pods_samples::handshake_ack());
+    let features_ack = || Input::Packet(pods_samples::features_ack());
+    [
+        (Answer::Hold, vec![], Phase::Idle),
+        (
+            Answer::Hold,
+            vec![Input::Up(0)],
+            Phase::Opening { attempt: 1 },
+        ),
+        (
+            Answer::Hold,
+            vec![Input::Up(0), Input::Release(true)],
+            Phase::AwaitHandshakeAck {
+                attempt: 1,
+                until: ms(2000),
+            },
+        ),
+        (
+            Answer::Open,
+            vec![Input::Up(0), handshake_ack()],
+            Phase::AwaitFeaturesAck {
+                attempt: 1,
+                until: ms(2000),
+            },
+        ),
+        (
+            Answer::Open,
+            vec![Input::Up(0), handshake_ack(), features_ack()],
+            Phase::Up {
+                rerequest: Some(ms(2000)),
+            },
+        ),
+        (
+            Answer::Open,
+            vec![
+                Input::Up(0),
+                handshake_ack(),
+                features_ack(),
+                Input::Down(0),
+            ],
+            Phase::Grace { until: ms(7750) },
+        ),
+        (
+            Answer::Hold,
+            vec![Input::Up(0), Input::Gone(0)],
+            Phase::Closing { attempt: None },
+        ),
+        (
+            Answer::Refuse,
+            vec![Input::Up(0)],
+            Phase::Backoff {
+                attempt: 2,
+                until: ms(1000),
+            },
+        ),
+        (
+            Answer::Refuse,
+            vec![Input::Up(0), Input::Wait(ms(PARKED_AT_MS))],
+            Phase::Parked {
+                until: ms(PARKED_AT_MS + 300_000),
+            },
+        ),
+    ]
+}
+
 #[test]
 fn commands_are_answered_at_once_in_every_phase() {
-    let mut sim = Sim::answering(Answer::Hold);
-    let ear = Command::SetEarDetection(EarDetectionBehavior::Disabled);
-    let noise = Command::SetNoise(NoiseTarget::Cycle);
-    sim.feed(Input::Command(ear));
-    sim.feed(Input::Up(0));
-    sim.feed(Input::Command(noise));
-    sim.feed(Input::Release(true));
-    sim.feed(Input::Packet(pods_samples::handshake_ack()));
-    sim.feed(Input::Packet(pods_samples::features_ack()));
-    sim.feed(Input::Command(noise));
-    assert_eq!(sim.last(), ["Resolve(2)"]);
-    let refused = Outcome::Refused(CommandError::NotConnected);
-    assert_eq!(sim.outcomes(), [Outcome::Confirmed, refused, refused]);
-    assert_eq!(
-        sim.state.ear_detection_behavior,
-        EarDetectionBehavior::Disabled
-    );
-    sim.feed(Input::CallFailed);
-    assert_eq!(sim.last(), NO_ACTIONS);
-    sim.check_all_tickets_resolved_once();
+    for (answer, script, phase) in phase_scripts() {
+        let mut sim = Sim::answering(answer);
+        for input in script {
+            sim.feed(input);
+        }
+        assert_eq!(sim.machine.phase(), phase);
+        let connected = sim.state.connected;
+        sim.feed(Input::Command(Command::SetEarDetection(
+            EarDetectionBehavior::Disabled,
+        )));
+        assert_eq!(sim.last(), ["Resolve(0)"], "{phase:?}");
+        assert_eq!(sim.outcomes(), [Outcome::Confirmed], "{phase:?}");
+        assert_eq!(
+            sim.state.ear_detection_behavior,
+            EarDetectionBehavior::Disabled
+        );
+        sim.feed(Input::CallFailed);
+        assert_eq!(sim.last(), NO_ACTIONS, "{phase:?}");
+        assert_eq!(sim.machine.phase(), phase);
+        assert_eq!(sim.state.connected, connected);
+        sim.check_all_tickets_resolved_once();
+    }
 }
 
 #[test]
