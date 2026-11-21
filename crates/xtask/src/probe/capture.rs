@@ -238,7 +238,7 @@ impl Engine<'_, '_> {
     }
 
     fn send_handshake(&mut self) -> Flow {
-        let first = Handshake::first();
+        let first = pods_proto::packets::HANDSHAKE.as_slice();
         let sent = self.link.send(first);
         self.phase = Phase::Handshaking {
             handshake: Handshake::default(),

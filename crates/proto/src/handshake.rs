@@ -1,10 +1,9 @@
-//! The three requests that open the control channel, each after the pods acknowledge the last.
+//! The two requests that follow `HANDSHAKE` on the control channel, each after the pods acknowledge the last.
 
 use std::fmt;
 
 use crate::packets::{
-    FEATURES_ACK_PREFIX, HANDSHAKE, HANDSHAKE_ACK_PREFIX, REQUEST_NOTIFICATIONS,
-    SET_SPECIFIC_FEATURES,
+    FEATURES_ACK_PREFIX, HANDSHAKE_ACK_PREFIX, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,11 +31,6 @@ pub struct Handshake {
 }
 
 impl Handshake {
-    #[must_use]
-    pub fn first() -> &'static [u8] {
-        &HANDSHAKE
-    }
-
     /// Replies only to the awaited acknowledgement, `01 00 04 00` then `04 00 04 00 2b 00`.
     pub fn on_packet(&mut self, sdu: &[u8]) -> Option<&'static [u8]> {
         match self.step {
@@ -63,6 +57,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::packets::HANDSHAKE;
 
     /// Ordinary traffic during a handshake.
     const EAR_PACKET: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00];
@@ -76,7 +71,6 @@ mod tests {
     #[test]
     fn follows_the_acks_in_order() {
         let mut handshake = Handshake::default();
-        assert_eq!(Handshake::first(), HANDSHAKE);
         assert_eq!(handshake.step(), Step::AwaitHandshakeAck);
 
         let reply = handshake.on_packet(&with_tail(&HANDSHAKE_ACK_PREFIX));
