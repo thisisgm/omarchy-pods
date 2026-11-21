@@ -10,8 +10,11 @@ pub mod ear;
 pub mod error;
 #[cfg(test)]
 mod fixture;
+pub mod handshake;
+pub mod metadata;
 pub mod model;
 pub mod noise;
+pub mod packet;
 pub mod packets;
 pub mod sdulog;
 pub mod uplink;

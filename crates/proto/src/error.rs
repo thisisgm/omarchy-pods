@@ -40,6 +40,10 @@ pub enum Parser {
     AttIndication,
     /// `DictationPacket::parse` reading a notification on the audio handle.
     DictationAudio,
+    /// `Metadata::parse`.
+    Metadata,
+    /// `classify` reading an SDU cut inside its opcode.
+    Packet,
 }
 
 impl fmt::Display for Parser {
@@ -61,6 +65,8 @@ impl fmt::Display for Parser {
             Self::AttNotification => "attribute protocol notification",
             Self::AttIndication => "attribute protocol indication",
             Self::DictationAudio => "dictation audio notification",
+            Self::Metadata => "metadata packet",
+            Self::Packet => "control channel packet",
         })
     }
 }
@@ -230,6 +236,8 @@ mod tests {
             (Parser::AttNotification, "attribute protocol notification"),
             (Parser::AttIndication, "attribute protocol indication"),
             (Parser::DictationAudio, "dictation audio notification"),
+            (Parser::Metadata, "metadata packet"),
+            (Parser::Packet, "control channel packet"),
         ] {
             assert_eq!(parser.to_string(), name);
         }
