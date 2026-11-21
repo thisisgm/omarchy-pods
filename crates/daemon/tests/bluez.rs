@@ -478,6 +478,31 @@ mod tests {
     }
 
     #[test]
+    fn pods_added_just_before_bluez_leaves_are_not_left_up() {
+        let mut rig = Rig::new();
+        let pods = rig.add_pods(Profile::default());
+        rig.bluez().remove(&pods.path);
+        rig.start();
+        wait_for("the first sweep", || {
+            (rig.bluez().sweeps() > 0).then_some(())
+        });
+        rig.bluez().hold_replies(true);
+        bluez_restarts(&rig);
+        wait_for("the held sweep", || {
+            (rig.bluez().sweeps() > 1).then_some(())
+        });
+        rig.bluez()
+            .add_device(rig.adapter(), pods.address, &[AAP_UUID], true);
+        rig.bluez().drop_name();
+        rig.bluez().hold_replies(false);
+        wait_for("the held sweep's error", || {
+            rig.daemon().log().contains(SWEEP_HELD).then_some(())
+        });
+        holds_for(&rig, QUIET, "not connected", |status| !connected(status));
+        rig.finish();
+    }
+
+    #[test]
     fn removed_pods_close_and_the_sweep_adopts_the_next_connected_pods() {
         let mut rig = Rig::new();
         let first = rig.add_pods(Profile::default());
