@@ -202,7 +202,7 @@ fn control_channel_level_above_100_keeps_the_last_reading() {
     let mut buf = HEADER.to_vec();
     buf.extend([1, 0x04, 0x01, 101, DISCHARGING, 0x01]);
     let report = BatteryReport::parse(&buf).unwrap();
-    assert_eq!(report.left, None);
+    assert_eq!(report.batteries.left, None);
     let mut fresh = Batteries::default();
     fresh.apply(&report);
     assert!(fresh.left.is_none());
@@ -241,7 +241,7 @@ fn control_channel_order_sets_primary_and_secondary() {
     assert_eq!(report.primary, Some(Component::Right));
     assert_eq!(report.secondary, Some(Component::Left));
     assert_eq!(
-        report.left,
+        report.batteries.left,
         Some(Charge {
             level: 50,
             charging: true
@@ -253,14 +253,14 @@ fn control_channel_order_sets_primary_and_secondary() {
 fn control_channel_disconnected_entry_keeps_the_last_reading() {
     let mut buf = HEADER.to_vec();
     buf.extend([1, 0x08, 0x01, 0, 0x04, 0x01]);
-    assert_eq!(BatteryReport::parse(&buf).unwrap().case, None);
+    assert_eq!(BatteryReport::parse(&buf).unwrap().batteries.case, None);
 }
 
 #[test]
 fn encrypted_right_primary_swaps_the_bud_bytes() {
     let report = BatteryReport::parse_decrypted(&payload(60, 70, 0), false, false, false).unwrap();
-    assert_eq!(report.right.map(|c| c.level), Some(60));
-    assert_eq!(report.left.map(|c| c.level), Some(70));
+    assert_eq!(report.batteries.right.map(|c| c.level), Some(60));
+    assert_eq!(report.batteries.left.map(|c| c.level), Some(70));
     assert_eq!(report.primary, Some(Component::Right));
     assert_eq!(report.secondary, Some(Component::Left));
 }
@@ -272,7 +272,7 @@ fn control_channel_unknown_part_is_skipped() {
     buf.extend([0x04, 0x01, 60, DISCHARGING, 0x01]);
     let report = BatteryReport::parse(&buf).unwrap();
     assert_eq!(
-        report.left,
+        report.batteries.left,
         Some(Charge {
             level: 60,
             charging: false
@@ -281,7 +281,11 @@ fn control_channel_unknown_part_is_skipped() {
     assert_eq!(report.primary, Some(Component::Left));
     assert_eq!(report.secondary, None);
     assert_eq!(
-        (report.right, report.case, report.headset),
+        (
+            report.batteries.right,
+            report.batteries.case,
+            report.batteries.headset
+        ),
         (None, None, None)
     );
 }
@@ -295,7 +299,7 @@ fn control_channel_case_entry_is_never_primary() {
     let report = BatteryReport::parse(&buf).unwrap();
     assert_eq!(report.primary, Some(Component::Right));
     assert_eq!(report.secondary, Some(Component::Left));
-    assert_eq!(report.case.map(|c| c.level), Some(90));
+    assert_eq!(report.batteries.case.map(|c| c.level), Some(90));
 }
 
 #[test]
