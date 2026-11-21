@@ -259,6 +259,11 @@ pub(crate) fn read_device(root: &Path) -> Result<BdAddr, StoreError> {
     parse_device(&path, &contents)
 }
 
+/// Reads a file from outside the store by the same rules as a capture: a regular file of the caller's, owner only, at most `MAX_READ_BYTES`.
+pub(crate) fn read_trace(path: &Path) -> Result<Vec<u8>, StoreError> {
+    read_bounded(CWD, path, path, ModeRule::OwnerOnly, MAX_READ_BYTES)
+}
+
 // Sample input: b"AA:BB:CC:DD:EE:FF\n", one address and an optional newline.
 fn parse_device(path: &Path, contents: &[u8]) -> Result<BdAddr, StoreError> {
     let line = contents.strip_suffix(b"\n").unwrap_or(contents);
@@ -403,7 +408,7 @@ fn open_dir(dir: BorrowedFd<'_>, name: &Path, path: &Path) -> Result<OwnedFd, St
 /// Opens a regular file under `dir` without following a symbolic link and reads at most `limit` bytes.
 fn read_bounded(
     dir: BorrowedFd<'_>,
-    name: &str,
+    name: impl rustix::path::Arg,
     path: &Path,
     rule: ModeRule,
     limit: u64,
