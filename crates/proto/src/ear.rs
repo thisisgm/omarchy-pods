@@ -120,6 +120,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_short_packet_that_has_the_ear_header() {
+        let mut buf = HEADER.to_vec();
+        buf.push(0x00);
+        assert_eq!(
+            EarReport::parse(&buf),
+            Err(ParseError::TooShort { need: 8, got: 7 })
+        );
+    }
+
+    #[test]
     fn accepts_eight_byte_packet() {
         let d = EarReport::parse(&packet(0x00, 0x01)).unwrap();
         assert_eq!(d.primary, EarPlacement::InEar);
