@@ -114,6 +114,12 @@ mod tests {
     }
 
     #[test]
+    fn ctl_subcommand_sends_flags_as_verbs() {
+        let parsed = parse(OsStr::new("librepods"), &args(&["ctl", "--help", "extra"]));
+        assert_eq!(parsed.unwrap(), client("--help"));
+    }
+
+    #[test]
     fn ctl_subcommand_without_a_verb_is_usage() {
         let parsed = parse(OsStr::new("librepods"), &args(&["ctl"]));
         assert_eq!(
