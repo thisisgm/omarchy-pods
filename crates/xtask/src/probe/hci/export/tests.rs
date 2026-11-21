@@ -4,8 +4,8 @@ use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{Direction, MAX_SDU_LEN, parse_line};
 
 use super::super::fixture::{
-    ATT_CIDS, AVDTP_PSM, CONTROL_CIDS, KEYBOARD_HANDLE, PODS_HANDLE, Trace, att_packets,
-    control_packets, counting_bytes, session,
+    ATT_CIDS, AVDTP_PSM, CONTROL_CIDS, EVENT_SYNCHRONOUS_CONNECTION, KEYBOARD_HANDLE, PODS_HANDLE,
+    Trace, att_packets, control_packets, counting_bytes, session,
 };
 use super::super::{Damage, records};
 use super::*;
@@ -19,8 +19,6 @@ const BASIC: u8 = 0x00;
 const ENHANCED_RETRANSMISSION: u8 = 0x03;
 /// A regular file every Linux host has, owned by uid 0.
 const SYSTEM_FILE: &str = "/etc/passwd";
-/// The event code of a completed synchronous connection.
-const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
 /// One millisecond, the step of the fixture's clock.
 const MS: u64 = 1_000_000;
 /// Where the timestamp starts in a record header.
@@ -295,9 +293,9 @@ fn the_link_summary_of_the_session() {
     let outputs = rendered(&session());
     let expected = "realtime_at_zero_ns 1795176000004000000\n\
         stamps_stepping_back 0\n\
-        synchronous_connection_events 0\n\
-        synchronous_connections_opened 0\n\
-        acl_packets 44\n\
+        synchronous_connection_events 1\n\
+        synchronous_connections_opened 1\n\
+        acl_packets 45\n\
         malformed_acl_packets 0\n\
         continuations_without_start 0\n\
         unfinished_pdus 0\n\
