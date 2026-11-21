@@ -551,18 +551,42 @@ const FORBIDDEN: [&str; 12] = [
     "fs::copy",
 ];
 
+/// Where a source file's unit tests begin; the scan reads everything above it.
+const TESTS_MODULE: &str = "#[cfg(test)]\nmod tests";
+/// A file of unit tests, which names the forbidden calls itself.
+const TESTS_FILE: &str = "tests.rs";
+
+/// Every source file of the crate except test files, read at run time so a module added later is scanned too.
+fn crate_sources() -> Vec<(PathBuf, String)> {
+    let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut sources = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension() == Some(OsStr::new("rs")) && !path.ends_with(TESTS_FILE) {
+                let source = fs::read_to_string(&path).unwrap();
+                sources.push((path, source));
+            }
+        }
+    }
+    sources
+}
+
 #[test]
 fn no_code_path_removes_or_overwrites() {
-    for (file, source) in [
-        ("store.rs", include_str!("../store.rs")),
-        ("mod.rs", include_str!("../mod.rs")),
-        ("main.rs", include_str!("../../main.rs")),
-    ] {
+    let sources = crate_sources();
+    for known in ["main.rs", "mod.rs", "store.rs"] {
+        let found = sources.iter().any(|(path, _)| path.ends_with(known));
+        assert!(found, "{known} was not scanned");
+    }
+    for (path, source) in &sources {
         let code = source
-            .split_once("#[cfg(test)]")
-            .map_or(source, |(code, _)| code);
+            .split_once(TESTS_MODULE)
+            .map_or(source.as_str(), |(code, _)| code);
         for call in FORBIDDEN {
-            assert!(!code.contains(call), "{file} holds {call}");
+            assert!(!code.contains(call), "{} holds {call}", path.display());
         }
     }
 }
