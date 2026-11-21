@@ -129,6 +129,14 @@ pub(crate) enum StoreError {
         action: &'static str,
         source: io::Error,
     },
+    #[error("{refused}; names given before it stay and block the next attempt: {}", listed(.left))]
+    NamesLeft { refused: Box<Self>, left: Vec<Self> },
+}
+
+/// Every error of a list in full, joined into one line.
+fn listed(errors: &[StoreError]) -> String {
+    let lines: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    lines.join("; ")
 }
 
 impl StoreError {
@@ -137,6 +145,17 @@ impl StoreError {
             path: path.to_path_buf(),
             action,
             source: source.into(),
+        }
+    }
+
+    /// The refusal alone when every name was taken back, else with each name that stays.
+    fn with_names_left(self, left: Vec<Self>) -> Self {
+        if left.is_empty() {
+            return self;
+        }
+        Self::NamesLeft {
+            refused: Box::new(self),
+            left,
         }
     }
 }
@@ -272,19 +291,16 @@ pub(crate) struct Unnamed<'run> {
 }
 
 impl Unnamed<'_> {
-    /// Gives every file its name or none: when one is refused, the names given before it are taken back and the run is as it was.
+    /// Gives every file its name or none: when one is refused, the names given before it are taken back, and the error says which stay.
     pub(crate) fn name_all(files: &[Self]) -> Result<(), StoreError> {
         for (given, file) in files.iter().enumerate() {
             let Err(refused) = file.give_name() else {
                 continue;
             };
-            let mut taken_back = Ok(());
-            for named in files.iter().take(given) {
-                taken_back = taken_back.and(named.take_name_back());
-            }
-            // A name that stays blocks the next attempt, so it is the fault to report.
-            taken_back?;
-            return Err(refused);
+            // Every take back is tried, and each that fails is reported beside the refusal.
+            let before = files.iter().take(given);
+            let left = before.filter_map(|named| named.take_name_back().err());
+            return Err(refused.with_names_left(left.collect()));
         }
         Ok(())
     }
