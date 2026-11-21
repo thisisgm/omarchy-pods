@@ -18,10 +18,10 @@ draws the bar. Judge it against these, not against generic best practice.
 - **The daemon publishes one line of JSON to
   `$XDG_STATE_HOME/librepods/status.json` on change and removes it on quit**,
   and the panel watches that file rather than polling. Keys arrive sorted
-  alphabetically because `QJsonObject` sorts. The C++ daemon leaves
-  the `left`, `right` and `case` objects **absent entirely** until a battery
-  packet arrives. The Rust daemon writes every key from the start, each
-  battery object with `available: false` until it has a reading.
+  alphabetically because `QJsonObject` sorts. Both daemons write
+  the `left`, `right`, `case` and `headset` objects from the start, each with
+  `available: false` until a battery packet gives it a reading; none is ever
+  absent while the daemon runs.
 - **`connected` means the L2CAP audio link, not the daemon.** Battery keeps
   arriving over BLE while `connected` is false, which is the pods-in-case case.
 - **The cursor ring appearing on panel open comes from the shared
