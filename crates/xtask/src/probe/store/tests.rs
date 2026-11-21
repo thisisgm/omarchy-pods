@@ -29,6 +29,8 @@ const SYSTEM_DIR: &str = "/usr";
 const SYSTEM_FILE: &str = "/etc/passwd";
 /// A read of a planted FIFO that has not returned by then is a hang, and the test fails.
 const FIFO_DEADLINE: Duration = Duration::from_secs(5);
+/// Generated device contents run past `MAX_DEVICE_BYTES` so the parser sees oversized input too.
+const DEVICE_SAMPLE_BYTES: usize = 80;
 
 fn mode_of(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & PERMISSION_BITS
@@ -331,7 +333,7 @@ fn refuses_a_stamp_that_is_a_path() {
 fn refuses_a_run_name_with_a_dot_or_slash() {
     let home = tempfile::tempdir().unwrap();
     let session = Session::open(&root_of(&home), STAMP).unwrap();
-    let too_long = "a".repeat(33);
+    let too_long = "a".repeat(RUN_NAME_MAX + 1);
     for name in [
         ".",
         "..",
@@ -352,7 +354,7 @@ fn refuses_a_run_name_with_a_dot_or_slash() {
     }
     assert_eq!(fs::read_dir(session.path()).unwrap().count(), 0);
 
-    let longest = "z".repeat(32);
+    let longest = "z".repeat(RUN_NAME_MAX);
     for name in [longest.as_str(), "0-9", "-"] {
         Run::create(&session, name).unwrap();
     }
@@ -412,9 +414,10 @@ fn device_file_must_be_0600_regular_and_short() {
             "{bad:o}: {error}"
         );
     }
-    let error = device_refusal(&[b'A'; 65], OWNER_FILE);
+    let device_max = usize::try_from(MAX_DEVICE_BYTES).unwrap();
+    let error = device_refusal(&vec![b'A'; device_max + 1], OWNER_FILE);
     assert!(matches!(error, StoreError::TooLarge { .. }), "{error}");
-    let error = device_refusal(&[b'A'; 64], OWNER_FILE);
+    let error = device_refusal(&vec![b'A'; device_max], OWNER_FILE);
     assert!(
         matches!(error, StoreError::DeviceNotAddress { .. }),
         "{error}"
@@ -603,7 +606,7 @@ proptest! {
     #[test]
     fn run_name_check_never_panics(text in any::<String>()) {
         if check_run_name(&text).is_ok() {
-            prop_assert!(!text.is_empty() && text.len() <= 32);
+            prop_assert!(!text.is_empty() && text.len() <= RUN_NAME_MAX);
             prop_assert!(!text.contains(['.', '/']));
         }
     }
@@ -617,7 +620,7 @@ proptest! {
     }
 
     #[test]
-    fn device_parse_never_panics(contents in proptest::collection::vec(any::<u8>(), 0..80)) {
+    fn device_parse_never_panics(contents in proptest::collection::vec(any::<u8>(), 0..DEVICE_SAMPLE_BYTES)) {
         if let Err(error) = parse_device(Path::new("/store/device"), &contents) {
             prop_assert!(!error.to_string().is_empty());
         }
