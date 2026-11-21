@@ -26,21 +26,43 @@ const CEILING: Duration = Duration::from_secs(10);
 
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
-const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
-
 /// The public description of this interface, which must list every error name.
 const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
 
-/// Every refusal a command can end in.
-const ALL_ERRORS: [CommandError; 8] = [
-    CommandError::NotConnected,
-    CommandError::NotSupported,
-    CommandError::NotWorn,
-    CommandError::OutOfRange,
-    CommandError::UnknownKey,
-    CommandError::BadRequest,
-    CommandError::Timeout,
-    CommandError::Headless,
+/// Every refusal a command can end in, with the error name a client sees for it.
+const ERROR_NAMES: [(CommandError, &str); 8] = [
+    (
+        CommandError::NotConnected,
+        "io.github.thisisgm.Omapods1.Error.NotConnected",
+    ),
+    (
+        CommandError::NotSupported,
+        "io.github.thisisgm.Omapods1.Error.NotSupported",
+    ),
+    (
+        CommandError::NotWorn,
+        "io.github.thisisgm.Omapods1.Error.NotWorn",
+    ),
+    (
+        CommandError::OutOfRange,
+        "io.github.thisisgm.Omapods1.Error.OutOfRange",
+    ),
+    (
+        CommandError::UnknownKey,
+        "io.github.thisisgm.Omapods1.Error.UnknownKey",
+    ),
+    (
+        CommandError::BadRequest,
+        "io.github.thisisgm.Omapods1.Error.BadRequest",
+    ),
+    (
+        CommandError::Timeout,
+        "io.github.thisisgm.Omapods1.Error.Timeout",
+    ),
+    (
+        CommandError::Headless,
+        "io.github.thisisgm.Omapods1.Error.Headless",
+    ),
 ];
 
 /// State changes the stalled peer test makes; their signals overfill a socket buffer many times over.
@@ -180,19 +202,6 @@ async fn call<B: Serialize + DynamicType>(
         Err(zbus::Error::MethodError(name, _, _)) => Err(name.to_string()),
         Err(other) => panic!("{method} failed outside the interface: {other}"),
     }
-}
-
-fn error_name(error: CommandError) -> String {
-    let camel: String = error
-        .code()
-        .split('_')
-        .map(|word| {
-            let mut letters = word.chars();
-            let first = letters.next().unwrap().to_ascii_uppercase();
-            std::iter::once(first).chain(letters).collect::<String>()
-        })
-        .collect();
-    format!("{ERROR_PREFIX}{camel}")
 }
 
 /// The next `PropertiesChanged` on `stream`, as its changed properties.
@@ -369,6 +378,23 @@ fn set_noise_mode_while_disconnected_returns_the_not_connected_error_name() {
         let peer = peer(Hub::new()).await;
         let reply = call(&peer.client, "SetNoiseMode", &("anc",)).await;
         assert_eq!(reply, Err(format!("{ERROR_PREFIX}NotConnected")));
+        let refused = peer
+            .client
+            .call_method(
+                None::<&str>,
+                OBJECT_PATH,
+                Some(INTERFACE),
+                "SetNoiseMode",
+                &("anc",),
+            )
+            .await;
+        let Err(zbus::Error::MethodError(_, message, _)) = refused else {
+            panic!("SetNoiseMode was not refused: {refused:?}");
+        };
+        assert_eq!(
+            message.as_deref(),
+            Some(CommandError::NotConnected.message())
+        );
     });
 }
 
@@ -515,17 +541,18 @@ fn every_mode_and_behavior_has_a_name() {
 
 #[test]
 fn every_command_error_has_its_camel_case_name() {
-    for error in ALL_ERRORS {
+    for (error, name) in ERROR_NAMES {
         let reply = CallError::from(error);
-        assert_eq!(reply.name().as_str(), error_name(error));
+        assert_eq!(reply.name().as_str(), name);
+        assert!(ErrorName::try_from(name).is_ok(), "{name}");
         assert_eq!(reply.description(), Some(error.message()));
     }
 }
 
 #[test]
 fn the_interface_document_lists_every_error_name_with_its_code() {
-    for error in ALL_ERRORS {
-        let row = format!("| `{}` | `{}` |", error_name(error), error.code());
+    for (error, name) in ERROR_NAMES {
+        let row = format!("| `{name}` | `{}` |", error.code());
         assert!(API_DOCUMENT.contains(&row), "{row}");
     }
 }
