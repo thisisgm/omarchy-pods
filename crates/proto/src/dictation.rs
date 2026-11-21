@@ -35,7 +35,7 @@ pub const STARTED: [u8; 15] = [
 /// The notification the pods answer `STOP` with, compared whole for the same reason.
 pub const STOPPED: [u8; 7] = [0x1b, 0x10, 0x00, 0x01, 0x00, 0x03, 0x00];
 
-/// Handle `START` is written to: a value of one firmware, not of the protocol, so check the attribute table before writing.
+/// Handle `START` is written to: a value of one firmware, not of the protocol; check the pods' attribute table before writing, and where it differs nothing in this module applies.
 pub const START_HANDLE: u16 = 0x0007;
 /// Handle `STOP` is written to, a value of one firmware like `START_HANDLE`.
 pub const STOP_HANDLE: u16 = 0x000a;
@@ -56,7 +56,7 @@ pub const TOC_CELT_WIDEBAND_20MS_MONO: u8 = 0xb8;
 pub enum DictationPacket<'a> {
     Audio(AudioNotification<'a>),
     Status(Status<'a>),
-    /// A notification on `AUDIO_HANDLE` whose value does not start with the audio marker `01 00`, kept whole so the caller can log or count it.
+    /// A notification on `AUDIO_HANDLE` of at least `AUDIO_PREFIX_LEN` bytes whose value does not start with the audio marker `01 00`, kept whole so the caller can log or count it; a shorter one is `TooShort` whatever its marker.
     Unknown {
         /// Everything after the handle.
         value: &'a [u8],
@@ -120,7 +120,7 @@ impl<'a> AudioNotification<'a> {
         }))
     }
 
-    /// The frames of this notification, in order.
+    /// The frames of this notification, in order, walked over the real bytes whatever the declared length says.
     #[must_use]
     pub fn frames(&self) -> Frames<'a> {
         Frames { rest: self.frames }
