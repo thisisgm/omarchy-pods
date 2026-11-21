@@ -29,6 +29,13 @@ const HID_CONTROL_PSM: u16 = 0x0011;
 const INFORMATION_REQUEST: u8 = 0x0a;
 /// The flush timeout option, which the reader skips (Core 6.1 Vol 3 Part A 5.2).
 const OPTION_FLUSH_TIMEOUT: u8 = 0x02;
+/// The frame check sequence option, the type after the mode's (Core 6.1 Vol 3 Part A 5.5).
+const OPTION_FCS: u8 = 0x05;
+/// The top bit of an option type, a hint, which the reader takes off before it reads the type (Core 6.1 Vol 3 Part A 5).
+const OPTION_HINT: u8 = 0x80;
+/// Two fixed channels, which the reader only counts: connectionless data, and the last identifier under the dynamic range (Core 6.1 Vol 3 Part A 2.1, Table 2.1).
+const CONNECTIONLESS_CID: u16 = 0x0002;
+const LAST_FIXED_CID: u16 = 0x003f;
 /// The L2CAP modes the tests ask for: basic, enhanced retransmission and streaming.
 const BASIC: u8 = 0x00;
 const ENHANCED_RETRANSMISSION: u8 = 0x03;
@@ -418,6 +425,9 @@ fn a_response_answers_the_request_with_its_identifier_from_the_other_side() {
     assert_eq!(found.list.len(), 1);
     assert_eq!(found.list[0].psm, CONTROL_PSM);
     assert_eq!((found.list[0].host_cid, found.list[0].pods_cid), SECOND);
+    let results = found.requests.iter().map(|request| request.result);
+    let only_the_newest = [None, None, Some(RESULT_SUCCESS), None];
+    assert_eq!(results.collect::<Vec<_>>(), only_the_newest);
 
     let mut trace = Trace::new();
     trace.signal(PODS, CONNECTION_REQUEST, &request(ATT_PSM, FIRST.0));
@@ -428,7 +438,8 @@ fn a_response_answers_the_request_with_its_identifier_from_the_other_side() {
     assert_eq!(found.list[0].psm, ATT_PSM);
     assert_eq!(found.list[0].host_cid, SECOND.0);
     assert_eq!(found.list[0].pods_cid, FIRST.0);
-    assert_eq!(found.requests[1].result, None);
+    let results = found.requests.iter().map(|request| request.result);
+    assert_eq!(results.collect::<Vec<_>>(), [Some(RESULT_SUCCESS), None]);
 }
 
 #[test]
@@ -477,8 +488,8 @@ fn the_mtu_option_each_side_sends_is_kept() {
     let mut request = FIRST.0.to_le_bytes().to_vec();
     request.extend([0x00, 0x00]);
     request.extend([OPTION_FLUSH_TIMEOUT, 0x02, 0xff, 0xff]);
-    request.extend([0x81, 0x02, 0x00, 0x04]);
-    request.extend([0x04, 0x09, 0x00]);
+    request.extend([OPTION_HINT | OPTION_MTU, 0x02, 0x00, 0x04]);
+    request.extend(&mode_option(BASIC)[..3]);
     trace.signal(PODS, CONFIGURATION_REQUEST, &request);
     let found = read(&trace);
     assert_eq!(found.list[0].pods_mtu, Some(1024));
@@ -486,7 +497,7 @@ fn the_mtu_option_each_side_sends_is_kept() {
     assert_eq!(found.counts.malformed_signals, 1);
 
     let mut odd = FIRST.0.to_le_bytes().to_vec();
-    odd.extend([0x00, 0x00, 0x01, 0x03, 0x01, 0x02, 0x03]);
+    odd.extend([0x00, 0x00, OPTION_MTU, 0x03, 0x01, 0x02, 0x03]);
     trace.signal(PODS, CONFIGURATION_REQUEST, &odd);
     trace.offer_mtu(PODS, (0x0049, 0x0059), 48);
     trace.signal(PODS, CONFIGURATION_REQUEST, &[0x40, 0x00, 0x00]);
@@ -556,7 +567,7 @@ fn the_mode_is_read_from_a_whole_option_of_either_side_and_no_other() {
         (Some(672), Some(STREAMING))
     );
     let mut hinted = streaming.clone();
-    hinted[0] |= 0x80;
+    hinted[0] |= OPTION_HINT;
     assert_eq!(asked(PODS, &hinted), (None, Some(STREAMING), false));
 
     let mut one_byte_short = streaming.clone();
@@ -568,7 +579,7 @@ fn the_mode_is_read_from_a_whole_option_of_either_side_and_no_other() {
     one_byte_long.push(0x00);
     assert_eq!(asked(PODS, &one_byte_long), (None, None, true));
     let mut another_option = streaming;
-    another_option[0] = 0x05;
+    another_option[0] = OPTION_FCS;
     assert_eq!(asked(PODS, &another_option), (None, None, true));
 }
 
@@ -620,20 +631,26 @@ fn a_disconnection_request_that_names_the_wrong_end_closes_nothing() {
 
 #[test]
 fn a_disconnection_request_from_either_side_closes_only_the_channel_of_its_link() {
-    for sender in [HOST, PODS] {
-        let mut trace = Trace::new();
-        trace.open(HOST, CONTROL_PSM, FIRST);
-        trace.on(KEYBOARD_HANDLE);
-        trace.open(HOST, HID_INTERRUPT_PSM, FIRST);
-        trace.signal(sender, DISCONNECTION_REQUEST, &closing(sender, FIRST));
-        trace.send(PODS, FIRST, &[0x6b]);
-        trace.on(PODS_HANDLE);
-        trace.send(PODS, FIRST, &[1]);
-        let found = read(&trace);
-        let closed = (found.list[0].closed, found.list[1].closed);
-        assert_eq!(closed, (None, Some(4)), "sent by {sender:?}");
-        assert_eq!(sdus(&found.list[0]), [(PODS, vec![1])]);
-        assert_eq!(found.list[1].sdus, []);
+    // The link the request is sent on, the channel it closes, the one it leaves open and the byte that one still reads.
+    for (link, closed, open, byte) in [(PODS_HANDLE, 0, 1, 0x6b), (KEYBOARD_HANDLE, 1, 0, 1)] {
+        for sender in [HOST, PODS] {
+            let mut trace = Trace::new();
+            trace.open(HOST, CONTROL_PSM, FIRST);
+            trace.on(KEYBOARD_HANDLE);
+            trace.open(HOST, HID_INTERRUPT_PSM, FIRST);
+            trace.on(link);
+            trace.signal(sender, DISCONNECTION_REQUEST, &closing(sender, FIRST));
+            trace.on(KEYBOARD_HANDLE);
+            trace.send(PODS, FIRST, &[0x6b]);
+            trace.on(PODS_HANDLE);
+            trace.send(PODS, FIRST, &[1]);
+            let found = read(&trace);
+            let state = |index: usize| (found.list[index].closed, sdus(&found.list[index]));
+            let gone = (Some(4), vec![]);
+            assert_eq!(state(closed), gone, "{sender:?} on {link:#06x}");
+            let still_read = (None, vec![(PODS, vec![byte])]);
+            assert_eq!(state(open), still_read, "{sender:?} on {link:#06x}");
+        }
     }
 }
 
@@ -737,8 +754,8 @@ fn a_reused_identifier_closes_the_channel_that_held_it() {
 #[test]
 fn fixed_channels_are_counted_and_one_pdu_may_hold_several_commands() {
     let mut trace = Trace::new();
-    trace.pdu(PODS, 0x0002, &[1, 2, 3]);
-    trace.pdu(HOST, 0x003f, &[1]);
+    trace.pdu(PODS, CONNECTIONLESS_CID, &[1, 2, 3]);
+    trace.pdu(HOST, LAST_FIXED_CID, &[1]);
     let mut commands = vec![CONNECTION_REQUEST, 0x01, 0x04, 0x00, 0x01, 0x10, 0x40, 0x00];
     commands.extend([INFORMATION_REQUEST, 0x02, 0x02, 0x00, 0x02, 0x00]);
     commands.extend([CONNECTION_REQUEST, 0x03, 0x04, 0x00, 0x1f, 0x00, 0x41, 0x00]);
@@ -764,9 +781,8 @@ fn fixed_channels_are_counted_and_one_pdu_may_hold_several_commands() {
 fn the_limits_count_what_they_refuse() {
     let mut trace = Trace::new();
     for cid in 0..u16::try_from(MAX_REQUESTS + 3).unwrap() {
-        let mut request = CONTROL_PSM.to_le_bytes().to_vec();
-        request.extend((0x0040 + cid).to_le_bytes());
-        trace.signal(HOST, CONNECTION_REQUEST, &request);
+        let wanted = request(CONTROL_PSM, 0x0040 + cid);
+        trace.signal(HOST, CONNECTION_REQUEST, &wanted);
     }
     for cid in 0..u16::try_from(MAX_UNMAPPED + 2).unwrap() {
         trace.pdu(PODS, 0x1000 + cid, &[1]);
