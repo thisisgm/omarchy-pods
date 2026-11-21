@@ -41,7 +41,7 @@ const OPCODE_EVENT: u16 = 3;
 /// Monitor opcode of ACL data the host sent.
 const OPCODE_ACL_TX: u16 = 4;
 /// Monitor opcode of ACL data the host received.
-const OPCODE_ACL_RX: u16 = 5;
+pub(crate) const OPCODE_ACL_RX: u16 = 5;
 /// The packet boundary flag sits above the 12 bit handle (`BlueZ` monitor/bt.h, `acl_flags`).
 const BOUNDARY_SHIFT: u32 = 12;
 /// Packet boundary flag of a continuing fragment.
@@ -82,7 +82,7 @@ const KEY_TYPE: u8 = 0x04;
 /// What a synchronous connection event ends with: eSCO, made up interval, window and packet lengths, transparent air mode (Core 6.1 Vol 4 Part E 7.7.35).
 const VOICE_LINK: [u8; 8] = [0x02, 0x0c, 0x04, 0x3c, 0x00, 0x3c, 0x00, 0x03];
 /// The reason a disconnection event ends with: the remote user ended the connection (Core 6.1 Vol 1 Part F 2.19).
-pub(crate) const REMOTE_USER_ENDED: u8 = 0x13;
+const REMOTE_USER_ENDED: u8 = 0x13;
 /// The PSM of AVDTP and the PSM of a keyboard's interrupt channel.
 pub(crate) const AVDTP_PSM: u16 = 0x0019;
 pub(crate) const HID_INTERRUPT_PSM: u16 = 0x0013;
@@ -182,6 +182,14 @@ impl Trace {
         let mut packet = vec![code, u8::try_from(parameters.len()).unwrap()];
         packet.extend(parameters);
         self.record(OPCODE_EVENT, &packet);
+    }
+
+    /// A Disconnection Complete event for `handle`, after which the link is gone.
+    pub(crate) fn end_link(&mut self, handle: u16) {
+        let mut ended = vec![STATUS_SUCCESS];
+        ended.extend(handle.to_le_bytes());
+        ended.push(REMOTE_USER_ENDED);
+        self.event(EVENT_DISCONNECTION_COMPLETE, &ended);
     }
 
     /// One ACL data packet with the given packet boundary flag.
@@ -524,9 +532,6 @@ pub(crate) fn session() -> Trace {
     keystrokes(&mut trace);
     voice(&mut trace);
     music(&mut trace);
-    let mut ended = vec![STATUS_SUCCESS];
-    ended.extend(PODS_HANDLE.to_le_bytes());
-    ended.push(REMOTE_USER_ENDED);
-    trace.event(EVENT_DISCONNECTION_COMPLETE, &ended);
+    trace.end_link(PODS_HANDLE);
     trace
 }

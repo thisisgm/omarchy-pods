@@ -116,7 +116,7 @@ pub(crate) struct Counts {
     pub continuations_without_start: u64,
     /// PDUs whose start arrived and whose last fragment never did.
     pub unfinished_pdus: u64,
-    /// Fragments that hold no whole L2CAP header, or more bytes than their PDU's length.
+    /// PDUs that hold more bytes than their length field says.
     pub malformed_pdus: u64,
     /// Signalling PDUs with a command or an option cut short, or a command of the wrong size.
     pub malformed_signals: u64,
@@ -267,8 +267,10 @@ impl Reader {
             rest.to_vec()
         };
         let mut payload = pdu.as_slice();
+        // A first fragment may end inside the 4 byte header; the rest follows in a continuation (Linux net/bluetooth/l2cap_core.c, `l2cap_recv_acldata`).
         let (Some(len), Some(cid)) = (take::<2>(&mut payload), take::<2>(&mut payload)) else {
-            return bump(&mut counts.malformed_pdus);
+            *slot = Some(pdu);
+            return;
         };
         let seen = Seen {
             position,
