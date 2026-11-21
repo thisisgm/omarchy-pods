@@ -27,7 +27,7 @@ mod tests {
     /// The longest request line the daemon takes, newline excluded, from `MAX_LINE_BYTES` in `src/daemon/proto1.rs`.
     const MAX_LINE_BYTES: usize = 4096;
 
-    /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/socket.rs`.
+    /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/mod.rs`.
     const MAX_CONNECTIONS: usize = 64;
 
     /// The changes the slow subscriber and pipelining tests make, past what one socket buffer and the daemon's queues hold.

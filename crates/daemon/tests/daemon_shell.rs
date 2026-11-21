@@ -40,7 +40,7 @@ mod tests {
     /// The pause between bytes of a request sent one byte at a time, so each lands in its own read.
     const BYTE_PAUSE: Duration = Duration::from_millis(10);
 
-    /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/socket.rs`.
+    /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/mod.rs`.
     const MAX_CONNECTIONS: usize = 64;
 
     /// The daemon's request deadline, from `REQUEST_DEADLINE` in `src/daemon/legacy_dialect.rs`; a tokio timeout never fires early.
