@@ -105,10 +105,49 @@ empty surface.
 
 ### The output codec, and what the microphone costs
 
-The daemon always selects the highest-bitrate playback profile the card offers,
-which is SBC-XQ at 453 kbps ahead of SBC at 328 and AAC at 256. That is the
-default, and it is re-applied every time the daemon activates the card, because
-PipeWire's own profile priority puts AAC first and would otherwise win.
+The daemon selects AAC when the card offers it, then SBC-XQ, then SBC. AAC is the
+codec Apple itself uses with AirPods, and it is the lightest on a link the hi-res
+microphone shares. The choice is re-applied every time the daemon activates the
+card.
+
+Measured on AirPods Pro 2 (USB-C) with PipeWire 1.6.9, same signal on each codec:
+
+| Codec | On air | Packets | Latency vs a wired reference |
+|---|---|---|---|
+| AAC | about 230 kbit/s | 47/s, about 600 B | 122 to 166 ms, median 123 |
+| SBC-XQ | 510 kbit/s | 62.5/s, 1021 B (full) | 157 ms; one run dropped clicks and settled at 242 |
+| SBC | 364 kbit/s | 47/s, 969 B | 141 to 142 ms |
+
+What the codecs carry, from the same capture. The encoder input is 48 kHz,
+16-bit stereo PCM, 1536 kbit/s, and that is also what the AirPods decode back to:
+
+| Codec | Configuration | Codec bitrate | Compression | Bits per sample |
+|---|---|---|---|---|
+| AAC-LC (PipeWire VBR) | 48 kHz, 1024 samples per frame | 234 avg, 161 to 372 per frame, 212 to 290 per second | 6.6:1 | 2.4 |
+| SBC-XQ | dual channel, bitpool 39, 16 blocks, 8 subbands | 504, constant | 3.0:1 | 5.3 |
+| SBC | joint stereo, bitpool 53, 16 blocks, 8 subbands | 357, constant | 4.3:1 | 3.7 |
+
+A higher SBC bitrate is not higher quality than AAC. SBC-XQ spends its bits on
+two independently coded channels with a fixed allocation. AAC adapts the bitrate
+per frame and puts the bits where the ear hears them. SBC-XQ needs more than
+twice the airtime of AAC, with no gain in latency.
+
+Objective quality, offline: ten EBU SQAM items (20 s each, resampled to 48 kHz)
+went through each codec at the settings above (libfdk-aac VBR mode 5 with
+afterburner and the same peak bitrate; `sbcenc` with the same bitpool and channel
+mode) and were scored with PEAQ (ITU-R BS.1387, GstPEAQ 0.6.1, basic version).
+ODG runs from 0 (imperceptible) to -4 (very annoying):
+
+| Codec | Mean ODG | Worst item | Bitrate on this music |
+|---|---|---|---|
+| AAC | -0.06 | -0.16 (orchestra) | 178 kbit/s average, 122 to 222 per item |
+| SBC-XQ | -0.09 | -0.40 (glockenspiel) | 504 kbit/s |
+| SBC | -0.32 | -0.86 (glockenspiel) | 357 kbit/s |
+
+All three stay close to transparent, AAC scores best on average and on its worst
+item while using about a third of SBC-XQ's bitrate. GstPEAQ is not a conformant
+BS.1387 implementation: the reference scored against itself gives +0.21, so read
+the numbers relative to each other.
 
 Selecting the AirPods as a **microphone** gives that up. Over the standard
 Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
@@ -118,7 +157,7 @@ rather than joining it. A card cannot offer a high-quality sink and a microphone
 at the same time. macOS is bound by the same profiles and simply negotiates a
 better voice codec on them.
 
-So take the microphone from another device and leave the AirPods on SBC-XQ. The
+So take the microphone from another device and leave the AirPods on A2DP. The
 daemon helps here: it defers its activation ladder while a capture is live, so it
 will not pull a live call off the headset profile mid-sentence.
 
