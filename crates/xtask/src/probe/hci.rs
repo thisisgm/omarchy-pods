@@ -131,6 +131,7 @@ struct RecordHeader {
 fn record_header(rest: &mut &[u8]) -> Option<RecordHeader> {
     let _original_len: [u8; 4] = take(rest)?;
     let included = u32::from_be_bytes(take(rest)?);
+    // corner: one adapter; its index is not read, so equal connection handles on two adapters would be mixed.
     let _adapter: [u8; 2] = take(rest)?;
     let opcode = u16::from_be_bytes(take(rest)?);
     let _drops: [u8; 4] = take(rest)?;
