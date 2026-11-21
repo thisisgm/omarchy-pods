@@ -609,7 +609,7 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
 
 /// Echoes what a run wrote to stderr: the test runner shows it only for a test that fails, which is when it is wanted.
 fn said(stderr: &[u8]) {
-    drop(std::io::stderr().write_all(stderr));
+    std::io::stderr().write_all(stderr).unwrap();
 }
 
 pub(crate) fn text(bytes: &[u8]) -> String {
