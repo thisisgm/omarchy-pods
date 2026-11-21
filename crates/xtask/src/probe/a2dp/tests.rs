@@ -322,6 +322,38 @@ fn a_start_command_lets_the_source_begin_a_new_sequence() {
 }
 
 #[test]
+fn a_start_counts_from_just_after_one_packet_up_to_the_next() {
+    let gaps = |start_ms: u64| -> u64 {
+        let mut trace = streaming();
+        trace.at_ms(5_000);
+        trace.send(HOST, MEDIA_CIDS, &rtp(100));
+        trace.at_ms(start_ms);
+        signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+        trace.at_ms(5_020);
+        trace.send(HOST, MEDIA_CIDS, &rtp(0));
+        media(&read(&trace)).iter().map(|row| row.gaps).sum()
+    };
+    assert_eq!(gaps(4_999), 1, "a start before the first packet");
+    assert_eq!(gaps(5_000), 1, "a start stamped with the first packet");
+    assert_eq!(gaps(5_001), 0, "a start just after the first packet");
+    assert_eq!(gaps(5_020), 0, "a start stamped with the second packet");
+    assert_eq!(gaps(5_021), 1, "a start after the second packet");
+}
+
+#[test]
+fn a_clock_that_steps_back_between_two_packets_hides_no_gap() {
+    let mut trace = streaming();
+    trace.at_ms(5_000);
+    trace.send(HOST, MEDIA_CIDS, &rtp(100));
+    trace.at_ms(4_000);
+    signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+    trace.at_ms(3_000);
+    trace.send(HOST, MEDIA_CIDS, &rtp(0));
+    let gaps: u64 = media(&read(&trace)).iter().map(|row| row.gaps).sum();
+    assert_eq!(gaps, 1);
+}
+
+#[test]
 fn a_new_media_channel_starts_a_new_sequence() {
     let mut trace = streaming();
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
