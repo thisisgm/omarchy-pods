@@ -86,7 +86,13 @@ proptest! {
             Command::SetAdaptiveLevel(level) if state.noise_mode == NoiseMode::Adaptive => {
                 expected.adaptive_noise_level = level.min(ADAPTIVE_LEVEL_MAX);
             }
-            _ => {}
+            Command::SetNoise(_)
+            | Command::SetAdaptiveLevel(_)
+            | Command::SetOneBudAnc(_)
+            | Command::Connect
+            | Command::Disconnect
+            | Command::Forget
+            | Command::Reopen => {}
         }
         prop_assert_eq!(after, expected);
     }
