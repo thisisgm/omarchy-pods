@@ -34,6 +34,18 @@ Every test is one `tst_*.cpp` with `QTEST_GUILESS_MAIN`, registered through
 header or a small translation unit those two can call, the way
 `controlreconnect.hpp` and `eardetection.hpp` do.
 
+The Rust workspace at the repository root has its own gate, the same checks the
+hosted `ci-ok` job runs apart from the workflow audit:
+
+```bash
+cargo install --locked cargo-nextest cargo-deny
+cargo xtask ci
+```
+
+`rust-toolchain.toml` pins the compiler, `rustfmt` and `clippy`, so rustup fetches
+those by itself. `cargo-nextest` and `cargo-deny` are separate tools and need the
+install line once; without them the gate stops at the first one missing.
+
 A green suite is not evidence that a fix works. See the next section.
 
 ## Prove it, then send it
