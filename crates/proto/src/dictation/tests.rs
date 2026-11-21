@@ -280,6 +280,15 @@ fn declared_length_is_kept_beside_the_real_one() {
     let mut frames = one_byte_lost.frames();
     assert_eq!(frames.next(), None);
     assert_eq!(frames.trailing(), 7);
+    let mut one_frame_more = pdu.clone();
+    one_frame_more.extend(hex("80 d5 05 01 01 b8"));
+    let past_the_declared_length = audio(&one_frame_more);
+    assert_eq!(past_the_declared_length.declared_len, 8);
+    assert!(!past_the_declared_length.length_matches());
+    let mut walked = past_the_declared_length.frames();
+    let both = [frame(0x0104, &[0xb8, 0x10, 0x11]), frame(0x0105, &[0xb8])];
+    assert_eq!(walked.by_ref().collect::<Vec<_>>(), both);
+    assert_eq!(walked.trailing(), 0);
     let length_only = hex("1b 0d 00 01 00 2a 02 01");
     let empty = audio(&length_only);
     assert_eq!(empty.declared_len, 0x0102);
