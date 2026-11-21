@@ -9,6 +9,10 @@ use super::*;
 use crate::legacy::{LegacyRequest, parse_verb};
 use crate::status::to_status_line;
 
+pub(crate) fn level(percent: u8) -> AdaptiveLevel {
+    AdaptiveLevel::new(percent).unwrap()
+}
+
 /// Every command a client can send, for the properties that cover them all.
 pub(crate) fn any_command() -> impl Strategy<Value = Command> {
     let mode = prop_oneof![
@@ -28,7 +32,7 @@ pub(crate) fn any_command() -> impl Strategy<Value = Command> {
         behavior.prop_map(Command::SetEarDetection),
         any::<bool>().prop_map(Command::SetConversationalAwareness),
         any::<bool>().prop_map(Command::SetOneBudAnc),
-        any::<u8>().prop_map(Command::SetAdaptiveLevel),
+        (0..=ADAPTIVE_LEVEL_MAX).prop_map(|percent| Command::SetAdaptiveLevel(level(percent))),
         Just(Command::Connect),
         Just(Command::Disconnect),
         Just(Command::Forget),
@@ -57,12 +61,12 @@ fn any_state() -> impl Strategy<Value = State> {
         0..=ADAPTIVE_LEVEL_MAX,
     )
         .prop_map(
-            |(noise_mode, ear_detection_behavior, ca, one_bud, level)| State {
+            |(noise_mode, ear_detection_behavior, ca, one_bud, percent)| State {
                 noise_mode,
                 ear_detection_behavior,
                 conversational_awareness: ca,
                 one_bud_anc_mode: one_bud,
-                adaptive_noise_level: level,
+                adaptive_noise_level: level(percent),
                 ..State::default()
             },
         )
@@ -84,7 +88,7 @@ proptest! {
                 expected.conversational_awareness = enabled;
             }
             Command::SetAdaptiveLevel(level) if state.noise_mode == NoiseMode::Adaptive => {
-                expected.adaptive_noise_level = level.min(ADAPTIVE_LEVEL_MAX);
+                expected.adaptive_noise_level = level;
             }
             Command::SetNoise(_)
             | Command::SetAdaptiveLevel(_)
@@ -184,31 +188,23 @@ fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
 
     let mut state = State {
         noise_mode: NoiseMode::Adaptive,
-        adaptive_noise_level: 0,
+        adaptive_noise_level: level(0),
         ..State::default()
     };
-    let outcome = apply(&mut state, &Command::SetAdaptiveLevel(u8::MAX));
+    let outcome = apply(
+        &mut state,
+        &Command::SetAdaptiveLevel(level(ADAPTIVE_LEVEL_MAX)),
+    );
     assert_eq!(outcome, Outcome::Refused(CommandError::NotConnected));
-    assert_eq!(state.adaptive_noise_level, ADAPTIVE_LEVEL_MAX);
+    assert_eq!(state.adaptive_noise_level, level(ADAPTIVE_LEVEL_MAX));
 
     let mut state = State {
         noise_mode: NoiseMode::Anc,
-        adaptive_noise_level: 0,
+        adaptive_noise_level: level(0),
         ..State::default()
     };
-    apply(&mut state, &Command::SetAdaptiveLevel(37));
-    assert_eq!(state.adaptive_noise_level, 0);
-}
-
-#[test]
-fn a_level_over_the_maximum_counts_as_the_maximum() {
-    let mut state = State {
-        noise_mode: NoiseMode::Adaptive,
-        adaptive_noise_level: ADAPTIVE_LEVEL_MAX,
-        ..State::default()
-    };
-    apply(&mut state, &Command::SetAdaptiveLevel(u8::MAX));
-    assert_eq!(state.counters.adaptive_level_changes, 0);
+    apply(&mut state, &Command::SetAdaptiveLevel(level(37)));
+    assert_eq!(state.adaptive_noise_level, level(0));
 }
 
 /// Every refusal, for the tests that cover them all.
@@ -458,7 +454,7 @@ fn verbs_whose_cpp_counter_needs_a_link_or_a_change_raise_nothing() {
     assert_guard_precedes_counter("adaptive:", clamped, "adaptiveNoiseLevel() != level", "{");
     let at_37 = State {
         noise_mode: NoiseMode::Adaptive,
-        adaptive_noise_level: 37,
+        adaptive_noise_level: level(37),
         ..State::default()
     };
     assert_eq!(rises("adaptive:37", &at_37), []);

@@ -3,8 +3,7 @@ use pods_proto::ear::EarReport;
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 
-/// The C++ `m_adaptiveNoiseLevel` initial value.
-const DEFAULT_ADAPTIVE_NOISE_LEVEL: u8 = 50;
+use crate::command::AdaptiveLevel;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
@@ -15,8 +14,7 @@ pub struct State {
     /// The raw `A<NNNN>` metadata code, kept when `model` is `Unknown` or reset.
     pub model_number: String,
     pub noise_mode: NoiseMode,
-    /// Percent from 0 to 100.
-    pub adaptive_noise_level: u8,
+    pub adaptive_noise_level: AdaptiveLevel,
     pub conversational_awareness: bool,
     pub one_bud_anc_mode: bool,
     pub batteries: Batteries,
@@ -36,7 +34,7 @@ impl Default for State {
             model: Model::Unknown,
             model_number: String::new(),
             noise_mode: NoiseMode::Off,
-            adaptive_noise_level: DEFAULT_ADAPTIVE_NOISE_LEVEL,
+            adaptive_noise_level: AdaptiveLevel::default(),
             conversational_awareness: false,
             one_bud_anc_mode: false,
             batteries: Batteries::default(),

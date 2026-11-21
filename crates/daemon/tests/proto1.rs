@@ -314,10 +314,12 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_level_101_is_out_of_range() {
+    fn adaptive_level_100_is_taken_and_101_is_out_of_range() {
         let session = Session::new();
         let _daemon = session.start();
         let mut client = Client::connect(&session);
+        let taken = r#"{"v":1,"id":13,"op":"set","key":"adaptive_level","value":"100"}"#;
+        assert_eq!(client.ask(taken), error_reply("13", NOT_CONNECTED));
         let level = r#"{"v":1,"id":13,"op":"set","key":"adaptive_level","value":"101"}"#;
         let range = r#"{"code":"out_of_range","message":"The value is outside the range the setting takes."}"#;
         assert_eq!(client.ask(level), error_reply("13", range));

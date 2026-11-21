@@ -171,6 +171,28 @@ mod tests {
         changed
     }
 
+    async fn adaptive_100_is_taken_and_101_is_out_of_range(bus: &Connection) {
+        for (level, name_wanted, refusal) in [
+            (100_u8, "NotConnected", CommandError::NotConnected),
+            (101, "OutOfRange", CommandError::OutOfRange),
+        ] {
+            let reply = bus
+                .call_method(
+                    Some(BUS_NAME),
+                    OBJECT_PATH,
+                    Some(INTERFACE),
+                    "SetAdaptiveLevel",
+                    &(level,),
+                )
+                .await;
+            let Err(zbus::Error::MethodError(name, message, _)) = reply else {
+                panic!("SetAdaptiveLevel({level}) was not refused: {reply:?}");
+            };
+            assert_eq!(name.as_str(), format!("{INTERFACE}.Error.{name_wanted}"));
+            assert_eq!(message.as_deref(), Some(refusal.message()), "{level}");
+        }
+    }
+
     fn text(value: &OwnedVariant) -> String {
         String::try_from(value.try_clone().unwrap()).unwrap()
     }
@@ -259,6 +281,7 @@ mod tests {
             let status = text(&ear_changed["StatusJson"]);
             assert_eq!(format!("{status}\n"), client(&session, &["status"]));
             assert_eq!(text(&get(bus, "StatusJson").await), status);
+            adaptive_100_is_taken_and_101_is_out_of_range(bus).await;
         };
         let finished =
             runtime.block_on(async { tokio::time::timeout(CONVERSATION_LIMIT, wait).await });

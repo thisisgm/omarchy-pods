@@ -8,7 +8,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::ladder::{CONFIRM_TIMEOUT_MS, PENDING_MAX};
 use super::{Action, Machine, Phase, Ticket, after, raise, resolve};
-use crate::command::{self, ADAPTIVE_LEVEL_MAX, Command, CommandError, NoiseTarget, Outcome};
+use crate::command::{self, AdaptiveLevel, Command, CommandError, NoiseTarget, Outcome};
 use crate::state::{Counters, State};
 
 /// A command written to the pods, waiting for the report that shows it carried out.
@@ -61,7 +61,7 @@ enum Handling {
     /// Written, then answered by the pods' report or by the deadline.
     Wait(Setting, ControlCommand),
     /// Written and stored at once, since the pods never report it back.
-    Store(u8),
+    Store(AdaptiveLevel),
 }
 
 impl Machine {
@@ -94,7 +94,7 @@ impl Machine {
                 raise(&mut state.counters.adaptive_level_changes);
                 let frame = ControlCommand {
                     id: ControlId::ADAPTIVE_NOISE_LEVEL,
-                    value: [level, 0, 0, 0],
+                    value: [level.percent(), 0, 0, 0],
                 };
                 vec![Action::Send(frame.encode()), resolve(ticket, Outcome::Sent)]
             }
@@ -266,12 +266,11 @@ fn adaptive_level(
     state: &State,
     known: KnownSettings,
     features: Capabilities,
-    level: u8,
+    level: AdaptiveLevel,
 ) -> Handling {
     if !features.adaptive || known.noise.then_some(state.noise_mode) != Some(NoiseMode::Adaptive) {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
-    let level = level.min(ADAPTIVE_LEVEL_MAX);
     if known.adaptive_level.then_some(state.adaptive_noise_level) == Some(level) {
         return Handling::Answer(Outcome::Confirmed);
     }

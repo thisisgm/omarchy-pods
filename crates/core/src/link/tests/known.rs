@@ -6,6 +6,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::reports::report;
 use super::sim::{Input, Sim, ms};
+use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::Phase;
 use crate::link::ladder::FIRST_RETRY_MS;
@@ -115,23 +116,26 @@ fn an_adaptive_level_is_written_unless_stored_or_reported_on_this_channel() {
     sim.feed(Input::Packet(adaptive.clone()));
     let default = sim.state.adaptive_noise_level;
     sim.feed(Input::Command(Command::SetAdaptiveLevel(default)));
-    assert_eq!(sim.last(), [level_frame(default), "Resolve(0)".to_owned()]);
+    assert_eq!(
+        sim.last(),
+        [level_frame(default.percent()), "Resolve(0)".to_owned()]
+    );
 
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), [level_frame(30), "Resolve(1)".to_owned()]);
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), ["Resolve(2)"]);
 
     reopen(&mut sim);
     sim.feed(Input::Packet(adaptive.clone()));
-    assert_eq!(sim.state.adaptive_noise_level, 30);
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    assert_eq!(sim.state.adaptive_noise_level, level(30));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), [level_frame(30), "Resolve(3)".to_owned()]);
 
     reopen(&mut sim);
     sim.feed(Input::Packet(adaptive));
     sim.feed(Input::Packet(report(ControlId::ADAPTIVE_NOISE_LEVEL, 40)));
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(40)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(40))));
     assert_eq!(sim.last(), ["Resolve(4)"]);
     assert_eq!(
         sim.outcomes(),
@@ -152,7 +156,7 @@ fn an_adaptive_level_is_refused_until_this_channel_reports_adaptive() {
     sim.feed(Input::Packet(NoiseMode::Adaptive.command().encode()));
     reopen(&mut sim);
     assert_eq!(sim.state.noise_mode, NoiseMode::Adaptive);
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), ["Resolve(0)"]);
     assert_eq!(
         sim.outcomes(),

@@ -6,6 +6,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::reports::report;
 use super::sim::{Answer, Input, Sim, ms};
+use crate::command::tests::level;
 use crate::command::{self, Command, CommandError, NoiseTarget, Outcome};
 use crate::link::Phase;
 use crate::link::ladder::PENDING_MAX;
@@ -29,27 +30,28 @@ const PRIMARY_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x01]
 /// The secondary bud in an ear, the primary out.
 const SECONDARY_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x01, 0x00];
 
-/// Every command a client can send, with levels on both sides of the bound.
-const EVERY_COMMAND: [Command; 18] = [
-    Command::SetNoise(NoiseTarget::Mode(NoiseMode::Off)),
-    Command::SetNoise(NoiseTarget::Mode(NoiseMode::Anc)),
-    Command::SetNoise(NoiseTarget::Mode(NoiseMode::Transparency)),
-    Command::SetNoise(NoiseTarget::Mode(NoiseMode::Adaptive)),
-    Command::SetNoise(NoiseTarget::Cycle),
-    Command::SetEarDetection(EarDetectionBehavior::PauseWhenOneRemoved),
-    Command::SetEarDetection(EarDetectionBehavior::PauseWhenBothRemoved),
-    Command::SetEarDetection(EarDetectionBehavior::Disabled),
-    Command::SetConversationalAwareness(true),
-    Command::SetConversationalAwareness(false),
-    Command::SetOneBudAnc(true),
-    Command::SetOneBudAnc(false),
-    Command::SetAdaptiveLevel(30),
-    Command::SetAdaptiveLevel(u8::MAX),
-    Command::Connect,
-    Command::Disconnect,
-    Command::Forget,
-    Command::Reopen,
-];
+/// Every command a client can send.
+fn every_command() -> [Command; 17] {
+    [
+        Command::SetNoise(NoiseTarget::Mode(NoiseMode::Off)),
+        Command::SetNoise(NoiseTarget::Mode(NoiseMode::Anc)),
+        Command::SetNoise(NoiseTarget::Mode(NoiseMode::Transparency)),
+        Command::SetNoise(NoiseTarget::Mode(NoiseMode::Adaptive)),
+        Command::SetNoise(NoiseTarget::Cycle),
+        Command::SetEarDetection(EarDetectionBehavior::PauseWhenOneRemoved),
+        Command::SetEarDetection(EarDetectionBehavior::PauseWhenBothRemoved),
+        Command::SetEarDetection(EarDetectionBehavior::Disabled),
+        Command::SetConversationalAwareness(true),
+        Command::SetConversationalAwareness(false),
+        Command::SetOneBudAnc(true),
+        Command::SetOneBudAnc(false),
+        Command::SetAdaptiveLevel(level(30)),
+        Command::Connect,
+        Command::Disconnect,
+        Command::Forget,
+        Command::Reopen,
+    ]
+}
 
 fn noise(mode: NoiseMode) -> Command {
     Command::SetNoise(NoiseTarget::Mode(mode))
@@ -328,7 +330,7 @@ fn conversational_awareness_and_one_bud_follow_the_same_rule() {
 #[test]
 fn adaptive_level_is_sent_and_stored_at_once() {
     let mut sim = up_pro3(NoiseMode::Adaptive);
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(
         sim.last(),
         [
@@ -337,44 +339,35 @@ fn adaptive_level_is_sent_and_stored_at_once() {
         ]
     );
     assert_eq!(sim.outcomes(), [Outcome::Sent]);
-    assert_eq!(sim.state.adaptive_noise_level, 30);
+    assert_eq!(sim.state.adaptive_noise_level, level(30));
     assert_eq!(sim.state.counters.adaptive_level_changes, 1);
     assert_eq!(sim.machine.pending.len(), 0);
 
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), ["Resolve(1)"]);
     assert_eq!(sim.outcome(1), [Outcome::Confirmed]);
     assert_eq!(sim.state.counters.adaptive_level_changes, 1);
 
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(u8::MAX)));
-    assert_eq!(
-        sim.last(),
-        [
-            "Send([04, 00, 04, 00, 09, 00, 2e, 64, 00, 00, 00])",
-            "Resolve(2)"
-        ]
-    );
-    assert_eq!(sim.state.adaptive_noise_level, 100);
     sim.check_all_tickets_resolved_once();
 }
 
 #[test]
 fn adaptive_level_outside_adaptive_mode_is_not_supported() {
     let mut sim = up_pro3(NoiseMode::Anc);
-    let level = sim.state.adaptive_noise_level;
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    let before = sim.state.adaptive_noise_level;
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), ["Resolve(0)"]);
 
     let mut unknown = up_unknown();
     unknown.feed(Input::Packet(NoiseMode::Adaptive.command().encode()));
     assert_eq!(unknown.state.noise_mode, NoiseMode::Adaptive);
     let unknown_level = unknown.state.adaptive_noise_level;
-    unknown.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    unknown.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(unknown.last(), ["Resolve(0)"]);
 
     assert_eq!(sim.outcomes(), [NOT_SUPPORTED]);
     assert_eq!(unknown.outcomes(), [NOT_SUPPORTED]);
-    assert_eq!(sim.state.adaptive_noise_level, level);
+    assert_eq!(sim.state.adaptive_noise_level, before);
     assert_eq!(unknown.state.adaptive_noise_level, unknown_level);
     assert_eq!(sim.state.counters.adaptive_level_changes, 0);
     sim.check_all_tickets_resolved_once();
@@ -574,7 +567,7 @@ fn outside_up() -> Vec<(&'static str, Sim)> {
 
 #[test]
 fn commands_outside_up_answer_as_before() {
-    for command in EVERY_COMMAND {
+    for command in every_command() {
         for (name, mut sim) in outside_up() {
             let phase = sim.machine.phase();
             let mut expected = sim.state.clone();
@@ -592,7 +585,7 @@ fn commands_outside_up_answer_as_before() {
 
 #[test]
 fn commands_that_are_not_pod_settings_answer_in_up_as_without_a_link() {
-    for command in EVERY_COMMAND {
+    for command in every_command() {
         let setting = matches!(
             command,
             Command::SetNoise(_)
@@ -628,7 +621,7 @@ fn counters_rise_when_bytes_are_written() {
         noise(NoiseMode::Anc),
         Command::SetConversationalAwareness(false),
         Command::SetOneBudAnc(false),
-        Command::SetAdaptiveLevel(30),
+        Command::SetAdaptiveLevel(level(30)),
     ] {
         sim.feed(Input::Command(answered_at_once));
         assert_eq!(sim.last().len(), 1, "{answered_at_once:?}");
@@ -643,7 +636,7 @@ fn counters_rise_when_bytes_are_written() {
         sim.feed(Input::Command(written));
     }
     sim.feed(Input::Packet(NoiseMode::Adaptive.command().encode()));
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(30)));
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     let expected = Counters {
         noise_control_changes: 1,
         conversational_awareness_changes: 1,

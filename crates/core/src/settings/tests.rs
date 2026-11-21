@@ -5,6 +5,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::command::NoiseTarget;
+use crate::command::tests::level;
 use crate::legacy::VERBS;
 use crate::state::EarDetectionBehavior;
 
@@ -51,12 +52,24 @@ fn every_documented_value_sets_its_command() {
         ),
         ("one_bud_anc", "true", Command::SetOneBudAnc(true)),
         ("one_bud_anc", "false", Command::SetOneBudAnc(false)),
-        ("adaptive_level", "0", Command::SetAdaptiveLevel(0)),
-        ("adaptive_level", "37", Command::SetAdaptiveLevel(37)),
-        ("adaptive_level", "100", Command::SetAdaptiveLevel(100)),
-        ("adaptive_level", "+37", Command::SetAdaptiveLevel(37)),
-        ("adaptive_level", "-0", Command::SetAdaptiveLevel(0)),
-        ("adaptive_level", "37 \t\n", Command::SetAdaptiveLevel(37)),
+        ("adaptive_level", "0", Command::SetAdaptiveLevel(level(0))),
+        ("adaptive_level", "37", Command::SetAdaptiveLevel(level(37))),
+        (
+            "adaptive_level",
+            "100",
+            Command::SetAdaptiveLevel(level(100)),
+        ),
+        (
+            "adaptive_level",
+            "+37",
+            Command::SetAdaptiveLevel(level(37)),
+        ),
+        ("adaptive_level", "-0", Command::SetAdaptiveLevel(level(0))),
+        (
+            "adaptive_level",
+            "37 \t\n",
+            Command::SetAdaptiveLevel(level(37)),
+        ),
     ] {
         assert_eq!(setting(key, value), Ok(command), "{key} {value}");
     }
@@ -263,7 +276,7 @@ fn a_key_whose_values_are_not_words_has_no_word() {
             Command::SetConversationalAwareness(true),
         ),
         (ONE_BUD_ANC, Command::SetOneBudAnc(true)),
-        (ADAPTIVE_LEVEL, Command::SetAdaptiveLevel(37)),
+        (ADAPTIVE_LEVEL, Command::SetAdaptiveLevel(level(37))),
         ("volume", noise(NoiseMode::Anc)),
         (EAR_DETECTION, noise(NoiseMode::Anc)),
     ] {

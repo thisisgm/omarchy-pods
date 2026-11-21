@@ -7,7 +7,7 @@ use pods_proto::packet::{Incoming, classify};
 
 use super::commands::KnownSettings;
 use super::{Action, Machine, Phase};
-use crate::command::ADAPTIVE_LEVEL_MAX;
+use crate::command::AdaptiveLevel;
 use crate::state::State;
 
 impl Machine {
@@ -71,8 +71,8 @@ fn apply_control(state: &mut State, known: &mut KnownSettings, control: ControlC
             }
         }
         ControlId::ADAPTIVE_NOISE_LEVEL => {
-            let [level, ..] = control.value;
-            if level <= ADAPTIVE_LEVEL_MAX {
+            let [percent, ..] = control.value;
+            if let Ok(level) = AdaptiveLevel::new(percent) {
                 state.adaptive_noise_level = level;
                 known.adaptive_level = true;
             }

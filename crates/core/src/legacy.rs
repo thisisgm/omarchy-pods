@@ -4,7 +4,7 @@ use std::num::IntErrorKind;
 
 use pods_proto::noise::NoiseMode;
 
-use crate::command::{ADAPTIVE_LEVEL_MAX, Command, CommandError, NoiseTarget};
+use crate::command::{AdaptiveLevel, Command, CommandError, NoiseTarget};
 use crate::state::EarDetectionBehavior;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +84,7 @@ pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
 }
 
 // `parseIntVerb` over Qt `toInt`. Sample input: `+37`, `37\n`; `37x` bad, `101` out of range.
-pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
+pub(crate) fn adaptive_level(payload: &str) -> Result<AdaptiveLevel, CommandError> {
     let value = match payload.trim_end_matches(QT_TRAILING_SPACE).parse::<i32>() {
         Ok(value) => value,
         Err(error)
@@ -97,10 +97,10 @@ pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
         }
         Err(_) => return Err(CommandError::BadRequest),
     };
-    u8::try_from(value)
-        .ok()
-        .filter(|level| *level <= ADAPTIVE_LEVEL_MAX)
-        .ok_or(CommandError::OutOfRange)
+    let Ok(percent) = u8::try_from(value) else {
+        return Err(CommandError::OutOfRange);
+    };
+    AdaptiveLevel::new(percent)
 }
 
 // Sample input: family `noise` with word `anc`, which is the verb `noise:anc`.
