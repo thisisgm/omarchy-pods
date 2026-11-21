@@ -7,6 +7,9 @@ use super::*;
 /// The longest request line, so the properties reach the daemon's bound.
 const LONGEST_LINE: usize = 4096;
 
+/// Arrays nested in a request object at the deepest JSON `serde_json` reads, 127 levels with the object.
+const ARRAYS_AT_THE_DEPTH_LIMIT: usize = 126;
+
 /// Members a request reads, which the generated objects use often so the checks past them run.
 const MEMBERS: [&str; 6] = ["v", "id", "op", "key", "value", "action"];
 
@@ -126,14 +129,18 @@ fn a_line_with_a_usable_id_echoes_it_in_the_refusal() {
 }
 
 #[test]
-fn nesting_past_the_json_depth_limit_is_refused() {
-    let deep = "[".repeat(LONGEST_LINE);
-    assert_eq!(parse(deep.as_bytes()), bad(None));
-    let object = format!(
-        r#"{{"v":1,"id":4,"op":"get","x":{}}}"#,
-        "[".repeat(LONGEST_LINE)
-    );
-    assert_eq!(parse(object.as_bytes()), bad(None));
+fn nesting_at_the_json_depth_limit_is_read_and_one_level_more_is_refused() {
+    let nested = |arrays: usize| {
+        format!(
+            r#"{{"v":1,"id":4,"op":"get","x":{}{}}}"#,
+            "[".repeat(arrays),
+            "]".repeat(arrays)
+        )
+    };
+    let at_the_limit = nested(ARRAYS_AT_THE_DEPTH_LIMIT);
+    assert_eq!(parse(at_the_limit.as_bytes()), Ok((4, Request::Get)));
+    let past_the_limit = nested(ARRAYS_AT_THE_DEPTH_LIMIT + 1);
+    assert_eq!(parse(past_the_limit.as_bytes()), bad(None));
 }
 
 /// Any JSON value, nested a few levels.

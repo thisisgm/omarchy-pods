@@ -21,6 +21,8 @@ them in the order they arrive.
 
 - A request line holds at most 4096 bytes, newline excluded. A longer line
   closes the connection without a reply.
+- A line nested more than 127 levels deep, objects and arrays counted
+  together, is read as not valid JSON.
 - Bytes after the last newline wait for the rest of their line. When the client
   ends its side of the connection, the daemon answers the complete lines it has,
   drops an unfinished one and closes.
