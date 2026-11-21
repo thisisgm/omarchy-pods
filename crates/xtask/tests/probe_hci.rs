@@ -59,8 +59,6 @@ mod hci {
     const RECORD_HEADER: usize = 24;
     /// Where the included length sits in a record header: after the original length.
     const INCLUDED_LEN: std::ops::Range<usize> = 4..8;
-    /// Where the first record's included length sits: after the file header and the original length.
-    const FIRST_INCLUDED_LEN: std::ops::Range<usize> = 20..24;
     /// Every file a run of the session trace holds.
     const SESSION_FILES: [&str; 6] = [
         "a2dp.tsv",
@@ -210,9 +208,9 @@ mod hci {
             assert_holds_no_secret(name, contents);
         }
 
-        let mut long_record = trace.clone();
-        long_record[FIRST_INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
-        let (home, path) = home_with_trace(&long_record);
+        let mut wrong_magic = trace.clone();
+        wrong_magic[0] = b'B';
+        let (home, path) = home_with_trace(&wrong_magic);
         let refused = hci(&home, &path, RUN);
         assert!(!refused.status.success(), "{refused:?}");
         assert_holds_no_secret("stdout of a refusal", &refused.stdout);
@@ -264,8 +262,6 @@ mod hci {
         wrong_magic[0] = b'B';
         let mut wrong_datalink = trace.clone();
         wrong_datalink[DATALINK_AT].copy_from_slice(&WRONG_DATALINK.to_be_bytes());
-        let mut long_record = trace.clone();
-        long_record[FIRST_INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
         for (bytes, rule) in [
             (
                 &[][..],
@@ -282,10 +278,6 @@ mod hci {
             (
                 &wrong_datalink[..],
                 "btsnoop trace has a datalink type other than the monitor datalink 2001, which btmon -w writes",
-            ),
-            (
-                &long_record[..],
-                "btsnoop record 0 at byte offset 16 claims more data than the 65535 bytes a record holds",
             ),
         ] {
             let (home, path) = home_with_trace(bytes);
@@ -381,6 +373,27 @@ mod hci {
             links.starts_with("trace_cut_short record=0 offset=16\n"),
             "{links}"
         );
+
+        let mut long_record = trace.clone();
+        long_record[offsets[last]..][INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
+        let (home, path) = home_with_trace(&long_record);
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        // The whole line is compared, so the length the record claims cannot ride along in any spelling.
+        let said = format!(
+            "xtask probe: {}: btsnoop record {last} at byte offset {} claims more data than the 65535 bytes a record holds, so the trace is read only up to the whole records before it\n",
+            path.display(),
+            offsets[last]
+        );
+        assert_eq!(String::from_utf8(ran.stderr).unwrap(), said);
+        let dir = run_dir(&home, RUN);
+        let links = fs::read_to_string(dir.join("links.txt")).unwrap();
+        let first_line = format!(
+            "trace_record_too_long record={last} offset={}\n",
+            offsets[last]
+        );
+        assert!(links.starts_with(&first_line), "{links}");
+        assert_eq!(log(&dir, "sdu.log"), control_packets());
 
         let (home, path) = home_with_trace(&trace);
         let ran = hci(&home, &path, RUN);

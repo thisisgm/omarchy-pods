@@ -163,39 +163,45 @@ fn a_truncated_record_ends_the_trace_and_is_named_with_its_offset() {
 }
 
 #[test]
-fn a_record_length_past_65535_is_refused_and_one_past_the_file_is_a_cut() {
+fn a_record_length_past_65535_ends_the_trace_and_one_past_the_file_is_a_cut() {
     let mut trace = Trace::new();
     trace.acl(Direction::ToPods, 0b00, &[1, 2, 3]);
+    trace.acl(Direction::FromPods, 0b10, &[4]);
     let bytes = trace.bytes();
-    let claims = |len: u32| {
-        with_bytes(
-            bytes.clone(),
-            FILE_HEADER + INCLUDED_LEN_AT,
-            &len.to_be_bytes(),
-        )
+    let first = records(&bytes).unwrap().kept[..1].to_vec();
+    let second = FILE_HEADER + RECORD_HEADER + 7;
+    let claims = |len: u32| with_bytes(bytes.clone(), second + INCLUDED_LEN_AT, &len.to_be_bytes());
+    let stopped = |damage| Cut {
+        record: 1,
+        offset: second,
+        damage,
     };
-    let past_the_file = Records {
-        kept: Vec::new(),
-        cut: Some(Cut {
-            record: 0,
-            offset: FILE_HEADER,
-            damage: Damage::CutShort,
-        }),
+    let up_to = |damage| Records {
+        kept: first.clone(),
+        cut: Some(stopped(damage)),
     };
-    assert_eq!(records(&claims(65_535)), Ok(past_the_file));
-    for len in [65_536, u32::MAX] {
-        let too_long = TraceError::RecordTooLong {
-            record: 0,
-            offset: FILE_HEADER,
-        };
-        assert_eq!(records(&claims(len)), Err(too_long));
+    let longest_len = u32::try_from(LONGEST_RECORD).unwrap();
+    assert_eq!(records(&claims(longest_len)), Ok(up_to(Damage::CutShort)));
+    for len in [longest_len + 1, u32::MAX] {
+        assert_eq!(records(&claims(len)), Ok(up_to(Damage::TooLong)), "{len}");
     }
+    assert_eq!(
+        stopped(Damage::TooLong).to_string(),
+        "btsnoop record 1 at byte offset 47 claims more data than the 65535 bytes a record holds, so the trace is read only up to the whole records before it"
+    );
 
     let mut longest = Trace::new();
     longest.record(OPCODE_ACL_TX, &vec![0x5a; LONGEST_RECORD]);
-    let kept = records(&longest.bytes()).unwrap().kept;
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0].data.len(), LONGEST_RECORD);
+    longest.record(OPCODE_ACL_TX, &vec![0x5a; LONGEST_RECORD + 1]);
+    let read = records(&longest.bytes()).unwrap();
+    assert_eq!(read.kept.len(), 1);
+    assert_eq!(read.kept[0].data.len(), LONGEST_RECORD);
+    let whole_but_too_long = Cut {
+        record: 1,
+        offset: FILE_HEADER + RECORD_HEADER + LONGEST_RECORD,
+        damage: Damage::TooLong,
+    };
+    assert_eq!(read.cut, Some(whole_but_too_long));
 }
 
 #[test]
@@ -266,7 +272,7 @@ fn only_the_records_the_tables_need_are_kept() {
 }
 
 #[test]
-fn every_error_names_the_record_and_the_rule() {
+fn every_refusal_names_the_rule_the_file_header_broke() {
     for (error, text) in [
         (
             TraceError::NoFileHeader { len: 0 },
@@ -283,13 +289,6 @@ fn every_error_names_the_record_and_the_rule() {
         (
             TraceError::UnknownDatalink,
             "btsnoop trace has a datalink type other than the monitor datalink 2001, which btmon -w writes",
-        ),
-        (
-            TraceError::RecordTooLong {
-                record: 3,
-                offset: 90,
-            },
-            "btsnoop record 3 at byte offset 90 claims more data than the 65535 bytes a record holds",
         ),
     ] {
         assert_eq!(error.to_string(), text);

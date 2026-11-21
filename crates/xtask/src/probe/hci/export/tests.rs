@@ -30,6 +30,8 @@ const ENHANCED_RETRANSMISSION: u8 = 0x03;
 const SYSTEM_FILE: &str = "/etc/passwd";
 /// One millisecond, the step of the fixture's clock.
 const MS: u64 = 1_000_000;
+/// Where the included length starts in a record header.
+const INCLUDED_LEN_AT: usize = 4;
 /// Where the timestamp starts in a record header.
 const STAMP_AT: usize = 16;
 /// Bytes off the end of the session trace that cut into its last media packet: past the 30 byte record of the link's end.
@@ -459,6 +461,22 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
     );
     let named = format!(
         "trace_stamp_out_of_range record={} offset={}\n{}",
+        cut.record,
+        cut.offset,
+        text(&before, "links.txt")
+    );
+    assert_eq!(text(&render(read).unwrap(), "links.txt"), named);
+
+    let mut too_long = bytes.clone();
+    too_long[cut.offset + INCLUDED_LEN_AT..][..4].copy_from_slice(&u32::MAX.to_be_bytes());
+    let read = records(&too_long).unwrap();
+    let stopped = read.cut.unwrap();
+    assert_eq!(
+        (stopped.record, stopped.offset, stopped.damage),
+        (cut.record, cut.offset, Damage::TooLong)
+    );
+    let named = format!(
+        "trace_record_too_long record={} offset={}\n{}",
         cut.record,
         cut.offset,
         text(&before, "links.txt")
