@@ -152,9 +152,10 @@ The connection stays open after any error reply.
 - `librepods status` prints the state line.
 - `librepods watch` prints the state line, then one line per change. When the
   connection ends, because the daemon stopped or closed it for reading too
-  slowly (see Events), it prints `The daemon went away.` on stderr and exits 1. When
-  nothing reads its output any more, it exits 0 at the next line it cannot
-  write, so `librepods watch | head -1` succeeds.
+  slowly (see Events), it prints `The daemon went away.` on stderr and exits 1.
+  When nothing reads its output any more, it notices at the next change, when
+  that line cannot be written, and exits 0, so `librepods watch | head -1`
+  succeeds but returns only after the next change of the state.
 - `librepods set <key> <value>` and `librepods do <action>` print nothing and
   exit 0 on success, or print the error message on stderr and exit 1.
 - When no daemon answers, each prints `Could not connect to OpenPods daemon at
