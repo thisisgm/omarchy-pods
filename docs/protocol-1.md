@@ -24,6 +24,11 @@ them in the order they arrive.
 - Bytes after the last newline wait for the rest of their line. When the client
   ends its side of the connection, the daemon answers the complete lines it has,
   drops an unfinished one and closes.
+- The daemon closes a connection that makes no progress for 2 seconds while it
+  waits on the client: a request line left unfinished, a reply left unread, or,
+  on a connection that has not subscribed, no request after the last reply. A
+  subscriber with nothing unfinished or unread may stay idle as long as it
+  likes.
 - Members a request does not use are ignored. A member given twice takes its
   last value.
 

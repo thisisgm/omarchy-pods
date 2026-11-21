@@ -9,12 +9,14 @@ use std::io::{self, ErrorKind};
 use std::mem;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use pods_core::state::State;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task;
+use tokio::time::{Sleep, sleep};
 
 use super::hub::Hub;
 use super::log;
@@ -29,6 +31,9 @@ const PENDING_BYTES: usize = MAX_LINE_BYTES + 1;
 /// Lines waiting for a slow client; an event that finds the queue full closes the connection instead of being skipped.
 const QUEUE_LINES: usize = 16;
 
+/// How long a client may leave a line unfinished, a reply unread or, unsubscribed, the connection idle; twice the legacy request deadline.
+const STALL_DEADLINE: Duration = Duration::from_millis(2000);
+
 /// What woke the connection.
 #[derive(Debug)]
 enum Wake {
@@ -38,6 +43,8 @@ enum Wake {
     Changed(Option<State>),
     /// Bytes of the first queued line taken by the socket.
     Wrote(io::Result<usize>),
+    /// The client made no progress for `STALL_DEADLINE` while the connection waited on it.
+    Stalled,
 }
 
 /// The state of one connection between wakes.
@@ -55,6 +62,8 @@ struct Connection {
     changes: Option<mpsc::Receiver<State>>,
     /// Whether the client ended its side, after which no more requests are read and the connection closes once the queue is written.
     ended: bool,
+    /// Runs while the connection waits on the client and restarts at each answered request and each written line.
+    stall: Option<Pin<Box<Sleep>>>,
 }
 
 /// Serves one client whose first bytes, already read, are `received`; returns when either side is done.
@@ -67,6 +76,7 @@ pub(super) async fn serve_connection(stream: UnixStream, hub: Hub, received: Vec
         written: 0,
         changes: None,
         ended: false,
+        stall: None,
     };
     if let Err(reason) = connection.run(&hub).await {
         log(&format!(
@@ -83,6 +93,7 @@ impl Connection {
             if self.ended && self.queue.is_empty() {
                 return Ok(());
             }
+            self.watch_for_stall();
             match poll_fn(|context| self.poll_wake(context)).await {
                 Wake::Received(Ok(0)) => self.ended = true,
                 Wake::Received(Ok(read)) => self
@@ -101,6 +112,12 @@ impl Connection {
                 // A client that hangs up without reading every reply is normal.
                 Wake::Wrote(Err(error)) if error.kind() == ErrorKind::BrokenPipe => return Ok(()),
                 Wake::Wrote(Err(error)) => return Err(format!("cannot send a reply: {error}")),
+                Wake::Stalled => {
+                    return Err(format!(
+                        "it made no progress for {} ms",
+                        STALL_DEADLINE.as_millis()
+                    ));
+                }
             }
         }
     }
@@ -111,6 +128,7 @@ impl Connection {
             let Some(line) = take_line(&mut self.pending)? else {
                 return Ok(());
             };
+            self.stall = None;
             let reply = match request::parse(&line) {
                 Ok((id, Request::Get)) => reply::state(id, &hub.state()),
                 Ok((id, Request::Subscribe)) => {
@@ -153,11 +171,23 @@ impl Connection {
         {
             drop(self.queue.pop_front());
             self.written = 0;
+            self.stall = None;
         }
         Ok(())
     }
 
-    /// Polls, in order, the write of the first queued line, the next change and the next request bytes.
+    /// Starts the stall deadline when the connection waits on its client, and stops it while it waits only for changes.
+    fn watch_for_stall(&mut self) {
+        let waits_on_client =
+            self.changes.is_none() || !self.pending.is_empty() || !self.queue.is_empty();
+        if !waits_on_client {
+            self.stall = None;
+        } else if self.stall.is_none() {
+            self.stall = Some(Box::pin(sleep(STALL_DEADLINE)));
+        }
+    }
+
+    /// Polls, in order, the write of the first queued line, the next change, the stall deadline and the next request bytes.
     fn poll_wake(&mut self, context: &mut Context<'_>) -> Poll<Wake> {
         if let Some(line) = self.queue.front() {
             let unsent = line.as_bytes().get(self.written..).unwrap_or_default();
@@ -169,6 +199,11 @@ impl Connection {
             && let Poll::Ready(change) = changes.poll_recv(context)
         {
             return Poll::Ready(Wake::Changed(change));
+        }
+        if let Some(stall) = &mut self.stall
+            && stall.as_mut().poll(context).is_ready()
+        {
+            return Poll::Ready(Wake::Stalled);
         }
         if self.ended {
             return Poll::Pending;
