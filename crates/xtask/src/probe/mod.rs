@@ -1,4 +1,4 @@
-//! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, `stop` ends an uplink a killed capture left running, and `hci` reads a btmon trace into a run.
+//! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, `stop` ends an uplink a killed capture left running, and `hci` reads a btmon or `PacketLogger` trace into a run.
 
 mod a2dp;
 mod capture;
@@ -59,9 +59,9 @@ enum ProbeCommand {
     Capture(CaptureArgs),
     /// Sends STOP to the pods, for a capture that was killed before it could.
     Stop,
-    /// Reads a trace written by btmon -w and writes its channel logs and tables into a new run.
+    /// Reads a trace written by btmon -w, or a .pklg file of Apple's packet logger, and writes its channel logs and tables into a new run.
     Hci {
-        /// The btsnoop file: the caller's own, with no access for group or others.
+        /// The btsnoop or .pklg file: the caller's own, with no access for group or others.
         file: PathBuf,
         /// The session stamp, from date -u +%Y%m%dT%H%M%SZ.
         #[arg(long)]

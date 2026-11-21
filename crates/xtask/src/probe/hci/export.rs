@@ -6,10 +6,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
-use pods_proto::sdulog::{Direction, LogError, format_line};
+use pods_proto::sdulog::{Direction, LogError, Record, format_line};
 
 use super::l2cap::Counts;
-use super::{Channel, Channels, Cut, HciRecord, Kind, Records, TraceError, channels, records};
+use super::{
+    Carries, Channel, Channels, Cut, HciRecord, Kind, Read, Records, TraceError, channels,
+    channels_by_content, read,
+};
 use crate::probe::a2dp::{self, AVDTP_PSM, Codec, CodecKind, Music, Second, Unread, VENDOR_CODEC};
 use crate::probe::store::{self, Run, Session, StoreError};
 
@@ -107,11 +110,11 @@ fn mode_text(mode: u8) -> String {
     format!("{mode:#04x}")
 }
 
-/// One channel's packets as capture log lines, and the line that names its link and counts what the log format could not hold.
-fn log(name: &str, channel: &Channel) -> Result<(String, String), ExportError> {
+/// Packets as capture log lines, and the line that names their link and counts what the log format could not hold.
+fn log(name: &str, handle: u16, sdus: &[Record]) -> Result<(String, String), ExportError> {
     let mut lines = Vec::new();
     let (mut empty, mut too_long) = (0_u64, 0_u64);
-    for sdu in &channel.sdus {
+    for sdu in sdus {
         match format_line(sdu.at_ns, sdu.direction, &sdu.sdu) {
             Ok(line) => lines.push(line),
             Err(LogError::Empty) => empty = empty.saturating_add(1),
@@ -131,8 +134,7 @@ fn log(name: &str, channel: &Channel) -> Result<(String, String), ExportError> {
     }
     let written = lines.len();
     let counted = format!(
-        "log {name} handle={:#06x} written={written} refused_empty={empty} refused_too_long={too_long}",
-        channel.handle
+        "log {name} handle={handle:#06x} written={written} refused_empty={empty} refused_too_long={too_long}"
     );
     Ok((text(&lines), counted))
 }
@@ -261,9 +263,37 @@ fn clock(kept: &[HciRecord]) -> Clock {
     }
 }
 
-/// The counts of `links.txt`: a cut first when there is one, the clock, the synchronous connections, and everything the reader could not use.
+/// What `links.txt` opens with for a btsnoop trace: where it was cut, when it was.
+fn cut_line(cut: Option<Cut>) -> Vec<String> {
+    let line = |cut: Cut| {
+        format!(
+            "{} record={} offset={}",
+            cut.damage.key(),
+            cut.record,
+            cut.offset
+        )
+    };
+    cut.map(line).into_iter().collect()
+}
+
+/// What `links.txt` opens with for a `PacketLogger` trace: its synchronous data records, which hold no audio, by who sent them.
+fn synchronous_data_lines(kept: &[HciRecord]) -> Vec<String> {
+    let from = |side: Direction| {
+        let sent = |record: &&HciRecord| record.kind == Kind::SynchronousData(side);
+        kept.iter().filter(sent).count()
+    };
+    vec![
+        format!("synchronous_packets_from_host {}", from(Direction::ToPods)),
+        format!(
+            "synchronous_packets_from_pods {}",
+            from(Direction::FromPods)
+        ),
+    ]
+}
+
+/// The counts of `links.txt`: what its kind of trace opens it with, the clock, the synchronous connections, and everything the reader could not use.
 fn link_lines(
-    cut: Option<Cut>,
+    mut lines: Vec<String>,
     clock: Clock,
     records: &[HciRecord],
     found: &Channels,
@@ -274,7 +304,10 @@ fn link_lines(
             .iter()
             .filter(|record| match record.kind {
                 Kind::SynchronousConnection { opened } => wanted.is_none_or(|want| want == opened),
-                Kind::AclSent | Kind::AclReceived | Kind::Disconnection { .. } => false,
+                Kind::AclSent
+                | Kind::AclReceived
+                | Kind::Disconnection { .. }
+                | Kind::SynchronousData(_) => false,
             })
             .count()
     };
@@ -297,17 +330,6 @@ fn link_lines(
     let not_basic_mode_pdus = found.list.iter().fold(0_u64, |pdus, channel| {
         pdus.saturating_add(channel.not_basic_pdus)
     });
-    let mut lines: Vec<String> = cut
-        .iter()
-        .map(|cut| {
-            format!(
-                "{} record={} offset={}",
-                cut.damage.key(),
-                cut.record,
-                cut.offset
-            )
-        })
-        .collect();
     lines.extend([
         format!("realtime_at_zero_ns {}", clock.zero_ns),
         format!("stamps_stepping_back {}", clock.steps_back),
@@ -342,6 +364,21 @@ fn link_lines(
             unmapped.pdus
         ));
     }
+    for carried in &found.by_content {
+        let carries = match carried.carries {
+            Carries::Accessory => "accessory",
+            Carries::Attributes => "attributes",
+        };
+        for half in &carried.halves {
+            lines.push(format!(
+                "channel_by_content handle={:#06x} cid={:#06x} sent_by={} carries={carries} pdus={}",
+                carried.handle,
+                half.cid,
+                side(half.direction),
+                half.pdus
+            ));
+        }
+    }
     let or_absent = |mode: Option<u8>| mode.map_or_else(|| ABSENT.to_owned(), mode_text);
     for channel in found.list.iter().filter(|channel| !channel.is_basic()) {
         lines.push(format!(
@@ -365,29 +402,46 @@ fn link_lines(
 }
 
 /// Every file of the run, from records whose stamps are counted from the earliest one kept.
-pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
-    let clock = clock(&read.kept);
-    let records: Vec<HciRecord> = read
-        .kept
+pub(crate) fn render(read: Read) -> Result<Vec<Output>, ExportError> {
+    type Mapper = fn(&[HciRecord]) -> Channels;
+    let (kept, opening, map): (_, _, Mapper) = match read {
+        Read::Btsnoop(Records { kept, cut }) => (kept, cut_line(cut), channels),
+        Read::PacketLogger(kept) => {
+            let opening = synchronous_data_lines(&kept);
+            (kept, opening, channels_by_content)
+        }
+    };
+    let clock = clock(&kept);
+    let records: Vec<HciRecord> = kept
         .into_iter()
         .map(|record| HciRecord {
             at_ns: record.at_ns.saturating_sub(clock.zero_ns),
             ..record
         })
         .collect();
-    let found = channels(&records);
+    let found = map(&records);
     let pods = pods_links(&found);
-    let mut links = link_lines(read.cut, clock, &records, &found, &pods);
+    let mut links = link_lines(opening, clock, &records, &found, &pods);
     let mut outputs = Vec::new();
-    for (psm, stem) in [(CONTROL_PSM, CONTROL_LOG), (ATT_PSM, ATT_LOG)] {
-        let on_psm = found.list.iter().filter(|channel| channel.psm == psm);
-        for (number, channel) in (1_usize..).zip(on_psm) {
+    for (psm, carries, stem) in [
+        (CONTROL_PSM, Carries::Accessory, CONTROL_LOG),
+        (ATT_PSM, Carries::Attributes, ATT_LOG),
+    ] {
+        let opened = found.list.iter().filter(|channel| channel.psm == psm);
+        let opened = opened.map(|channel| {
+            let basic = channel.is_basic().then_some(&channel.sdus);
+            (channel.handle, basic)
+        });
+        let told = found.by_content.iter();
+        let told = told.filter(|told| told.carries == carries);
+        let told = told.map(|told| (told.handle, Some(&told.sdus)));
+        for (number, (handle, sdus)) in (1_usize..).zip(opened.chain(told)) {
             // A channel in another mode keeps its number and gets no log; links.txt says why.
-            if !channel.is_basic() {
+            let Some(sdus) = sdus else {
                 continue;
-            }
+            };
             let name = numbered(stem, number, "log");
-            let (text, counted) = log(&name, channel)?;
+            let (text, counted) = log(&name, handle, sdus)?;
             links.push(counted);
             outputs.push(Output { name, text });
         }
@@ -437,13 +491,16 @@ pub(crate) fn export(
     // A run name the store refuses must leave no session directory behind, so it is judged before anything is read or made.
     store::check_run_name(run)?;
     let bytes = store::read_trace(trace, MAX_TRACE_BYTES).map_err(refused_read)?;
-    let read = records(&bytes).map_err(|source| ExportError::Trace {
+    let read = read(&bytes).map_err(|source| ExportError::Trace {
         path: trace.to_path_buf(),
         source,
     })?;
     // The kept records hold copies of what they need, so the trace leaves memory before the tables are built.
     drop(bytes);
-    let cut = read.cut;
+    let cut = match &read {
+        Read::Btsnoop(records) => records.cut,
+        Read::PacketLogger(_) => None,
+    };
     let outputs = render(read)?;
     let session = Session::open(root, stamp)?;
     let created = Run::create(&session, run)?;

@@ -1,10 +1,11 @@
-//! The L2CAP channels inside a trace: ACL fragments joined, and channel identifiers mapped to PSMs by the signalling.
+//! The L2CAP channels inside a trace: ACL fragments joined, and channel identifiers mapped to PSMs by the signalling or, where a trace holds none, by content.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use pods_proto::sdulog::{Direction, Record};
 
+use super::content::{Carried, Unopened};
 use super::{HANDLE_MASK, HciRecord, Kind, sender, take};
 
 /// The packet boundary flag sits above the 12 bit handle (`BlueZ` lib/bluetooth/hci.h, `acl_flags`).
@@ -141,6 +142,8 @@ pub(crate) struct Channels {
     pub requests: Vec<Request>,
     /// At most `MAX_UNMAPPED` identifiers.
     pub unmapped: Vec<Unmapped>,
+    /// What content mapped of the identifiers no response opened; only `channels_by_content` fills it.
+    pub by_content: Vec<Carried>,
     pub counts: Counts,
 }
 
@@ -174,13 +177,15 @@ impl Link {
 
 /// Where and when one PDU was seen.
 #[derive(Debug, Clone, Copy)]
-struct Seen {
+pub(super) struct Seen {
     /// The position of the record that completed it.
     position: usize,
-    at_ns: u64,
-    handle: u16,
+    pub(super) at_ns: u64,
+    pub(super) handle: u16,
+    /// The number of the link on that handle.
+    pub(super) link: usize,
     /// Who sent it.
-    direction: Direction,
+    pub(super) direction: Direction,
 }
 
 /// The walk over the records; links are at most 4096, one per 12 bit handle.
@@ -191,10 +196,12 @@ struct Reader {
     links_started: usize,
     /// Where each listed unmapped identifier sits in `found.unmapped`, by handle, identifier and whether the pods sent.
     unmapped_at: BTreeMap<(u16, u16, bool), usize>,
+    /// Set when identifiers no response opened are to be mapped by content, which takes their PDUs and not only a count.
+    unopened: Option<Unopened>,
     found: Channels,
 }
 
-fn bump(count: &mut u64) {
+pub(super) fn bump(count: &mut u64) {
     *count = count.saturating_add(1);
 }
 
@@ -271,6 +278,13 @@ impl Reader {
         let field = u16::from_le_bytes(field);
         let handle = field & HANDLE_MASK;
         let link = link_on(&mut self.links, &mut self.links_started, handle);
+        let seen = Seen {
+            position,
+            at_ns: record.at_ns,
+            handle,
+            link: link.number,
+            direction,
+        };
         let slot = match direction {
             Direction::ToPods => &mut link.from_host,
             Direction::FromPods => &mut link.from_pods,
@@ -293,12 +307,6 @@ impl Reader {
         let (Some(len), Some(cid)) = (take::<2>(&mut payload), take::<2>(&mut payload)) else {
             *slot = Some(pdu);
             return;
-        };
-        let seen = Seen {
-            position,
-            at_ns: record.at_ns,
-            handle,
-            direction,
         };
         match payload.len().cmp(&usize::from(u16::from_le_bytes(len))) {
             Ordering::Less => *slot = Some(pdu),
@@ -335,6 +343,9 @@ impl Reader {
                 bump(&mut channel.not_basic_pdus);
             }
             return;
+        }
+        if let Some(unopened) = &mut self.unopened {
+            return unopened.keep(seen, cid, payload, &mut self.found.counts);
         }
         let key = (seen.handle, cid, seen.direction == Direction::FromPods);
         let listed = self.unmapped_at.get(&key).copied();
@@ -537,23 +548,43 @@ impl Reader {
             }
         }
     }
+
+    fn read(mut self, records: &[HciRecord]) -> Self {
+        for (position, record) in records.iter().enumerate() {
+            if let Some(direction) = sender(record.kind) {
+                self.acl(position, record, direction);
+            } else if let Kind::Disconnection { handle } = record.kind {
+                self.end_link(position, handle);
+            }
+        }
+        let links = std::mem::take(&mut self.links);
+        for link in links.values() {
+            self.count_unfinished(link);
+        }
+        self
+    }
 }
 
 /// Joins the ACL fragments of every link and sorts the PDUs into the channels the signalling opened.
 pub(crate) fn channels(records: &[HciRecord]) -> Channels {
-    let mut reader = Reader::default();
-    for (position, record) in records.iter().enumerate() {
-        if let Some(direction) = sender(record.kind) {
-            reader.acl(position, record, direction);
-        } else if let Kind::Disconnection { handle } = record.kind {
-            reader.end_link(position, handle);
-        }
+    Reader::default().read(records).found
+}
+
+/// As `channels`, and what no response opened is mapped by what it carries; an identifier that matches no rule stays unmapped.
+pub(crate) fn channels_by_content(records: &[HciRecord]) -> Channels {
+    let by_content = Reader {
+        unopened: Some(Unopened::default()),
+        ..Reader::default()
+    };
+    let Reader {
+        unopened,
+        mut found,
+        ..
+    } = by_content.read(records);
+    if let Some(unopened) = unopened {
+        unopened.settle(&mut found);
     }
-    let links = std::mem::take(&mut reader.links);
-    for link in links.values() {
-        reader.count_unfinished(link);
-    }
-    reader.found
+    found
 }
 
 #[cfg(test)]

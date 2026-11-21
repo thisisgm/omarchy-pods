@@ -1,12 +1,16 @@
-//! Reads a Bluetooth trace written by `btmon -w`: the btsnoop file here and, in `l2cap`, the channels inside it.
+//! Reads a Bluetooth trace: the btsnoop file `btmon -w` writes here, Apple's `PacketLogger` file in `pklg`, and in `l2cap` the channels inside either.
 
+mod content;
 mod export;
 #[cfg(test)]
 pub(crate) mod fixture;
 mod l2cap;
+mod pklg;
 
+pub(crate) use content::Carries;
 pub(crate) use export::export;
-pub(crate) use l2cap::{Channel, Channels, channels};
+pub(crate) use l2cap::{Channel, Channels, channels, channels_by_content};
+pub(crate) use pklg::{Fault, records_pklg};
 
 use std::fmt;
 
@@ -40,6 +44,8 @@ const EVENT_SYNCHRONOUS_CONNECTION_COMPLETE: u8 = 0x2c;
 const STATUS_SUCCESS: u8 = 0x00;
 /// A connection handle is the low 12 bits of the field that holds it (`BlueZ` lib/bluetooth/hci.h, `acl_handle`).
 pub(crate) const HANDLE_MASK: u16 = 0x0fff;
+/// What every refusal of a `PacketLogger` trace ends with, since such a file has no pattern to know it by.
+const PACKET_LOGGER_RULE: &str = "a file that does not start with the btsnoop identification pattern is read as a PacketLogger trace, which is refused unless it parses to its last byte";
 
 /// What one kept record is; every other record of a trace is skipped and none of its bytes is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +58,8 @@ pub(crate) enum Kind {
     SynchronousConnection { opened: bool },
     /// The link with this connection handle ended.
     Disconnection { handle: u16 },
+    /// A synchronous data packet from this side, which only a `PacketLogger` trace keeps; it is counted and none of its bytes is kept.
+    SynchronousData(Direction),
 }
 
 /// One record of a trace that the tables need.
@@ -64,7 +72,16 @@ pub(crate) struct HciRecord {
     pub data: Vec<u8>,
 }
 
-/// Why a trace was refused: a rule its file header broke; none holds a value read from the trace.
+/// A trace as the reader its first bytes chose left it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Read {
+    /// May end at a damaged record, as when btmon was stopped while it wrote.
+    Btsnoop(Records),
+    /// Whole, and with no connection request to name its channels.
+    PacketLogger(Vec<HciRecord>),
+}
+
+/// Why a trace was refused: a rule its file header or one of its `PacketLogger` records broke; none holds a byte of the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TraceError {
     #[error("btsnoop trace is {len} bytes, shorter than its {FILE_HEADER_LEN} byte file header")]
@@ -77,6 +94,16 @@ pub(crate) enum TraceError {
         "btsnoop trace has a datalink type other than the monitor datalink {MONITOR_DATALINK}, which btmon -w writes"
     )]
     UnknownDatalink,
+    #[error("PacketLogger trace holds no record; {PACKET_LOGGER_RULE}")]
+    NoRecord,
+    #[error("PacketLogger record {record} at byte offset {offset} {fault}; {PACKET_LOGGER_RULE}")]
+    PacketLogger {
+        /// The index of the record, which is also how many whole records come before it.
+        record: usize,
+        /// The byte offset the record starts at.
+        offset: usize,
+        fault: Fault,
+    },
 }
 
 /// What is wrong with the record a trace stops being read at.
@@ -192,7 +219,26 @@ pub(crate) fn sender(kind: Kind) -> Option<Direction> {
     match kind {
         Kind::AclSent => Some(Direction::ToPods),
         Kind::AclReceived => Some(Direction::FromPods),
-        Kind::SynchronousConnection { .. } | Kind::Disconnection { .. } => None,
+        Kind::SynchronousConnection { .. }
+        | Kind::Disconnection { .. }
+        | Kind::SynchronousData(_) => None,
+    }
+}
+
+/// Keeps one record the tables need: an ACL packet with its bytes, every other kind as the kind alone.
+fn keep(kept: &mut Vec<HciRecord>, at_ns: u64, kind: Option<Kind>, packet: &[u8]) {
+    if let Some(kind) = kind {
+        let data = sender(kind).map_or_else(Vec::new, |_| packet.to_vec());
+        kept.push(HciRecord { at_ns, kind, data });
+    }
+}
+
+/// A `PacketLogger` file has no pattern of its own, so every file without the btsnoop one is read as one.
+pub(crate) fn read(trace: &[u8]) -> Result<Read, TraceError> {
+    if trace.starts_with(&MAGIC) {
+        records(trace).map(Read::Btsnoop)
+    } else {
+        records_pklg(trace).map(Read::PacketLogger)
     }
 }
 
@@ -256,11 +302,7 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
             OPCODE_EVENT => event(data),
             _ => None,
         };
-        if let Some(kind) = kind {
-            // An event is kept as its kind alone; only an ACL packet keeps bytes.
-            let data = sender(kind).map_or_else(Vec::new, |_| data.to_vec());
-            kept.push(HciRecord { at_ns, kind, data });
-        }
+        keep(&mut kept, at_ns, kind, data);
         record = record.saturating_add(1);
     }
     Ok(Records { kept, cut })
