@@ -369,7 +369,7 @@ impl Omapods {
     }
 }
 
-/// A refused command as a D-Bus error reply, named after its `CommandError` variant, carrying the error's code.
+/// A refused command as a D-Bus error reply, named after its `CommandError` variant, carrying the error's sentence.
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "io.github.thisisgm.Omapods1.Error")]
 enum CallError {
@@ -385,16 +385,16 @@ enum CallError {
 
 impl From<CommandError> for CallError {
     fn from(error: CommandError) -> Self {
-        let code = error.code().to_owned();
+        let message = error.message().to_owned();
         match error {
-            CommandError::NotConnected => Self::NotConnected(code),
-            CommandError::NotSupported => Self::NotSupported(code),
-            CommandError::NotWorn => Self::NotWorn(code),
-            CommandError::OutOfRange => Self::OutOfRange(code),
-            CommandError::UnknownKey => Self::UnknownKey(code),
-            CommandError::BadRequest => Self::BadRequest(code),
-            CommandError::Timeout => Self::Timeout(code),
-            CommandError::Headless => Self::Headless(code),
+            CommandError::NotConnected => Self::NotConnected(message),
+            CommandError::NotSupported => Self::NotSupported(message),
+            CommandError::NotWorn => Self::NotWorn(message),
+            CommandError::OutOfRange => Self::OutOfRange(message),
+            CommandError::UnknownKey => Self::UnknownKey(message),
+            CommandError::BadRequest => Self::BadRequest(message),
+            CommandError::Timeout => Self::Timeout(message),
+            CommandError::Headless => Self::Headless(message),
         }
     }
 }

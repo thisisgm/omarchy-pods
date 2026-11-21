@@ -28,6 +28,21 @@ const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
 
+/// The public description of this interface, which must list every error name.
+const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
+
+/// Every refusal a command can end in.
+const ALL_ERRORS: [CommandError; 8] = [
+    CommandError::NotConnected,
+    CommandError::NotSupported,
+    CommandError::NotWorn,
+    CommandError::OutOfRange,
+    CommandError::UnknownKey,
+    CommandError::BadRequest,
+    CommandError::Timeout,
+    CommandError::Headless,
+];
+
 /// State changes the stalled peer test makes; their signals overfill a socket buffer many times over.
 const FLOOD_CHANGES: usize = 5_000;
 
@@ -500,19 +515,18 @@ fn every_mode_and_behavior_has_a_name() {
 
 #[test]
 fn every_command_error_has_its_camel_case_name() {
-    for error in [
-        CommandError::NotConnected,
-        CommandError::NotSupported,
-        CommandError::NotWorn,
-        CommandError::OutOfRange,
-        CommandError::UnknownKey,
-        CommandError::BadRequest,
-        CommandError::Timeout,
-        CommandError::Headless,
-    ] {
+    for error in ALL_ERRORS {
         let reply = CallError::from(error);
         assert_eq!(reply.name().as_str(), error_name(error));
-        assert_eq!(reply.description(), Some(error.code()));
+        assert_eq!(reply.description(), Some(error.message()));
+    }
+}
+
+#[test]
+fn the_interface_document_lists_every_error_name_with_its_code() {
+    for error in ALL_ERRORS {
+        let row = format!("| `{}` | `{}` |", error_name(error), error.code());
+        assert!(API_DOCUMENT.contains(&row), "{row}");
     }
 }
 

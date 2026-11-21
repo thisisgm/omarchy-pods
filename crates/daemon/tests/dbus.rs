@@ -16,6 +16,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use pods_core::command::CommandError;
     use rustix::process::{Pid, Signal, kill_process};
     use tempfile::TempDir;
     use tokio::runtime::Builder as RuntimeBuilder;
@@ -310,12 +311,16 @@ mod tests {
                     &("anc",),
                 )
                 .await;
-            let Err(zbus::Error::MethodError(name, _, _)) = refused else {
+            let Err(zbus::Error::MethodError(name, message, _)) = refused else {
                 panic!("SetNoiseMode was not refused: {refused:?}");
             };
             assert_eq!(
                 name.as_str(),
                 "io.github.thisisgm.Omapods1.Error.NotConnected"
+            );
+            assert_eq!(
+                message.as_deref(),
+                Some(CommandError::NotConnected.message())
             );
             // The refused mode still counts as a noise control change, which only the status object shows.
             let counted = next_change(&mut changes).await;
