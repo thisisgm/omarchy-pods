@@ -10,6 +10,8 @@ use clap::Parser;
 struct Cli {}
 
 fn main() -> ExitCode {
+    let missing: Option<u8> = None;
+    let _value = missing.unwrap();
     let _cli = Cli::parse();
     ExitCode::SUCCESS
 }
