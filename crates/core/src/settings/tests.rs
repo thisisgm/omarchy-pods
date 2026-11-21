@@ -10,6 +10,8 @@ use crate::state::EarDetectionBehavior;
 
 const PROTOCOL_DOCUMENT: &str = include_str!("../../../../docs/protocol-1.md");
 
+const DBUS_DOCUMENT: &str = include_str!("../../../../docs/dbus-api.md");
+
 fn noise(mode: NoiseMode) -> Command {
     Command::SetNoise(NoiseTarget::Mode(mode))
 }
@@ -176,6 +178,22 @@ fn the_protocol_document_names_every_key_value_and_action() {
     for name in ["connect", "disconnect", "forget"] {
         assert!(action(name).is_ok(), "{name}");
         assert!(actions.contains(&format!("`{name}`")), "{name}: {actions}");
+    }
+}
+
+#[test]
+fn the_dbus_document_has_one_set_method_for_every_key() {
+    for (key, _) in KEYS {
+        // Sample input: the row `| `SetNoiseMode` | `s` | `noise` | `off`, `anc` |` counts for `noise`.
+        let key_cell = format!(" | `{key}` | ");
+        let rows = DBUS_DOCUMENT
+            .lines()
+            .filter(|line| line.starts_with("| `Set") && line.contains(&key_cell))
+            .count();
+        assert_eq!(
+            rows, 1,
+            "docs/dbus-api.md has {rows} Set methods for `{key}`"
+        );
     }
 }
 
