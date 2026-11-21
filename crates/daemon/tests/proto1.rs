@@ -555,9 +555,10 @@ mod tests {
         idle.ask(GET);
         let mut unread = UnixStream::connect(session.socket()).unwrap();
         let mut writer = unread.try_clone().unwrap();
+        writer.set_write_timeout(Some(HANG_LIMIT)).unwrap();
         let flood = format!("{SUBSCRIBE}\n{}", format!("{GET}\n").repeat(UNREAD_GETS));
         thread::scope(|scope| {
-            // The write fails once the daemon closes the connection, which is the outcome under test.
+            // The write fails once the daemon closes the connection, the outcome under test, or once HANG_LIMIT passes.
             scope.spawn(move || drop(writer.write_all(flood.as_bytes())));
             let state = &state;
             // Moved in, so the steady client hangs up when done instead of staying for a stall close of its own.
