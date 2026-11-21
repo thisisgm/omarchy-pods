@@ -94,6 +94,8 @@ pub(crate) enum StoreError {
     BadFileName { name: String },
     #[error("{} is not an absolute path below a parent directory", .path.display())]
     BadRoot { path: PathBuf },
+    #[error("{} is not a run directory of the form .../{ROOT_NAME}/<stamp>/<run name>", .path.display())]
+    NotARun { path: PathBuf },
     #[error("{} is inside a git repository ({} exists); captures must never be committed", .path.display(), .marker.display())]
     InRepository { path: PathBuf, marker: PathBuf },
     #[error("{} is a symbolic link; the store never follows one", .path.display())]
@@ -194,10 +196,14 @@ impl Run {
         Ok(Run { path, dir })
     }
 
-    /// Opens an existing run directory with the same checks as the root.
+    /// Opens an existing `<root>/<stamp>/<name>`, checking the root, the session and the run on the way down.
     pub(crate) fn open(path: &Path) -> Result<Run, StoreError> {
-        refuse_repository_ancestors(path)?;
-        let dir = open_dir(CWD, path, path)?;
+        let (root, stamp, name) = split_run_path(path)?;
+        refuse_repository_ancestors(root)?;
+        let root_dir = open_dir(CWD, root, root)?;
+        refuse_git_marker(&root_dir, root)?;
+        let session_dir = open_dir(root_dir.as_fd(), Path::new(stamp), &root.join(stamp))?;
+        let dir = open_dir(session_dir.as_fd(), Path::new(name), path)?;
         refuse_git_marker(&dir, path)?;
         Ok(Run {
             path: path.to_path_buf(),
@@ -288,6 +294,29 @@ fn check_run_name(name: &str) -> Result<(), StoreError> {
             name: name.to_owned(),
         })
     }
+}
+
+// Sample input: /home/owner/omapods-captures/20261120T143005Z/left-mic-2, split into root, stamp and run name.
+fn split_run_path(path: &Path) -> Result<(&Path, &str, &str), StoreError> {
+    let not_a_run = || StoreError::NotARun {
+        path: path.to_path_buf(),
+    };
+    let name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(not_a_run)?;
+    let session = path.parent().ok_or_else(not_a_run)?;
+    let stamp = session
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(not_a_run)?;
+    let root = session.parent().ok_or_else(not_a_run)?;
+    if root.file_name() != Some(OsStr::new(ROOT_NAME)) {
+        return Err(not_a_run());
+    }
+    check_stamp(stamp)?;
+    check_run_name(name)?;
+    Ok((root, stamp, name))
 }
 
 // Sample input: uplink.bin, one name inside the run directory.
