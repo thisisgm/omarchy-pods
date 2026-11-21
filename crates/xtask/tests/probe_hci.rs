@@ -208,7 +208,11 @@ mod hci {
         assert_eq!(log(&dir, "att.log"), att_packets());
         let links = fs::read_to_string(dir.join("links.txt")).unwrap();
         assert_eq!(String::from_utf8(ran.stdout).unwrap(), links);
-        assert!(links.contains("log sdu.log written=7 refused_empty=0 refused_too_long=0\n"));
+        assert!(
+            links.contains(
+                "log sdu.log handle=0x000b written=7 refused_empty=0 refused_too_long=0\n"
+            )
+        );
         for name in SESSION_FILES {
             let mode = fs::metadata(dir.join(name)).unwrap().permissions().mode();
             assert_eq!(mode & 0o7777, OWNER_FILE, "{name}");
