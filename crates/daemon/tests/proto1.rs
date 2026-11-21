@@ -49,6 +49,15 @@ mod tests {
     /// How long a check that nothing more arrives waits.
     const QUIET_FOR: Duration = Duration::from_millis(300);
 
+    /// How long a waiting connection may go without progress, from `STALL_DEADLINE` in `src/daemon/proto1.rs`.
+    const STALL_DEADLINE: Duration = Duration::from_millis(2000);
+
+    /// Requests the non-reading client sends, far past what the socket buffers, the queue and the pending bytes hold.
+    const UNREAD_GETS: usize = 5000;
+
+    /// Requests the steady client spaces half a stall deadline apart, more than one deadline in all.
+    const STEADY_REQUESTS: usize = 4;
+
     const GET: &str = r#"{"v":1,"id":7,"op":"get"}"#;
     const SUBSCRIBE: &str = r#"{"v":1,"id":8,"op":"subscribe"}"#;
     const NOT_CONNECTED: &str =
@@ -494,6 +503,61 @@ mod tests {
             event(&legacy_state(&session)),
             "reopen is counted"
         );
+    }
+
+    /// Reads until the daemon closes, which a reset also shows, and returns the lines read; a read that times out fails the test.
+    fn lines_until_closed(stream: &mut UnixStream) -> usize {
+        stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+        let mut received = Vec::new();
+        match stream.read_to_end(&mut received) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::ConnectionReset => {}
+            Err(error) => panic!("still open after {HANG_LIMIT:?}: {error}"),
+        }
+        received.as_slice().lines().count()
+    }
+
+    #[test]
+    fn a_stalled_client_is_closed_and_an_idle_subscriber_is_not() {
+        let session = Session::new();
+        let daemon = session.start();
+        let state = legacy_state(&session);
+        let mut subscriber = Client::connect(&session);
+        subscriber.ask(SUBSCRIBE);
+        let started = Instant::now();
+        let mut steady = Client::connect(&session);
+        let mut unfinished = Client::connect(&session);
+        unfinished.send(b"{");
+        let mut idle = Client::connect(&session);
+        idle.ask(GET);
+        let mut unread = UnixStream::connect(session.socket()).unwrap();
+        let mut writer = unread.try_clone().unwrap();
+        let flood = format!("{SUBSCRIBE}\n{}", format!("{GET}\n").repeat(UNREAD_GETS));
+        thread::scope(|scope| {
+            // The write fails once the daemon closes the connection, which is the outcome under test.
+            scope.spawn(move || drop(writer.write_all(flood.as_bytes())));
+            scope.spawn(|| {
+                for _ in 0..STEADY_REQUESTS {
+                    assert_eq!(steady.ask(GET), state_reply(7, &state));
+                    pause(STALL_DEADLINE / 2);
+                }
+            });
+            assert!(unfinished.closed(), "the unfinished line");
+            assert!(idle.closed(), "the idle connection");
+            pause(STALL_DEADLINE);
+            assert!(
+                lines_until_closed(&mut unread) < UNREAD_GETS,
+                "the unread replies"
+            );
+        });
+        assert!(started.elapsed() >= STALL_DEADLINE);
+        assert_eq!(
+            daemon.log().matches("made no progress").count(),
+            3,
+            "{}",
+            daemon.log()
+        );
+        assert_eq!(subscriber.ask(GET), state_reply(7, &state));
     }
 
     #[test]
