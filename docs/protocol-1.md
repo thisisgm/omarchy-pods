@@ -50,8 +50,9 @@ and `op`, what it asks for.
 ```
 
 - `v` is `1`, the only version this daemon speaks.
-- `id` is a whole number from 0 to 18446744073709551615. A string, a fraction,
-  a negative number or a larger number is not a usable `id`.
+- `id` is a whole number from 0 to 18446744073709551615, written as plain
+  digits. A string, a negative number, a larger number or a number written with
+  a decimal point or an exponent (`7.0`, `1e2`) is not a usable `id`.
 - `op` is one of `get`, `subscribe`, `set` and `do`.
 
 ### `get`
