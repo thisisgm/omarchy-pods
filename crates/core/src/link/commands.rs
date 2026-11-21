@@ -7,7 +7,7 @@ use pods_proto::model::Capabilities;
 use pods_proto::noise::NoiseMode;
 
 use super::ladder::{CONFIRM_TIMEOUT_MS, PENDING_MAX};
-use super::{Action, Machine, Phase, Ticket, after, raise, resolve};
+use super::{Action, Event, Machine, Phase, Ticket, after, raise, resolve};
 use crate::command::{self, AdaptiveLevel, Command, CommandError, NoiseTarget, Outcome};
 use crate::state::{Counters, State};
 
@@ -18,6 +18,15 @@ pub(super) struct Pending {
     /// The report that confirms it: the same identifier and first value byte.
     expect: ControlCommand,
     deadline: Duration,
+}
+
+/// An adaptive level whose write the driver has not yet answered for.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Stored {
+    ticket: Ticket,
+    level: AdaptiveLevel,
+    /// When it was written; the deadline that makes the driver step again at once.
+    at: Duration,
 }
 
 /// The settings the pods reported on the current channel, and whether the adaptive level was stored on it.
@@ -89,16 +98,37 @@ impl Machine {
                 vec![Action::Send(expect.encode())]
             }
             Handling::Store(level) => {
-                state.adaptive_noise_level = level;
-                self.known_settings.adaptive_level = true;
-                raise(&mut state.counters.adaptive_level_changes);
+                self.stored = Some(Stored {
+                    ticket,
+                    level,
+                    at: now,
+                });
                 let frame = ControlCommand {
                     id: ControlId::ADAPTIVE_NOISE_LEVEL,
                     value: [level.percent(), 0, 0, 0],
                 };
-                vec![Action::Send(frame.encode()), resolve(ticket, Outcome::Sent)]
+                vec![Action::Send(frame.encode())]
             }
         }
+    }
+
+    /// Answers the level written in the step before `event`: refused when its write failed, else stored and sent.
+    pub(super) fn written(&mut self, state: &mut State, event: Event<'_>) -> Vec<Action> {
+        let Some(stored) = self.stored.take() else {
+            return Vec::new();
+        };
+        if event == Event::SendFailed {
+            let refused = Outcome::Refused(CommandError::NotConnected);
+            return vec![resolve(stored.ticket, refused)];
+        }
+        state.adaptive_noise_level = stored.level;
+        self.known_settings.adaptive_level = true;
+        raise(&mut state.counters.adaptive_level_changes);
+        vec![resolve(stored.ticket, Outcome::Sent)]
+    }
+
+    pub(super) fn stored_deadline(&self) -> Option<Duration> {
+        self.stored.map(|stored| stored.at)
     }
 
     /// Confirms every waiting command that `report` shows carried out.

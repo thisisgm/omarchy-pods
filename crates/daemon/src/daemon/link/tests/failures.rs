@@ -1,12 +1,16 @@
-//! Support tests: the driver under a queue that never empties, and a queue that closes.
+//! Support tests: the driver under a queue that never empties, a write that fails, and a queue that closes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use pods_core::command::{AdaptiveLevel, Command, CommandError, Outcome};
 use pods_core::link::ladder::HANDSHAKE_STEP_TIMEOUT_MS;
 use pods_fake::pair;
+use pods_proto::control::{ControlCommand, ControlId};
+use pods_proto::noise::NoiseMode;
+use pods_samples::{NOISE, setting};
 use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 use rustix::time::{ClockId, clock_gettime};
@@ -16,8 +20,13 @@ use tokio::time::sleep;
 
 use super::super::reader::RECV_BUFFER_LEN;
 use super::super::{Connector, Input, REQUEST_QUEUE, drive, queue};
-use super::{HANG_LIMIT, REAL_TIME_SLACK, Running, device_up, report};
+use super::{
+    HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device_up, report, wait_for_state, wire,
+};
 use crate::daemon::hub::Hub;
+
+/// Writes into an unread socket before one must have failed; a few hundred fill it.
+const SENDS_MAX: usize = 10_000;
 
 /// Threads feeding the queue at once, so it never empties between two inputs.
 const FLOODERS: usize = 4;
@@ -43,6 +52,29 @@ fn hand_held() -> (Running, Channel, Instant) {
     device_up(running.inputs());
     let (pods_end, connected) = far.recv_timeout(HANG_LIMIT).unwrap();
     (running, pods_end, connected)
+}
+
+fn level_frame(level: AdaptiveLevel) -> Vec<u8> {
+    let frame = ControlCommand {
+        id: ControlId::ADAPTIVE_NOISE_LEVEL,
+        value: [level.percent(), 0, 0, 0],
+    };
+    frame.encode()
+}
+
+/// Every SDU left on `pods_end` until the host's close shows.
+fn drain(pods_end: &Channel) -> Vec<Vec<u8>> {
+    pods_end.set_recv_timeout(HANG_LIMIT).unwrap();
+    let mut buf = vec![0_u8; RECV_BUFFER_LEN];
+    let mut sdus = Vec::new();
+    loop {
+        match pods_end.recv(&mut buf).unwrap() {
+            Received::Sdu(len) => sdus.push(buf[..len].to_vec()),
+            Received::Closed => return sdus,
+            Received::Truncated { full_len } => panic!("the host sent a {full_len} byte SDU"),
+            Received::TimedOut => panic!("no close from the host within {HANG_LIMIT:?}"),
+        }
+    }
 }
 
 fn thread_cpu() -> Duration {
@@ -92,6 +124,56 @@ fn packets_never_hold_back_a_passed_deadline() {
         closed >= delay && closed <= delay + REAL_TIME_SLACK,
         "{closed:?}, from {delay:?} to {:?}",
         delay + REAL_TIME_SLACK
+    );
+    drop(running);
+}
+
+#[test]
+fn a_failed_write_is_refused_and_never_known() {
+    let (running, pods_end, _) = hand_held();
+    let hub = running.hub();
+    for sdu in [
+        pods_samples::handshake_ack(),
+        pods_samples::features_ack(),
+        pods_samples::metadata(),
+        setting(NOISE, wire(NoiseMode::Adaptive)),
+    ] {
+        pods_end.send(&sdu).unwrap();
+    }
+    wait_for_state(&hub, HANG_LIMIT, "adaptive pods", |state| {
+        state.connected && state.noise_mode == NoiseMode::Adaptive
+    });
+    let levels = [
+        AdaptiveLevel::new(10).unwrap(),
+        AdaptiveLevel::new(20).unwrap(),
+    ];
+    // Nothing reads the pods' end, so the socket's queue fills and a write fails.
+    let mut sent = 0;
+    let (failed, refusal) = loop {
+        assert!(sent < SENDS_MAX, "{sent} writes and none failed");
+        let level = levels[sent % levels.len()];
+        let outcome = block_on(hub.submit(Command::SetAdaptiveLevel(level)));
+        if outcome != Outcome::Sent {
+            break (level, outcome);
+        }
+        sent += 1;
+    };
+    report(&format!("a write failed after {sent} were sent"));
+    assert_eq!(refusal, Outcome::Refused(CommandError::NotConnected));
+    let repeat = block_on(hub.submit(Command::SetAdaptiveLevel(failed)));
+    assert!(
+        !matches!(repeat, Outcome::Sent | Outcome::Confirmed),
+        "the failed level asked again: {repeat:?}"
+    );
+    wait_for_state(&hub, HANG_LIMIT, "the link down", |state| !state.connected);
+    let written = levels.map(level_frame);
+    let heard = drain(&pods_end)
+        .iter()
+        .filter(|sdu| written.contains(sdu))
+        .count();
+    assert_eq!(
+        heard, sent,
+        "levels the pods hold against levels answered sent"
     );
     drop(running);
 }

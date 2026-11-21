@@ -117,12 +117,12 @@ fn an_adaptive_level_is_written_unless_stored_or_reported_on_this_channel() {
     let default = sim.state.adaptive_noise_level;
     sim.feed(Input::Command(Command::SetAdaptiveLevel(default)));
     assert_eq!(
-        sim.last(),
+        sim.since(2),
         [level_frame(default.percent()), "Resolve(0)".to_owned()]
     );
 
     sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
-    assert_eq!(sim.last(), [level_frame(30), "Resolve(1)".to_owned()]);
+    assert_eq!(sim.since(2), [level_frame(30), "Resolve(1)".to_owned()]);
     sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(sim.last(), ["Resolve(2)"]);
 
@@ -130,7 +130,7 @@ fn an_adaptive_level_is_written_unless_stored_or_reported_on_this_channel() {
     sim.feed(Input::Packet(adaptive.clone()));
     assert_eq!(sim.state.adaptive_noise_level, level(30));
     sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
-    assert_eq!(sim.last(), [level_frame(30), "Resolve(3)".to_owned()]);
+    assert_eq!(sim.since(2), [level_frame(30), "Resolve(3)".to_owned()]);
 
     reopen(&mut sim);
     sim.feed(Input::Packet(adaptive));

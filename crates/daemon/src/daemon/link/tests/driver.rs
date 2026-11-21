@@ -7,7 +7,7 @@ use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use pods_core::command::{AdaptiveLevel, Command, CommandError, NoiseTarget, Outcome};
+use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
 use pods_core::link::End;
 use pods_core::link::ladder::{FIRST_RETRY_MS, HELD_DELAYS_MS};
 use pods_core::state::State;
@@ -548,49 +548,6 @@ fn a_full_input_queue_refuses_with_timeout() {
     });
 }
 
-#[test]
-fn a_send_that_fails_closes_the_channel() {
-    let (far_ends, far) = std_mpsc::channel();
-    let connector: Connector = Arc::new(move |_| {
-        let (host_end, pods_end) = pair();
-        // Only the first connect reaches the test; a retry after it finds the receiver gone and fails.
-        match far_ends.send(pods_end) {
-            Ok(()) => Ok(host_end),
-            Err(_) => Err(ChannelError::Connect(Errno::HOSTDOWN)),
-        }
-    });
-    let running = Running::start(connector, None);
-    let hub = running.hub();
-    device_up(running.inputs());
-    let pods_end: Channel = far.recv_timeout(HANG_LIMIT).unwrap();
-    drop(far);
-    for sdu in [
-        pods_samples::handshake_ack(),
-        pods_samples::features_ack(),
-        pods_samples::metadata(),
-        setting(NOISE, wire(NoiseMode::Adaptive)),
-    ] {
-        pods_end.send(&sdu).unwrap();
-    }
-    wait_for_state(&hub, HANG_LIMIT, "adaptive pods", |state| {
-        state.connected && state.noise_mode == NoiseMode::Adaptive
-    });
-    // Nothing reads the pods' end, so the socket's queue fills and a send fails.
-    let mut sends = 0;
-    while hub.state().connected {
-        assert!(
-            sends < 10_000,
-            "still connected after {sends} sends into a full socket"
-        );
-        let level = AdaptiveLevel::new(if sends % 2 == 0 { 10 } else { 20 }).unwrap();
-        block_on(hub.submit(Command::SetAdaptiveLevel(level)));
-        sends += 1;
-    }
-    report(&format!("the channel closed after {sends} unread sends"));
-    drop(running);
-    drop(pods_end);
-}
-
 /// Every input one reader thread sends, as labels, until it drops its sender.
 fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<String> {
     let (feedback, mut inputs) = mpsc::channel(INPUT_QUEUE);
@@ -606,7 +563,10 @@ fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<Stri
                 Input::Sdu(sdu) => format!("sdu {}", sdu.len()),
                 Input::Ended(End::Closed) => "ended closed".to_owned(),
                 Input::Ended(End::ConnectFailed) => "ended connect failed".to_owned(),
-                Input::Device(_) | Input::Command { .. } | Input::Shutdown(_) => {
+                Input::Device(_)
+                | Input::SendFailed
+                | Input::Command { .. }
+                | Input::Shutdown(_) => {
                     format!("unexpected {input:?}")
                 }
             });
