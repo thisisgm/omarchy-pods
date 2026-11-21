@@ -1,7 +1,7 @@
 //! The `tst_battery` cases, translated, plus the range and order rules.
 
 use super::*;
-use crate::cpp_header::{BATTERY, PACKETS};
+use cpp_source::{BATTERY, PACKETS};
 
 const DISCHARGING: u8 = 0x02;
 

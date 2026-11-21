@@ -11,5 +11,8 @@ publish.workspace = true
 pods-proto = { path = "../proto" }
 serde_json.workspace = true
 
+[dev-dependencies]
+cpp-source = { path = "../cpp-source" }
+
 [lints]
 workspace = true

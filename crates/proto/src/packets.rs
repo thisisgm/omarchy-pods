@@ -20,7 +20,7 @@ pub const REQUEST_NOTIFICATIONS: [u8; 11] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpp_header::PACKETS;
+    use cpp_source::PACKETS;
 
     const CONNECTION: Option<&str> = Some("namespace Connection");
 

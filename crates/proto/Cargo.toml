@@ -11,6 +11,7 @@ publish.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+cpp-source = { path = "../cpp-source" }
 proptest.workspace = true
 
 [lints]

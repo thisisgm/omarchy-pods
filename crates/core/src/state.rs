@@ -108,3 +108,6 @@ pub struct Counters {
     pub one_bud_anc_changes: u64,
     pub reopen_calls: u64,
 }
+
+#[cfg(test)]
+mod tests;
