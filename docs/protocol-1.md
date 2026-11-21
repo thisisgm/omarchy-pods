@@ -151,7 +151,8 @@ The connection stays open after any error reply.
 
 - `librepods status` prints the state line.
 - `librepods watch` prints the state line, then one line per change. When the
-  daemon stops it prints `The daemon went away.` on stderr and exits 1. When
+  connection ends, because the daemon stopped or closed it for reading too
+  slowly (see Events), it prints `The daemon went away.` on stderr and exits 1. When
   nothing reads its output any more, it exits 0 at the next line it cannot
   write, so `librepods watch | head -1` succeeds.
 - `librepods set <key> <value>` and `librepods do <action>` print nothing and
