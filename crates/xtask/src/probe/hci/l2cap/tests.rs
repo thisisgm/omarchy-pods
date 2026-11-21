@@ -6,7 +6,7 @@ use pods_proto::sdulog::{Direction, Record};
 use super::super::fixture::{
     AVDTP_PSM, CONFIGURATION_REQUEST, CONNECTION_REQUEST, CONNECTION_RESPONSE, CONTINUATION,
     EVENT_DISCONNECTION_COMPLETE, KEYBOARD_HANDLE, PODS_HANDLE, SIGNALLING_CID, START_UNIX_MICROS,
-    Trace, counting_bytes, start_flag,
+    Trace, counting_bytes, mode_option, receiver_cid, start_flag,
 };
 use super::super::records;
 use super::*;
@@ -17,6 +17,10 @@ const PODS: Direction = Direction::FromPods;
 const FIRST: (u16, u16) = (0x0040, 0x0050);
 /// The identifiers of a second channel.
 const SECOND: (u16, u16) = (0x0041, 0x0051);
+/// The L2CAP modes the tests ask for: basic, enhanced retransmission and streaming.
+const BASIC: u8 = 0x00;
+const ENHANCED_RETRANSMISSION: u8 = 0x03;
+const STREAMING: u8 = 0x04;
 /// `L2CAP_DISCONNECTION_REQ`.
 const DISCONNECTION_REQUEST: u8 = 0x06;
 /// The connection response result for a request still being worked on.
@@ -278,6 +282,83 @@ fn the_mtu_option_each_side_sends_is_kept() {
     let found = read(&trace);
     assert_eq!(found.list[0].pods_mtu, Some(1024));
     assert_eq!(found.counts.malformed_signals, 2);
+}
+
+#[test]
+fn a_channel_a_side_asks_another_mode_for_keeps_no_pdus() {
+    let mut trace = Trace::new();
+    trace.open(HOST, CONTROL_PSM, FIRST);
+    trace.open(PODS, ATT_PSM, SECOND);
+    trace.offer_mode(HOST, FIRST, BASIC);
+    trace.offer_mode(PODS, FIRST, BASIC);
+    trace.offer_mode(HOST, SECOND, BASIC);
+    trace.offer_mode(PODS, SECOND, ENHANCED_RETRANSMISSION);
+    trace.offer_mtu(PODS, SECOND, 185);
+    trace.send(PODS, FIRST, &[1]);
+    trace.send(PODS, SECOND, &[2]);
+    trace.send(HOST, SECOND, &[3]);
+    let found = read(&trace);
+    let modes = |channel: &Channel| (channel.host_mode, channel.pods_mode, channel.is_basic());
+    assert_eq!(modes(&found.list[0]), (Some(BASIC), Some(BASIC), true));
+    assert_eq!(sdus(&found.list[0]), [(PODS, vec![1])]);
+    assert_eq!(found.list[0].not_basic_pdus, 0);
+    let asked = (Some(BASIC), Some(ENHANCED_RETRANSMISSION), false);
+    assert_eq!(modes(&found.list[1]), asked);
+    assert_eq!(found.list[1].sdus, []);
+    assert_eq!(found.list[1].not_basic_pdus, 2);
+    assert_eq!(found.list[1].pods_mtu, Some(185));
+    assert_eq!(found.unmapped, []);
+
+    trace.offer_mode(PODS, SECOND, BASIC);
+    trace.send(PODS, SECOND, &[4]);
+    let found = read(&trace);
+    assert_eq!(modes(&found.list[1]), (Some(BASIC), Some(BASIC), true));
+    assert_eq!(sdus(&found.list[1]), [(PODS, vec![4])]);
+    assert_eq!(found.list[1].not_basic_pdus, 2);
+}
+
+#[test]
+fn the_mode_is_read_from_a_whole_option_of_either_side_and_no_other() {
+    let configured = |sender: Direction, options: &[u8]| {
+        let mut trace = Trace::new();
+        trace.open(HOST, ATT_PSM, FIRST);
+        let mut request = receiver_cid(sender, FIRST).to_le_bytes().to_vec();
+        request.extend([0x00, 0x00]);
+        request.extend(options);
+        trace.signal(sender, CONFIGURATION_REQUEST, &request);
+        read(&trace).list.remove(0)
+    };
+    let asked = |sender: Direction, options: &[u8]| {
+        let channel = configured(sender, options);
+        (channel.host_mode, channel.pods_mode, channel.is_basic())
+    };
+    let streaming = mode_option(STREAMING);
+    assert_eq!(asked(HOST, &streaming), (Some(STREAMING), None, false));
+    assert_eq!(asked(PODS, &streaming), (None, Some(STREAMING), false));
+    assert_eq!(asked(PODS, &[]), (None, None, true));
+
+    let mut after_an_mtu = vec![0x01, 0x02, 0xa0, 0x02];
+    after_an_mtu.extend(&streaming);
+    let both = configured(PODS, &after_an_mtu);
+    assert_eq!(
+        (both.pods_mtu, both.pods_mode),
+        (Some(672), Some(STREAMING))
+    );
+    let mut hinted = streaming.clone();
+    hinted[0] |= 0x80;
+    assert_eq!(asked(PODS, &hinted), (None, Some(STREAMING), false));
+
+    let mut one_byte_short = streaming.clone();
+    one_byte_short[1] = 8;
+    one_byte_short.pop();
+    assert_eq!(asked(PODS, &one_byte_short), (None, None, true));
+    let mut one_byte_long = streaming.clone();
+    one_byte_long[1] = 10;
+    one_byte_long.push(0x00);
+    assert_eq!(asked(PODS, &one_byte_long), (None, None, true));
+    let mut another_option = streaming;
+    another_option[0] = 0x05;
+    assert_eq!(asked(PODS, &another_option), (None, None, true));
 }
 
 #[test]

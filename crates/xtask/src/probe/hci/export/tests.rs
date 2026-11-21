@@ -13,6 +13,9 @@ const HOST: Direction = Direction::ToPods;
 const PODS: Direction = Direction::FromPods;
 /// The identifiers of a second channel.
 const SECOND: (u16, u16) = (0x0048, 0x0058);
+/// The L2CAP modes the tests ask for: basic and enhanced retransmission.
+const BASIC: u8 = 0x00;
+const ENHANCED_RETRANSMISSION: u8 = 0x03;
 /// The event code of a completed synchronous connection.
 const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
 /// One millisecond, the step of the fixture's clock.
@@ -173,20 +176,20 @@ fn stamps_count_from_the_first_record_kept() {
 #[test]
 fn the_request_table_lists_sides_results_and_mtu_options() {
     let outputs = rendered(&session());
-    let expected = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\n\
-        0\tpods\t0x0013\t0x0000\t0x000c\t-\t-\n\
-        3000000\thost\t0x1001\t0x0000\t0x000b\t672\t1024\n\
-        17000000\tpods\t0x001f\t0x0000\t0x000b\t672\t1024\n\
-        996000000\thost\t0x0019\t0x0000\t0x000b\t-\t-\n\
-        1004000000\thost\t0x0019\t0x0000\t0x000b\t-\t-\n";
+    let expected = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode\n\
+        0\tpods\t0x0013\t0x0000\t0x000c\t-\t-\t-\t-\n\
+        3000000\thost\t0x1001\t0x0000\t0x000b\t672\t1024\t-\t-\n\
+        17000000\tpods\t0x001f\t0x0000\t0x000b\t672\t1024\t-\t-\n\
+        996000000\thost\t0x0019\t0x0000\t0x000b\t-\t-\t-\t-\n\
+        1004000000\thost\t0x0019\t0x0000\t0x000b\t-\t-\t-\t-\n";
     assert_eq!(text(&outputs, "psm.tsv"), expected);
 
     let mut trace = Trace::new();
     trace.connect(PODS, ATT_PSM, ATT_CIDS, 0x0003);
     trace.signal(HOST, 0x02, &[0x1f, 0x00, 0x44, 0x00]);
-    let expected = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\n\
-        0\tpods\t0x001f\t0x0003\t0x000b\t-\t-\n\
-        2000000\thost\t0x001f\t-\t0x000b\t-\t-\n";
+    let expected = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode\n\
+        0\tpods\t0x001f\t0x0003\t0x000b\t-\t-\t-\t-\n\
+        2000000\thost\t0x001f\t-\t0x000b\t-\t-\t-\t-\n";
     assert_eq!(text(&rendered(&trace), "psm.tsv"), expected);
 }
 
@@ -256,6 +259,7 @@ fn the_link_summary_of_the_session() {
         fixed_channel_pdus 0\n\
         requests_over_limit 0\n\
         unmapped_over_limit 0\n\
+        not_basic_mode_pdus 0\n\
         avdtp_fragmented_signals 0\n\
         avdtp_malformed_signals 0\n\
         avdtp_other_channels 0\n\
@@ -292,6 +296,52 @@ fn synchronous_connections_and_what_could_not_be_read_are_counted() {
     assert_eq!(
         names(&outputs),
         ["psm.tsv", "a2dp.tsv", "avdtp.txt", "links.txt"]
+    );
+}
+
+#[test]
+fn a_channel_not_in_basic_mode_is_listed_counted_and_not_exported() {
+    let mut trace = Trace::new();
+    trace.open(PODS, ATT_PSM, ATT_CIDS);
+    trace.offer_mode(PODS, ATT_CIDS, ENHANCED_RETRANSMISSION);
+    trace.open(HOST, CONTROL_PSM, CONTROL_CIDS);
+    trace.offer_mode(HOST, CONTROL_CIDS, BASIC);
+    trace.open(PODS, ATT_PSM, SECOND);
+    for cids in [ATT_CIDS, CONTROL_CIDS, SECOND, ATT_CIDS] {
+        trace.send(PODS, cids, &[0x1b, 0x0d, 0x00]);
+    }
+    let outputs = rendered(&trace);
+    assert_eq!(
+        names(&outputs),
+        [
+            "sdu.log",
+            "att-2.log",
+            "psm.tsv",
+            "a2dp.tsv",
+            "avdtp.txt",
+            "links.txt"
+        ]
+    );
+    assert_eq!(text(&outputs, "sdu.log"), "9000000 < 1b0d00\n");
+    assert_eq!(text(&outputs, "att-2.log"), "10000000 < 1b0d00\n");
+    let requests = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode\n\
+        0\tpods\t0x001f\t0x0000\t0x000b\t-\t-\t-\t0x03\n\
+        3000000\thost\t0x1001\t0x0000\t0x000b\t-\t-\t0x00\t-\n\
+        6000000\tpods\t0x001f\t0x0000\t0x000b\t-\t-\t-\t-\n";
+    assert_eq!(text(&outputs, "psm.tsv"), requests);
+    let links = text(&outputs, "links.txt");
+    let said: Vec<&str> = links
+        .lines()
+        .filter(|line| line.contains("not_basic") || line.starts_with("log "))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "not_basic_mode_pdus 2",
+            "channel_not_read handle=0x000b psm=0x001f host_mode=- pods_mode=0x03 pdus=2 reason=l2cap_mode_is_not_basic",
+            "log sdu.log written=1 refused_empty=0 refused_too_long=0",
+            "log att-2.log written=1 refused_empty=0 refused_too_long=0",
+        ]
     );
 }
 

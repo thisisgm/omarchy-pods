@@ -217,6 +217,14 @@ impl Trace {
         self.signal(sender, CONFIGURATION_REQUEST, &request);
     }
 
+    /// A configuration request from `sender` for the channel with `cids`, asking for an L2CAP mode.
+    pub(crate) fn offer_mode(&mut self, sender: Direction, cids: (u16, u16), mode: u8) {
+        let mut request = receiver_cid(sender, cids).to_le_bytes().to_vec();
+        request.extend(0_u16.to_le_bytes());
+        request.extend(mode_option(mode));
+        self.signal(sender, CONFIGURATION_REQUEST, &request);
+    }
+
     /// One PDU from `sender` on the channel with `cids`.
     pub(crate) fn send(&mut self, sender: Direction, cids: (u16, u16), payload: &[u8]) {
         self.pdu(sender, receiver_cid(sender, cids), payload);
@@ -225,6 +233,13 @@ impl Trace {
     pub(crate) fn bytes(&self) -> Vec<u8> {
         self.bytes.clone()
     }
+}
+
+/// A retransmission and flow control option: type 4, 9 bytes, the mode first, then made up windows and timeouts.
+pub(crate) fn mode_option(mode: u8) -> Vec<u8> {
+    vec![
+        0x04, 0x09, mode, 0x3f, 0x03, 0xd0, 0x07, 0xe0, 0x2e, 0xf0, 0x03,
+    ]
 }
 
 /// The packet boundary flag that starts a PDU: 0b00 from the host, 0b10 from the controller.
