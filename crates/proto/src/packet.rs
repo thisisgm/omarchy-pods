@@ -7,7 +7,7 @@ use crate::error::{HEADER_LEN, ParseError, Parser};
 use crate::metadata::Metadata;
 
 /// Starts every packet the pods send after the handshake; the opcode follows.
-const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
+pub const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
 /// A little endian u16 right after the accessory header.
 const OPCODE_LEN: usize = 2;
 const OPCODE_BATTERY: u16 = 0x0004;

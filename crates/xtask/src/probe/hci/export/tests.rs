@@ -47,7 +47,7 @@ const UNSUPPORTED_REMOTE_FEATURE: u8 = 0x1a;
 const NOTIFICATION: [u8; 3] = [0x1b, 0x0d, 0x00];
 
 fn rendered(trace: &Trace) -> Vec<Output> {
-    render(records(&trace.bytes()).unwrap()).unwrap()
+    render(Read::Btsnoop(records(&trace.bytes()).unwrap())).unwrap()
 }
 
 fn names(outputs: &[Output]) -> Vec<&str> {
@@ -392,7 +392,7 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
     let whole = records(&bytes).unwrap();
     assert_eq!(whole.cut, None);
     let kept_whole = whole.kept.len();
-    assert!(!text(&render(whole).unwrap(), "links.txt").contains("trace_cut_short"));
+    assert!(!text(&render(Read::Btsnoop(whole)).unwrap(), "links.txt").contains("trace_cut_short"));
 
     let cut_bytes = &bytes[..bytes.len() - CUT_INTO_LAST_MEDIA];
     let read = records(cut_bytes).unwrap();
@@ -402,10 +402,10 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
         kept_whole,
         "only the cut packet and the link's end are lost"
     );
-    let outputs = render(read).unwrap();
+    let outputs = render(Read::Btsnoop(read)).unwrap();
     let last_second = "3\t1\t112\t0\t1100000000\t0\t1\n";
     assert!(text(&outputs, "a2dp.tsv").ends_with(last_second));
-    let before = render(records(&bytes[..cut.offset]).unwrap()).unwrap();
+    let before = render(Read::Btsnoop(records(&bytes[..cut.offset]).unwrap())).unwrap();
     assert_eq!(names(&outputs), names(&before));
     for (cut_output, whole_output) in outputs.iter().zip(&before) {
         if cut_output.name == "links.txt" {
@@ -434,7 +434,10 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
         cut.offset,
         text(&before, "links.txt")
     );
-    assert_eq!(text(&render(read).unwrap(), "links.txt"), named);
+    assert_eq!(
+        text(&render(Read::Btsnoop(read)).unwrap(), "links.txt"),
+        named
+    );
 
     let mut too_long = bytes.clone();
     too_long[cut.offset + INCLUDED_LEN_AT..][..4].copy_from_slice(&u32::MAX.to_be_bytes());
@@ -450,7 +453,10 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
         cut.offset,
         text(&before, "links.txt")
     );
-    assert_eq!(text(&render(read).unwrap(), "links.txt"), named);
+    assert_eq!(
+        text(&render(Read::Btsnoop(read)).unwrap(), "links.txt"),
+        named
+    );
 }
 
 #[test]

@@ -1,6 +1,11 @@
-//! Synthetic btsnoop traces for the tests, built byte by byte from the documented layouts; no byte comes from a real capture.
+//! Synthetic btsnoop and `PacketLogger` traces for the tests, built byte by byte from the documented layouts; no byte comes from a real capture.
 
-use pods_proto::packets::{ATT_PSM, CONTROL_PSM, HANDSHAKE, HANDSHAKE_ACK_PREFIX};
+use pods_proto::dictation::{
+    self, Frame, SESSION_ACTIVE, SESSION_IDLE, TOC_CELT_WIDEBAND_20MS_MONO,
+};
+use pods_proto::packets::{
+    ATT_PSM, CONTROL_PSM, FEATURES_ACK_PREFIX, HANDSHAKE, HANDSHAKE_ACK_PREFIX,
+};
 use pods_proto::sdulog::Direction;
 use pods_proto::uplink::{AccessUnit, OPAQUE_LEN, START, STOP, encode_audio};
 
@@ -129,12 +134,48 @@ pub(crate) const MEDIA_PAYLOAD_LEN: usize = 100;
 /// The two control packets the session trace sends in fragments, by their length.
 const THREE_FRAGMENT_LEN: usize = 600;
 const TWO_FRAGMENT_LEN: usize = 300;
+/// Where each of those is split: the size of every fragment but its last.
+const THREE_FRAGMENT_SIZES: [usize; 2] = [200, 250];
+const TWO_FRAGMENT_SIZES: [usize; 1] = [100];
+/// What follows the prefix of the features acknowledgement in the macOS trace, made up.
+const FEATURES_ACK_REST: [u8; 4] = [0x00; 4];
+/// `PacketLogger` record types: a command, an event, ACL data sent and received, and synchronous data sent and received with the audio left out.
+pub(crate) const PKLG_COMMAND: u8 = 0x00;
+pub(crate) const PKLG_EVENT: u8 = 0x01;
+pub(crate) const PKLG_ACL_SENT: u8 = 0x02;
+pub(crate) const PKLG_ACL_RECEIVED: u8 = 0x03;
+pub(crate) const PKLG_SCO_SENT: u8 = 0x18;
+pub(crate) const PKLG_SCO_RECEIVED: u8 = 0x19;
+/// What the length field of a `PacketLogger` record counts besides the payload: seconds, microseconds and the type.
+pub(crate) const PKLG_COUNTED_LEN: u32 = 9;
+/// Microseconds in one second.
+const MICROS_PER_SECOND: u64 = 1_000_000;
+/// The opcode of HCI Create Connection, whose parameters open with the address (Core 6.1 Vol 4 Part E 7.1.5).
+const CREATE_CONNECTION: u16 = 0x0405;
+/// What a Create Connection command ends with: made up packet types, page scan mode, clock offset and role switch.
+const CONNECTION_PARAMETERS: [u8; 7] = [0x18, 0xcc, 0x01, 0x00, 0x00, 0x00, 0x01];
+/// What a synchronous data record of the macOS trace holds where the audio would be, which no output may hold.
+pub(crate) const VOICE_BYTES: &[u8] = b"voice-on-the-air";
+/// An ATT notification and a write command for handles the dictation stream does not use, sent before the stream starts.
+const OTHER_NOTIFICATION: [u8; 5] = [0x1b, 0x03, 0x00, 0x5a, 0xa5];
+const OTHER_WRITE: [u8; 4] = [0x52, 0x03, 0x00, 0x01];
+/// The flag and the level of a synthetic dictation frame.
+const FRAME_FLAG: u8 = 0x80;
+const FRAME_LEVEL: u8 = 200;
+
+/// How a trace under construction lays its records out.
+#[derive(Clone, Copy)]
+enum Layout {
+    Btsnoop,
+    PacketLogger,
+}
 
 /// One trace under construction; records are stamped by a clock that steps after each.
 pub(crate) struct Trace {
     bytes: Vec<u8>,
     micros: u64,
     handle: u16,
+    layout: Layout,
 }
 
 impl Trace {
@@ -147,6 +188,17 @@ impl Trace {
             bytes,
             micros: START_UNIX_MICROS,
             handle: PODS_HANDLE,
+            layout: Layout::Btsnoop,
+        }
+    }
+
+    /// An empty `PacketLogger` trace, which has no file header, on the pods' handle.
+    pub(crate) fn packet_logger() -> Self {
+        Self {
+            bytes: Vec::new(),
+            micros: START_UNIX_MICROS,
+            handle: PODS_HANDLE,
+            layout: Layout::PacketLogger,
         }
     }
 
@@ -160,8 +212,31 @@ impl Trace {
         self.handle = handle;
     }
 
-    /// One monitor record on adapter 0.
+    /// One `PacketLogger` record: the length of what follows it, seconds, microseconds, the type and the payload, the integers little endian.
+    pub(crate) fn logged(&mut self, kind: u8, payload: &[u8]) {
+        let len = u32::try_from(payload.len()).unwrap();
+        let seconds = u32::try_from(self.micros / MICROS_PER_SECOND).unwrap();
+        let micros = u32::try_from(self.micros % MICROS_PER_SECOND).unwrap();
+        self.bytes
+            .extend(len.saturating_add(PKLG_COUNTED_LEN).to_le_bytes());
+        self.bytes.extend(seconds.to_le_bytes());
+        self.bytes.extend(micros.to_le_bytes());
+        self.bytes.push(kind);
+        self.bytes.extend(payload);
+        self.micros = self.micros.saturating_add(STEP_MICROS);
+    }
+
+    /// One monitor record on adapter 0, or the `PacketLogger` record of the same meaning.
     pub(crate) fn record(&mut self, opcode: u16, data: &[u8]) {
+        if let Layout::PacketLogger = self.layout {
+            let kind = match opcode {
+                OPCODE_EVENT => PKLG_EVENT,
+                OPCODE_ACL_TX => PKLG_ACL_SENT,
+                OPCODE_ACL_RX => PKLG_ACL_RECEIVED,
+                other => panic!("monitor opcode {other} has no PacketLogger type"),
+            };
+            return self.logged(kind, data);
+        }
         let len = u32::try_from(data.len()).unwrap();
         self.bytes.extend(len.to_be_bytes());
         self.bytes.extend(len.to_be_bytes());
@@ -396,13 +471,22 @@ pub(crate) fn att_packets() -> Vec<(Direction, Vec<u8>)> {
     ]
 }
 
+/// An address in the order a packet carries it.
+fn wire(address: [u8; 6]) -> Vec<u8> {
+    address.into_iter().rev().collect()
+}
+
 /// The identifying events a real trace opens with: the adapter, the connection, the name and the link key.
 fn identify(trace: &mut Trace) {
-    let wire = |address: [u8; 6]| address.into_iter().rev().collect::<Vec<u8>>();
     let mut adapter = PRIMARY_ON_USB.to_vec();
     adapter.extend(wire(HOST_ADDRESS));
     adapter.extend(b"hci0\0\0\0\0");
     trace.record(OPCODE_NEW_INDEX, &adapter);
+    paired(trace);
+}
+
+/// The events that name the pods: the connection, the name and the link key.
+fn paired(trace: &mut Trace) {
     let mut connected = vec![STATUS_SUCCESS];
     connected.extend(PODS_HANDLE.to_le_bytes());
     connected.extend(wire(PODS_ADDRESS));
@@ -450,8 +534,8 @@ fn accessory(trace: &mut Trace) {
     trace.offer_mtu(Direction::FromPods, CONTROL_CIDS, PODS_MTU);
     for (direction, packet) in control_packets() {
         let sizes: &[usize] = match packet.len() {
-            THREE_FRAGMENT_LEN => &[200, 250],
-            TWO_FRAGMENT_LEN => &[100],
+            THREE_FRAGMENT_LEN => &THREE_FRAGMENT_SIZES,
+            TWO_FRAGMENT_LEN => &TWO_FRAGMENT_SIZES,
             _ => &[],
         };
         let cid = receiver_cid(direction, CONTROL_CIDS);
@@ -532,6 +616,85 @@ pub(crate) fn session() -> Trace {
     keystrokes(&mut trace);
     voice(&mut trace);
     music(&mut trace);
+    trace.end_link(PODS_HANDLE);
+    trace
+}
+
+/// The accessory packets of the macOS trace, which holds no handshake: macOS never sends one.
+pub(crate) fn mac_accessory_packets() -> Vec<(Direction, Vec<u8>)> {
+    let mut acknowledgement = FEATURES_ACK_PREFIX.to_vec();
+    acknowledgement.extend(FEATURES_ACK_REST);
+    vec![
+        (Direction::ToPods, SESSION_IDLE.to_vec()),
+        (Direction::FromPods, acknowledgement),
+        (Direction::ToPods, SESSION_ACTIVE.to_vec()),
+        (Direction::FromPods, counting_bytes(THREE_FRAGMENT_LEN)),
+        (Direction::ToPods, SESSION_IDLE.to_vec()),
+    ]
+}
+
+/// One audio notification that holds one frame, the table of contents byte alone.
+pub(crate) fn audio_notification(counter: u8) -> Vec<u8> {
+    let frame = Frame {
+        flag: FRAME_FLAG,
+        level: FRAME_LEVEL,
+        counter: u16::from(counter),
+        data: &[TOC_CELT_WIDEBAND_20MS_MONO],
+    };
+    dictation::encode_audio(counter, &[frame]).unwrap()
+}
+
+/// The attribute packets of the macOS trace: one dictation session, after a packet each way that is not part of it.
+pub(crate) fn mac_att_packets() -> Vec<(Direction, Vec<u8>)> {
+    vec![
+        (Direction::FromPods, OTHER_NOTIFICATION.to_vec()),
+        (Direction::ToPods, OTHER_WRITE.to_vec()),
+        (Direction::ToPods, dictation::START.to_vec()),
+        (Direction::FromPods, dictation::STARTED.to_vec()),
+        (Direction::FromPods, audio_notification(0)),
+        (Direction::FromPods, audio_notification(1)),
+        (Direction::ToPods, dictation::STOP.to_vec()),
+        (Direction::FromPods, dictation::STOPPED.to_vec()),
+    ]
+}
+
+/// One whole synthetic session as macOS logs it: no channel is opened by a request, and the synchronous data records hold no audio.
+pub(crate) fn mac_session() -> Trace {
+    let mut trace = Trace::packet_logger();
+    let mut connect = CREATE_CONNECTION.to_le_bytes().to_vec();
+    connect.push(
+        u8::try_from(
+            PODS_ADDRESS
+                .len()
+                .saturating_add(CONNECTION_PARAMETERS.len()),
+        )
+        .unwrap(),
+    );
+    connect.extend(wire(PODS_ADDRESS));
+    connect.extend(CONNECTION_PARAMETERS);
+    trace.logged(PKLG_COMMAND, &connect);
+    paired(&mut trace);
+    keystrokes(&mut trace);
+    for (direction, packet) in mac_accessory_packets() {
+        let sizes: &[usize] = match packet.len() {
+            THREE_FRAGMENT_LEN => &THREE_FRAGMENT_SIZES,
+            _ => &[],
+        };
+        let cid = receiver_cid(direction, CONTROL_CIDS);
+        trace.fragments(direction, cid, &packet, sizes);
+    }
+    for (direction, packet) in mac_att_packets() {
+        trace.send(direction, ATT_CIDS, &packet);
+    }
+    voice(&mut trace);
+    for kind in [PKLG_SCO_SENT, PKLG_SCO_RECEIVED, PKLG_SCO_RECEIVED] {
+        trace.logged(kind, VOICE_BYTES);
+    }
+    let start = avdtp(1, COMMAND, AVDTP_START, &[FIRST_SEID]);
+    trace.send(Direction::ToPods, SIGNALLING_CIDS, &start);
+    for sequence in 0..2 {
+        trace.send(Direction::ToPods, MEDIA_CIDS, &rtp(sequence));
+    }
     trace.end_link(PODS_HANDLE);
     trace
 }

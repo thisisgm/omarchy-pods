@@ -314,16 +314,12 @@ mod hci {
         wrong_datalink[DATALINK_AT].copy_from_slice(&WRONG_DATALINK.to_be_bytes());
         for (bytes, rule) in [
             (
-                &[][..],
-                "btsnoop trace is 0 bytes, shorter than its 16 byte file header",
-            ),
-            (
                 &trace[..FILE_HEADER - 1],
                 "btsnoop trace is 15 bytes, shorter than its 16 byte file header",
             ),
             (
                 &wrong_magic[..],
-                "btsnoop trace does not start with the btsnoop identification pattern",
+                "PacketLogger record 0 at byte offset 0 is cut short; a file that does not start with the btsnoop identification pattern is read as a PacketLogger trace, which is refused unless it parses to its last byte",
             ),
             (
                 &wrong_datalink[..],
@@ -740,4 +736,6 @@ mod hci {
             assert_eq!(names_in(home.path()), ["hci.btsnoop"], "{bad}");
         }
     }
+
+    mod pklg;
 }

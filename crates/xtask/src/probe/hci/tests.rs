@@ -419,7 +419,7 @@ fn read_everything(trace: &[u8]) -> usize {
         read.into_iter().sum::<usize>()
     };
     let music: usize = found.list.iter().map(of_link).sum();
-    music.saturating_add(render(read).map_or(0, |outputs| outputs.len()))
+    music.saturating_add(render(Read::Btsnoop(read)).map_or(0, |outputs| outputs.len()))
 }
 
 /// One record whose claimed length need not match the data behind it, so the walker meets cut and shifted records.
@@ -474,7 +474,7 @@ proptest! {
         let logged = |channel: &&Channel| [CONTROL_PSM, ATT_PSM].contains(&channel.psm) && channel.is_basic();
         let on_control = found.list.iter().filter(|channel| channel.psm == CONTROL_PSM);
         let pods_links: BTreeSet<usize> = on_control.map(|channel| channel.link).collect();
-        let outputs = render(read).unwrap();
+        let outputs = render(Read::Btsnoop(read)).unwrap();
         for table in TABLES {
             let named = outputs.iter().filter(|output| output.name == table).count();
             prop_assert_eq!(named, 1, "{} is always rendered, once", table);
