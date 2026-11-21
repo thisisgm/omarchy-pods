@@ -371,6 +371,14 @@ void MediaController::removeAudioOutputDevice() {
     return;
   }
 
+  // A later both-out report releases the card once the call ends, so this needs no timer of its own.
+  const CaptureState capture = m_pulseAudio->captureState(connectedDeviceMacAddress);
+  if (!mayReleaseCard(capture)) {
+    LOG_INFO("Capture " << (capture == CaptureState::Live ? "live" : "unknown")
+             << " on the AirPods, keeping the card so the call holds its headset profile");
+    return;
+  }
+
   // Ear detection fires on every packet, so without this the card is re-released every few seconds.
   if (m_pulseAudio->getActiveCardProfile(m_deviceOutputName) == QStringLiteral("off")) {
     return;
