@@ -30,6 +30,8 @@ const FULL_FRAMES: usize = 252;
 const LAST_DATA_AT_THE_LIMIT: usize = 10;
 /// Data bytes of the last frame that bring the body one byte past `LONGEST_BODY`.
 const LAST_DATA_PAST_THE_LIMIT: usize = 11;
+/// One more longest frame than fits: 253 of them are 65780 frame bytes, past `LONGEST_BODY`.
+const FRAMES_PAST_THE_LIMIT: usize = FULL_FRAMES + 1;
 
 // Sample output for (0x10, 3): b8 10 11, the table of contents byte then counting bytes that stand in for one coded frame.
 fn codec_bytes(seed: u8, len: usize) -> Vec<u8> {
@@ -526,4 +528,24 @@ fn a_packet_over_65535_bytes_cannot_be_encoded() {
         error.to_string(),
         "dictation audio notification cannot carry 65536 bytes of frames: the length field counts the frames and their prefixes, not the whole notification, and holds at most 65535"
     );
+}
+
+#[test]
+fn a_frame_too_long_is_refused_before_a_packet_too_long() {
+    let longest = codec_bytes(0x00, LONGEST_FRAME);
+    let too_long = codec_bytes(0x00, LONGEST_FRAME + 1);
+    let mut frames = vec![frame(0, &longest); FRAMES_PAST_THE_LIMIT];
+    assert_eq!(
+        encode_audio(0, &frames),
+        Err(EncodeError::PacketTooLong { len: 65780 })
+    );
+    frames.push(frame(0, &too_long));
+    let after_the_limit = EncodeError::FrameTooLong {
+        index: FRAMES_PAST_THE_LIMIT,
+        len: 256,
+    };
+    assert_eq!(encode_audio(0, &frames), Err(after_the_limit));
+    frames.rotate_right(1);
+    let before_the_limit = EncodeError::FrameTooLong { index: 0, len: 256 };
+    assert_eq!(encode_audio(0, &frames), Err(before_the_limit));
 }
