@@ -374,9 +374,14 @@ name = "pods-proto"
 version = "0.0.0"
 dependencies = [
  "cpp-source",
+ "pods-samples",
  "proptest",
  "thiserror",
 ]
+
+[[package]]
+name = "pods-samples"
+version = "0.0.0"
 
 [[package]]
 name = "pods-sys"

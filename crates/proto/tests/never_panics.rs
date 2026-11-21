@@ -7,6 +7,8 @@ use pods_proto::control::ControlCommand;
 use pods_proto::dictation::{self, DictationPacket, Frame, STARTED, STOPPED, Status};
 use pods_proto::ear::EarReport;
 use pods_proto::error::{ParseError, Parser};
+use pods_proto::metadata::{FIELD_MAX_BYTES, Metadata};
+use pods_proto::packet::{Incoming, classify};
 use pods_proto::sdulog::{Direction, format_line, parse_line};
 use pods_proto::uplink::{
     AUDIO_HEADER_LEN, AccessUnit, OPAQUE_LEN, UNIT_PREFIX_LEN, UplinkPacket, encode_audio,
@@ -23,6 +25,17 @@ fn sample_frame(id: u8, v: [u8; 4]) -> Vec<u8> {
 const CONTROL_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00];
 const BATTERY_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x04, 0x00];
 const EAR_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00];
+const METADATA_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
+/// Every packet the pods send after the handshake starts with these bytes; the opcode follows.
+const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
+/// Battery, ear, control, metadata and uplink: the opcodes `classify` does not report as `Other`.
+const ROUTED_OPCODES: [u16; 5] = [0x0004, 0x0006, 0x0009, 0x001d, 0x0058];
+/// Length bound of a generated body behind the opcode, past every fixed length the routed parsers check.
+const ROUTED_BODY_BOUND: usize = 64;
+/// The bytes between the metadata header and the name.
+const METADATA_SKIPPED_LEN: usize = 5;
+/// One more than the most strings a generated metadata packet carries, more than the three read.
+const METADATA_STRING_BOUND: usize = 6;
 const UPLINK_AUDIO_GATE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01, 0x00];
 const UPLINK_CONTROL_GATE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00];
 /// Length bound of a generated SDU, room for sixteen access units of the longest kind.
@@ -295,6 +308,60 @@ proptest! {
     #[test]
     fn ear_parse_never_panics(b in proptest::collection::vec(any::<u8>(), 0..512)) {
         let _outcome = EarReport::parse(&b);
+    }
+
+    #[test]
+    fn classify_never_panics(b in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        let _outcome = classify(&b);
+    }
+
+    // Behind the accessory header an opcode with a parser gets that parser's result, 0x58 is handed over whole, and any other is Other.
+    #[test]
+    fn classify_sorts_every_opcode(
+        opcode in prop_oneof![proptest::sample::select(&ROUTED_OPCODES), any::<u16>()],
+        body in proptest::collection::vec(any::<u8>(), 0..ROUTED_BODY_BOUND),
+    ) {
+        let mut sdu = ACCESSORY_HEADER.to_vec();
+        sdu.extend(opcode.to_le_bytes());
+        sdu.extend(&body);
+        let expected = match opcode {
+            0x0004 => BatteryReport::parse(&sdu).map(Incoming::Battery),
+            0x0006 => EarReport::parse(&sdu).map(Incoming::Ear),
+            0x0009 => ControlCommand::parse(&sdu).map(Incoming::Control),
+            0x001d => Metadata::parse(&sdu).map(Incoming::Metadata),
+            0x0058 => Ok(Incoming::Uplink(&sdu)),
+            _ => Ok(Incoming::Other { opcode }),
+        };
+        prop_assert_eq!(classify(&sdu), expected);
+    }
+
+    #[test]
+    fn classify_without_the_accessory_header_is_foreign(
+        b in proptest::collection::vec(any::<u8>(), 0..ROUTED_BODY_BOUND)
+            .prop_filter("starts with the accessory header", |b| !b.starts_with(&ACCESSORY_HEADER)),
+    ) {
+        prop_assert_eq!(classify(&b), Ok(Incoming::Foreign));
+    }
+
+    // Short printable fields read back as the first three zero ended strings, a missing one as empty.
+    #[test]
+    fn metadata_reads_the_first_three_strings(
+        skipped in any::<[u8; METADATA_SKIPPED_LEN]>(),
+        strings in proptest::collection::vec("[ -~]{0,40}", 0..METADATA_STRING_BOUND),
+    ) {
+        let mut sdu = METADATA_HEADER.to_vec();
+        sdu.extend(skipped);
+        sdu.extend(strings.join("\0").as_bytes());
+        let m = Metadata::parse(&sdu).unwrap();
+        let expected = |at: usize| strings.get(at).map_or("", String::as_str);
+        prop_assert_eq!((m.name.as_str(), m.model_number.as_str(), m.manufacturer.as_str()), (expected(0), expected(1), expected(2)));
+    }
+
+    #[test]
+    fn metadata_never_panics_and_stays_bounded(b in proptest::collection::vec(any::<u8>(), 0..4096)) {
+        if let Ok(m) = Metadata::parse(&b) {
+            prop_assert!(m.name.len() <= FIELD_MAX_BYTES && m.model_number.len() <= FIELD_MAX_BYTES && m.manufacturer.len() <= FIELD_MAX_BYTES);
+        }
     }
 
     #[test]

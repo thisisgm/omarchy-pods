@@ -1,0 +1,13 @@
+[package]
+name = "pods-samples"
+description = "Test support that builds sample control channel packets from the documented layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A dev-dependency only: never a normal dependency of any crate.
+
+[lints]
+workspace = true

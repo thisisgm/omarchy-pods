@@ -12,6 +12,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 cpp-source = { path = "../cpp-source" }
+pods-samples = { path = "../samples" }
 proptest.workspace = true
 
 [lints]
