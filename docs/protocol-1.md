@@ -24,11 +24,13 @@ them in the order they arrive.
 - Bytes after the last newline wait for the rest of their line. When the client
   ends its side of the connection, the daemon answers the complete lines it has,
   drops an unfinished one and closes.
-- The daemon closes a connection that makes no progress for 2 seconds while it
-  waits on the client: a request line left unfinished, a reply left unread, or,
-  on a connection that has not subscribed, no request after the last reply. A
-  subscriber with nothing unfinished or unread may stay idle as long as it
-  likes.
+- The daemon waits on the client while a request line is unfinished, while a
+  reply or event it has queued is not yet sent, and, on a connection that has
+  not subscribed, at all times. While it waits, it closes the connection after
+  2 seconds without progress. Progress is a complete request line answered or a
+  queued line sent in full; the bytes of an unfinished line do not count, so
+  the 2 seconds for a line run from the last progress before it. A subscriber
+  with nothing unfinished or queued may stay idle as long as it likes.
 - Members a request does not use are ignored. A member given twice takes its
   last value.
 
@@ -106,8 +108,9 @@ After `subscribe`, the daemon sends one line per change of the state:
 ```
 
 The daemon keeps at most 16 lines waiting for a client that reads slowly. When
-a 17th would wait, it closes that connection rather than skip a change. A
-subscriber therefore sees every change in order, or its connection closes.
+a 17th would wait, or a waiting line stays unsent for 2 seconds, it closes that
+connection rather than skip a change. A subscriber therefore sees every change
+in order, or its connection closes.
 
 ## Errors
 
