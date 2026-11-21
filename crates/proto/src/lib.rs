@@ -5,6 +5,7 @@ pub mod addr;
 pub mod att;
 pub mod battery;
 pub mod control;
+pub mod dictation;
 pub mod ear;
 pub mod error;
 pub mod model;

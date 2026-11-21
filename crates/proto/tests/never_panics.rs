@@ -4,6 +4,7 @@ use pods_proto::addr::BdAddr;
 use pods_proto::att::{self, AttPdu, HandleInfo, Uuid};
 use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
+use pods_proto::dictation::{self, DictationPacket, Frame, STARTED, STOPPED, Status};
 use pods_proto::ear::EarReport;
 use pods_proto::error::{ParseError, Parser};
 use pods_proto::sdulog::{Direction, format_line, parse_line};
@@ -66,6 +67,18 @@ const CHANGED_SDU_MAX: usize = 16;
 const CHANGED_TO: &[char] = &[
     '0', '9', ' ', '<', '>', '+', '-', 'a', 'f', 'A', 'F', 'g', '\n', '\u{e9}',
 ];
+/// Notification opcode and the audio handle 0x000d, little endian: the gate of a dictation audio notification.
+const DICTATION_AUDIO_GATE: [u8; 3] = [0x1b, 0x0d, 0x00];
+/// The two bytes every dictation audio value starts with.
+const DICTATION_AUDIO_MARKER: [u8; 2] = [0x01, 0x00];
+/// Notification opcode and the status handle 0x0010, little endian.
+const DICTATION_STATUS_GATE: [u8; 3] = [0x1b, 0x10, 0x00];
+/// Where the length byte sits in a dictation frame, after the flag, the level and the two counter bytes.
+const FRAME_LENGTH_AT: usize = 4;
+/// One more than the most frames a generated notification carries.
+const FRAME_COUNT_BOUND: usize = 8;
+/// Length bound of a generated value that is noise, longer than both known status replies.
+const VALUE_NOISE_BOUND: usize = 16;
 
 // Sample output: [04, 01, 55, 02, 01], kind, spacer, level, status, end; marks are mostly 0x01 so the entry loop runs.
 fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
@@ -160,6 +173,38 @@ fn octets_of(text: &str) -> Option<Vec<u8>> {
     text.split(':')
         .map(|pair| u8::from_str_radix(pair, 16).ok())
         .collect()
+}
+
+// Sample output: (0x80, 0xd5, 0x0104, [b8, 10, 11]), one frame's flag, level, counter and data; counters and lengths lean on their edges.
+fn dictation_frame() -> impl Strategy<Value = (u8, u8, u16, Vec<u8>)> {
+    let longest = usize::from(u8::MAX);
+    let counter = prop_oneof![Just(0_u16), Just(u16::MAX), any::<u16>()];
+    let data = prop_oneof![
+        Just(Vec::new()),
+        proptest::collection::vec(any::<u8>(), longest),
+        proptest::collection::vec(any::<u8>(), 0..=longest),
+    ];
+    (any::<u8>(), any::<u8>(), counter, data)
+}
+
+// Sample output: 01 00 03 00, a status value: a known reply, a known reply with one bit flipped, or noise.
+fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
+    let value_of = |reply: &[u8]| -> Vec<u8> {
+        let after_the_gate = reply.iter().skip(DICTATION_STATUS_GATE.len());
+        after_the_gate.copied().collect()
+    };
+    let known = move || prop_oneof![Just(value_of(&STARTED)), Just(value_of(&STOPPED))];
+    let flipped = (known(), any::<proptest::sample::Index>(), 0..u8::BITS).prop_map(
+        |(mut value, at, bit)| {
+            let at = at.index(value.len());
+            if let Some(byte) = value.get_mut(at) {
+                *byte ^= 1_u8.rotate_left(bit);
+            }
+            value
+        },
+    );
+    let noise = proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND);
+    prop_oneof![known(), flipped, noise]
 }
 
 proptest! {
@@ -505,6 +550,120 @@ proptest! {
         let line: String = chars.into_iter().collect();
         if let Ok(record) = parse_line(&line) {
             prop_assert_eq!(format_line(record.at_ns, record.direction, &record.sdu), Ok(line));
+        }
+    }
+
+    // A uniform length under MAX_SDU almost never draws a PDU cut inside the prefix, so half the cases are that short.
+    #[test]
+    fn dictation_parse_never_panics(b in prop_oneof![
+        proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+        proptest::collection::vec(any::<u8>(), 0..=dictation::AUDIO_PREFIX_LEN),
+    ]) {
+        let _outcome = DictationPacket::parse(&b);
+    }
+
+    // The yielded frames encode back to the front of the body, and trailing counts a tail that holds no whole frame.
+    #[test]
+    fn dictation_parse_past_the_prefix_never_panics(
+        packet_counter in any::<u8>(),
+        declared_shift in prop_oneof![Just(0_u16), any::<u16>()],
+        body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+    ) {
+        let declared_len = u16::try_from(body.len()).unwrap().wrapping_add(declared_shift);
+        let mut pdu = DICTATION_AUDIO_GATE.to_vec();
+        pdu.extend(DICTATION_AUDIO_MARKER);
+        pdu.push(packet_counter);
+        pdu.extend(declared_len.to_le_bytes());
+        pdu.extend(&body);
+        let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&pdu) else {
+            return Err(TestCaseError::fail("a notification with the whole audio prefix did not parse as audio"));
+        };
+        prop_assert_eq!(audio.packet_counter, packet_counter);
+        prop_assert_eq!(audio.declared_len, declared_len);
+        prop_assert_eq!(audio.length_matches(), declared_shift == 0);
+        let mut frames = audio.frames();
+        let whole: Vec<_> = frames.by_ref().collect();
+        let used: usize = whole.iter().map(|f| f.data.len().saturating_add(dictation::FRAME_PREFIX_LEN)).sum();
+        prop_assert_eq!(used.checked_add(frames.trailing()), Some(body.len()));
+        let rebuilt = dictation::encode_audio(packet_counter, &whole).unwrap();
+        let rebuilt_frames = &rebuilt[dictation::AUDIO_PREFIX_LEN..];
+        prop_assert!(body.starts_with(rebuilt_frames));
+        let tail = &body[rebuilt_frames.len()..];
+        prop_assert_eq!(frames.trailing(), tail.len());
+        let cut_short = tail.get(dictation::FRAME_PREFIX_LEN..).is_none_or(|data| data.len() < usize::from(tail[FRAME_LENGTH_AT]));
+        prop_assert!(cut_short, "a whole frame was left in the tail {:02x?}", tail);
+    }
+
+    // A value on the audio handle is too short before its length bytes end, unknown without the marker, and audio otherwise.
+    #[test]
+    fn dictation_audio_handle_sorts_every_value(
+        marker in prop_oneof![Just(DICTATION_AUDIO_MARKER), any::<[u8; 2]>()],
+        rest in proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND),
+        kept in any::<proptest::sample::Index>(),
+    ) {
+        let mut value = marker.to_vec();
+        value.extend(&rest);
+        value.truncate(kept.index(value.len().saturating_add(1)));
+        let mut pdu = DICTATION_AUDIO_GATE.to_vec();
+        pdu.extend(&value);
+        let outcome = DictationPacket::parse(&pdu);
+        if pdu.len() < dictation::AUDIO_PREFIX_LEN {
+            let too_short = ParseError::TooShort { parser: Parser::DictationAudio, need: dictation::AUDIO_PREFIX_LEN, got: pdu.len() };
+            prop_assert_eq!(outcome, Err(too_short));
+        } else if value.starts_with(&DICTATION_AUDIO_MARKER) {
+            prop_assert!(matches!(outcome, Ok(Some(DictationPacket::Audio(_)))), "{:?}", outcome);
+        } else {
+            let unknown = DictationPacket::Unknown { handle: dictation::AUDIO_HANDLE, value: &value };
+            prop_assert_eq!(outcome, Ok(Some(unknown)));
+        }
+    }
+
+    #[test]
+    fn dictation_status_is_a_known_reply_only_when_every_byte_agrees(value in dictation_status_value()) {
+        let mut pdu = DICTATION_STATUS_GATE.to_vec();
+        pdu.extend(&value);
+        let expected = if pdu == STARTED {
+            Status::Started
+        } else if pdu == STOPPED {
+            Status::Stopped
+        } else {
+            Status::Other(&value)
+        };
+        prop_assert_eq!(DictationPacket::parse(&pdu), Ok(Some(DictationPacket::Status(expected))));
+    }
+
+    // Whole frames survive a round trip; a cut notification yields every frame that still fits and counts the rest.
+    #[test]
+    fn dictation_audio_round_trips_and_counts_a_cut_tail(
+        packet_counter in prop_oneof![Just(0_u8), Just(u8::MAX), any::<u8>()],
+        parts in proptest::collection::vec(dictation_frame(), 0..FRAME_COUNT_BOUND),
+        cut in any::<proptest::sample::Index>(),
+    ) {
+        let frames: Vec<Frame<'_>> = parts.iter().map(|(flag, level, counter, data)| Frame { flag: *flag, level: *level, counter: *counter, data }).collect();
+        let pdu = dictation::encode_audio(packet_counter, &frames).unwrap();
+        let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&pdu) else {
+            return Err(TestCaseError::fail("an encoded notification did not parse as audio"));
+        };
+        prop_assert_eq!(audio.packet_counter, packet_counter);
+        prop_assert_eq!(usize::from(audio.declared_len).checked_add(dictation::AUDIO_PREFIX_LEN), Some(pdu.len()));
+        prop_assert!(audio.length_matches());
+        let mut seen = audio.frames();
+        prop_assert_eq!(&seen.by_ref().collect::<Vec<_>>(), &frames);
+        prop_assert_eq!(seen.trailing(), 0);
+
+        let kept = cut.index(pdu.len()).max(dictation::AUDIO_PREFIX_LEN);
+        let Ok(Some(DictationPacket::Audio(cut_audio))) = DictationPacket::parse(&pdu[..kept]) else {
+            return Err(TestCaseError::fail("a cut notification with a whole prefix did not parse as audio"));
+        };
+        prop_assert_eq!(cut_audio.declared_len, audio.declared_len);
+        prop_assert_eq!(cut_audio.length_matches(), kept == pdu.len());
+        let mut cut_frames = cut_audio.frames();
+        let whole: Vec<_> = cut_frames.by_ref().collect();
+        prop_assert_eq!(whole.as_slice(), &frames[..whole.len()]);
+        let rebuilt = dictation::encode_audio(packet_counter, &whole).unwrap();
+        prop_assert_eq!(kept.checked_sub(rebuilt.len()), Some(cut_frames.trailing()));
+        if let Some(one_more) = frames.get(..=whole.len()) {
+            prop_assert!(dictation::encode_audio(packet_counter, one_more).unwrap().len() > kept, "a frame that fits was not yielded");
         }
     }
 }
