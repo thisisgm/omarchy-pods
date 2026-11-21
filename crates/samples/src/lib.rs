@@ -1,10 +1,10 @@
-//! Sample control channel packets for tests, each built from the documented layout with synthetic contents.
+//! Sample control channel packets for tests: documented layouts, synthetic contents.
 
-// Layouts are those of daemon/airpods_packets.h and parseMetadata in daemon/main.cpp; no byte comes from a real device.
+// Layouts from daemon/airpods_packets.h and parseMetadata in daemon/main.cpp; no real device bytes.
 
-/// Every packet the pods send after the handshake starts with these bytes; the opcode follows.
+/// Starts every packet the pods send after the handshake; the opcode follows.
 const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
-/// `Parse::HANDSHAKE_ACK`, the start of the reply to the handshake.
+/// `Parse::HANDSHAKE_ACK`.
 const HANDSHAKE_ACK_PREFIX: [u8; 4] = [0x01, 0x00, 0x04, 0x00];
 /// Synthetic bytes behind the acknowledgement prefix, which nothing reads.
 const HANDSHAKE_ACK_TAIL: [u8; 12] = [0x01, 0x00, 0x02, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -26,9 +26,8 @@ const BATTERY_BODY: [u8; 16] = [
 const EAR_BODY: [u8; 2] = [0x00, 0x00];
 /// Conversation awareness 0x28, switched on, then three zero value bytes.
 const CONTROL_BODY: [u8; 5] = [0x28, 0x01, 0x00, 0x00, 0x00];
-/// The value bytes of every setting in the first burst: on, then three zero bytes.
+/// Every setting in the first burst: on, then three zero bytes.
 const SETTING_ON: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
-/// The control commands of the first burst, one per setting identifier from 1 up.
 const BURST_SETTINGS: u8 = 22;
 
 /// Synthetic bytes between the metadata header and the name, which no parser reads.
@@ -46,7 +45,7 @@ const BURST_OTHER_OPCODES: [u16; 11] = [
     0x02, 0x08, 0x0c, 0x0c, 0x0c, 0x0e, 0x2e, 0x2e, 0x4e, 0x53, 0x63,
 ];
 
-/// One packet from the pods: the accessory header, the opcode little endian, then the body, so `04 00 04 00 06 00 00 00` for opcode 0x0006 and body `00 00`.
+/// Opcode 0x0006 with body `00 00` gives `04 00 04 00 06 00 00 00`.
 fn packet(opcode: u16, body: &[u8]) -> Vec<u8> {
     let mut sdu = ACCESSORY_HEADER.to_vec();
     sdu.extend(opcode.to_le_bytes());
@@ -54,7 +53,6 @@ fn packet(opcode: u16, body: &[u8]) -> Vec<u8> {
     sdu
 }
 
-/// The reply to the handshake request.
 #[must_use]
 pub fn handshake_ack() -> Vec<u8> {
     [&HANDSHAKE_ACK_PREFIX[..], &HANDSHAKE_ACK_TAIL].concat()
@@ -66,25 +64,21 @@ pub fn features_ack() -> Vec<u8> {
     packet(OPCODE_FEATURES_ACK, &FILLER)
 }
 
-/// A battery packet for both buds and the case, 22 bytes.
 #[must_use]
 pub fn battery() -> Vec<u8> {
     packet(OPCODE_BATTERY, &BATTERY_BODY)
 }
 
-/// An ear detection packet with both buds in the ear.
 #[must_use]
 pub fn ear() -> Vec<u8> {
     packet(OPCODE_EAR, &EAR_BODY)
 }
 
-/// A control command that switches conversation awareness on.
 #[must_use]
 pub fn control() -> Vec<u8> {
     packet(OPCODE_CONTROL, &CONTROL_BODY)
 }
 
-/// A metadata packet: name, model number, manufacturer and a serial number, each ended by a zero byte.
 #[must_use]
 pub fn metadata() -> Vec<u8> {
     let mut body = METADATA_SKIPPED.to_vec();
@@ -102,7 +96,7 @@ pub fn metadata() -> Vec<u8> {
     sdu
 }
 
-/// The 38 packets that follow the handshake: only the census (which opcodes, how many of each) and the order of the first two follow a real device; the order and the bodies after them are made up.
+/// 38 packets: opcode counts and first two match a real device; later order and bodies are made up.
 #[must_use]
 pub fn first_burst() -> Vec<Vec<u8>> {
     let mut burst = vec![
@@ -126,10 +120,9 @@ pub fn first_burst() -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// The opcode is a little endian u16 right after the accessory header.
     const OPCODE_LEN: usize = 2;
 
-    /// The opcode of a packet that starts with the accessory header, read here without the parser under test: 0x0006 for `04 00 04 00 06 00 00 00`, none for `01 00 04 00 ..`.
+    /// Not the parser under test: 0x0006 for `04 00 04 00 06 00 00 00`, none for `01 00 04 00 ..`.
     fn opcode(sdu: &[u8]) -> Option<u16> {
         let rest = sdu.strip_prefix(&ACCESSORY_HEADER)?;
         rest.first_chunk::<OPCODE_LEN>()
