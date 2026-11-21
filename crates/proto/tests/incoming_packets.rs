@@ -1,4 +1,4 @@
-//! Random input never panics the packet classifier or the metadata parser, and each sorts or cuts by its rule.
+//! Random input never panics the classifier or the metadata parser; each sorts or cuts by its rule.
 
 use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
@@ -12,16 +12,15 @@ const METADATA_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
 const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
 /// Battery, ear, control, metadata and uplink: the opcodes `classify` does not report as `Other`.
 const ROUTED_OPCODES: [u16; 5] = [0x0004, 0x0006, 0x0009, 0x001d, 0x0058];
-/// Length bound of a generated body behind the opcode, past every fixed length the routed parsers check.
+/// Past every fixed length the routed parsers check.
 const ROUTED_BODY_BOUND: usize = 64;
-/// The bytes between the metadata header and the name.
 const METADATA_SKIPPED_LEN: usize = 5;
 /// One more than the most strings a generated metadata packet carries, more than the three read.
 const METADATA_STRING_BOUND: usize = 6;
 /// Longest generated printable field, short enough that no field is cut.
 const SHORT_FIELD_LEN: usize = 40;
 const _: () = assert!(SHORT_FIELD_LEN < FIELD_MAX_BYTES);
-/// Length bound of a generated metadata body, long enough that random fields often run past `FIELD_MAX_BYTES`.
+/// Long enough that random fields often run past `FIELD_MAX_BYTES`.
 const METADATA_BODY_BOUND: usize = 1024;
 
 proptest! {
@@ -30,7 +29,7 @@ proptest! {
         let _outcome = classify(&b);
     }
 
-    // Behind the accessory header an opcode with a parser gets that parser's result, 0x58 is handed over whole, and any other is Other.
+    // An opcode with a parser gets its result, 0x58 is handed over whole, any other is Other.
     #[test]
     fn classify_sorts_every_opcode(
         opcode in prop_oneof![proptest::sample::select(&ROUTED_OPCODES), any::<u16>()],
@@ -58,7 +57,7 @@ proptest! {
         prop_assert_eq!(classify(&b), Ok(Incoming::Foreign));
     }
 
-    // Short printable fields read back as the first three zero ended strings, a missing one as empty.
+    // Short printable fields read back as the first three zero ended strings, missing ones empty.
     #[test]
     fn metadata_reads_the_first_three_strings(
         skipped in any::<[u8; METADATA_SKIPPED_LEN]>(),
@@ -75,7 +74,7 @@ proptest! {
         prop_assert_eq!((m.name.as_str(), m.model_number.as_str(), m.manufacturer.as_str()), (expected(0), expected(1), expected(2)));
     }
 
-    // Random bytes behind a valid header make long fields, some invalid UTF-8 that grows when replaced; each comes back cut to the bound.
+    // Random fields, some invalid UTF-8 that grows when replaced, each come back cut to the bound.
     #[test]
     fn metadata_fields_are_cut_to_the_bound(
         skipped in any::<[u8; METADATA_SKIPPED_LEN]>(),

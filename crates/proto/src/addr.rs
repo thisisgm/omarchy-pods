@@ -3,35 +3,31 @@
 use std::fmt;
 use std::str::FromStr;
 
-/// A device address has this many octets.
 const OCTETS: usize = 6;
 /// Two hex digits and the colon after them.
 const GROUP_LEN: usize = 3;
 /// Six groups, the last one without its colon.
 const TEXT_LEN: usize = OCTETS * GROUP_LEN - 1;
-/// Hex digits are base sixteen.
 const HEX_RADIX: u32 = 16;
 
-/// A device address, octets in the order people read them.
+/// Octets in the order people read them.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BdAddr([u8; OCTETS]);
 
-/// Why a text is not a device address; it names the place and cannot hold any of the text.
+/// Names the place and cannot hold any of the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BdAddrError {
-    /// Not as long as six pairs and five colons.
     #[error("Bluetooth address is {got} bytes, expected {expected}", expected = TEXT_LEN)]
     WrongLength { got: usize },
-    /// The pair, counted from 1, holds something other than two hex digits.
+    /// `pair` counts from 1.
     #[error("Bluetooth address pair {pair} is not two hex digits")]
     BadDigit { pair: usize },
-    /// The pair, counted from 1, is followed by something other than a colon.
+    /// `pair` counts from 1.
     #[error("Bluetooth address has no colon after pair {pair}")]
     BadSeparator { pair: usize },
 }
 
 impl BdAddr {
-    /// The six octets in the order people read them.
     #[must_use]
     pub fn octets(self) -> [u8; OCTETS] {
         self.0
@@ -48,7 +44,7 @@ impl fmt::Debug for BdAddr {
 impl FromStr for BdAddr {
     type Err = BdAddrError;
 
-    // Sample input: AA:BB:CC:DD:EE:FF or aa:bb:cc:dd:ee:ff, six hex pairs with a colon between them.
+    // Sample input: `AA:BB:CC:DD:EE:FF` or `aa:bb:cc:dd:ee:ff`, six hex pairs with colons between.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
         let bytes = text.as_bytes();
         if bytes.len() != TEXT_LEN {
@@ -68,7 +64,7 @@ impl FromStr for BdAddr {
     }
 }
 
-// Sample input: b'a' and b'9', or b'A' and b'9', read as 0xa9; a sign or a space is refused.
+// Sample input: `b'a'` and `b'9'`, or `b'A'` and `b'9'`, read as 0xa9; a sign or space is refused.
 fn hex_pair(high: u8, low: u8) -> Option<u8> {
     let high = char::from(high).to_digit(HEX_RADIX)?;
     let low = char::from(low).to_digit(HEX_RADIX)?;

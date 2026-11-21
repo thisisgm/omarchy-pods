@@ -2,64 +2,53 @@
 
 use std::fmt;
 
-/// The most bytes of one packet a line carries: this log format's own bound on one line, not a protocol constant.
+/// This log format's own bound on one line, not a protocol constant.
 pub const MAX_SDU_LEN: usize = 4096;
-/// Marks a packet the pods sent.
 const FROM_PODS_MARK: &str = "<";
-/// Marks a packet the host sent.
 const TO_PODS_MARK: &str = ">";
-/// How many hex digits one byte takes.
 const DIGITS_PER_BYTE: usize = 2;
-/// How far the first digit of a byte is shifted to sit above the second.
 const HIGH_DIGIT_SHIFT: u32 = 4;
-/// The value of the hex digit `a`.
 const VALUE_OF_A: u8 = 10;
 
-/// Which way a packet travelled, written `<` or `>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     FromPods,
     ToPods,
 }
 
-/// One packet read back from a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
-    /// When the packet was seen, in nanoseconds on the clock of whoever wrote the line.
+    /// Nanoseconds on the clock of whoever wrote the line.
     pub at_ns: u64,
     pub direction: Direction,
-    /// The packet, 1 to `MAX_SDU_LEN` bytes.
+    /// 1 to `MAX_SDU_LEN` bytes.
     pub sdu: Vec<u8>,
 }
 
-/// Why a line was not read or not written; it never repeats the line, whose bytes can identify a device.
+/// Never repeats the line, whose bytes can identify a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum LogError {
-    /// Fewer than two spaces, so fewer than three fields.
     #[error(
         "capture log line is missing a field: it needs a stamp, a direction and hex bytes, separated by single spaces"
     )]
     MissingField,
-    /// The first field is not a number written the way `format_line` writes it.
     #[error(
         "capture log line has a bad stamp: the first field must be a decimal number from 0 to {max}, with no sign and no leading zero",
         max = u64::MAX
     )]
     BadStamp,
-    /// The second field is neither mark.
     #[error(
         "capture log line has a bad direction: the second field must be {FROM_PODS_MARK} or {TO_PODS_MARK}"
     )]
     BadDirection,
-    /// Byte `byte` of the packet, counting from 0, is not two lowercase hex digits; a stray space or a lone last digit lands here.
     #[error(
         "capture log line has bad hex: byte {byte} of the third field, counting from 0, is not two lowercase hex digits"
     )]
     BadHex { byte: usize },
-    /// The third field holds no byte, or `format_line` was handed an empty packet.
+    /// Also what `format_line` returns for an empty packet.
     #[error("capture log line carries no bytes: the third field is empty")]
     Empty,
-    /// The third field is long enough for `len` bytes; checked before any digit is read, so it wins over `BadHex`.
+    /// Checked before any digit is read, so it wins over `BadHex`.
     #[error(
         "capture log line is too long: the third field is long enough for {len} bytes, at most {max} fit",
         max = MAX_SDU_LEN
@@ -75,7 +64,7 @@ impl Direction {
         }
     }
 
-    // Sample input: "<" for a packet the pods sent, ">" for one the host sent.
+    // Sample input: `<` for a packet the pods sent, `>` for one the host sent.
     fn from_mark(mark: &str) -> Result<Self, LogError> {
         match mark {
             FROM_PODS_MARK => Ok(Self::FromPods),
@@ -85,11 +74,10 @@ impl Direction {
     }
 }
 
-/// The bytes of a packet as the third field of a line.
 struct Hex<'a>(&'a [u8]);
 
 impl fmt::Display for Hex<'_> {
-    // Sample output: 0400040058000100
+    // Sample output: `0400040058000100`
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for byte in self.0 {
             write!(f, "{byte:02x}")?;
@@ -98,7 +86,7 @@ impl fmt::Display for Hex<'_> {
     }
 }
 
-/// Writes one line with no newline, and only a line `parse_line` reads back: an empty or too long packet is refused.
+/// One line, no newline, that `parse_line` reads back; an empty or too long packet is refused.
 pub fn format_line(at_ns: u64, direction: Direction, sdu: &[u8]) -> Result<String, LogError> {
     if sdu.is_empty() {
         return Err(LogError::Empty);
@@ -113,8 +101,7 @@ pub fn format_line(at_ns: u64, direction: Direction, sdu: &[u8]) -> Result<Strin
     ))
 }
 
-/// Reads one line without its newline, and only in the exact form `format_line` writes.
-// 1203456789 < 0400040058000100: nanoseconds in decimal, < from the pods or > to them, then the bytes in lowercase hex.
+/// Sample input: `1203456789 < 0400040058000100`; only the exact form `format_line` writes.
 pub fn parse_line(line: &str) -> Result<Record, LogError> {
     let Some((stamp, after_stamp)) = line.split_once(' ') else {
         return Err(LogError::MissingField);
@@ -129,7 +116,7 @@ pub fn parse_line(line: &str) -> Result<Record, LogError> {
     })
 }
 
-// Sample input: 1203456789, refused unless writing the number again gives the same text.
+// Sample input: `1203456789`, refused unless writing the number again gives the same text.
 fn parse_stamp(stamp: &str) -> Result<u64, LogError> {
     let Ok(at_ns) = stamp.parse::<u64>() else {
         return Err(LogError::BadStamp);
@@ -140,7 +127,7 @@ fn parse_stamp(stamp: &str) -> Result<u64, LogError> {
     Ok(at_ns)
 }
 
-// Sample input: 0400040058000100, two lowercase hex digits for each of 1 to MAX_SDU_LEN bytes.
+// Sample input: `0400040058000100`, two lowercase hex digits for each of 1 to MAX_SDU_LEN bytes.
 fn parse_hex(hex: &str) -> Result<Vec<u8>, LogError> {
     if hex.is_empty() {
         return Err(LogError::Empty);
@@ -162,7 +149,7 @@ fn parse_hex(hex: &str) -> Result<Vec<u8>, LogError> {
     Ok(sdu)
 }
 
-// Sample input: b'a' reads as 10; an uppercase digit and every other character read as None.
+// Sample input: `b'a'` reads as 10; an uppercase digit and every other character read as None.
 fn digit_value(digit: u8) -> Option<u8> {
     match digit {
         b'0'..=b'9' => digit.checked_sub(b'0'),
@@ -178,22 +165,17 @@ mod tests {
 
     /// The line the module documents: an audio gate the pods sent 1.2 seconds into a capture.
     const SAMPLE_LINE: &str = "1203456789 < 0400040058000100";
-    /// The stamp `SAMPLE_LINE` is written from.
     const SAMPLE_AT_NS: u64 = 1_203_456_789;
-    /// The packet `SAMPLE_LINE` is written from.
     const SAMPLE_SDU: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01, 0x00];
-    /// The shortest packet a line can carry.
     const MIN_SDU_LEN: usize = 1;
     /// The largest stamp, written out so the test does not lean on the formatter.
     const LAST_STAMP: &str = "18446744073709551615";
-    /// One past `LAST_STAMP`.
     const STAMP_PAST_U64: &str = "18446744073709551616";
-    /// The documented bound, written out so the test pins the number and does not follow the constant.
+    /// The documented bound, written out so the test pins the number, not the constant.
     const LONGEST: usize = 4096;
-    /// One past `LONGEST`.
     const TOO_LONG: usize = 4097;
 
-    // Sample output for 3: 00 01 02, counting bytes that stand in for one packet.
+    // Sample output for 3: `00 01 02`, counting bytes that stand in for one packet.
     fn counting_bytes(len: usize) -> Vec<u8> {
         std::iter::successors(Some(0_u8), |byte| Some(byte.wrapping_add(1)))
             .take(len)
@@ -204,7 +186,6 @@ mod tests {
         prop_oneof![Just(Direction::FromPods), Just(Direction::ToPods)]
     }
 
-    /// A packet of the shortest length, of the longest, of any length between, or of a length no line carries.
     fn packet() -> impl Strategy<Value = Vec<u8>> {
         prop_oneof![
             Just(Vec::new()),
