@@ -24,6 +24,8 @@ const NOT_CONNECTED: Outcome = Outcome::Refused(CommandError::NotConnected);
 const OUT_OF_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x01, 0x01];
 /// Both buds in the case.
 const IN_CASE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x02, 0x02];
+/// The primary bud in an ear, the secondary out.
+const ONE_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x01];
 
 /// Every command a client can send, with levels on both sides of the bound.
 const EVERY_COMMAND: [Command; 18] = [
@@ -165,11 +167,22 @@ fn noise_set_without_a_report_is_not_worn_when_no_bud_is_in_an_ear() {
         let mut sim = up_unknown();
         sim.feed(Input::Packet(placement.to_vec()));
         sim.feed(Input::Command(noise(NoiseMode::Anc)));
+        assert_eq!(sim.last(), [ANC_FRAME]);
         sim.feed(Input::Command(Command::SetNoise(NoiseTarget::Cycle)));
+        assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
         sim.run_until(ms(700));
+        assert_eq!(sim.times_of("Resolve(0)"), [700]);
         assert_eq!(sim.outcomes(), [not_worn, not_worn]);
         sim.check_all_tickets_resolved_once();
     }
+
+    // One bud in an ear is worn, so the command times out.
+    let mut sim = up_unknown();
+    sim.feed(Input::Packet(ONE_IN_EAR.to_vec()));
+    sim.feed(Input::Command(noise(NoiseMode::Anc)));
+    sim.run_until(ms(700));
+    assert_eq!(sim.outcomes(), [TIMEOUT]);
+    sim.check_all_tickets_resolved_once();
 
     // A headset has no ear placement to ask about, so it times out.
     let mut sim = up_unknown();
@@ -186,6 +199,14 @@ fn noise_set_without_a_report_is_not_worn_when_no_bud_is_in_an_ear() {
     sim.feed(Input::Packet(OUT_OF_EAR.to_vec()));
     sim.run_until(ms(700));
     assert_eq!(sim.outcomes(), [not_worn]);
+    sim.check_all_tickets_resolved_once();
+
+    let mut sim = up_unknown();
+    sim.feed(Input::Packet(OUT_OF_EAR.to_vec()));
+    sim.feed(Input::Command(noise(NoiseMode::Anc)));
+    sim.feed(Input::Packet(pods_samples::ear()));
+    sim.run_until(ms(700));
+    assert_eq!(sim.outcomes(), [TIMEOUT]);
     sim.check_all_tickets_resolved_once();
 }
 
@@ -336,13 +357,15 @@ fn adaptive_level_outside_adaptive_mode_is_not_supported() {
 
     let mut unknown = up_unknown();
     unknown.feed(Input::Packet(NoiseMode::Adaptive.command().encode()));
+    assert_eq!(unknown.state.noise_mode, NoiseMode::Adaptive);
+    let unknown_level = unknown.state.adaptive_noise_level;
     unknown.feed(Input::Command(Command::SetAdaptiveLevel(30)));
     assert_eq!(unknown.last(), ["Resolve(0)"]);
 
     assert_eq!(sim.outcomes(), [NOT_SUPPORTED]);
     assert_eq!(unknown.outcomes(), [NOT_SUPPORTED]);
     assert_eq!(sim.state.adaptive_noise_level, level);
-    assert_eq!(unknown.state.adaptive_noise_level, level);
+    assert_eq!(unknown.state.adaptive_noise_level, unknown_level);
     assert_eq!(sim.state.counters.adaptive_level_changes, 0);
     sim.check_all_tickets_resolved_once();
     unknown.check_all_tickets_resolved_once();
@@ -421,16 +444,17 @@ fn a_seventeenth_pending_command_is_refused_with_timeout() {
         sim.feed(Input::Command(noise(NoiseMode::Anc)));
         assert_eq!(sim.last(), [ANC_FRAME]);
     }
-    assert_eq!(sim.state.counters.noise_control_changes, 16);
+    let written = sim.state.counters;
+    let refused = u64::try_from(PENDING_MAX).unwrap();
     sim.feed(Input::Command(noise(NoiseMode::Transparency)));
-    assert_eq!(sim.last(), ["Resolve(16)"]);
-    assert_eq!(sim.outcome(16), [TIMEOUT]);
-    assert_eq!(sim.state.counters.noise_control_changes, 16);
+    assert_eq!(sim.last(), [format!("Resolve({PENDING_MAX})")]);
+    assert_eq!(sim.outcome(refused), [TIMEOUT]);
+    assert_eq!(sim.state.counters, written);
     sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
     assert_eq!(sim.last().len(), PENDING_MAX);
     sim.feed(Input::Command(noise(NoiseMode::Transparency)));
     assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
-    assert!((0..16).all(|ticket| sim.outcome(ticket) == [Outcome::Confirmed]));
+    assert!((0..refused).all(|ticket| sim.outcome(ticket) == [Outcome::Confirmed]));
     sim.check();
 }
 
@@ -505,17 +529,24 @@ fn outside_up() -> Vec<(&'static str, Sim)> {
     let mut idle = Sim::new();
     idle.state.noise_mode = NoiseMode::Adaptive;
     idle.state.model = Model::AirPodsPro3;
+    assert!(matches!(idle.machine.phase(), Phase::Idle));
 
     let mut opening = Sim::answering(Answer::Hold);
     opening.feed(Input::Up(0));
+    assert!(matches!(opening.machine.phase(), Phase::Opening { .. }));
 
     let mut handshake = Sim::new();
     handshake.feed(Input::Up(0));
     handshake.state.conversational_awareness = true;
+    assert!(matches!(
+        handshake.machine.phase(),
+        Phase::AwaitHandshakeAck { .. }
+    ));
 
     let mut backoff = Sim::answering(Answer::Refuse);
     backoff.feed(Input::Up(0));
     backoff.state.noise_mode = NoiseMode::Transparency;
+    assert!(matches!(backoff.machine.phase(), Phase::Backoff { .. }));
 
     let mut grace = up_pro3(NoiseMode::Adaptive);
     grace.feed(Input::Down(0));
