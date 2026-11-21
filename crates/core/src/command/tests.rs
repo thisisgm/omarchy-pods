@@ -130,19 +130,23 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(state.counters.ear_detection_changes, 1);
 }
 
-/// Asserts that the C++ `function` sends as a statement of its own, so nothing reads whether the packet went out.
+/// Asserts that every C++ statement of `function` that sends is the call alone, so nothing reads whether the packet went out.
+// Sample input: `{ ... QByteArray packet = ...; writePacketToSocket(packet, "Noise control mode packet written: "); ++m_x; }`
 fn assert_send_is_unchecked(function: &str) {
     let body = MAIN.body(&format!("void {function}("));
-    let sends: Vec<&str> = body
-        .lines()
-        .filter(|line| line.contains("writePacketToSocket("))
+    let statements: Vec<&str> = body
+        .split([';', '{', '}'])
+        .map(str::trim)
+        .filter(|statement| statement.contains("writePacketToSocket("))
         .collect();
-    assert!(!sends.is_empty(), "{function} sends nothing: {body}");
-    for send in sends {
-        assert!(
-            send.trim_start().starts_with("writePacketToSocket("),
-            "{function} checks its send: {send}"
-        );
+    assert!(!statements.is_empty(), "{function} sends nothing: {body}");
+    for statement in statements {
+        let arguments = statement
+            .strip_prefix("writePacketToSocket(")
+            .and_then(|rest| rest.strip_suffix(')'));
+        // corner: the C++ send arguments hold no parentheses, so one closing one ends the call.
+        let alone = arguments.is_some_and(|arguments| !arguments.contains(')'));
+        assert!(alone, "{function} reads its send: {statement}");
     }
 }
 
