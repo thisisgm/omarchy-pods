@@ -13,7 +13,7 @@ const HELD_OPENS_MS: [u64; 11] = [
     0, 1000, 3000, 7000, 15000, 31000, 47000, 63000, 79000, 95000, 111_000,
 ];
 /// The last held attempt fails here and the device parks.
-const PARKED_AT_MS: u64 = 111_000;
+pub(super) const PARKED_AT_MS: u64 = 111_000;
 /// One hour of clock after the device parks.
 const HOUR_MS: u64 = 3_600_000;
 
