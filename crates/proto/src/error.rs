@@ -20,9 +20,11 @@ pub enum Parser {
     NoiseCommand,
     /// `NoiseMode::try_from`.
     NoiseMode,
+    /// `UplinkPacket::parse` reading a 0x58 packet cut before its subtype.
+    Uplink,
     /// `UplinkPacket::parse` reading an audio SDU.
     UplinkAudio,
-    /// `UplinkPacket::parse` reading a control packet, or a 0x58 packet cut before its subtype.
+    /// `UplinkPacket::parse` reading a control packet.
     UplinkControl,
 }
 
@@ -35,6 +37,7 @@ impl fmt::Display for Parser {
             Self::Control => "control command",
             Self::NoiseCommand => "noise control command",
             Self::NoiseMode => "noise mode number",
+            Self::Uplink => "uplink packet",
             Self::UplinkAudio => "uplink audio packet",
             Self::UplinkControl => "uplink control packet",
         })
@@ -122,6 +125,7 @@ mod tests {
     use crate::battery::BatteryReport;
     use crate::control::ControlCommand;
     use crate::noise::NoiseMode;
+    use crate::uplink::UplinkPacket;
 
     use super::*;
 
@@ -131,6 +135,11 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "battery packet too short: need 7 bytes, got 6"
+        );
+        let err = UplinkPacket::parse(&[0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "uplink packet too short: need 8 bytes, got 7"
         );
     }
 
@@ -171,6 +180,7 @@ mod tests {
             (Parser::Control, "control command"),
             (Parser::NoiseCommand, "noise control command"),
             (Parser::NoiseMode, "noise mode number"),
+            (Parser::Uplink, "uplink packet"),
             (Parser::UplinkAudio, "uplink audio packet"),
             (Parser::UplinkControl, "uplink control packet"),
         ] {

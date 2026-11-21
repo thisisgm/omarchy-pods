@@ -18,7 +18,7 @@ const STATE_DISABLED: u8 = 0x02;
 pub struct ControlId(pub u8);
 
 impl ControlId {
-    /// Which bud's microphone is used; the C++ daemon does not define it, the value is protocol fact P17.
+    /// Which bud's microphone is used; the C++ daemon does not define it, the value is from `docs/control_commands.md` of librepods-org/librepods.
     pub const MIC_SIDE: Self = Self(0x01);
     /// Listening mode, value is the noise mode plus one.
     pub const NOISE_CONTROL: Self = Self(0x0D);
