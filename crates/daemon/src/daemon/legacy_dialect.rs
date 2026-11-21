@@ -8,7 +8,7 @@ use pods_core::legacy::{LegacyRequest, parse_verb};
 use pods_core::status::to_status_line;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 use super::hub::Hub;
 use super::log;
@@ -35,9 +35,8 @@ pub(super) async fn serve_connection(
     mut request: Vec<u8>,
     left: Duration,
 ) {
-    // The deadline only ends the wait: whatever arrived by then is parsed as one verb.
-    drop(timeout(left, read_request(&mut stream, &mut request)).await);
-    let Some(reply) = respond(&hub, &request).await else {
+    let verb = read_request(&mut stream, &mut request, left).await;
+    let Some(reply) = respond(&hub, verb.ok_or(request.as_slice())).await else {
         return;
     };
     match timeout(REPLY_DEADLINE, stream.write_all(reply.as_bytes())).await {
@@ -51,44 +50,54 @@ pub(super) async fn serve_connection(
     }
 }
 
-/// Reads until the bytes are a verb answered at once, the client stops sending, or `MAX_REQUEST_BYTES`.
+/// Reads until the bytes are a verb answered at once, the client stops sending, `MAX_REQUEST_BYTES`, or `left` runs out, and gives the verb they make.
 // Sample input: `status` with the client's write side left open, or `noise:anc` then end of stream.
-async fn read_request(stream: &mut (impl AsyncRead + Unpin), request: &mut Vec<u8>) {
+async fn read_request(
+    stream: &mut (impl AsyncRead + Unpin),
+    request: &mut Vec<u8>,
+    left: Duration,
+) -> Option<LegacyRequest> {
+    let started = Instant::now();
     let mut chunk = [0_u8; MAX_REQUEST_BYTES];
-    while !answered_at_once(request) {
+    loop {
+        let verb = parse_verb(request);
+        if answered_at_once(verb) {
+            return verb;
+        }
         let room = MAX_REQUEST_BYTES.saturating_sub(request.len());
         let Some(window) = chunk.get_mut(..room).filter(|window| !window.is_empty()) else {
-            return;
+            return verb;
         };
-        match stream.read(window).await {
-            Ok(0) => return,
-            Ok(read) => request.extend_from_slice(window.get(..read).unwrap_or_default()),
-            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+        // The deadline only ends the wait: whatever arrived by then is parsed as one verb.
+        match timeout(left.saturating_sub(started.elapsed()), stream.read(window)).await {
+            Ok(Ok(0)) | Err(_) => return verb,
+            Ok(Ok(read)) => request.extend_from_slice(window.get(..read).unwrap_or_default()),
+            Ok(Err(error)) if error.kind() == ErrorKind::Interrupted => {}
             // A reset client still has what it sent parsed, as the C++ handles the bytes it read.
-            Err(_) => return,
+            Ok(Err(_)) => return verb,
         }
     }
 }
 
 /// The legacy client writes these and waits without closing, so they cannot wait for end of stream.
-fn answered_at_once(request: &[u8]) -> bool {
+fn answered_at_once(verb: Option<LegacyRequest>) -> bool {
     matches!(
-        parse_verb(request),
+        verb,
         Some(LegacyRequest::Status | LegacyRequest::Command(Command::Reopen))
     )
 }
 
-/// The reply one request gets, if any; only `status` and `reopen` get one.
-async fn respond(hub: &Hub, request: &[u8]) -> Option<String> {
-    match parse_verb(request) {
-        Some(LegacyRequest::Status) => Some(to_status_line(&hub.state())),
-        Some(LegacyRequest::Command(command)) => match hub.submit(command).await {
+/// The reply to a verb, or to the bytes that made none, if any; only `status` and `reopen` get one.
+async fn respond(hub: &Hub, verb: Result<LegacyRequest, &[u8]>) -> Option<String> {
+    match verb {
+        Ok(LegacyRequest::Status) => Some(to_status_line(&hub.state())),
+        Ok(LegacyRequest::Command(command)) => match hub.submit(command).await {
             Outcome::Refused(CommandError::Headless) => Some(HEADLESS_REFUSAL.to_owned()),
             Outcome::Refused(_) | Outcome::Sent | Outcome::Confirmed => None,
         },
         // A client that sent nothing gave the C++ no message to log either.
-        None if request.is_empty() => None,
-        None => {
+        Err([]) => None,
+        Err(request) => {
             let quoted = request.get(..LOGGED_REQUEST_BYTES).unwrap_or(request);
             log(&format!(
                 "control socket: unknown request {:?}",
@@ -140,10 +149,12 @@ mod tests {
     fn read_chunks(chunks: Vec<Vec<u8>>) -> Vec<u8> {
         let mut client = Chunked { chunks };
         let mut request = Vec::new();
-        Builder::new_current_thread()
+        let verb = Builder::new_current_thread()
+            .enable_time()
             .build()
             .unwrap()
-            .block_on(read_request(&mut client, &mut request));
+            .block_on(read_request(&mut client, &mut request, REQUEST_DEADLINE));
+        assert_eq!(verb, parse_verb(&request));
         request
     }
 
