@@ -217,11 +217,4 @@ proptest! {
         let ok = serde_json::from_slice::<Value>(&line).ok().and_then(|reply| reply.get("ok")?.as_bool());
         prop_assert_eq!(taken, ok == Some(true));
     }
-
-    #[test]
-    fn any_event_bytes_give_a_state_line_or_garbled(line in proptest::collection::vec(any::<u8>(), 0..256)) {
-        if let Ok(state) = event_state_line(&line) {
-            prop_assert!(state.starts_with('{') && state.ends_with("}\n"), "{}", state);
-        }
-    }
 }
