@@ -160,8 +160,8 @@ mod tests {
     }
 
     // Sample: `QTextStream(stderr) << "Timed out waiting for a reply to " << cmd << "\n";`
-    /// The literals of the C++ statement whose first literal is `first`, in order.
-    fn cpp_statement_literals(source: &str, first: &str) -> Vec<String> {
+    /// The C++ message whose first literal is `first`, with `values` standing in for its expressions in order.
+    fn cpp_message(source: &str, first: &str, values: &[&str]) -> String {
         let (before, after) = source
             .split_once(&cpp_literal(first))
             .unwrap_or_else(|| panic!("the C++ source has no literal {first:?}"));
@@ -172,28 +172,38 @@ mod tests {
             !lead_in.contains('"'),
             "{first:?} is not the first literal of its C++ statement"
         );
-        let mut literals = vec![first.to_owned()];
+        let mut message = first.to_owned();
+        let mut unused = values.iter();
         // Splitting on the quote alternates code and literal, so only a `;` in code ends the statement.
         for (index, piece) in after.split('"').enumerate() {
             if index % 2 == 1 {
-                literals.push(piece.replace("\\n", "\n"));
-            } else if piece.contains(';') {
-                return literals;
+                message.push_str(&piece.replace("\\n", "\n"));
+                continue;
+            }
+            let (code, ends) = match piece.split_once(';') {
+                Some((code, _)) => (code, true),
+                None => (piece, false),
+            };
+            for expression in code
+                .split_whitespace()
+                .filter(|token| !matches!(*token, "<<" | ")"))
+            {
+                let value = unused.next().unwrap_or_else(|| {
+                    panic!(
+                        "the C++ statement starting with {first:?} has no value for {expression:?}"
+                    )
+                });
+                message.push_str(value);
+            }
+            if ends {
+                assert!(
+                    unused.next().is_none(),
+                    "the C++ statement starting with {first:?} has fewer expressions than {values:?}"
+                );
+                return message;
             }
         }
         panic!("the C++ statement starting with {first:?} never ends");
-    }
-
-    /// The C++ message whose first literal is `first`, with `values` written after its leading literals in turn.
-    fn cpp_message(source: &str, first: &str, values: &[&str]) -> String {
-        let mut message = String::new();
-        for (index, literal) in cpp_statement_literals(source, first).iter().enumerate() {
-            message.push_str(literal);
-            if let Some(value) = values.get(index) {
-                message.push_str(value);
-            }
-        }
-        message
     }
 
     #[test]
