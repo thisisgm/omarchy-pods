@@ -271,8 +271,9 @@ separate works that talk over a state file and a command line.
 
 | Path | Licence | |
 |---|---|---|
-| repository root, the bar widget | MIT | [LICENSE](LICENSE) |
+| repository root outside `daemon/` and `crates/`, the bar widget | MIT | [LICENSE](LICENSE) |
 | `daemon/`, a modified copy of librepods | GPL-3.0 | [daemon/LICENSE](daemon/LICENSE) |
+| `crates/`, the Rust daemon | GPL-3.0-only | [crates/LICENSE](crates/LICENSE) |
 
 Shipping both in one repository is aggregation, not combination, so the widget
 stays MIT and the daemon stays GPL-3.0. What was modified, and the upstream
