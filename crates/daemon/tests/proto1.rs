@@ -526,6 +526,26 @@ mod tests {
     }
 
     #[test]
+    fn a_subscriber_keeps_16_unsent_lines_and_the_17th_closes_it() {
+        let session = Session::new();
+        let daemon = session.start();
+        let mut subscriber = Client::connect(&session);
+        subscriber.ask(SUBSCRIBE);
+        let mut changer = Client::connect(&session);
+        // The set runs every subscriber's task before its reply, so a close it caused is logged by then.
+        let closed_at = (0..CHANGES)
+            .position(|id| {
+                assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
+                daemon.log().contains("protocol 1 client closed")
+            })
+            .expect("the subscriber that reads nothing was never closed");
+        let log = daemon.log();
+        assert!(log.contains("lines unread"), "{log}");
+        let sent = lines_until_closed(&mut subscriber.reader.into_inner());
+        assert_eq!(closed_at + 1 - sent, 17, "changes past the socket buffer");
+    }
+
+    #[test]
     fn legacy_verbs_still_work_on_the_same_socket() {
         let session = Session::new();
         let _daemon = session.start();
