@@ -133,7 +133,7 @@ therefore sees every change in order, or its connection closes.
 | `out_of_range` | The value is outside the range the setting takes. | `adaptive_level` outside 0 to 100. |
 | `unknown_key` | There is no setting by that name. | `set` with a `key` the table above does not list. |
 | `bad_request` | The daemon could not read the request. | See below. |
-| `timeout` | The AirPods did not answer in time. | The AirPods did not answer, or the daemon already holds 64 commands waiting to be carried out. |
+| `timeout` | The AirPods did not answer in time. | The AirPods did not answer, the daemon's input queue, which the AirPods' packets share, was full, or too many commands already waited for the AirPods to confirm them. |
 | `headless` | This daemon runs headless and has no window. | Not sent in protocol 1. |
 | `unsupported_version` | This daemon speaks protocol version 1 only. | The line has a usable `id`, and `v` is present and is not `1`. The error lists the versions the daemon speaks in `supported`. |
 
