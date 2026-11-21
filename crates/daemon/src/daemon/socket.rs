@@ -1,14 +1,14 @@
 //! The control socket: one daemon per runtime directory, a socket file only its owner can use, one task per client in either dialect.
 
-use std::fs::{self, File, OpenOptions, TryLockError};
+use std::fs::{self, File, TryLockError};
 use std::io::ErrorKind;
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixListener as StdUnixListener;
 use std::path::Path;
 use std::time::Duration;
 
 use pods_core::legacy::REOPEN_VERB;
-use rustix::fs::Mode;
+use rustix::fs::{Mode, OFlags, open};
+use rustix::io::Errno;
 use rustix::process::umask;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -72,15 +72,25 @@ pub(super) async fn lock(socket: &Path) -> Result<Option<File>, String> {
         })?
 }
 
-/// Opens and locks `path` on the calling thread, which `lock` keeps off the runtime.
+/// Opens and locks `path` on the calling thread, which `lock` keeps off the runtime; a link at `path` is never followed, a linked directory above it is.
 fn take_lock(path: &Path) -> Result<Option<File>, String> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(LOCK_MODE)
-        .open(path)
-        .map_err(|error| format!("cannot open the daemon lock {}: {error}", path.display()))?;
+    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let file = match open(path, flags, Mode::from_raw_mode(LOCK_MODE)) {
+        Ok(fd) => File::from(fd),
+        // O_NOFOLLOW fails with ELOOP when the last component is a link, dangling or not, so its target is never created.
+        Err(Errno::LOOP) => {
+            return Err(format!(
+                "cannot open the daemon lock {}: it is a symbolic link, which the daemon never opens",
+                path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "cannot open the daemon lock {}: {error}",
+                path.display()
+            ));
+        }
+    };
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
@@ -202,11 +212,12 @@ async fn serve_client(mut stream: UnixStream, hub: Hub) {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
     use std::sync::mpsc;
     use std::thread;
 
     use cpp_source::MAIN;
-    use rustix::fs::{CWD, OFlags, mkfifoat, open};
+    use rustix::fs::{CWD, mkfifoat};
     use tokio::runtime::Builder;
 
     use super::*;
@@ -252,6 +263,38 @@ mod tests {
             std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
             LOCK_MODE
         );
+    }
+
+    #[test]
+    fn lock_is_never_opened_through_a_symbolic_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("librepods.sock");
+        let lock_path = socket.with_extension(LOCK_EXTENSION);
+        let target = dir.path().join("target");
+        symlink(&target, &lock_path).unwrap();
+        let error = block_on(lock(&socket)).unwrap_err();
+        assert!(error.contains(&lock_path.display().to_string()), "{error}");
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(
+            fs::symlink_metadata(&target).is_err(),
+            "the target was created"
+        );
+        fs::write(&target, "original").unwrap();
+        let error = block_on(lock(&socket)).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+    }
+
+    #[test]
+    fn lock_is_taken_in_a_linked_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let linked = dir.path().join("linked");
+        symlink(&real, &linked).unwrap();
+        let held = block_on(lock(&linked.join("librepods.sock"))).unwrap();
+        assert!(held.is_some());
+        assert!(real.join("librepods.lock").is_file());
     }
 
     #[test]

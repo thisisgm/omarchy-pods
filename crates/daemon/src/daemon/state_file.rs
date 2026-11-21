@@ -170,7 +170,7 @@ pub(super) async fn follow(
     }
 }
 
-/// Replaces `path` with `line` through a 0600 copy created fresh beside it, synced, then renamed over it.
+/// Replaces `path` with `line` through a 0600 copy created fresh beside it, synced, then renamed over it; a link at either is never followed, a linked directory above them is.
 fn write_atomically(path: &Path, line: &str) -> Result<(), String> {
     let fail = |step: &str, error: &dyn std::fmt::Display| {
         format!(
@@ -325,6 +325,21 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "line\n");
         assert_eq!(fs::read_to_string(&target).unwrap(), "original");
         assert!(!PathBuf::from(temp).exists());
+    }
+
+    #[test]
+    fn write_goes_through_a_linked_state_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = state_path(&dir);
+        fs::create_dir(dir.path().join("state")).unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        symlink(&real, path.parent().unwrap()).unwrap();
+        write_atomically(&path, "line\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(real.join(STATE_FILE_NAME)).unwrap(),
+            "line\n"
+        );
     }
 
     #[test]
