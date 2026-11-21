@@ -10,7 +10,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::time::{sleep, timeout};
+use tokio::time::{Sleep, sleep, timeout};
 use zbus::export::futures_core::Stream;
 use zbus::export::ordered_stream::{IntoStream, JoinMultiple, OrderedStreamExt, Peekable};
 use zbus::export::serde::Deserialize;
@@ -28,10 +28,14 @@ pub(super) const AAP_UUID: &str = "74ec2172-0bad-4d01-8f77-997b2be0722a";
 /// The C++ `sweepTimeoutMs`: bluetoothd answers in milliseconds, so a longer wait is a wedged BlueZ.
 const SWEEP_TIMEOUT_MS: u64 = 2000;
 
+/// The wait before sweeping again after a sweep that failed with BlueZ on the bus, as a busy or starting bluetoothd answers a later one.
+const SWEEP_RETRY_MS: u64 = 1000;
+
 /// The wait before connecting again after the system bus was missing, the connection closed or a subscription failed.
 const SYSTEM_BUS_RETRY_MS: u64 = 5000;
 
 const BLUEZ: &str = "org.bluez";
+const BUS: &str = "org.freedesktop.DBus";
 const DEVICE_INTERFACE: &str = "org.bluez.Device1";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
@@ -65,6 +69,7 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Recei
                     inputs: &inputs,
                     candidates: Candidates::default(),
                     errors: &mut errors,
+                    retry: None,
                 };
                 if watcher.run(&mut requests).await.is_break() {
                     return;
@@ -86,6 +91,8 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Recei
 enum Next {
     Signal(Message),
     Request(Request),
+    /// The wait after a failed sweep is over.
+    Retry,
     /// The connection to the system bus closed.
     Closed,
     /// The driver dropped its end of the request queue.
@@ -98,6 +105,8 @@ struct Watcher<'a> {
     inputs: &'a mpsc::Sender<Input>,
     candidates: Candidates,
     errors: &'a mut ErrorLog,
+    /// Set while a sweep that failed with BlueZ on the bus waits to be tried again.
+    retry: Option<Pin<Box<Sleep>>>,
 }
 
 impl Watcher<'_> {
@@ -117,9 +126,9 @@ impl Watcher<'_> {
         let mut signals = JoinMultiple(streams).into_stream();
         self.sweep().await?;
         loop {
-            match next(&mut signals, requests).await {
+            match next(&mut signals, requests, &mut self.retry).await {
                 Next::Signal(message) => self.take(&message).await?,
-                Next::Request(Request::Sweep) => self.sweep().await?,
+                Next::Request(Request::Sweep) | Next::Retry => self.sweep().await?,
                 Next::Request(Request::Call { action, .. }) => {
                     send(self.inputs, DeviceEvent::CallFailed(action)).await?;
                 }
@@ -215,8 +224,11 @@ impl Watcher<'_> {
         );
         let reply = reply::<Managed>(call).await;
         let Some(objects) = self.noted(reply, "BlueZ's devices") else {
+            let on_bus = self.bluez_on_bus().await;
+            self.retry = on_bus.then(|| Box::pin(sleep(Duration::from_millis(SWEEP_RETRY_MS))));
             return ControlFlow::Continue(());
         };
+        self.retry = None;
         self.errors.clear();
         let devices = objects
             .into_iter()
@@ -226,6 +238,18 @@ impl Watcher<'_> {
             })
             .collect();
         self.report(Change::Swept(devices)).await
+    }
+
+    /// Without BlueZ on the bus no sweep is tried again, as its return brings one.
+    async fn bluez_on_bus(&self) -> bool {
+        let call = self.connection.call_method(
+            Some(BUS),
+            "/org/freedesktop/DBus",
+            Some(BUS),
+            "NameHasOwner",
+            &(BLUEZ,),
+        );
+        reply::<bool>(call).await == Ok(true)
     }
 
     /// The reply, or `None` with the failure logged once.
@@ -265,8 +289,12 @@ where
     }
 }
 
-/// The next signal, or the next request.
-async fn next(signals: &mut Signals, requests: &mut mpsc::Receiver<Request>) -> Next {
+/// The next signal, the next request, or the end of the wait to sweep again.
+async fn next(
+    signals: &mut Signals,
+    requests: &mut mpsc::Receiver<Request>,
+    retry: &mut Option<Pin<Box<Sleep>>>,
+) -> Next {
     poll_fn(|context| {
         match Pin::new(&mut *signals).poll_next(context) {
             Poll::Ready(Some(Ok(message))) => return Poll::Ready(Next::Signal(message)),
@@ -274,10 +302,17 @@ async fn next(signals: &mut Signals, requests: &mut mpsc::Receiver<Request>) -> 
             Poll::Ready(Some(Err(_)) | None) => return Poll::Ready(Next::Closed),
             Poll::Pending => {}
         }
-        requests.poll_recv(context).map(|request| match request {
-            Some(request) => Next::Request(request),
-            None => Next::DriverGone,
-        })
+        if let Poll::Ready(request) = requests.poll_recv(context) {
+            return Poll::Ready(request.map_or(Next::DriverGone, Next::Request));
+        }
+        let waited = retry
+            .as_mut()
+            .is_some_and(|wait| wait.as_mut().poll(context).is_ready());
+        if !waited {
+            return Poll::Pending;
+        }
+        *retry = None;
+        Poll::Ready(Next::Retry)
     })
     .await
 }

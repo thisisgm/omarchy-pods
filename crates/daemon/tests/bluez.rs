@@ -27,6 +27,7 @@ mod tests {
     use tokio::time::timeout;
     use zbus::connection::Builder;
     use zbus::export::futures_core::Stream;
+    use zbus::message::Type;
     use zbus::{Connection, MessageStream, OwnedObjectPath, OwnedVariant, Variant};
 
     use super::support::bluez::{AAP_UUID, DEVICE_INTERFACE, FakeBluez};
@@ -43,6 +44,14 @@ mod tests {
 
     /// `SYSTEM_BUS_RETRY_MS` of `src/daemon/bluez.rs`.
     const SYSTEM_BUS_RETRY: Duration = Duration::from_millis(5000);
+
+    /// `SWEEP_RETRY_MS` of `src/daemon/bluez.rs`.
+    const SWEEP_RETRY: Duration = Duration::from_millis(1000);
+
+    /// A bus monitor that saw no message for this long has seen every one sent before it.
+    const MONITOR_QUIET: Duration = Duration::from_millis(100);
+
+    const SWEEP_CALLS: &str = "type='method_call',interface='org.freedesktop.DBus.ObjectManager',member='GetManagedObjects'";
 
     /// How the daemon's line about a sweep that failed starts, from `src/daemon/bluez.rs`.
     const SWEEP_FAILED: &str = "bluez: cannot read BlueZ's devices:";
@@ -94,6 +103,40 @@ mod tests {
     fn in_time<T>(runtime: &Runtime, work: impl Future<Output = T>) -> T {
         let finished = runtime.block_on(async { timeout(HANG_LIMIT, work).await });
         finished.unwrap_or_else(|_| panic!("the bus client still waiting after {HANG_LIMIT:?}"))
+    }
+
+    /// A monitor of the bus at `address` that keeps every message matching `rule`.
+    fn monitor(runtime: &Runtime, address: &str, rule: &str) -> MessageStream {
+        in_time(runtime, async {
+            let monitor = Builder::address(address).build().await.unwrap();
+            monitor
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus.Monitoring"),
+                    "BecomeMonitor",
+                    &(vec![rule], 0_u32),
+                )
+                .await
+                .unwrap();
+            MessageStream::from(monitor)
+        })
+    }
+
+    /// The method calls the monitor kept so far; the bus also sends it the loss of its own name.
+    fn monitored(runtime: &Runtime, messages: &mut MessageStream) -> usize {
+        let mut count: usize = 0;
+        loop {
+            let next = poll_fn(|context| Pin::new(&mut *messages).poll_next(context));
+            match runtime.block_on(async { timeout(MONITOR_QUIET, next).await }) {
+                Ok(Some(message)) => {
+                    if message.unwrap().message_type() == Type::MethodCall {
+                        count = count.saturating_add(1);
+                    }
+                }
+                Ok(None) | Err(_) => return count,
+            }
+        }
     }
 
     #[test]
@@ -499,6 +542,41 @@ mod tests {
             rig.daemon().log().contains(SWEEP_HELD).then_some(())
         });
         holds_for(&rig, QUIET, "not connected", |status| !connected(status));
+        rig.finish();
+    }
+
+    #[test]
+    fn a_failed_sweep_is_tried_again_until_it_finds_pods_already_connected() {
+        let mut rig = Rig::new();
+        let device = rig.add_pods(Profile::default());
+        rig.link_up(&device);
+        rig.bluez().fail_calls(true);
+        rig.start();
+        wait_for("a second failed sweep", || {
+            (rig.bluez().sweeps() > 1).then_some(())
+        });
+        let log = rig.daemon().log();
+        assert_eq!(log.matches(SWEEP_FAILED).count(), 1, "{log}");
+        rig.bluez().fail_calls(false);
+        rig.wait_dials(1, SWEEP_RETRY + REAL_TIME_SLACK + DIAL_WAIT);
+        up(&rig);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_sweep_failed_with_bluez_off_the_bus_is_not_tried_again() {
+        let mut rig = Rig::before_bluez();
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut sweeps = monitor(&runtime, &rig.system_bus_address(), SWEEP_CALLS);
+        rig.start();
+        wait_for("the failed sweep", || {
+            rig.daemon().log().contains(SWEEP_FAILED).then_some(())
+        });
+        pause(SWEEP_RETRY + REAL_TIME_SLACK);
+        assert_eq!(monitored(&runtime, &mut sweeps), 1);
         rig.finish();
     }
 
