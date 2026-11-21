@@ -161,3 +161,10 @@ The connection stays open after any error reply.
   exit 0 on success, or print the error message on stderr and exit 1.
 - When no daemon answers, each prints `Could not connect to OpenPods daemon at
   <socket> (is it running?)` on stderr and exits 1.
+- Each reads lines from the daemon of at most 65536 bytes, newline excluded,
+  and takes only the shapes given above: a reply with the request's `id` and
+  `ok` true carrying the `state` or `result` its `op` gets; a refusal with `ok`
+  false and an `error` holding a string `message`, which is what it prints,
+  under the request's `id` or under a null `id` with `bad_request`; for
+  `watch`, then state events. Any other line prints
+  `The daemon's reply to <command> was not understood.` on stderr and exits 1.
