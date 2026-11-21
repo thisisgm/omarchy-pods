@@ -1,17 +1,22 @@
 //! A driver on a thread of its own, so a test calls `submit` from any thread or runtime and blocks on the fake pods freely.
 
 mod driver;
+mod failures;
 
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use pods_core::state::State;
+use pods_proto::addr::BdAddr;
+use pods_proto::noise::NoiseMode;
 use pods_sys::l2cap::ChannelError;
 use rustix::io::Errno;
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 
-use super::{Connector, Input, REQUEST_QUEUE, drive, queue};
+use super::{Connector, DeviceEvent, Input, REQUEST_QUEUE, drive, queue};
 use crate::daemon::hub::Hub;
 
 /// A wait in a test still running after this long has hung, and the test fails.
@@ -24,6 +29,67 @@ pub(in crate::daemon) fn block_on<F: Future>(future: F) -> F::Output {
         .build()
         .unwrap()
         .block_on(future)
+}
+
+/// The bound past an exact "not before" that a real time check allows a loaded host.
+const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
+
+fn device() -> BdAddr {
+    "02:00:00:00:00:01".parse().unwrap()
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "a timing test prints the range it saw, pass or fail"
+)]
+fn report(line: &str) {
+    eprintln!("{line}");
+}
+
+fn device_up(inputs: &mpsc::Sender<Input>) {
+    inputs
+        .blocking_send(Input::Device(DeviceEvent::Up(device())))
+        .unwrap();
+}
+
+/// Waits for a state `ready` accepts and gives it back, failing the test after `within`.
+fn wait_for_state(
+    hub: &Hub,
+    within: Duration,
+    what: &str,
+    ready: impl Fn(&State) -> bool,
+) -> State {
+    block_on(wait_for_state_async(hub, within, what, ready))
+}
+
+async fn wait_for_state_async(
+    hub: &Hub,
+    within: Duration,
+    what: &str,
+    ready: impl Fn(&State) -> bool,
+) -> State {
+    let mut updates = hub.subscribe();
+    let found = timeout(within, async {
+        loop {
+            let state = updates.borrow_and_update().clone();
+            if ready(&state) {
+                return state;
+            }
+            updates.changed().await.unwrap();
+        }
+    });
+    found.await.unwrap_or_else(|_| {
+        panic!(
+            "{what} not seen within {within:?}; the state is {:?}",
+            hub.state()
+        )
+    })
+}
+
+/// The byte `mode` takes in a `NOISE` setting.
+fn wire(mode: NoiseMode) -> u8 {
+    let [wire, ..] = mode.command().value;
+    wire
 }
 
 /// Sees each input a reader sends, before the driver does.

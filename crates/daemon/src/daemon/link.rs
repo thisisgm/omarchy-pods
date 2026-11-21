@@ -3,6 +3,7 @@
 mod reader;
 
 use std::collections::{HashMap, VecDeque};
+use std::future;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::thread;
@@ -128,10 +129,6 @@ pub(super) async fn drive(
                 driver.step(Event::Tick);
                 ControlFlow::Continue(())
             }
-            Turn::Closed => {
-                driver.step(Event::Shutdown);
-                ControlFlow::Break(())
-            }
         };
         if flow.is_break() {
             return;
@@ -146,8 +143,6 @@ enum Turn {
     Input(Input),
     /// The machine's deadline passed.
     Tick,
-    /// Every sender is gone, which a driver holding `feedback` never sees.
-    Closed,
 }
 
 struct Driver {
@@ -181,7 +176,11 @@ impl Driver {
             },
             None => inputs.recv().await,
         };
-        received.map_or(Turn::Closed, Turn::Input)
+        match received {
+            Some(input) => Turn::Input(input),
+            // Never: the driver holds `feedback`, a sender of this same queue.
+            None => future::pending().await,
+        }
     }
 
     fn take(&mut self, input: Input) -> ControlFlow<()> {

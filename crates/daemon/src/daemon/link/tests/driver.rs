@@ -12,7 +12,6 @@ use pods_core::link::End;
 use pods_core::link::ladder::{FIRST_RETRY_MS, HELD_DELAYS_MS};
 use pods_core::state::State;
 use pods_fake::{Fault, Pods, Profile, pair};
-use pods_proto::addr::BdAddr;
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_samples::{CASE, Cell, NOISE, RIGHT, host, setting};
@@ -25,12 +24,12 @@ use tokio::time::{sleep, timeout};
 use super::super::reader::{self, RECV_BUFFER_LEN};
 use super::super::{Connector, DeviceEvent, INPUT_QUEUE, Input, REQUEST_QUEUE, STOP_WAIT_MS};
 use super::super::{drive, queue, stop};
-use super::{HANG_LIMIT, Running, block_on};
+use super::{
+    HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device, device_up, report, wait_for_state,
+    wait_for_state_async, wire,
+};
 use crate::daemon::SUBSCRIBER_BACKLOG;
 use crate::daemon::hub::Hub;
-
-/// The bound past an exact "not before" that a real time check allows a loaded host.
-const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
 
 /// How often a poll of `/proc` looks again.
 const POLL: Duration = Duration::from_millis(5);
@@ -53,18 +52,6 @@ const SENTINEL: Cell = Cell {
 /// The first rungs of the held ladder the one reader test climbs, 1 + 2 + 4 s apart; the rest is the pure machine's to prove.
 const LADDER_ATTEMPTS: usize = 4;
 
-fn device() -> BdAddr {
-    "02:00:00:00:00:01".parse().unwrap()
-}
-
-#[expect(
-    clippy::print_stderr,
-    reason = "a timing test prints the range it saw, pass or fail"
-)]
-fn report(line: &str) {
-    eprintln!("{line}");
-}
-
 /// Spins for `duration`, finer than a sleep can wake.
 fn spin(duration: Duration) {
     let started = Instant::now();
@@ -85,46 +72,6 @@ fn fake_connector(pods: &Pods) -> (Connector, std_mpsc::Receiver<Instant>) {
         Ok(host_end)
     });
     (connector, connects)
-}
-
-fn device_up(inputs: &mpsc::Sender<Input>) {
-    inputs
-        .blocking_send(Input::Device(DeviceEvent::Up(device())))
-        .unwrap();
-}
-
-/// Waits for a state `ready` accepts and gives it back, failing the test after `within`.
-fn wait_for_state(
-    hub: &Hub,
-    within: Duration,
-    what: &str,
-    ready: impl Fn(&State) -> bool,
-) -> State {
-    block_on(wait_for_state_async(hub, within, what, ready))
-}
-
-async fn wait_for_state_async(
-    hub: &Hub,
-    within: Duration,
-    what: &str,
-    ready: impl Fn(&State) -> bool,
-) -> State {
-    let mut updates = hub.subscribe();
-    let found = timeout(within, async {
-        loop {
-            let state = updates.borrow_and_update().clone();
-            if ready(&state) {
-                return state;
-            }
-            updates.changed().await.unwrap();
-        }
-    });
-    found.await.unwrap_or_else(|_| {
-        panic!(
-            "{what} not seen within {within:?}; the state is {:?}",
-            hub.state()
-        )
-    })
 }
 
 /// Connected, with the first burst's name, model and batteries in place.
@@ -174,12 +121,6 @@ async fn wait_for_tasks(count: usize, within: Duration) -> Duration {
 
 fn noise(mode: NoiseMode) -> Command {
     Command::SetNoise(NoiseTarget::Mode(mode))
-}
-
-/// The byte `mode` takes in a `NOISE` setting.
-fn wire(mode: NoiseMode) -> u8 {
-    let [wire, ..] = mode.command().value;
-    wire
 }
 
 /// A noise mode that alternates by round between the two every model offers, and its byte.
