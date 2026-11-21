@@ -100,6 +100,10 @@ impl Rig {
         self.system_bus = Some(bus);
     }
 
+    pub(crate) fn system_bus_address(&self) -> String {
+        bus_address(&self.session, SYSTEM_BUS)
+    }
+
     pub(crate) fn session(&self) -> &Session {
         &self.session
     }
