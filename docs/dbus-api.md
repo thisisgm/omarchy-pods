@@ -23,9 +23,11 @@ never lets another process take it.
 ## Properties
 
 Every property is read only. Every property except `ApiVersion` emits
-`org.freedesktop.DBus.Properties.PropertiesChanged` with its new value. One
-state change sends one signal listing exactly the properties whose value
-changed; a command that changes nothing sends none.
+`org.freedesktop.DBus.Properties.PropertiesChanged` with its new value. A
+signal lists exactly the properties whose value differs from the previous
+signal. Changes that land before the daemon sends the signal arrive together
+with their latest values, a change undone before then sends nothing, and a
+command that changes nothing sends none.
 
 | Property | Type | Value |
 |---|---|---|
@@ -66,8 +68,8 @@ refuses the same way.
 
 ## Errors
 
-An error reply carries one of these names. Its message is the sentence
-protocol 1 sends with the same code, as listed in
+A refused command's error reply carries one of these names. Its message is
+the sentence protocol 1 sends with the same code, as listed in
 [protocol-1.md](protocol-1.md), so a program reads the name and a person reads
 the message.
 
@@ -82,8 +84,13 @@ the message.
 | `io.github.thisisgm.Omapods1.Error.Timeout` | `timeout` |
 | `io.github.thisisgm.Omapods1.Error.Headless` | `headless` |
 
-No method of this interface names a setting, so none returns `UnknownKey`. A
-`Set` method given a word its key does not take returns `BadRequest`.
+No method of this interface names a setting, opens a window or waits for the
+pods, so none returns `UnknownKey`, `Headless` or `Timeout`. A `Set` method
+given a word its key does not take returns `BadRequest`.
+
+A call the bus layer refuses before it reaches the daemon, such as one with the
+wrong argument type or one that writes a property, gets a standard
+`org.freedesktop.DBus.Error` name instead.
 
 ## Examples
 
