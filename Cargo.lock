@@ -371,6 +371,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pods-fake"
+version = "0.0.0"
+dependencies = [
+ "pods-samples",
+ "pods-sys",
+ "proptest",
+ "rustix",
+]
+
+[[package]]
 name = "pods-proto"
 version = "0.0.0"
 dependencies = [

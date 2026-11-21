@@ -1,0 +1,21 @@
+[package]
+name = "pods-fake"
+description = "Test support: fake pods that answer the control channel from sample bytes alone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A dev-dependency only: never a normal dependency of any crate.
+
+[dependencies]
+pods-samples = { path = "../samples" }
+pods-sys.workspace = true
+rustix.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
