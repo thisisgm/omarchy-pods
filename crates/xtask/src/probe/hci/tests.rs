@@ -29,6 +29,9 @@ const STAMP_AT: usize = 16;
 const LONGEST_RECORD: usize = 65_535;
 /// The stamp of 1970 in microseconds since year 0, written out so the test pins the number (`BlueZ` src/shared/btsnoop.c).
 const STAMP_OF_1970: u64 = 62_168_256_000_000_000;
+/// The last stamp a nanosecond count holds, in microseconds after 1970 and in nanoseconds: `u64::MAX / 1000`, written out so the test pins the numbers.
+const LAST_MICROS: u64 = 18_446_744_073_709_551;
+const LAST_NANOS: u64 = 18_446_744_073_709_551_000;
 /// A monitor opcode this reader has no use for: a system note.
 const OPCODE_SYSTEM_NOTE: u16 = 12;
 /// Monitor opcodes of ACL data the host sent and received, written out so no test takes them from the fixture (`BlueZ` src/shared/btsnoop.h).
@@ -213,19 +216,25 @@ fn a_stamp_outside_the_nanosecond_range_ends_the_trace_and_is_named() {
     let bytes = trace.bytes();
     let first = records(&bytes).unwrap().kept[..1].to_vec();
     let second = FILE_HEADER + RECORD_HEADER + 5;
-    let stopped = Cut {
-        record: 1,
-        offset: second,
+    let third = second + RECORD_HEADER + 4;
+    let last_stamp = STAMP_OF_1970 + LAST_MICROS;
+    let stopped_at = |record, offset| Cut {
+        record,
+        offset,
         damage: Damage::StampOutOfRange,
     };
-    for stamp in [0_u64, STAMP_OF_1970 - 1, u64::MAX] {
-        let other = with_bytes(bytes.clone(), second + STAMP_AT, &stamp.to_be_bytes());
-        let up_to_it = Records {
-            kept: first.clone(),
-            cut: Some(stopped),
-        };
-        assert_eq!(records(&other), Ok(up_to_it), "{stamp}");
+    // The skipped note and the kept packet after it: the rule holds for a record of either kind.
+    for (record, offset) in [(1, second), (2, third)] {
+        for stamp in [0_u64, STAMP_OF_1970 - 1, last_stamp + 1, u64::MAX] {
+            let other = with_bytes(bytes.clone(), offset + STAMP_AT, &stamp.to_be_bytes());
+            let up_to_it = Records {
+                kept: first.clone(),
+                cut: Some(stopped_at(record, offset)),
+            };
+            assert_eq!(records(&other), Ok(up_to_it), "record {record}, {stamp}");
+        }
     }
+    let stopped = stopped_at(1, second);
     let mut zero_tail = bytes[..second].to_vec();
     zero_tail.extend_from_slice(&[0; RECORD_HEADER]);
     assert_eq!(records(&zero_tail).unwrap().cut, Some(stopped));
@@ -233,13 +242,11 @@ fn a_stamp_outside_the_nanosecond_range_ends_the_trace_and_is_named() {
         stopped.to_string(),
         "btsnoop record 1 at byte offset 45 has a timestamp outside the years 1970 to 2554, so the trace is read only up to the whole records before it"
     );
-    let third = second + RECORD_HEADER + 4;
-    let epoch = with_bytes(
-        bytes.clone(),
-        third + STAMP_AT,
-        &STAMP_OF_1970.to_be_bytes(),
-    );
-    assert_eq!(records(&epoch).unwrap().kept[1].at_ns, 0);
+    for (stamp, at_ns) in [(STAMP_OF_1970, 0), (last_stamp, LAST_NANOS)] {
+        let edge = with_bytes(bytes.clone(), third + STAMP_AT, &stamp.to_be_bytes());
+        let read = records(&edge).unwrap();
+        assert_eq!((read.kept[1].at_ns, read.cut), (at_ns, None), "{stamp}");
+    }
 }
 
 #[test]
