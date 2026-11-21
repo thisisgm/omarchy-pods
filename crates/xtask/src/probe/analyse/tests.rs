@@ -8,14 +8,12 @@ use std::path::{Path, PathBuf};
 use pods_proto::sdulog::{Record, format_line};
 use tempfile::TempDir;
 
-use super::super::store::{Run, Session, StoreError, root};
+use super::super::store::{Run, StoreError};
 use super::input::{InputError, LineRule};
-use super::support::{NS_PER_MS, OPAQUE, SEED, SILENT_UNIT, audio, from_pods, shows};
+use super::support::{NS_PER_MS, OPAQUE, SEED, SILENT_UNIT, audio, from_pods, run_with, shows};
 use super::synth::synth;
 use super::*;
 
-/// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
-const STAMP: &str = "20261120T120000Z";
 /// The mode every file of a run has.
 const OWNER_FILE: u32 = 0o600;
 /// The marks of a run that starts at zero and stops after 62 seconds.
@@ -36,16 +34,6 @@ fn log_text(records: &[Record]) -> String {
         .iter()
         .map(|record| format_line(record.at_ns, record.direction, &record.sdu).unwrap() + "\n")
         .collect()
-}
-
-/// A run named `name` in a store under `home`, holding the given files.
-fn run_with(home: &TempDir, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
-    let session = Session::open(&root(home.path().as_os_str()), STAMP).unwrap();
-    let run = Run::create(&session, name).unwrap();
-    for (file, contents) in files {
-        run.create_file(file).unwrap().write_all(contents).unwrap();
-    }
-    session.path().join(name)
 }
 
 fn soak_run(home: &TempDir, name: &str, records: &[Record]) -> PathBuf {

@@ -9,6 +9,7 @@ yanked = "deny"
 [licenses]
 # The allow-list is policy for crates added later, so an unused entry is not a warning.
 unused-allowed-license = "allow"
+# rusty_aac is labelled Apache-2.0 and reads as a port of the LGPL-2.1-or-later FFmpeg decoder; open, and GPL-3.0 takes either, in xtask only.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -25,6 +26,7 @@ allow = [
 deny = [
     { crate = "openssl-sys", reason = "TLS is not part of this daemon" },
     { crate = "libdbus-sys", reason = "D-Bus is reached through pure Rust, not libdbus" },
+    { crate = "rusty_aac", wrappers = ["xtask"], reason = "a decoder under measurement in the developer tool; nothing that ships may link it" },
 ]
 
 [sources]

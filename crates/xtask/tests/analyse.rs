@@ -1,66 +1,42 @@
 //! The built binary's `probe analyse` command against generated runs in a store under a temporary `HOME`.
 
 #[cfg(test)]
+mod support;
+#[cfg(test)]
 #[path = "../src/probe/analyse/synth.rs"]
 mod synth;
+#[cfg(test)]
+#[path = "../src/probe/xorshift.rs"]
+mod xorshift;
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, DirBuilder, OpenOptions};
-    use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-    use std::path::{Path, PathBuf};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     use std::process::{Command, Output};
 
-    use pods_proto::sdulog::{Direction, Record, format_line};
+    use pods_proto::sdulog::{Direction, Record};
     use pods_proto::uplink::encode_audio;
     use tempfile::TempDir;
 
-    use super::synth::{OPAQUE, shows, synth};
+    use super::support::{
+        DEVICE_INFO, OWNER_FILE, PERMISSION_BITS, PRIVATE, RATE_HZ, SAMPLES_PER_UNIT, SHORT_RUN_S,
+        UNITS_PER_SDU, log_text, make_run, names_in, probe, row, run_path, soak,
+    };
+    use super::synth::{OPAQUE, shows};
 
-    /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
-    const STAMP: &str = "20261120T120000Z";
-    /// The mode the store gives its directories.
-    const OWNER_DIR: u32 = 0o700;
-    /// The mode the store gives its files.
-    const OWNER_FILE: u32 = 0o600;
-    /// The permission bits of a mode, without the file type.
-    const PERMISSION_BITS: u32 = 0o777;
     /// The status the command exits with when it refuses; a panic would exit with 101.
     const REFUSED: i32 = 1;
-    /// The clock of the generated peer where a test needs only one.
-    const RATE_HZ: u32 = 64_000;
-    /// The samples one unit is assumed to hold, which is also the step of the generated stamps.
-    const SAMPLES_PER_UNIT: u32 = 480;
-    /// The units in every generated SDU.
-    const UNITS_PER_SDU: u32 = 4;
-    /// Each arrival is late by a seeded delay under this, far below the 30 ms between two SDUs.
-    const JITTER_MS: u32 = 2;
     /// Ten minutes, the length of a soak.
     const TEN_MINUTES_S: u32 = 600;
-    /// One second over the 30 s a start needs for its rates, so the short run still gets a whole table.
-    const SHORT_RUN_S: u32 = 31;
     /// The SDU taken out of the ten minute log, far from both of its ends.
     const WITHHELD_SDU: u32 = 7000;
     /// Parts in one.
     const MILLION: f64 = 1e6;
-    /// The seed of every generated log here.
-    const SEED: u64 = 0x5eed_0006;
     /// How close the reported clock must come to the generated one, in parts per million.
     const WITHIN_PPM: f64 = 20.0;
-    /// A run that starts at zero and stops after 601 seconds.
-    const MARKS: &str =
-        "0\tconnect\t\n0\tstart\t\n601000000000\tstop\t\n602000000000\tend\tscript done\n";
-    /// The meta file of a soak.
-    const META: &str = "script=soak\ntool=xtask 0.0.0\nrealtime_at_zero_ns=1763640000000000000\n";
-
-    /// A device information packet with two made up strings.
-    const DEVICE_INFO: &[u8] =
-        b"\x04\x00\x04\x00\x1d\x00\x02\xed\x00\x04\x00Probe Pods\x00SERIAL0XYZ\x00";
-    /// A word of each made up string, which no output but the device file may show.
-    const PRIVATE: [&str; 2] = ["Probe", "SERIAL0XYZ"];
-
     /// Audio SDUs with a header and no unit: over the 50 packets a lead needs, and none of them delivers a frame.
     const HEADER_ONLY_SDUS: u64 = 60;
     /// 30 ms between two of them, so all arrive in the ten seconds after the start mark that a lead reads.
@@ -79,50 +55,7 @@ mod tests {
     /// 64 blocks are over the analysis table of the short run and under its units table, so only the second file does not fit.
     const BETWEEN_THE_TABLES_BLOCKS: u64 = 64;
 
-    fn log_text(records: &[Record]) -> String {
-        records
-            .iter()
-            .map(|record| format_line(record.at_ns, record.direction, &record.sdu).unwrap() + "\n")
-            .collect()
-    }
-
-    /// Where the store under `home` keeps the run `name`.
-    fn run_path(home: &TempDir, name: &str) -> PathBuf {
-        home.path().join("omapods-captures").join(STAMP).join(name)
-    }
-
-    /// A run directory under `home` shaped and moded as the store makes one, holding the three input files.
-    fn make_run(home: &TempDir, name: &str, log: &str) -> PathBuf {
-        let run = run_path(home, name);
-        DirBuilder::new()
-            .recursive(true)
-            .mode(OWNER_DIR)
-            .create(&run)
-            .unwrap();
-        for (file, contents) in [("sdu.log", log), ("marks.tsv", MARKS), ("meta.txt", META)] {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(OWNER_FILE)
-                .open(run.join(file))
-                .unwrap()
-                .write_all(contents.as_bytes())
-                .unwrap();
-        }
-        run
-    }
-
-    /// Runs the built command with `HOME` set to the temporary directory, never the real one.
-    fn analyse(home: &TempDir, run: &Path) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_xtask"))
-            .args(["probe", "analyse"])
-            .arg(run)
-            .env("HOME", home.path())
-            .output()
-            .unwrap()
-    }
-
-    /// The same, in a shell that caps a written file at `blocks` and ignores the signal sent for passing the cap.
+    /// The analyse command on `run`, in a shell that caps a written file at `blocks` and ignores the signal sent for passing the cap.
     fn analyse_with_room_for(blocks: u64, home: &TempDir, run: &Path) -> Output {
         Command::new("sh")
             .args(["-c", NO_ROOM, env!("CARGO_BIN_EXE_xtask")])
@@ -133,38 +66,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The value and the note of the one row with this key.
-    fn row<'a>(table: &'a str, key: &str) -> (&'a str, &'a str) {
-        let mut found = table.lines().filter_map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
-            (fields[0] == key).then(|| (fields[1], fields[3]))
-        });
-        let row = found.next().unwrap();
-        assert_eq!(found.next(), None, "{key} has more than one row");
-        row
-    }
-
-    /// The short run every test of a refusal or of the device strings analyses.
-    fn short_run() -> Vec<Record> {
-        synth(
-            RATE_HZ,
-            SAMPLES_PER_UNIT,
-            UNITS_PER_SDU,
-            SHORT_RUN_S,
-            JITTER_MS,
-            SEED,
-        )
-    }
-
-    fn names_in(run: &Path) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(run)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        names
-    }
-
     #[test]
     fn analyse_reports_the_rate_a_ten_minute_log_was_generated_at() {
         let home = tempfile::tempdir().unwrap();
@@ -173,16 +74,9 @@ mod tests {
             ("soak-48000", 48_000),
             ("soak-63990", 63_990),
         ] {
-            let records = synth(
-                rate_hz,
-                SAMPLES_PER_UNIT,
-                UNITS_PER_SDU,
-                TEN_MINUTES_S,
-                JITTER_MS,
-                SEED,
-            );
+            let records = soak(rate_hz, TEN_MINUTES_S);
             let run = make_run(&home, name, &log_text(&records));
-            let done = analyse(&home, &run);
+            let done = probe(&home, "analyse", &run).output().unwrap();
             assert!(done.status.success(), "{done:?}");
             assert_eq!(String::from_utf8(done.stderr).unwrap(), "");
             let table = String::from_utf8(done.stdout).unwrap();
@@ -211,25 +105,20 @@ mod tests {
     #[test]
     fn one_withheld_sdu_shows_as_one_gap() {
         let home = tempfile::tempdir().unwrap();
-        let mut records = synth(
-            RATE_HZ,
-            SAMPLES_PER_UNIT,
-            UNITS_PER_SDU,
-            TEN_MINUTES_S,
-            JITTER_MS,
-            SEED,
-        );
+        let mut records = soak(RATE_HZ, TEN_MINUTES_S);
         let whole = make_run(&home, "whole", &log_text(&records));
         records.remove(usize::try_from(WITHHELD_SDU).unwrap());
         let first_stamp = WITHHELD_SDU * UNITS_PER_SDU * SAMPLES_PER_UNIT;
         let last_stamp = first_stamp + (UNITS_PER_SDU - 1) * SAMPLES_PER_UNIT;
         let withheld = make_run(&home, "withheld", &log_text(&records));
 
-        let table = String::from_utf8(analyse(&home, &whole).stdout).unwrap();
+        let table =
+            String::from_utf8(probe(&home, "analyse", &whole).output().unwrap().stdout).unwrap();
         assert_eq!(row(&table, "gaps").0, "0");
         assert!(!table.contains("\ngap\t"), "{table}");
 
-        let table = String::from_utf8(analyse(&home, &withheld).stdout).unwrap();
+        let table =
+            String::from_utf8(probe(&home, "analyse", &withheld).output().unwrap().stdout).unwrap();
         assert_eq!(row(&table, "gaps").0, "1");
         let (_, note) = row(&table, "gap");
         let missing = format!("stamps {first_stamp} to {last_stamp} missing");
@@ -243,7 +132,7 @@ mod tests {
     fn a_garbage_or_empty_log_is_refused_and_no_number_is_printed() {
         let home = tempfile::tempdir().unwrap();
         let garbage = make_run(&home, "garbage", "1 < 00\n2 < 01\n3 < AA:BB:CC:DD:EE:FF\n");
-        let refused = analyse(&home, &garbage);
+        let refused = probe(&home, "analyse", &garbage).output().unwrap();
         assert!(!refused.status.success(), "{refused:?}");
         assert_eq!(refused.stdout, b"");
         let error = String::from_utf8(refused.stderr).unwrap();
@@ -252,7 +141,7 @@ mod tests {
         assert_eq!(names_in(&garbage), ["marks.tsv", "meta.txt", "sdu.log"]);
 
         let empty = make_run(&home, "empty", "");
-        let refused = analyse(&home, &empty);
+        let refused = probe(&home, "analyse", &empty).output().unwrap();
         assert!(!refused.status.success(), "{refused:?}");
         assert_eq!(refused.stdout, b"");
         let error = String::from_utf8(refused.stderr).unwrap();
@@ -273,7 +162,7 @@ mod tests {
             .collect();
         let run = make_run(&home, "header-only", &log_text(&records));
 
-        let done = analyse(&home, &run);
+        let done = probe(&home, "analyse", &run).output().unwrap();
         assert!(done.status.success(), "{done:?}");
         let table = String::from_utf8(done.stdout).unwrap();
         assert_eq!(row(&table, "audio_sdus").0, HEADER_ONLY_SDUS.to_string());
@@ -294,15 +183,16 @@ mod tests {
     #[test]
     fn the_largest_packet_row_names_an_opcode_or_says_none() {
         let home = tempfile::tempdir().unwrap();
-        let records = short_run();
+        let records = soak(RATE_HZ, SHORT_RUN_S);
         let longest = records.iter().map(|record| record.sdu.len()).max().unwrap();
         let run = make_run(&home, "with-opcodes", &log_text(&records));
-        let table = String::from_utf8(analyse(&home, &run).stdout).unwrap();
+        let table =
+            String::from_utf8(probe(&home, "analyse", &run).output().unwrap().stdout).unwrap();
         let largest = format!("\nlargest_packet\t{longest}\tbytes\topcode 0x0058\n");
         assert!(table.contains(&largest), "{table}");
 
         let run = make_run(&home, "no-opcode", NO_OPCODE_LOG);
-        let done = analyse(&home, &run);
+        let done = probe(&home, "analyse", &run).output().unwrap();
         assert!(done.status.success(), "{done:?}");
         let table = String::from_utf8(done.stdout).unwrap();
         let none = "\nlargest_packet\tnone\tbytes\tno packet from the pods carries an opcode\n";
@@ -313,7 +203,7 @@ mod tests {
     #[test]
     fn a_table_that_cannot_be_written_whole_leaves_no_table_in_the_run() {
         let home = tempfile::tempdir().unwrap();
-        let log = log_text(&short_run());
+        let log = log_text(&soak(RATE_HZ, SHORT_RUN_S));
         for (name, blocks, file) in [
             ("no-room", UNDER_BOTH_TABLES_BLOCKS, "/analysis.tsv: "),
             (
@@ -331,7 +221,7 @@ mod tests {
             assert!(error.contains(file), "{error}");
             assert_eq!(names_in(&run), ["marks.tsv", "meta.txt", "sdu.log"]);
 
-            let done = analyse(&home, &run);
+            let done = probe(&home, "analyse", &run).output().unwrap();
             assert!(done.status.success(), "{done:?}");
             let table = String::from_utf8(done.stdout).unwrap();
             assert_eq!(fs::read_to_string(run.join("analysis.tsv")).unwrap(), table);
@@ -351,10 +241,10 @@ mod tests {
             direction: Direction::FromPods,
             sdu: DEVICE_INFO.to_vec(),
         }];
-        records.extend(short_run());
+        records.extend(soak(RATE_HZ, SHORT_RUN_S));
         let run = make_run(&home, "device", &log_text(&records));
 
-        let done = analyse(&home, &run);
+        let done = probe(&home, "analyse", &run).output().unwrap();
         assert!(done.status.success(), "{done:?}");
         assert_eq!(String::from_utf8(done.stderr).unwrap(), "");
         let table = String::from_utf8(done.stdout).unwrap();
@@ -372,7 +262,7 @@ mod tests {
         let mode = fs::metadata(&device_file).unwrap().permissions().mode();
         assert_eq!(mode & PERMISSION_BITS, OWNER_FILE);
 
-        let again = analyse(&home, &run);
+        let again = probe(&home, "analyse", &run).output().unwrap();
         assert_eq!(again.status.code(), Some(REFUSED), "{again:?}");
         assert_eq!(again.stdout, b"");
         let error = String::from_utf8(again.stderr).unwrap();
@@ -398,12 +288,13 @@ mod tests {
             "{error}"
         );
 
-        let run = make_run(&home, "two-arguments", &log_text(&short_run()));
-        let two = Command::new(env!("CARGO_BIN_EXE_xtask"))
-            .args(["probe", "analyse"])
-            .arg(&run)
+        let run = make_run(
+            &home,
+            "two-arguments",
+            &log_text(&soak(RATE_HZ, SHORT_RUN_S)),
+        );
+        let two = probe(&home, "analyse", &run)
             .arg("second")
-            .env("HOME", home.path())
             .output()
             .unwrap();
         assert_eq!(two.status.code(), Some(REFUSED), "{two:?}");
@@ -413,7 +304,7 @@ mod tests {
         assert_eq!(names_in(&run), ["marks.tsv", "meta.txt", "sdu.log"]);
 
         let empty = tempfile::tempdir().unwrap();
-        let not_a_run = analyse(&empty, empty.path());
+        let not_a_run = probe(&empty, "analyse", empty.path()).output().unwrap();
         assert_eq!(not_a_run.status.code(), Some(REFUSED), "{not_a_run:?}");
         assert_eq!(not_a_run.stdout, b"");
         let error = String::from_utf8(not_a_run.stderr).unwrap();

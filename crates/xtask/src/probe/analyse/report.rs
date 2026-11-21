@@ -19,6 +19,10 @@ const TABLE_HEADER: &str = "key\tvalue\tunit\tnote";
 const UNITS_HEADER: &str = "index\tsdu\tarrival_ns\tstamp\tlen\tmax_sfb";
 /// Joins the items of a note.
 const NOTE_SEPARATOR: &str = "; ";
+/// The key of the row that counts the units of a run.
+pub(crate) const UNITS_KEY: &str = "audio_units";
+/// The key of the rows that hold the sample clock of each start.
+pub(crate) const CLOCK_KEY: &str = "clock_hz";
 /// What a row reads when there is nothing to measure.
 const NONE: &str = "none";
 const PACKETS: &str = "packets";
@@ -38,7 +42,7 @@ pub(crate) struct Row {
 }
 
 impl Row {
-    fn new(key: &str, value: &dyn Display, unit: &'static str, note: &str) -> Self {
+    pub(crate) fn new(key: &str, value: &dyn Display, unit: &'static str, note: &str) -> Self {
         Self {
             key: key.to_owned(),
             value: value.to_string(),
@@ -58,21 +62,30 @@ pub(crate) struct Report {
     pub(crate) device_strings: Option<Vec<String>>,
 }
 
-impl Report {
-    /// The analysis table: a header, then one line a row, each ending in a newline.
-    pub(crate) fn table(&self) -> String {
-        let mut lines = vec![format!("{TABLE_HEADER}\n")];
-        lines.extend(self.rows.iter().map(|row| {
-            let Row {
-                key,
-                value,
-                unit,
-                note,
-            } = row;
-            format!("{key}\t{value}\t{unit}\t{note}\n")
-        }));
-        lines.concat()
-    }
+/// A table of rows: a header, then one line a row, each ending in a newline.
+pub(crate) fn table(rows: &[Row]) -> String {
+    let mut lines = vec![format!("{TABLE_HEADER}\n")];
+    lines.extend(rows.iter().map(|row| {
+        let Row {
+            key,
+            value,
+            unit,
+            note,
+        } = row;
+        format!("{key}\t{value}\t{unit}\t{note}\n")
+    }));
+    lines.concat()
+}
+
+// Sample input: `clock_hz\t63998.412\tHz\tslope x 480 samples per unit`, read for the key `clock_hz` as `63998.412`.
+pub(crate) fn values<'a>(table: &'a str, key: &str) -> Vec<&'a str> {
+    let value_of = |line: &'a str| {
+        let mut fields = line.split('\t');
+        (fields.next() == Some(key))
+            .then(|| fields.next())
+            .flatten()
+    };
+    table.lines().filter_map(value_of).collect()
 }
 
 /// Measures the run: rows for the whole log first, then the rows of each start mark.
@@ -133,7 +146,7 @@ fn count_rows(whole: &Loaded, marks: &[Mark]) -> Vec<Row> {
             "opcode 0x58 subtype 1 from the pods",
         ),
         Row::new(
-            "audio_units",
+            UNITS_KEY,
             &whole.units().count(),
             UNITS,
             "whole units in the audio SDUs",

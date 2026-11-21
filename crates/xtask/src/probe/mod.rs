@@ -3,9 +3,15 @@
 mod a2dp;
 mod analyse;
 mod capture;
+mod decode;
+mod eldfile;
+#[cfg(test)]
+mod fixture;
 mod hci;
 mod script;
 mod store;
+mod wav;
+mod xorshift;
 
 use std::env;
 use std::ffi::{OsString, c_int};
@@ -73,6 +79,11 @@ enum ProbeCommand {
     },
     /// Measures the shape of the audio stream in one run and writes analysis.tsv and units.tsv into it.
     Analyse {
+        /// The run directory, a session directory of the store then the run name.
+        run_dir: PathBuf,
+    },
+    /// Decodes the units of an analysed run with `rusty_aac` and with FFmpeg, compares the two, and writes the decodes and decode.tsv into it.
+    Decode {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,
     },
@@ -166,7 +177,8 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         },
         ProbeCommand::Stop => stop(&mut host),
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
-        ProbeCommand::Analyse { run_dir } => analyse(&run_dir),
+        ProbeCommand::Analyse { run_dir } => print_table(analyse::analyse_run(&run_dir)),
+        ProbeCommand::Decode { run_dir } => print_table(decode::decode_run(&run_dir)),
     }
 }
 
@@ -191,9 +203,9 @@ fn init(stamp: &str, home: &str) -> ExitCode {
     }
 }
 
-/// Analyses one run and prints its analysis table, which is all analyse writes on stdout.
-fn analyse(run_dir: &Path) -> ExitCode {
-    match analyse::analyse_run(run_dir) {
+/// Prints the table a command wrote into a run, which is all it writes on stdout, or the reason it wrote none.
+fn print_table(written: Result<String, impl fmt::Display>) -> ExitCode {
+    match written {
         Ok(table) => {
             // Only the last newline goes, for print_line to add back: the last row may end in a tab.
             print_line(table.strip_suffix('\n').unwrap_or(&table));

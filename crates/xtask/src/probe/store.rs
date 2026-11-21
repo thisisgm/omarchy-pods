@@ -3,9 +3,10 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::process;
 
 use pods_proto::addr::{BdAddr, BdAddrError};
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
@@ -266,13 +267,11 @@ impl Run {
             Err(errno) => return Err(StoreError::io(&path, "inspect", errno)),
         }
         // O_TMPFILE makes the file inside the run directory with no name; the kernel frees one that never gets a name.
-        let flags = OFlags::WRONLY | OFlags::TMPFILE | OFlags::CLOEXEC;
+        let flags = OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC;
         let fd = rustix::fs::openat(self.dir.as_fd(), HERE, flags, FILE_MODE)
             .map_err(|errno| StoreError::io(&path, "create", errno))?;
         let mut file = File::from(fd);
-        // Synced before it can be named, so a power loss never leaves a name on a file that is not whole.
         file.write_all(contents)
-            .and_then(|()| file.sync_all())
             .map_err(|source| StoreError::io(&path, "write", source))?;
         Ok(Unnamed {
             run: self,
@@ -305,9 +304,34 @@ impl Unnamed<'_> {
         Ok(())
     }
 
+    /// Where a child process finds the file while this process holds it: its descriptor under /proc, the only path a file with no name has.
+    pub(crate) fn path_for_child(&self) -> PathBuf {
+        let (pid, fd) = (process::id(), self.file.as_raw_fd());
+        PathBuf::from(format!("/proc/{pid}/fd/{fd}"))
+    }
+
+    /// A second handle on the file, for a child process to write through.
+    pub(crate) fn handle(&self) -> Result<File, StoreError> {
+        let shared = self.file.try_clone();
+        shared.map_err(|source| StoreError::io(&self.run.path.join(self.name), "share", source))
+    }
+
+    /// Everything the file holds now, refused above `limit` bytes.
+    pub(crate) fn contents(&self, limit: u64) -> Result<Vec<u8>, StoreError> {
+        let path = self.run.path.join(self.name);
+        let mut file = &self.file;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| StoreError::io(&path, "read", source))?;
+        read_at_most(file, &path, limit)
+    }
+
     /// Gives the file its name in the run; a name taken since it was written is refused, never replaced.
     fn give_name(&self) -> Result<(), StoreError> {
         let path = self.run.path.join(self.name);
+        // Synced before it gets its name, so a power loss never leaves a name on a file that is not whole.
+        self.file
+            .sync_all()
+            .map_err(|source| StoreError::io(&path, "write", source))?;
         // A file with no name is reached through its descriptor under /proc, which the link call follows.
         let written = format!("{PROC_FD_DIR}/{}", self.file.as_raw_fd());
         let dir = self.run.dir.as_fd();
@@ -501,9 +525,13 @@ fn read_bounded(
         Err(errno) => return Err(StoreError::io(path, "open", errno)),
     };
     check(&fd, path, Kind::RegularFile, rule)?;
+    read_at_most(File::from(fd), path, limit)
+}
+
+/// Reads `file` to its end, refused above `limit` bytes; one byte more than the limit is the most it ever holds.
+fn read_at_most(file: impl Read, path: &Path, limit: u64) -> Result<Vec<u8>, StoreError> {
     let mut contents = Vec::new();
-    File::from(fd)
-        .take(limit.saturating_add(1))
+    file.take(limit.saturating_add(1))
         .read_to_end(&mut contents)
         .map_err(|source| StoreError::io(path, "read", source))?;
     if !u64::try_from(contents.len()).is_ok_and(|len| len <= limit) {

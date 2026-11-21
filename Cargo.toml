@@ -16,6 +16,7 @@ pods-proto = { path = "crates/proto" }
 pods-sys = { path = "crates/sys" }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "net", "event"] }
+rusty_aac = { version = "2", default-features = false }
 serde_json = "1.0"
 signal-hook = { version = "0.4", default-features = false }
 tempfile = "3"

@@ -551,7 +551,7 @@ fn device_strings_stay_out_of_the_table() {
     let report = analyse(&records, &marks, "voice", CutLines::default());
     let strings = report.device_strings.as_ref().unwrap();
     assert_eq!(strings, &["Probe Pods", "SERIAL0XYZ"]);
-    let table = report.table();
+    let table = table(&report.rows);
     for private in ["Probe", "SERIAL0XYZ"] {
         assert!(!shows(&table, private), "{table}");
         assert!(!shows(&report.units, private), "{}", report.units);
@@ -591,7 +591,7 @@ fn units_table_lists_every_unit_under_its_log_line() {
 fn the_table_is_four_tab_separated_fields_a_line() {
     let (records, marks) = mixed_run();
     let report = analyse(&records, &marks, "voice", CutLines::default());
-    let table = report.table();
+    let table = table(&report.rows);
     let mut lines = table.lines();
     assert_eq!(lines.next(), Some("key\tvalue\tunit\tnote"));
     let body: Vec<_> = lines.collect();
@@ -710,7 +710,7 @@ proptest! {
             prop_assert!(fields.iter().all(|field| !field.contains(['\t', '\n'])), "{:?}", row);
             prop_assert!(!row.value.contains("NaN") && !row.value.contains("inf"), "{:?}", row);
         }
-        prop_assert_eq!(report.table().lines().count(), report.rows.len().saturating_add(1));
+        prop_assert_eq!(table(&report.rows).lines().count(), report.rows.len().saturating_add(1));
     }
 
     #[test]

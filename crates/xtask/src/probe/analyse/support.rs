@@ -1,11 +1,18 @@
 //! Builders the unit tests of the analysis share.
 
+use std::io::Write;
+use std::path::PathBuf;
+
 use pods_proto::sdulog::{Direction, Record};
 use pods_proto::uplink::{AccessUnit, OPAQUE_LEN, encode_audio};
+use tempfile::TempDir;
 
+use super::super::store::{Run, Session, root};
 use super::input::{Mark, MarkKind};
 pub(crate) use super::synth::{NS_PER_MS, NS_PER_SECOND, OPAQUE, SILENT_UNIT, shows};
 
+/// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
+pub(crate) const STAMP: &str = "20261120T120000Z";
 /// The seed every generated log in the unit tests uses.
 pub(crate) const SEED: u64 = 0x5eed_0001;
 /// The stamp step of the generated units, one 480 sample frame.
@@ -14,6 +21,16 @@ pub(crate) const STAMP_STEP: u32 = 480;
 pub(crate) const SDU_INTERVAL_NS: u64 = 30 * NS_PER_MS;
 /// Units in each SDU of the hand built streams.
 pub(crate) const UNITS_PER_SDU: u32 = 4;
+
+/// A run named `name` in a store under `home`, holding the given files.
+pub(crate) fn run_with(home: &TempDir, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+    let session = Session::open(&root(home.path().as_os_str()), STAMP).unwrap();
+    let run = Run::create(&session, name).unwrap();
+    for (file, contents) in files {
+        run.create_file(file).unwrap().write_all(contents).unwrap();
+    }
+    session.path().join(name)
+}
 
 pub(crate) fn from_pods(at_ns: u64, sdu: &[u8]) -> Record {
     Record {
