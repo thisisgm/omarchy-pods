@@ -11,6 +11,7 @@ publish.workspace = true
 clap.workspace = true
 pods-core = { path = "../core" }
 pods-proto.workspace = true
+pods-sys.workspace = true
 rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "process"] }
 serde_json.workspace = true
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "net", "time", "signal", "sync", "io-util"] }
@@ -18,6 +19,8 @@ zbus = { version = "6.3", default-features = false, features = ["tokio", "servic
 
 [dev-dependencies]
 cpp-source = { path = "../cpp-source" }
+pods-fake = { path = "../fake" }
+pods-samples = { path = "../samples" }
 proptest.workspace = true
 tempfile.workspace = true
 # The in process tests serve the interface over a socket pair, which a peer to peer connection needs.
