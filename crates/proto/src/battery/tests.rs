@@ -4,11 +4,11 @@ use super::*;
 
 const DISCHARGING: u8 = 0x02;
 
-// Sample input: a 16 byte decrypted payload, byte 1 left, byte 2 right, byte 3 case, high bit charging.
-fn payload(left: u8, right: u8, case: u8) -> [u8; 16] {
+// Sample input: a 16 byte decrypted payload, byte 1 primary, byte 2 secondary, byte 3 case, high bit charging.
+fn payload(primary: u8, secondary: u8, case: u8) -> [u8; 16] {
     let mut p = [0; 16];
-    p[1] = left;
-    p[2] = right;
+    p[1] = primary;
+    p[2] = secondary;
     p[3] = case;
     p
 }
@@ -240,4 +240,46 @@ fn control_channel_disconnected_entry_keeps_the_last_reading() {
     let mut buf = HEADER.to_vec();
     buf.extend([1, 0x08, 0x01, 0, 0x04, 0x01]);
     assert_eq!(BatteryReport::parse(&buf).unwrap().case, None);
+}
+
+#[test]
+fn encrypted_right_primary_swaps_the_bud_bytes() {
+    let report = BatteryReport::parse_decrypted(&payload(60, 70, 0), false, false, false).unwrap();
+    assert_eq!(report.right.map(|c| c.level), Some(60));
+    assert_eq!(report.left.map(|c| c.level), Some(70));
+    assert_eq!(report.primary, Some(Component::Right));
+    assert_eq!(report.secondary, Some(Component::Left));
+}
+
+#[test]
+fn control_channel_unknown_part_is_skipped() {
+    let mut buf = HEADER.to_vec();
+    buf.extend([2, 0x10, 0x01, 50, DISCHARGING, 0x01]);
+    buf.extend([0x04, 0x01, 60, DISCHARGING, 0x01]);
+    let report = BatteryReport::parse(&buf).unwrap();
+    assert_eq!(
+        report.left,
+        Some(Charge {
+            level: 60,
+            charging: false
+        })
+    );
+    assert_eq!(report.primary, Some(Component::Left));
+    assert_eq!(report.secondary, None);
+    assert_eq!(
+        (report.right, report.case, report.headset),
+        (None, None, None)
+    );
+}
+
+#[test]
+fn control_channel_case_entry_is_never_primary() {
+    let mut buf = HEADER.to_vec();
+    buf.extend([3, 0x08, 0x01, 90, 0x01, 0x01]);
+    buf.extend([0x02, 0x01, 40, DISCHARGING, 0x01]);
+    buf.extend([0x04, 0x01, 50, DISCHARGING, 0x01]);
+    let report = BatteryReport::parse(&buf).unwrap();
+    assert_eq!(report.primary, Some(Component::Right));
+    assert_eq!(report.secondary, Some(Component::Left));
+    assert_eq!(report.case.map(|c| c.level), Some(90));
 }
