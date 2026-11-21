@@ -299,7 +299,7 @@ fn check_run_name(name: &str) -> Result<(), StoreError> {
     }
 }
 
-// Sample input: /home/owner/omapods-captures/20261120T143005Z/left-mic-2, split into root, stamp and run name.
+// Sample input: <home>/omapods-captures/20261120T143005Z/left-mic-2, split into root, stamp and run name.
 fn split_run_path(path: &Path) -> Result<(&Path, &str, &str), StoreError> {
     let not_a_run = || StoreError::NotARun {
         path: path.to_path_buf(),
