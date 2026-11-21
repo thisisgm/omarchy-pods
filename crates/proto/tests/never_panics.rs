@@ -29,6 +29,8 @@ const DECLARED_LEN_BYTES: usize = 2;
 const UPLINK_CONTROL_MIN_LEN: usize = 10;
 /// Where the length byte sits in an access unit, after the four stamp bytes.
 const UNIT_LENGTH_AT: usize = 4;
+/// One more than the most access units a generated SDU carries, and how many stamps are drawn for them.
+const UNIT_COUNT_BOUND: usize = 8;
 
 // Sample output: [04, 01, 55, 02, 01], kind, spacer, level, status, end; marks are mostly 0x01 so the entry loop runs.
 fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
@@ -202,8 +204,8 @@ proptest! {
     #[test]
     fn uplink_audio_round_trips_and_counts_a_cut_tail(
         opaque in any::<[u8; OPAQUE_LEN]>(),
-        payloads in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..=255), 0..8),
-        stamps in any::<[u32; 8]>(),
+        payloads in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..=usize::from(u8::MAX)), 0..UNIT_COUNT_BOUND),
+        stamps in any::<[u32; UNIT_COUNT_BOUND]>(),
         cut in any::<proptest::sample::Index>(),
     ) {
         let units: Vec<AccessUnit<'_>> = stamps.iter().zip(&payloads).map(|(&stamp, data)| AccessUnit { stamp, data }).collect();
