@@ -2,6 +2,10 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "these tests need no bus, so the private bus and the fake BlueZ go unused"
+)]
 mod support;
 
 #[cfg(test)]

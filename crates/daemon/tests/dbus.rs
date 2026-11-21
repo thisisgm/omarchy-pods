@@ -2,6 +2,10 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "these tests start the daemon on a private session bus alone, so the fake BlueZ goes unused"
+)]
 mod support;
 
 #[cfg(test)]
@@ -9,13 +13,10 @@ mod tests {
     use std::collections::HashMap;
     use std::fs::{self, File};
     use std::future::poll_fn;
-    use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixStream;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::pin::Pin;
-    use std::process::{Command, ExitStatus, Stdio};
-    use std::sync::mpsc;
-    use std::thread;
+    use std::process::{ExitStatus, Stdio};
     use std::time::{Duration, Instant};
 
     use pods_core::command::CommandError;
@@ -25,6 +26,7 @@ mod tests {
     use zbus::export::futures_core::Stream;
     use zbus::{Connection, MessageStream, OwnedVariant};
 
+    use super::support::bus::{bus_address, start_bus};
     use super::support::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
 
     /// The whole bus conversation of one test, longer than any one wait inside it so that wait reports first.
@@ -48,52 +50,12 @@ mod tests {
     /// How zbus 6 starts an address it cannot reach, after `NO_BUS_LOG`; the address follows in backquotes.
     const CONNECT_FAILED: &str = "failed to connect to";
 
-    const BUS_DAEMON: &str = "dbus-daemon";
     const BUS_ADDRESS_VAR: &str = "DBUS_SESSION_BUS_ADDRESS";
     const DRIVER_NAME: &str = "org.freedesktop.DBus";
     const DRIVER_PATH: &str = "/org/freedesktop/DBus";
     const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
     const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
     const CHANGES_RULE: &str = "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/io/github/thisisgm/Omapods'";
-
-    /// The session's directory for the private bus, its socket and its log.
-    fn bus_dir(session: &Session) -> PathBuf {
-        session.dir.path().join("bus")
-    }
-
-    /// Starts a private bus with everything it reads or writes in this session, and returns it with its address.
-    fn start_bus(session: &Session) -> (Daemon, String) {
-        let dir = bus_dir(session);
-        fs::create_dir(&dir).unwrap();
-        let log = dir.join("bus.log");
-        let mut child = Command::new(BUS_DAEMON)
-            .args(["--session", "--nofork", "--print-address"])
-            .arg(format!("--address=unix:dir={}", dir.display()))
-            .env_clear()
-            .env("HOME", session.dir.path().join("home"))
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("XDG_DATA_HOME", &dir)
-            .env("XDG_DATA_DIRS", &dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(File::create(&log).unwrap())
-            .spawn()
-            .unwrap_or_else(|error| panic!("cannot start {BUS_DAEMON}: {error}"));
-        let stdout = child.stdout.take().unwrap();
-        let bus = Daemon { child, log };
-        let (sender, address) = mpsc::channel();
-        thread::spawn(move || {
-            let mut line = String::new();
-            // A bus that dies before printing closes stdout, which leaves the line empty.
-            drop(BufReader::new(stdout).read_line(&mut line));
-            // The receiver is gone only after `recv_timeout` gave up, and the test has failed by then.
-            drop(sender.send(line));
-        });
-        let address = address.recv_timeout(HANG_LIMIT).unwrap();
-        let address = address.trim().to_owned();
-        assert!(!address.is_empty(), "no bus address: {}", bus.log());
-        (bus, address)
-    }
 
     /// Starts a daemon whose session bus is `bus_address`, and waits until its socket accepts.
     fn start_daemon(session: &Session, bus_address: &str, log_name: &str) -> Daemon {
@@ -200,7 +162,8 @@ mod tests {
     #[test]
     fn daemon_owns_the_name_and_busctl_style_get_works() {
         let session = Session::new();
-        let (_bus, address) = start_bus(&session);
+        let bus = start_bus(&session, "bus");
+        let address = bus.address.clone();
         let mut daemon = start_daemon(&session, &address, "daemon.log");
         let runtime = RuntimeBuilder::new_current_thread()
             .enable_all()
@@ -305,10 +268,7 @@ mod tests {
     #[test]
     fn daemon_runs_without_a_session_bus() {
         let pointing_nowhere = Session::new();
-        let missing = format!(
-            "unix:path={}",
-            bus_dir(&pointing_nowhere).join("no-bus").display()
-        );
+        let missing = bus_address(&pointing_nowhere, "no-bus");
         let daemon = start_daemon(&pointing_nowhere, &missing, "daemon.log");
         // With no address at all the daemon tries the bus in its runtime directory, which the session never creates.
         let unset = Session::new();
