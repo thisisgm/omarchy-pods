@@ -472,6 +472,30 @@ mod tests {
         assert_eq!(session.status(), to_status_line(&State::default()));
     }
 
+    /// The adaptive verb with `level` zero padded, which the level parser skips, to `length` bytes in all.
+    fn padded_adaptive_verb(length: usize, level: &str) -> Vec<u8> {
+        let width = length.checked_sub("adaptive:".len()).unwrap();
+        let verb = format!("adaptive:{level:0>width$}");
+        assert_eq!(verb.len(), length);
+        verb.into_bytes()
+    }
+
+    #[test]
+    fn a_legacy_request_of_4096_bytes_is_read_whole_and_4097_is_cut_to_4096() {
+        let session = Session::new();
+        let daemon = session.start();
+        // Level 500 is out of range and 50 is not, so an unknown request line shows the parse reached byte 4096.
+        assert_eq!(session.ask(&padded_adaptive_verb(4096, "500")), b"");
+        let log = daemon.log();
+        assert_eq!(log.matches("unknown request").count(), 1, "{log}");
+        let error = session
+            .try_ask(&padded_adaptive_verb(4097, "5000"))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConnectionReset, "{error}");
+        let log = daemon.log();
+        assert_eq!(log.matches("unknown request").count(), 2, "{log}");
+    }
+
     #[test]
     fn unset_runtime_dir_fails_with_the_cpp_message() {
         let session = Session::new();
