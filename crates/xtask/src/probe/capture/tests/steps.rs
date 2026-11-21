@@ -1,5 +1,6 @@
 //! Single steps of the loop, taken on a socket pair that no thread plays, for what the fake pods cannot bring about.
 
+use std::cell::Cell;
 use std::io;
 
 use pods_proto::packets::{HANDSHAKE_ACK_PREFIX, SET_SPECIFIC_FEATURES};
@@ -12,6 +13,10 @@ use super::pods::{audio_sdu, pair, queued};
 
 /// What the clock of a loop built by hand always reads.
 const BENCH_NOW_NS: u64 = 5;
+/// The tail of the guards dropped by hand, in readings of a clock that moves by one at each reading.
+const TAIL_READINGS: u64 = 6;
+/// How long one wait of that tail lasts.
+const TAIL_POLL: Duration = Duration::from_millis(1);
 
 /// What a loop built by hand left behind.
 struct Bench<T> {
@@ -214,6 +219,49 @@ fn the_side_is_read_only_before_the_gate() {
         next: 0,
     };
     assert_eq!(read(scripted), None);
+}
+
+#[test]
+fn the_channel_stays_open_after_a_restore_that_no_stop_preceded() {
+    // No socket pair can refuse a STOP and then take the restore, so the guards are dropped by hand with no STOP sent.
+    let (near, far) = pair();
+    near.set_recv_timeout(TAIL_POLL).unwrap();
+    let clock = Cell::new(0_u64);
+    let now_ns = || clock.replace(clock.get() + 1);
+    let link = Link {
+        channel: &near,
+        now_ns: &now_ns,
+    };
+    let original = MicSide::Right.command();
+    let dropped = Dropped::default();
+    {
+        let _tail = Tail {
+            link,
+            length_ns: TAIL_READINGS,
+            dropped: &dropped,
+        };
+        let _side = SideChange {
+            link,
+            original,
+            dropped: &dropped,
+        };
+    }
+    let (_, restore) = dropped.restore.get().unwrap();
+    assert_eq!(restore.result, Ok(()));
+    assert_eq!(queued(&far), [original.encode()]);
+    assert_eq!(dropped.tail_from_ns.get(), Some(restore.at_ns));
+    assert!(clock.get() > restore.at_ns + TAIL_READINGS, "{clock:?}");
+
+    drop(far);
+    let dropped = Dropped::default();
+    drop(SideChange {
+        link,
+        original,
+        dropped: &dropped,
+    });
+    let (_, restore) = dropped.restore.get().unwrap();
+    assert_eq!(restore.result, Err(ChannelError::Send(Errno::PIPE)));
+    assert_eq!(dropped.tail_from_ns.get(), None);
 }
 
 /// A writer that takes nothing, as a full disk would.
