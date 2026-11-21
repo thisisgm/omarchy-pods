@@ -103,7 +103,7 @@ pub fn metadata() -> Vec<u8> {
     sdu
 }
 
-/// The 38 packets that follow the handshake, by opcode as often as each was measured; the order behind the two acknowledgements is synthetic.
+/// The 38 packets that follow the handshake: only the census (which opcodes, how many of each) and the order of the first two follow a real device; the order and the bodies after them are made up.
 #[must_use]
 pub fn first_burst() -> Vec<Vec<u8>> {
     let mut burst = vec![

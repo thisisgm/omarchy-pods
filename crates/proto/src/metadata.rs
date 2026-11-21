@@ -34,6 +34,7 @@ impl Metadata {
                 got: sdu.len(),
             });
         };
+        // Memory bound: the lossy conversion can allocate three times a field's bytes before the cut, so the bound is the SDU length, which the caller caps.
         let mut fields = strings.split(|&byte| byte == TERMINATOR);
         let name = text(fields.next());
         let model_number = text(fields.next());
