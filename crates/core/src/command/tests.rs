@@ -130,7 +130,16 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(state.counters.ear_detection_changes, 1);
 }
 
-// The C++ setters store the value before they send, whether or not a packet goes out.
+/// Asserts that the C++ `function` sends without checking whether the packet went out.
+fn assert_send_is_unchecked(function: &str) {
+    let body = MAIN.body(&format!("void {function}("));
+    assert!(
+        body.contains("writePacketToSocket(") && !body.contains("if (writePacketToSocket("),
+        "{function} does not send unchecked: {body}"
+    );
+}
+
+// The C++ setters store the value after a send whose failure they ignore.
 #[test]
 fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
     for (function, store) in [
@@ -143,13 +152,14 @@ fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
             "m_deviceInfo->setAdaptiveNoiseLevel(level);",
         ),
     ] {
+        assert_send_is_unchecked(function);
         let body = MAIN.body(&format!("void {function}("));
         let (before, after) = body
             .split_once(store)
             .unwrap_or_else(|| panic!("{function} does not store through {store}: {body}"));
         assert!(
-            before.contains("writePacketToSocket(") && !before.contains("if (writePacketToSocket("),
-            "{function}: the store does not follow an unchecked send: {body}"
+            before.contains("writePacketToSocket("),
+            "{function}: the store comes before the send: {body}"
         );
         assert!(
             after.contains("++m_"),
@@ -360,6 +370,7 @@ fn verbs_whose_cpp_counter_needs_a_link_or_a_change_raise_nothing() {
     let noise = ["setNoiseControlModeInt", "setNoiseControlMode"].as_slice();
     let body = cpp_chain_body("noise:off", noise);
     assert_guard_precedes_counter("noise:off", body, "== mode", "return;");
+    assert_send_is_unchecked("setNoiseControlMode");
     assert_eq!(rises("noise:off", &State::default()), []);
 
     let body = cpp_chain_body("ear:one", &["setEarDetectionBehavior"]);
@@ -382,7 +393,14 @@ fn verbs_whose_cpp_counter_needs_a_link_or_a_change_raise_nothing() {
 
     for verb in ["onebud:on", "onebud:off"] {
         let body = cpp_chain_body(verb, &["setOneBudANCMode"]);
-        assert_guard_precedes_counter(verb, body, "if (writePacketToSocket(", "{");
+        let (sent, unsent) = body
+            .split_once("else")
+            .unwrap_or_else(|| panic!("{verb}: no branch for an unsent packet in {body}"));
+        assert_guard_precedes_counter(verb, sent, "if (writePacketToSocket(", "{");
+        assert!(
+            !unsent.contains("++m_"),
+            "{verb}: a counter rises outside the sent branch"
+        );
         let current = State {
             one_bud_anc_mode: verb == "onebud:off",
             ..State::default()
@@ -403,6 +421,14 @@ fn verbs_whose_cpp_counter_needs_a_link_or_a_change_raise_nothing() {
     let body = cpp_chain_body("adaptive:", &["setAdaptiveNoiseLevel"]);
     assert_guard_precedes_counter("adaptive:", body, "adaptiveModeActive()", "{");
     assert_eq!(rises("adaptive:37", &State::default()), []);
+    let (_, clamped) = body.split_once("qBound(").unwrap();
+    assert_guard_precedes_counter("adaptive:", clamped, "adaptiveNoiseLevel() != level", "{");
+    let at_37 = State {
+        noise_mode: NoiseMode::Adaptive,
+        adaptive_noise_level: 37,
+        ..State::default()
+    };
+    assert_eq!(rises("adaptive:37", &at_37), []);
 }
 
 #[test]

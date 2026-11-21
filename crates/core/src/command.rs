@@ -95,7 +95,7 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         }
         Command::SetConversationalAwareness(enabled) => {
             if enabled != state.conversational_awareness {
-                // corner: the C++ stores before it sends, and the pods' own report overwrites it on connect.
+                // corner: the C++ stores even when the send fails, and the pods' own report overwrites it on connect.
                 state.conversational_awareness = enabled;
                 raise(&mut counters.conversational_awareness_changes);
             }
@@ -104,7 +104,7 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         Command::SetAdaptiveLevel(level) => {
             let level = level.min(ADAPTIVE_LEVEL_MAX);
             if level != state.adaptive_noise_level && state.noise_mode == NoiseMode::Adaptive {
-                // corner: the C++ stores before it sends, and the pods' own report overwrites it on connect.
+                // corner: the C++ stores even when the send fails, and the pods' own report overwrites it on connect.
                 state.adaptive_noise_level = level;
                 raise(&mut counters.adaptive_level_changes);
             }
