@@ -161,7 +161,7 @@ fn set_exit_codes_and_messages() {
         assert_eq!(String::from_utf8(out.stderr).unwrap(), stderr, "{args:?}");
     }
     kill_process(daemon.pid(), Signal::TERM).unwrap();
-    daemon.wait_exit();
+    assert!(daemon.wait_exit().success(), "{}", daemon.log());
     let refused = format!(
         "Could not connect to OpenPods daemon at {} (is it running?)\n",
         session.socket().display()
