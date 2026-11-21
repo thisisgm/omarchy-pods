@@ -69,8 +69,8 @@ impl StateFile {
         }
     }
 
-    /// Writes `line` on the calling thread; only for the write before the daemon serves, when nothing waits on it.
-    pub(super) fn publish_now(&self, line: &str) -> Result<(), String> {
+    /// Writes `line` on the calling thread, which `publish` keeps off the runtime.
+    fn publish_now(&self, line: &str) -> Result<(), String> {
         let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner);
         if *removed {
             return Ok(());
@@ -79,7 +79,7 @@ impl StateFile {
     }
 
     /// Writes `line` on the blocking pool, off the runtime thread.
-    async fn publish(&self, line: String) -> Result<(), String> {
+    pub(super) async fn publish(&self, line: String) -> Result<(), String> {
         let file = self.clone();
         spawn_blocking(move || file.publish_now(&line))
             .await
