@@ -22,6 +22,8 @@ cpp-source = { path = "../cpp-source" }
 pods-fake = { path = "../fake" }
 pods-samples = { path = "../samples" }
 proptest.workspace = true
+# A test reads its thread's CPU time to tell an idle driver from a spinning one.
+rustix = { version = "1.1.6", default-features = false, features = ["time"] }
 tempfile.workspace = true
 # The in process tests serve the interface over a socket pair, which a peer to peer connection needs.
 zbus = { version = "6.3", default-features = false, features = ["tokio", "service", "p2p"] }
