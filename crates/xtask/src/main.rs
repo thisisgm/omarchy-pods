@@ -1,4 +1,6 @@
-//! Workspace checks. `cargo xtask ci` runs the Rust gates of the hosted CI; zizmor runs only there.
+//! Workspace checks and tools. `cargo xtask ci` runs the Rust gates of the hosted CI; zizmor runs only there.
+
+mod probe;
 
 use std::env;
 use std::process::{Command, ExitCode};
@@ -21,11 +23,13 @@ const CI_STEPS: [&[&str]; 5] = [
 ];
 
 fn main() -> ExitCode {
-    if env::args().nth(1).as_deref() == Some("ci") {
-        run_ci()
-    } else {
-        report("usage: cargo xtask ci");
-        ExitCode::FAILURE
+    match env::args_os().nth(1) {
+        Some(command) if command == "ci" => run_ci(),
+        Some(command) if command == "probe" => probe::run(env::args_os().skip(1)),
+        _ => {
+            report("usage: cargo xtask ci | cargo xtask probe <command>");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -58,6 +62,15 @@ fn run_ci() -> ExitCode {
 )]
 fn report(message: &str) {
     eprintln!("{message}");
+}
+
+/// The one place xtask writes a result for a shell to capture.
+#[expect(
+    clippy::print_stdout,
+    reason = "a probe command's result is its standard output"
+)]
+fn print_line(line: &str) {
+    println!("{line}");
 }
 
 #[cfg(test)]
