@@ -123,6 +123,17 @@ pub enum Outcome {
     Confirmed,
 }
 
+impl Outcome {
+    /// The word a client reads for a command the daemon took, or the refusal.
+    pub const fn name(self) -> Result<&'static str, CommandError> {
+        match self {
+            Self::Sent => Ok("sent"),
+            Self::Confirmed => Ok("confirmed"),
+            Self::Refused(error) => Err(error),
+        }
+    }
+}
+
 /// Applies `command` to `state` with no link: values and counters change only where the C++ setters change them.
 pub fn apply(state: &mut State, command: &Command) -> Outcome {
     let counters = &mut state.counters;
