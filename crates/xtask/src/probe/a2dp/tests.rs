@@ -5,9 +5,10 @@ use proptest::prelude::*;
 
 use super::super::hci::fixture::{
     AAC_BYTES, ACCEPT, AVDTP_PSM, AVDTP_START, AVDTP_SUSPEND, COMMAND,
-    EVENT_DISCONNECTION_COMPLETE, GET_ALL_CAPABILITIES, GET_CAPABILITIES, MEDIA_CIDS, MEDIA_CODEC,
-    MEDIA_PAYLOAD_LEN, MEDIA_TRANSPORT, PODS_HANDLE, SBC_BYTES, SET_CONFIGURATION, SIGNALLING_CIDS,
-    START_UNIX_MICROS, Trace, VENDOR_BYTES, avdtp, capability, media_codec, rtp, session,
+    EVENT_DISCONNECTION_COMPLETE, GET_ALL_CAPABILITIES, GET_CAPABILITIES, KEYBOARD_HANDLE,
+    MEDIA_CIDS, MEDIA_CODEC, MEDIA_PAYLOAD_LEN, MEDIA_TRANSPORT, PODS_HANDLE, SBC_BYTES,
+    SET_CONFIGURATION, SIGNALLING_CIDS, START_UNIX_MICROS, Trace, VENDOR_BYTES, avdtp, capability,
+    media_codec, rtp, session,
 };
 use super::super::hci::{channels, records};
 use super::*;
@@ -259,6 +260,65 @@ fn rtp_gaps_are_counted_across_the_16_bit_wrap() {
     assert_eq!(send(&[7, 8, 6, 7]), 1);
     assert_eq!(send(&[10, 12, 14, 15, 0]), 3);
     assert_eq!(send(&[9]), 0);
+}
+
+#[test]
+fn both_sides_may_wait_for_an_answer_with_one_label() {
+    let aac = choice(&media_codec(0x02, &AAC_BYTES));
+    let sbc = choice(&media_codec(0x00, &SBC_BYTES));
+    let crossed = |answered_first: Direction| {
+        let mut trace = streaming();
+        signal(&mut trace, HOST, 3, COMMAND, SET_CONFIGURATION, &aac);
+        signal(&mut trace, PODS, 3, COMMAND, SET_CONFIGURATION, &sbc);
+        signal(
+            &mut trace,
+            answered_first,
+            3,
+            ACCEPT,
+            SET_CONFIGURATION,
+            &[],
+        );
+        let other = match answered_first {
+            HOST => PODS,
+            PODS => HOST,
+        };
+        signal(
+            &mut trace,
+            other,
+            3,
+            REJECT,
+            SET_CONFIGURATION,
+            &[0x07, 0x29],
+        );
+        configuration(&read(&trace))
+    };
+    assert_eq!(crossed(PODS), Some(standard(0x02, &AAC_BYTES)));
+    assert_eq!(crossed(HOST), Some(standard(0x00, &SBC_BYTES)));
+}
+
+#[test]
+fn a_start_command_lets_the_source_begin_a_new_sequence() {
+    let gaps = |trace: &Trace| -> u64 { media(&read(trace)).iter().map(|row| row.gaps).sum() };
+    let mut trace = streaming();
+    trace.send(HOST, MEDIA_CIDS, &rtp(100));
+    trace.send(HOST, MEDIA_CIDS, &rtp(101));
+    signal(&mut trace, HOST, 1, COMMAND, AVDTP_SUSPEND, &[0x04]);
+    signal(&mut trace, PODS, 1, ACCEPT, AVDTP_SUSPEND, &[]);
+    trace.send(HOST, MEDIA_CIDS, &rtp(500));
+    signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+    trace.send(HOST, MEDIA_CIDS, &rtp(0));
+    trace.send(HOST, MEDIA_CIDS, &rtp(1));
+    trace.send(HOST, MEDIA_CIDS, &rtp(3));
+    assert_eq!(gaps(&trace), 2);
+
+    let mut elsewhere = streaming();
+    elsewhere.send(HOST, MEDIA_CIDS, &rtp(100));
+    elsewhere.on(KEYBOARD_HANDLE);
+    elsewhere.open(HOST, AVDTP_PSM, SIGNALLING_CIDS);
+    signal(&mut elsewhere, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+    elsewhere.on(PODS_HANDLE);
+    elsewhere.send(HOST, MEDIA_CIDS, &rtp(0));
+    assert_eq!(gaps(&elsewhere), 1);
 }
 
 #[test]
