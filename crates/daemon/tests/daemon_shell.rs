@@ -10,7 +10,7 @@ mod tests {
     use std::io::{ErrorKind, Read, Write};
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::{Duration, Instant, UNIX_EPOCH};
 
     use cpp_source::MAIN;
@@ -76,12 +76,6 @@ mod tests {
 
     /// The sentinel's modification time, in 2001, so a rewrite with the same bytes still shows.
     const SURVIVOR_MTIME: Duration = Duration::from_secs(1_000_000_000);
-
-    impl Session {
-        fn state_file(&self) -> PathBuf {
-            self.state_home().join("librepods").join("status.json")
-        }
-    }
 
     impl Daemon {
         fn running(&mut self) -> bool {
