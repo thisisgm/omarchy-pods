@@ -278,7 +278,7 @@ impl Machine {
                 | P::Grace { .. },
                 E::BluezLost,
             ) => {
-                // corner: an open or opening channel stays until its socket ends; the socket is the truth while it lives.
+                // corner: no close here, the socket is the truth while it lives; a channel still opening is closed once it opens.
                 self.held = false;
                 Vec::new()
             }
@@ -364,8 +364,7 @@ impl Machine {
                 raise(&mut state.counters.reconnect_failures);
                 self.idle(state)
             }
-            // Nothing to do: a stopped machine, calls until device actions exist, events the shell contract rules out,
-            // packets outside the handshake until reports exist, and ticks in phases with no deadline.
+            // Nothing to do: stopped, calls and reports not handled yet, events the shell rules out, ticks with no deadline.
             (
                 P::Stopped,
                 E::DeviceUp(_)

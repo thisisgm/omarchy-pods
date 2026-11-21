@@ -3,7 +3,7 @@
 /// The C++ daemon asks again after 2 s; the acknowledgement was measured at about 10 ms.
 pub const HANDSHAKE_STEP_TIMEOUT_MS: u64 = 2000;
 
-/// The C++ daemon repeats the notification request once if no battery report came.
+/// The C++ daemon repeats the notification request once, this long after the first.
 pub const NOTIFY_REREQUEST_MS: u64 = 2000;
 
 /// The C++ `firstDelayMs`: short enough that a profile rebuild is still under way.
