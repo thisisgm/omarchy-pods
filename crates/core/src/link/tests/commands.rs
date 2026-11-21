@@ -367,6 +367,54 @@ fn two_commands_for_one_setting_each_get_their_own_answer() {
 }
 
 #[test]
+fn a_setting_asked_back_before_its_report_is_written_and_waits() {
+    let mut sim = up_unknown();
+    sim.feed(Input::Command(noise(NoiseMode::Anc)));
+    sim.feed(Input::Command(noise(NoiseMode::Off)));
+    assert_eq!(sim.last(), [OFF_FRAME]);
+    assert_eq!(sim.outcomes(), []);
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
+    assert_eq!(sim.last(), ["Resolve(0)"]);
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x01)));
+    assert_eq!(sim.last(), ["Resolve(1)"]);
+    assert_eq!(sim.outcomes(), [Outcome::Confirmed; 2]);
+    assert_eq!(sim.state.noise_mode, NoiseMode::Off);
+    sim.check_all_tickets_resolved_once();
+
+    let mut sim = up_pro3(NoiseMode::Anc);
+    sim.feed(Input::Command(Command::SetConversationalAwareness(true)));
+    sim.feed(Input::Command(Command::SetConversationalAwareness(false)));
+    assert_eq!(
+        sim.last(),
+        ["Send([04, 00, 04, 00, 09, 00, 28, 02, 00, 00, 00])"]
+    );
+    assert_eq!(sim.outcomes(), []);
+    sim.run_until(ms(700));
+    assert_eq!(sim.outcomes(), [TIMEOUT; 2]);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_second_cycle_before_the_report_steps_from_the_mode_on_its_way() {
+    let cycle = Command::SetNoise(NoiseTarget::Cycle);
+    let mut sim = up_pro3(NoiseMode::Anc);
+    sim.feed(Input::Command(cycle));
+    assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
+    sim.feed(Input::Command(cycle));
+    assert_eq!(sim.last(), [ADAPTIVE_FRAME]);
+    sim.feed(Input::Command(cycle));
+    assert_eq!(sim.last(), [ANC_FRAME]);
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
+    assert_eq!(sim.last(), ["Resolve(0)"]);
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x04)));
+    assert_eq!(sim.last(), ["Resolve(1)"]);
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
+    assert_eq!(sim.last(), ["Resolve(2)"]);
+    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
 fn a_seventeenth_pending_command_is_refused_with_timeout() {
     let mut sim = up_unknown();
     for _ in 0..PENDING_MAX {
