@@ -3,23 +3,6 @@
 use super::*;
 use cpp_source::{DEVICE_INFO, ENUMS};
 
-/// Every model, in `model_int` order.
-const ALL: [Model; 13] = [
-    Model::Unknown,
-    Model::AirPods1,
-    Model::AirPods2,
-    Model::AirPods3,
-    Model::AirPodsPro,
-    Model::AirPodsPro2Lightning,
-    Model::AirPodsPro2USBC,
-    Model::AirPodsMaxLightning,
-    Model::AirPodsMaxUSBC,
-    Model::AirPods4,
-    Model::AirPods4ANC,
-    Model::AirPodsPro3,
-    Model::AirPodsMax2,
-];
-
 /// One capability flag read out of `Capabilities`.
 type Flag = fn(Capabilities) -> bool;
 
@@ -49,7 +32,9 @@ fn cpp_true_cases(function: &str) -> Vec<String> {
 
 /// The models whose flag is set, by C++ name.
 fn rust_true_cases(flag: Flag) -> Vec<String> {
-    ALL.into_iter()
+    Model::ALL
+        .iter()
+        .copied()
         .filter(|model| flag(model.capabilities()))
         .map(cpp_name)
         .collect()
@@ -110,7 +95,7 @@ fn model_display_name_covers_all() {
 
 #[test]
 fn model_display_name_exhaustive() {
-    for model in ALL.into_iter().skip(1) {
+    for &model in Model::ALL.iter().skip(1) {
         assert!(
             model.display_name().starts_with("AirPods"),
             "{model:?} is {:?}",
@@ -193,7 +178,7 @@ fn is_pro_series_covers_all_pro_gens() {
 #[test]
 fn capabilities_match_apple_compare_table() {
     // Columns: noise control, adaptive, conversational awareness, one bud ANC.
-    for (model, noise_control, adaptive, conversational_awareness, one_bud_anc) in [
+    let rows = [
         (Model::AirPods1, false, false, false, false),
         (Model::AirPods2, false, false, false, false),
         (Model::AirPods3, false, false, false, false),
@@ -208,7 +193,8 @@ fn capabilities_match_apple_compare_table() {
         (Model::AirPodsMax2, true, true, true, false),
         // Unknown fails open on modes so an unmapped model keeps what it had, and gains nothing else.
         (Model::Unknown, true, false, false, false),
-    ] {
+    ];
+    for (model, noise_control, adaptive, conversational_awareness, one_bud_anc) in rows {
         let c = model.capabilities();
         assert_eq!(c.noise_control, noise_control, "{model:?} noise control");
         assert_eq!(c.adaptive, adaptive, "{model:?} adaptive");
@@ -218,11 +204,29 @@ fn capabilities_match_apple_compare_table() {
         );
         assert_eq!(c.one_bud_anc, one_bud_anc, "{model:?} one bud ANC");
     }
+    let mut listed: Vec<Model> = rows.iter().map(|&(model, ..)| model).collect();
+    listed.sort_by_key(|model| model.as_int());
+    assert_eq!(listed, Model::ALL, "every model has one row here");
+}
+
+#[test]
+fn only_unknown_has_no_model_number() {
+    for &model in Model::ALL {
+        let rows = MODEL_NUMBERS
+            .iter()
+            .filter(|&&(_, row)| row == model)
+            .count();
+        assert_eq!(
+            rows > 0,
+            model != Model::Unknown,
+            "{model:?} has {rows} rows"
+        );
+    }
 }
 
 #[test]
 fn capabilities_never_exceed_noise_control() {
-    for model in ALL {
+    for &model in Model::ALL {
         let c = model.capabilities();
         if !c.noise_control {
             assert!(
@@ -274,9 +278,9 @@ fn model_ints_match_the_cpp_enum_order() {
         .filter(|line| !line.is_empty() && *line != "{" && !line.starts_with("//"))
         .map(|line| line.trim_end_matches(','))
         .collect();
-    let rust: Vec<String> = ALL.into_iter().map(cpp_name).collect();
+    let rust: Vec<String> = Model::ALL.iter().copied().map(cpp_name).collect();
     assert_eq!(rust, cpp);
-    for (int, model) in ALL.into_iter().enumerate() {
+    for (int, &model) in Model::ALL.iter().enumerate() {
         assert_eq!(model.as_int(), i64::try_from(int).unwrap(), "{model:?}");
     }
 }
@@ -284,7 +288,7 @@ fn model_ints_match_the_cpp_enum_order() {
 #[test]
 fn display_names_match_the_cpp_switch() {
     let body = ENUMS.scope("inline QString modelDisplayName(AirPodsModel model)");
-    for model in ALL {
+    for &model in Model::ALL {
         let name = cpp_name(model);
         // Sample input: `case AirPodsModel::AirPods1:   return QStringLiteral("AirPods");`
         let (_, rest) = body
@@ -343,8 +347,9 @@ fn capabilities_match_the_cpp_switches() {
         "return model != AirPodsModel::",
         ';',
     );
-    let rust_without_off: Vec<String> = ALL
-        .into_iter()
+    let rust_without_off: Vec<String> = Model::ALL
+        .iter()
+        .copied()
         .filter(|model| !model.capabilities().noise_off)
         .map(cpp_name)
         .collect();

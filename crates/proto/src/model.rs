@@ -1,8 +1,23 @@
 //! The supported models, their published numbers and what each one can do.
 
-/// A supported model, named as the C++ `AirPodsModel` enum names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Model {
+/// Declares `Model` and `Model::ALL` from one list of variants, so `ALL` cannot leave one out.
+macro_rules! models {
+    ($($(#[$attr:meta])* $variant:ident,)+) => {
+        /// A supported model, named as the C++ `AirPodsModel` enum names it.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+        pub enum Model {
+            $($(#[$attr])* $variant,)+
+        }
+
+        impl Model {
+            /// Every model, in `model_int` order.
+            #[cfg(test)]
+            const ALL: &[Self] = &[$(Self::$variant,)+];
+        }
+    };
+}
+
+models! {
     #[default]
     Unknown,
     AirPods1,
@@ -119,51 +134,52 @@ impl Model {
     /// The model's features, by Apple's compare table; `Unknown` keeps the listening modes and gains nothing else.
     #[must_use]
     pub fn capabilities(self) -> Capabilities {
+        let listening_modes = Capabilities {
+            noise_off: true,
+            noise_control: true,
+            ..Capabilities::default()
+        };
         // Apple's own column set for Adaptive Audio and Conversation Awareness.
-        let h2_listening = matches!(
-            self,
-            Self::AirPods4ANC
-                | Self::AirPodsPro2Lightning
-                | Self::AirPodsPro2USBC
-                | Self::AirPodsPro3
-                | Self::AirPodsMax2
-        );
-        Capabilities {
+        let h2_listening = Capabilities {
+            adaptive: true,
+            conversational_awareness: true,
+            ..listening_modes
+        };
+        match self {
+            Self::AirPods1 | Self::AirPods2 | Self::AirPods3 | Self::AirPods4 => Capabilities {
+                noise_off: true,
+                ..Capabilities::default()
+            },
+            Self::Unknown => listening_modes,
+            Self::AirPodsMaxLightning | Self::AirPodsMaxUSBC => Capabilities {
+                is_headset: true,
+                ..listening_modes
+            },
+            Self::AirPodsMax2 => Capabilities {
+                is_headset: true,
+                ..h2_listening
+            },
+            Self::AirPods4ANC => Capabilities {
+                one_bud_anc: true,
+                ..h2_listening
+            },
+            Self::AirPodsPro => Capabilities {
+                one_bud_anc: true,
+                is_pro_series: true,
+                ..listening_modes
+            },
+            Self::AirPodsPro2Lightning | Self::AirPodsPro2USBC => Capabilities {
+                one_bud_anc: true,
+                is_pro_series: true,
+                ..h2_listening
+            },
             // The Pro 3 accepts the Off packet and ignores it.
-            noise_off: self != Self::AirPodsPro3,
-            noise_control: matches!(
-                self,
-                Self::Unknown
-                    | Self::AirPods4ANC
-                    | Self::AirPodsPro
-                    | Self::AirPodsPro2Lightning
-                    | Self::AirPodsPro2USBC
-                    | Self::AirPodsPro3
-                    | Self::AirPodsMaxLightning
-                    | Self::AirPodsMaxUSBC
-                    | Self::AirPodsMax2
-            ),
-            adaptive: h2_listening,
-            conversational_awareness: h2_listening,
-            one_bud_anc: matches!(
-                self,
-                Self::AirPods4ANC
-                    | Self::AirPodsPro
-                    | Self::AirPodsPro2Lightning
-                    | Self::AirPodsPro2USBC
-                    | Self::AirPodsPro3
-            ),
-            is_pro_series: matches!(
-                self,
-                Self::AirPodsPro
-                    | Self::AirPodsPro2Lightning
-                    | Self::AirPodsPro2USBC
-                    | Self::AirPodsPro3
-            ),
-            is_headset: matches!(
-                self,
-                Self::AirPodsMaxLightning | Self::AirPodsMaxUSBC | Self::AirPodsMax2
-            ),
+            Self::AirPodsPro3 => Capabilities {
+                noise_off: false,
+                one_bud_anc: true,
+                is_pro_series: true,
+                ..h2_listening
+            },
         }
     }
 }
