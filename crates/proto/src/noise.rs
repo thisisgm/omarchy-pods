@@ -162,7 +162,14 @@ mod tests {
         );
         let past_adaptive =
             ControlCommand::parse(&[0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0d, 0x05]).unwrap();
-        assert!(NoiseMode::from_command(&past_adaptive).is_err());
+        assert_eq!(
+            NoiseMode::from_command(&past_adaptive),
+            Err(ParseError::UnknownValue {
+                parser: Parser::NoiseCommand,
+                field: "noise control value",
+                value: 0x05
+            })
+        );
         let other_id =
             ControlCommand::parse(&[0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x28, 0x01]).unwrap();
         assert_eq!(
