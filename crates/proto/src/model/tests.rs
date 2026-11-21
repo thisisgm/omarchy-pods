@@ -353,8 +353,10 @@ fn capabilities_match_the_cpp_switches() {
 
 #[test]
 fn default_model_matches_the_cpp_device_info() {
+    // Sample input: `AirPodsModel m_model = AirPodsModel::Unknown;`
     let initial = DEVICE_INFO.find(None, "AirPodsModel m_model = AirPodsModel::", ';');
     assert_eq!(cpp_name(Model::default()), initial);
+    // Sample input: `setModel(AirPodsModel::Unknown);` inside `void reset()`.
     let reset = DEVICE_INFO.find(Some("void reset()"), "setModel(AirPodsModel::", ')');
     assert_eq!(cpp_name(Model::default()), reset);
 }
