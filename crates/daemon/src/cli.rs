@@ -22,6 +22,14 @@ pub(crate) enum Invocation {
     LegacyUsage { program: &'static str },
     /// Run the daemon.
     Daemon,
+    /// Print the status line, over protocol 1.
+    Status,
+    /// Print the status line now and again on every change, over protocol 1.
+    Watch,
+    /// Change one setting, over protocol 1.
+    Set { key: String, value: String },
+    /// Ask for one action, over protocol 1.
+    Do { action: String },
 }
 
 /// Daemon for the Omarchy bar plugin, and its command line client.
@@ -44,6 +52,22 @@ enum Command {
     /// Run the daemon; `--headless` is the name the C++ daemon's service file starts it under
     #[command(long_flag = "headless")]
     Daemon,
+    /// Print the status line
+    Status,
+    /// Print the status line now and again on every change, until the daemon stops
+    Watch,
+    /// Change one setting, such as noise or the adaptive level
+    Set {
+        /// The setting to change
+        key: String,
+        /// Its new value, such as anc or 40
+        value: String,
+    },
+    /// Ask for one action: connect, disconnect or forget
+    Do {
+        /// The action to ask for
+        action: String,
+    },
 }
 
 /// Parses `argv[0]` and the arguments after it.
@@ -56,6 +80,10 @@ pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap
     match cli.command {
         Command::Ctl { words } => legacy(CTL_SUBCOMMAND_PROGRAM, &words),
         Command::Daemon => Ok(Invocation::Daemon),
+        Command::Status => Ok(Invocation::Status),
+        Command::Watch => Ok(Invocation::Watch),
+        Command::Set { key, value } => Ok(Invocation::Set { key, value }),
+        Command::Do { action } => Ok(Invocation::Do { action }),
     }
 }
 
@@ -139,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_name_that_only_contains_librepods_ctl_is_not_the_client() {
-        let parsed = parse(OsStr::new("librepods-ctl.old"), &args(&["status"]));
+        let parsed = parse(OsStr::new("librepods-ctl.old"), &args(&["noise:anc"]));
         assert_eq!(parsed.unwrap_err().kind(), ErrorKind::InvalidSubcommand);
     }
 
@@ -163,6 +191,41 @@ mod tests {
     #[test]
     fn headless_flag_takes_no_further_arguments() {
         let parsed = parse(OsStr::new("librepods"), &args(&["--headless", "--debug"]));
+        assert_eq!(parsed.unwrap_err().kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn protocol_1_subcommands_take_their_words() {
+        for (words, expected) in [
+            (vec!["status"], Invocation::Status),
+            (vec!["watch"], Invocation::Watch),
+            (
+                vec!["set", "noise", "anc"],
+                Invocation::Set {
+                    key: "noise".to_owned(),
+                    value: "anc".to_owned(),
+                },
+            ),
+            (
+                vec!["do", "disconnect"],
+                Invocation::Do {
+                    action: "disconnect".to_owned(),
+                },
+            ),
+        ] {
+            let parsed = parse(OsStr::new("librepods"), &args(&words));
+            assert_eq!(parsed.unwrap(), expected, "{words:?}");
+        }
+    }
+
+    #[test]
+    fn set_needs_a_key_and_a_value() {
+        let parsed = parse(OsStr::new("librepods"), &args(&["set", "noise"]));
+        assert_eq!(
+            parsed.unwrap_err().kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+        let parsed = parse(OsStr::new("librepods"), &args(&["status", "extra"]));
         assert_eq!(parsed.unwrap_err().kind(), ErrorKind::UnknownArgument);
     }
 

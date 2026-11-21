@@ -1,4 +1,4 @@
-//! The control socket: one daemon per runtime directory, a socket file only its owner can use, one task per client.
+//! The control socket: one daemon per runtime directory, a socket file only its owner can use, one task per client in either dialect.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::ErrorKind;
@@ -10,13 +10,13 @@ use std::time::Duration;
 use pods_core::legacy::REOPEN_VERB;
 use rustix::fs::Mode;
 use rustix::process::umask;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::{JoinSet, spawn_blocking};
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant, sleep, timeout};
 
 use super::hub::Hub;
-use super::{legacy_dialect, log};
+use super::{legacy_dialect, log, proto1};
 
 /// How long the start waits for a live daemon to accept, as the C++ `waitForConnected(300)` does.
 const LIVE_DAEMON_PROBE: Duration = Duration::from_millis(300);
@@ -38,6 +38,9 @@ const MAX_CONNECTIONS: usize = 64;
 
 /// The pause after a failed accept, so a lasting failure such as no free descriptors does not spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+/// The first byte of every protocol 1 connection; any other first byte is a legacy verb.
+const PROTOCOL_1_START: u8 = b'{';
 
 /// Whether a daemon already answers on `socket`; one that does is asked to reopen, as the C++ second instance asks.
 pub(super) async fn ask_running_daemon_to_reopen(socket: &Path) -> bool {
@@ -156,7 +159,7 @@ pub(super) async fn remove(socket: &Path) -> Result<(), String> {
     }
 }
 
-/// Accepts clients until aborted, each in its own task, so a slow or silent client delays no other.
+/// Accepts clients until aborted, each in its own task, so a slow or silent client delays no other; dropping the set at abort ends every client.
 pub(super) async fn accept_loop(listener: UnixListener, hub: Hub) {
     let mut connections = JoinSet::new();
     loop {
@@ -176,7 +179,24 @@ pub(super) async fn accept_loop(listener: UnixListener, hub: Hub) {
             ));
             continue;
         }
-        connections.spawn(legacy_dialect::serve_connection(stream, hub.clone()));
+        connections.spawn(serve_client(stream, hub.clone()));
+    }
+}
+
+/// Reads the first byte within the legacy request deadline and serves the dialect it starts.
+async fn serve_client(mut stream: UnixStream, hub: Hub) {
+    let accepted = Instant::now();
+    let mut first = [0_u8; 1];
+    match timeout(legacy_dialect::REQUEST_DEADLINE, stream.read(&mut first)).await {
+        Ok(Ok(1)) if first == [PROTOCOL_1_START] => {
+            proto1::serve_connection(stream, hub, first.to_vec()).await;
+        }
+        Ok(Ok(1)) => {
+            let left = legacy_dialect::REQUEST_DEADLINE.saturating_sub(accepted.elapsed());
+            legacy_dialect::serve_connection(stream, hub, first.to_vec(), left).await;
+        }
+        // Nothing arrived, which the legacy dialect has always answered with nothing.
+        Ok(Ok(_) | Err(_)) | Err(_) => {}
     }
 }
 

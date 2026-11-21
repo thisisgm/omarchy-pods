@@ -1,7 +1,8 @@
-//! The daemon: it owns the state, serves the control socket in the C++ daemon's dialect and publishes the state file.
+//! The daemon: it owns the state, serves the control socket in protocol 1 and the C++ daemon's dialect, and publishes the state file.
 
 mod hub;
 mod legacy_dialect;
+mod proto1;
 mod signals;
 mod socket;
 pub(crate) mod state_file;
