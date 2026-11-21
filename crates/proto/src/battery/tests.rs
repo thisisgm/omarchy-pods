@@ -1,6 +1,7 @@
 //! The `tst_battery` cases, translated, plus the range and order rules.
 
 use super::*;
+use crate::cpp_header::{BATTERY, PACKETS};
 
 const DISCHARGING: u8 = 0x02;
 
@@ -282,4 +283,29 @@ fn control_channel_case_entry_is_never_primary() {
     assert_eq!(report.primary, Some(Component::Right));
     assert_eq!(report.secondary, Some(Component::Left));
     assert_eq!(report.case.map(|c| c.level), Some(90));
+}
+
+#[test]
+fn header_and_codes_match_the_cpp_battery_definitions() {
+    assert_eq!(
+        HEADER.to_vec(),
+        PACKETS.hex(Some("namespace Parse"), "BATTERY_STATUS")
+    );
+    let component = Some("enum class Component");
+    for (part, name) in [
+        (Component::Headset, "Headset"),
+        (Component::Right, "Right"),
+        (Component::Left, "Left"),
+        (Component::Case, "Case"),
+    ] {
+        let cpp = BATTERY.byte(component, &format!("{name} = "), ',');
+        assert_eq!(Component::try_from(cpp), Ok(part), "{name}");
+    }
+    let status = Some("enum class BatteryStatus");
+    assert_eq!(STATUS_CHARGING, BATTERY.byte(status, "Charging = ", ','));
+    assert_eq!(DISCHARGING, BATTERY.byte(status, "Discharging = ", ','));
+    assert_eq!(
+        STATUS_DISCONNECTED,
+        BATTERY.byte(status, "Disconnected = ", ',')
+    );
 }

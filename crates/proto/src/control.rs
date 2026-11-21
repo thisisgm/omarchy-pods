@@ -96,6 +96,7 @@ impl ControlCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpp_header::{CONTROL, PACKETS};
 
     const TEST_ID: ControlId = ControlId(0x42);
 
@@ -167,18 +168,43 @@ mod tests {
 
     #[test]
     fn switch_matches_the_cpp_enabled_and_disabled_packets() {
-        let one_bud = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x1b];
-        let mut enabled = one_bud.to_vec();
-        enabled.extend([0x01, 0x00, 0x00, 0x00]);
-        let mut disabled = one_bud.to_vec();
-        disabled.extend([0x02, 0x00, 0x00, 0x00]);
+        let header = CONTROL.hex(Some("namespace ControlCommand"), "HEADER");
+        for (id, namespace) in [
+            (ControlId::ONE_BUD_ANC, "namespace OneBudANCMode"),
+            (
+                ControlId::CONVERSATIONAL_AWARENESS,
+                "namespace ConversationalAwareness",
+            ),
+            (ControlId::ALLOW_OFF_OPTION, "namespace AllowOffOption"),
+        ] {
+            let cpp_id = PACKETS.byte(Some(namespace), "BasicControlCommand<", '>');
+            for (enabled, create) in [
+                (true, "::ENABLED = create("),
+                (false, "::DISABLED = create("),
+            ] {
+                // create fills the three value bytes it is not given with 0x00.
+                let mut expected = header.clone();
+                expected.extend([cpp_id, CONTROL.byte(None, create, ')'), 0, 0, 0]);
+                let command = ControlCommand::switch(id, enabled);
+                assert_eq!(command.encode(), expected, "{namespace} {create}");
+                assert_eq!(
+                    ControlCommand::parse(&expected).unwrap().state(),
+                    Some(enabled)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn noise_and_adaptive_ids_match_the_cpp_headers() {
+        let noise = Some("namespace NoiseControl");
+        let cpp_noise = PACKETS.byte(noise, "HEADER = ControlCommand::HEADER +", ';');
+        assert_eq!(ControlId::NOISE_CONTROL.0, cpp_noise);
+        let mut adaptive = HEADER.to_vec();
+        adaptive.push(ControlId::ADAPTIVE_NOISE_LEVEL.0);
         assert_eq!(
-            ControlCommand::switch(ControlId::ONE_BUD_ANC, true).encode(),
-            enabled
-        );
-        assert_eq!(
-            ControlCommand::switch(ControlId::ONE_BUD_ANC, false).encode(),
-            disabled
+            adaptive,
+            PACKETS.hex(Some("namespace AdaptiveNoise"), "HEADER")
         );
     }
 }

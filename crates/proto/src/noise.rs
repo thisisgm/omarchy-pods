@@ -84,6 +84,7 @@ impl TryFrom<u8> for NoiseMode {
 mod tests {
     use super::*;
     use crate::control::ControlCommand;
+    use crate::cpp_header::{ENUMS, PACKETS};
 
     #[test]
     fn next_follows_the_noise_cycle_order() {
@@ -108,17 +109,38 @@ mod tests {
 
     #[test]
     fn command_matches_the_cpp_noise_control_packets() {
-        let header = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0d];
-        for (mode, wire) in [
-            (NoiseMode::Off, 0x01),
-            (NoiseMode::Anc, 0x02),
-            (NoiseMode::Transparency, 0x03),
-            (NoiseMode::Adaptive, 0x04),
+        for (mode, symbol) in [
+            (NoiseMode::Off, "OFF"),
+            (NoiseMode::Anc, "NOISE_CANCELLATION"),
+            (NoiseMode::Transparency, "TRANSPARENCY"),
+            (NoiseMode::Adaptive, "ADAPTIVE"),
         ] {
-            let mut expected = header.to_vec();
-            expected.extend([wire, 0x00, 0x00, 0x00]);
-            assert_eq!(mode.command().encode(), expected);
-            assert_eq!(NoiseMode::from_command(&mode.command()), Ok(mode));
+            let cpp = PACKETS.command(Some("namespace NoiseControl"), symbol);
+            assert_eq!(mode.command().encode(), cpp, "{symbol}");
+            let parsed = ControlCommand::parse(&cpp).unwrap();
+            assert_eq!(NoiseMode::from_command(&parsed), Ok(mode), "{symbol}");
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::as_conversions,
+        reason = "reads each declared discriminant to compare it with the C++ enum"
+    )]
+    fn modes_match_the_cpp_noise_control_mode_enum() {
+        for (mode, name) in [
+            (NoiseMode::Off, "Off"),
+            (NoiseMode::Anc, "NoiseCancellation"),
+            (NoiseMode::Transparency, "Transparency"),
+            (NoiseMode::Adaptive, "Adaptive"),
+        ] {
+            let cpp = ENUMS.byte(
+                Some("enum class NoiseControlMode"),
+                &format!("{name} = "),
+                ',',
+            );
+            assert_eq!(mode as u8, cpp, "{name}");
+            assert_eq!(NoiseMode::try_from(cpp), Ok(mode), "{name}");
         }
     }
 
