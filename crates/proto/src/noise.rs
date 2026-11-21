@@ -3,16 +3,23 @@
 use crate::control::{ControlCommand, ControlId};
 use crate::error::{ParseError, Parser};
 
-/// Numbered as the status document publishes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NoiseMode {
-    Off = 0,
-    Anc = 1,
-    Transparency = 2,
-    Adaptive = 3,
+    Off,
+    Anc,
+    Transparency,
+    Adaptive,
+}
+
+/// The number the status document publishes and the byte the noise control command carries.
+struct Codes {
+    status: u8,
+    wire: u8,
 }
 
 impl NoiseMode {
+    const ALL: [Self; 4] = [Self::Off, Self::Anc, Self::Transparency, Self::Adaptive];
+
     #[must_use]
     pub fn next(self) -> Self {
         match self {
@@ -23,17 +30,21 @@ impl NoiseMode {
         }
     }
 
+    fn codes(self) -> Codes {
+        let (status, wire) = match self {
+            Self::Off => (0, 0x01),
+            Self::Anc => (1, 0x02),
+            Self::Transparency => (2, 0x03),
+            Self::Adaptive => (3, 0x04),
+        };
+        Codes { status, wire }
+    }
+
     #[must_use]
     pub fn command(self) -> ControlCommand {
-        let wire = match self {
-            Self::Off => 0x01,
-            Self::Anc => 0x02,
-            Self::Transparency => 0x03,
-            Self::Adaptive => 0x04,
-        };
         ControlCommand {
             id: ControlId::NOISE_CONTROL,
-            value: [wire, 0, 0, 0],
+            value: [self.codes().wire, 0, 0, 0],
         }
     }
 
@@ -47,47 +58,36 @@ impl NoiseMode {
             });
         }
         let [wire, ..] = command.value;
-        match wire {
-            0x01 => Ok(Self::Off),
-            0x02 => Ok(Self::Anc),
-            0x03 => Ok(Self::Transparency),
-            0x04 => Ok(Self::Adaptive),
-            _ => Err(ParseError::UnknownValue {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.codes().wire == wire)
+            .ok_or(ParseError::UnknownValue {
                 parser: Parser::NoiseCommand,
                 field: "noise control value",
                 value: wire,
-            }),
-        }
+            })
     }
 }
 
 impl From<NoiseMode> for u8 {
     fn from(mode: NoiseMode) -> Self {
-        match mode {
-            NoiseMode::Off => 0,
-            NoiseMode::Anc => 1,
-            NoiseMode::Transparency => 2,
-            NoiseMode::Adaptive => 3,
-        }
+        mode.codes().status
     }
 }
 
 impl TryFrom<u8> for NoiseMode {
     type Error = ParseError;
 
-    // 0 Off, 1 Anc, 2 Transparency, 3 Adaptive.
+    // Sample input: `2`, read as Transparency.
     fn try_from(value: u8) -> Result<Self, ParseError> {
-        match value {
-            0 => Ok(Self::Off),
-            1 => Ok(Self::Anc),
-            2 => Ok(Self::Transparency),
-            3 => Ok(Self::Adaptive),
-            _ => Err(ParseError::UnknownValue {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.codes().status == value)
+            .ok_or(ParseError::UnknownValue {
                 parser: Parser::NoiseMode,
                 field: "noise mode",
                 value,
-            }),
-        }
+            })
     }
 }
 
@@ -135,10 +135,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::as_conversions,
-        reason = "reads each declared discriminant to compare it with the C++ enum"
-    )]
     fn modes_match_the_cpp_noise_control_mode_enum() {
         for (mode, name) in [
             (NoiseMode::Off, "Off"),
@@ -151,7 +147,6 @@ mod tests {
                 &format!("{name} = "),
                 ',',
             );
-            assert_eq!(mode as u8, cpp, "{name}");
             assert_eq!(u8::from(mode), cpp, "{name}");
             assert_eq!(NoiseMode::try_from(cpp), Ok(mode), "{name}");
         }
