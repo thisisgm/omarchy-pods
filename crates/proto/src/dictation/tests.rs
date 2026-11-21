@@ -1,6 +1,7 @@
 //! Every input here is built by the test: the fixed protocol bytes, and frames of the table of contents byte then counting bytes.
 
 use super::*;
+use crate::fixture::hex;
 
 /// Opcode, audio handle, marker, packet counter 0x2a, declared length 8, then one frame: flag 0x80, level 0xd5, counter 0x0104, length 3, three codec bytes.
 const ONE_FRAME_NOTIFICATION: &str = "1b 0d 00 01 00 2a 08 00 80 d5 04 01 03 b8 10 11";
@@ -26,13 +27,6 @@ const FULL_FRAMES: usize = 252;
 const LAST_DATA_AT_THE_LIMIT: usize = 10;
 /// Data bytes of the last frame that bring the body one byte past `LONGEST_BODY`.
 const LAST_DATA_PAST_THE_LIMIT: usize = 11;
-
-// Sample input: "1b 0d 00", hex bytes separated by one space.
-fn hex(text: &str) -> Vec<u8> {
-    text.split(' ')
-        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
-        .collect()
-}
 
 // Sample output for (0x10, 3): b8 10 11, the table of contents byte then counting bytes that stand in for one coded frame.
 fn codec_bytes(seed: u8, len: usize) -> Vec<u8> {
