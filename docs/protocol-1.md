@@ -127,7 +127,7 @@ in order, or its connection closes.
 | `bad_request` | The daemon could not read the request. | See below. |
 | `timeout` | The AirPods did not answer in time. | The AirPods did not answer. |
 | `headless` | This daemon runs headless and has no window. | Not sent in protocol 1. |
-| `unsupported_version` | This daemon speaks protocol version 1 only. | `v` is present and is not `1`. The error lists the versions the daemon speaks in `supported`. |
+| `unsupported_version` | This daemon speaks protocol version 1 only. | The line has a usable `id`, and `v` is present and is not `1`. The error lists the versions the daemon speaks in `supported`. |
 
 `bad_request` covers:
 
@@ -140,9 +140,10 @@ in order, or its connection closes.
 
 Every reply to a line with a usable `id` echoes that `id`, refusals included.
 The daemon checks a line in this order and replies to the first rule it breaks:
-a usable `id`, then `v` present, then `v` is `1`, then the rest. A line whose
-`v` is present and is not `1` therefore gets `unsupported_version` whatever
-else it holds.
+a usable `id`, then `v` present, then `v` is `1`, then the rest. A line with a
+usable `id` whose `v` is present and is not `1` therefore gets
+`unsupported_version` whatever else it holds, and a line with no usable `id`
+gets `bad_request` whatever its `v`.
 
 The connection stays open after any error reply.
 
