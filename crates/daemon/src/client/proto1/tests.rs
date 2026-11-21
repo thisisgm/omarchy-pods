@@ -56,13 +56,13 @@ const ANY_STRING: &str = ".{0,12}";
 /// How deep a generated JSON value nests; the parsers read only the top two levels.
 const VALUE_DEPTH: u32 = 3;
 
-/// Nodes proptest aims for in one generated JSON value, a target rather than a cap.
+/// Nodes proptest aims for in one generated JSON value, a target not a cap, small so runs stay fast.
 const VALUE_NODES: u32 = 24;
 
-/// Items proptest expects in one generated array or object when sizing a value, a hint rather than a cap.
+/// Items proptest expects per generated array or object, a hint not a cap, the same as `VALUE_ITEMS`.
 const VALUE_BRANCH: u32 = 4;
 
-/// Generated arrays and objects hold fewer items than this.
+/// Generated arrays and objects hold fewer items than this; members are read by name, so more add no paths.
 const VALUE_ITEMS: usize = 4;
 
 /// Weight of the documented shapes among a generated member's values, so they come up most.
