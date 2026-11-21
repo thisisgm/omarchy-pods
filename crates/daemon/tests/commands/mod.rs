@@ -27,8 +27,9 @@ impl Drop for Watch {
             drop(watchdog.join());
         }
         let mut child = lock(&self.child);
-        // A watch that already exited refuses the kill, which is the outcome wanted.
+        // A watch that already exited takes the kill as a no-op.
         drop(child.kill());
+        // Only reaps it; a test that needs the exit status has read it already.
         drop(child.wait());
     }
 }
