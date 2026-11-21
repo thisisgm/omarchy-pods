@@ -14,6 +14,7 @@ use pods_core::state::State;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
+use tokio::task;
 
 use super::hub::Hub;
 use super::log;
@@ -117,7 +118,12 @@ impl Connection {
                     self.changes = Some(changes);
                     reply::state(id, &state)
                 }
-                Ok((id, Request::Submit(command))) => reply::outcome(id, hub.submit(command).await),
+                Ok((id, Request::Submit(command))) => {
+                    let outcome = hub.submit(command).await;
+                    // One change per turn, so every subscriber's task runs before this client makes the next one.
+                    task::yield_now().await;
+                    reply::outcome(id, outcome)
+                }
                 Err(refusal) => reply::refusal(refusal.id, refusal.error),
             };
             self.queue.push_back(reply);

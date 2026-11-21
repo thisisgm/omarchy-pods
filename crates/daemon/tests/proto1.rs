@@ -25,7 +25,7 @@ mod tests {
     /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/socket.rs`.
     const MAX_CONNECTIONS: usize = 64;
 
-    /// The changes the slow subscriber test makes, past what one socket buffer and the queue hold.
+    /// The changes the slow subscriber and burst tests make, past what one socket buffer and either queue of 64 holds.
     const CHANGES: usize = 200;
 
     /// The bound on a `get` answered while a slow subscriber holds a full queue.
@@ -407,6 +407,29 @@ mod tests {
             "a line past the bound closes before its newline"
         );
         assert_eq!(Client::connect(&session).ask(GET), state_reply(7, &state));
+    }
+
+    #[test]
+    fn a_pipelined_burst_of_changes_reaches_a_prompt_subscriber_whole() {
+        let session = Session::new();
+        let _daemon = session.start();
+        let mut subscriber = Client::connect(&session);
+        let first_reply = subscriber.ask(SUBSCRIBE);
+        let mut burst = Client::connect(&session);
+        thread::scope(|scope| {
+            let reader =
+                scope.spawn(move || (0..CHANGES).map(|_| subscriber.line()).collect::<Vec<_>>());
+            let lines: String = (0..CHANGES).map(|id| ear_change(id) + "\n").collect();
+            burst.send(lines.as_bytes());
+            for id in 0..CHANGES {
+                assert_eq!(burst.line(), confirmed(id));
+            }
+            let mut expected = ear_changes(&first_reply);
+            for line in reader.join().unwrap() {
+                expected += 1;
+                assert_eq!(ear_changes(&line), expected, "{line}");
+            }
+        });
     }
 
     #[test]
