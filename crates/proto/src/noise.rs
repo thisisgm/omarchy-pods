@@ -3,7 +3,7 @@
 use crate::control::{ControlCommand, ControlId};
 use crate::error::{ParseError, Parser};
 
-/// A listening mode, numbered as the status document publishes it.
+/// Numbered as the status document publishes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NoiseMode {
     Off = 0,
@@ -13,7 +13,6 @@ pub enum NoiseMode {
 }
 
 impl NoiseMode {
-    /// The mode after this one: Off, Anc, Transparency, Adaptive, then Off again.
     #[must_use]
     pub fn next(self) -> Self {
         match self {
@@ -24,7 +23,6 @@ impl NoiseMode {
         }
     }
 
-    /// The control command that selects this mode; the wire value is the mode plus one.
     #[must_use]
     pub fn command(self) -> ControlCommand {
         let wire = match self {
@@ -39,8 +37,7 @@ impl NoiseMode {
         }
     }
 
-    /// The mode a noise control command reports.
-    // Identifier 0D, value 03 00 00 00: Transparency.
+    /// Sample input: identifier 0D, value `03 00 00 00`, read as Transparency.
     pub fn from_command(command: &ControlCommand) -> Result<Self, ParseError> {
         if command.id != ControlId::NOISE_CONTROL {
             return Err(ParseError::UnknownValue {

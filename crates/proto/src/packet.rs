@@ -1,4 +1,4 @@
-//! Sorts one control channel SDU by its header and opcode, and hands it to the parser of that opcode.
+//! Sorts one control channel SDU by its header and opcode to that opcode's parser.
 
 use crate::battery::BatteryReport;
 use crate::control::ControlCommand;
@@ -6,9 +6,9 @@ use crate::ear::EarReport;
 use crate::error::{HEADER_LEN, ParseError, Parser};
 use crate::metadata::Metadata;
 
-/// Every packet the pods send after the handshake starts with these bytes; the opcode follows.
+/// Starts every packet the pods send after the handshake; the opcode follows.
 const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
-/// The opcode is a little endian u16 right after the accessory header.
+/// A little endian u16 right after the accessory header.
 const OPCODE_LEN: usize = 2;
 const OPCODE_BATTERY: u16 = 0x0004;
 const OPCODE_EAR: u16 = 0x0006;
@@ -16,16 +16,14 @@ const OPCODE_CONTROL: u16 = 0x0009;
 const OPCODE_METADATA: u16 = 0x001d;
 const OPCODE_UPLINK: u16 = 0x0058;
 
-/// One SDU from the control channel, read as far as this crate knows its opcode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming<'a> {
     Battery(BatteryReport),
     Ear(EarReport),
     Control(ControlCommand),
     Metadata(Metadata),
-    /// An opcode 0x58 packet, whole, for `UplinkPacket::parse`.
+    /// The whole packet, for `UplinkPacket::parse`.
     Uplink(&'a [u8]),
-    /// An opcode no parser here reads.
     Other {
         opcode: u16,
     },
@@ -33,7 +31,7 @@ pub enum Incoming<'a> {
     Foreign,
 }
 
-/// Sorts one SDU such as `04 00 04 00 09 00 28 01 00 00 00` (accessory header, opcode 0x0009 little endian, body) to its parser and returns that parser's error; a header cut before its two opcode bytes is a `Parser::Packet` error, never `Other` or `Foreign`.
+/// Sample input: `04 00 04 00 09 00 28 01 00 00 00`, accessory header, opcode 0x0009, body.
 pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
     let Some(after_header) = sdu.strip_prefix(&ACCESSORY_HEADER) else {
         return Ok(Incoming::Foreign);

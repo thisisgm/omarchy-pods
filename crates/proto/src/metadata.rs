@@ -2,19 +2,17 @@
 
 use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
-/// Every metadata packet starts with these bytes.
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
 /// Bytes between the header and the name, which no known code reads.
 const SKIPPED_LEN: usize = 5;
-/// Header plus the skipped bytes, where parseMetadata in daemon/main.cpp starts reading strings.
+/// Where parseMetadata in daemon/main.cpp starts reading strings.
 const MIN_LEN: usize = HEADER_LEN + SKIPPED_LEN;
-/// Ends every string field.
 const TERMINATOR: u8 = 0x00;
 
-/// The most bytes a field keeps: 248, the longest Bluetooth device name.
+/// 248, the longest Bluetooth device name.
 pub const FIELD_MAX_BYTES: usize = 248;
 
-/// The three fields the metadata packet starts with; the serial numbers behind them are never read.
+/// The serial numbers behind these three fields are never read.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Metadata {
     pub name: String,
@@ -23,12 +21,12 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// Reads name, model number and manufacturer, each ended by 00, behind the header and five skipped bytes, as in `04 00 04 00 1d 00 01 02 03 04 05 4e 00 41 33 30 36 33 00 41 00`; a missing one is empty and invalid UTF-8 is replaced.
+    /// Sample input: `04 00 04 00 1d 00 01 02 03 04 05 4e 00 41 00`, five skipped, 00 ended fields.
     pub fn parse(sdu: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(Parser::Metadata, sdu, HEADER, MIN_LEN)?;
         // strip_header refused anything under MIN_LEN, so the skipped bytes are always there.
         let strings = body.get(SKIPPED_LEN..).unwrap_or_default();
-        // Memory bound: the lossy conversion can allocate three times a field's bytes before the cut, so the bound is the SDU length, which the caller caps.
+        // Lossy conversion may allocate three times a field before the cut; callers cap the SDU.
         let mut fields = strings.split(|&byte| byte == TERMINATOR);
         let name = text(fields.next());
         let model_number = text(fields.next());
@@ -41,7 +39,6 @@ impl Metadata {
     }
 }
 
-/// One field as text, missing as empty, cut to `FIELD_MAX_BYTES` at a character boundary.
 fn text(field: Option<&[u8]>) -> String {
     let mut text = String::from_utf8_lossy(field.unwrap_or_default()).into_owned();
     text.truncate(text.floor_char_boundary(FIELD_MAX_BYTES));
@@ -55,12 +52,10 @@ mod tests {
     use cpp_source::PACKETS;
 
     const NAME: &str = "Test\u{2019}s AirPods Pro";
-    /// Five bytes between the header and the name, which the parser skips.
     const SKIPPED: [u8; 5] = [0x01, 0x02, 0x03, 0x04, 0x05];
     /// parseMetadata in daemon/main.cpp skips six bytes behind its five byte header.
     const CPP_SKIPPED_LEN: usize = 6;
 
-    /// A metadata packet: the header, the skipped bytes, then the string bytes as given, so `04 00 04 00 1d 00 01 02 03 04 05 41 00` for the strings `41 00`.
     fn packet(strings: &[u8]) -> Vec<u8> {
         [&HEADER[..], &SKIPPED, strings].concat()
     }
