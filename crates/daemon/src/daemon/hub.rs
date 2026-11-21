@@ -184,8 +184,11 @@ mod tests {
     fn a_subscriber_that_falls_behind_is_closed_after_its_backlog() {
         let hub = Hub::new();
         let (copy, mut changes) = hub.follow();
-        let (_, kept) = hub.follow();
-        for turn in 0..=SUBSCRIBER_BACKLOG {
+        let (_, departed) = hub.follow();
+        drop(departed);
+        block_on(hub.submit(ear_change(0)));
+        assert_eq!(hub.subscribers().len(), 1, "the departed subscriber");
+        for turn in 1..=SUBSCRIBER_BACKLOG {
             block_on(hub.submit(ear_change(turn)));
         }
         let mut expected = copy.counters.ear_detection_changes;
@@ -195,9 +198,7 @@ mod tests {
             assert_eq!(change.counters.ear_detection_changes, expected);
         }
         assert_eq!(changes.try_recv(), Err(TryRecvError::Disconnected));
-        drop(kept);
-        block_on(hub.submit(ear_change(SUBSCRIBER_BACKLOG + 1)));
-        assert!(hub.subscribers().is_empty());
+        assert!(hub.subscribers().is_empty(), "the full subscriber");
     }
 
     #[test]
