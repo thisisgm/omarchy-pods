@@ -49,16 +49,20 @@ Each method returns `s`: `sent` when the pods have the command and have not
 answered yet, or `confirmed` when the state already shows it carried out. A
 method never waits for the pods. A refused command is an error reply instead.
 
-| Method | Argument | Accepts |
-|---|---|---|
-| `SetNoiseMode` | `s` | `off`, `anc`, `transparency`, `adaptive` |
-| `SetEarDetection` | `s` | `off`, `one`, `both` |
-| `SetConversationalAwareness` | `b` | |
-| `SetOneBudAnc` | `b` | |
-| `SetAdaptiveLevel` | `y` | 0 to 100 |
-| `Connect` | none | |
-| `Disconnect` | none | |
-| `Forget` | none | |
+A `Set` method is the protocol 1 `set` request for the key in the table, as
+described in [protocol-1.md](protocol-1.md): it takes the same values and
+refuses the same way.
+
+| Method | Argument | Key | Accepts |
+|---|---|---|---|
+| `SetNoiseMode` | `s` | `noise` | `off`, `anc`, `transparency`, `adaptive`, `cycle` |
+| `SetEarDetection` | `s` | `ear_detection` | `off`, `one`, `both` |
+| `SetConversationalAwareness` | `b` | `conversational_awareness` | |
+| `SetOneBudAnc` | `b` | `one_bud_anc` | |
+| `SetAdaptiveLevel` | `y` | `adaptive_level` | 0 to 100 |
+| `Connect` | none | | |
+| `Disconnect` | none | | |
+| `Forget` | none | | |
 
 ## Errors
 
@@ -70,8 +74,8 @@ An error reply carries one of these names and the error's code as its message.
 | `io.github.thisisgm.Omapods1.Error.NotSupported` | The model cannot do this. |
 | `io.github.thisisgm.Omapods1.Error.NotWorn` | The command needs the pods in the ears. |
 | `io.github.thisisgm.Omapods1.Error.OutOfRange` | A number is outside its range, such as an adaptive level above 100. |
-| `io.github.thisisgm.Omapods1.Error.UnknownKey` | A string argument is not one of the accepted values. |
-| `io.github.thisisgm.Omapods1.Error.BadRequest` | The request is malformed. |
+| `io.github.thisisgm.Omapods1.Error.UnknownKey` | The setting does not exist. No method of this interface returns it. |
+| `io.github.thisisgm.Omapods1.Error.BadRequest` | A string argument is not one of the accepted values. |
 | `io.github.thisisgm.Omapods1.Error.Timeout` | The pods did not answer in time. |
 | `io.github.thisisgm.Omapods1.Error.Headless` | The request needs a window, which the daemon does not have. |
 

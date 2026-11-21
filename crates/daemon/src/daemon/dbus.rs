@@ -6,11 +6,13 @@ use std::future::{Future, poll_fn};
 use std::pin::{Pin, pin};
 use std::task::Poll;
 
-use pods_core::command::{ADAPTIVE_LEVEL_MAX, Command, CommandError, NoiseTarget, Outcome};
-use pods_core::legacy::{LegacyRequest, parse_verb, verb_for};
+use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
+use pods_core::settings::{
+    self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, NOISE, ONE_BUD_ANC,
+};
 use pods_core::state::{EarDetectionBehavior, State};
-use pods_core::status::{in_ear, to_status_object};
-use pods_proto::battery::{Charge, Component};
+use pods_core::status::{battery_reading, in_ear, to_status_object};
+use pods_proto::battery::Component;
 use pods_proto::noise::NoiseMode;
 use serde_json::Value;
 use tokio::sync::watch;
@@ -37,12 +39,6 @@ const API_VERSION: u32 = 1;
 /// Every line the daemon logs about this interface starts with this.
 const LOG_PREFIX: &str = "D-Bus interface off";
 
-/// The legacy verb family whose values name the listening modes, such as `noise:anc`.
-const NOISE_VERB_PREFIX: &str = "noise:";
-
-/// The legacy verb family whose values name the ear detection behaviours, such as `ear:both`.
-const EAR_VERB_PREFIX: &str = "ear:";
-
 /// The status document key prefix of the flags `Capabilities` lists.
 const CAPABILITY_KEY_PREFIX: &str = "supports_";
 
@@ -54,8 +50,9 @@ const CONFIRMED: &str = "confirmed";
 
 /// Serves the interface for as long as the session bus keeps the connection, or logs one line and returns at once.
 pub(super) async fn serve(hub: Hub) {
-    // Taken before the object is served, so a change while the name is requested is still announced.
+    // A watch, not `follow`: a property signal carries values, so a slow bus gets the net change, never a backlog or a drop.
     let updates = hub.subscribe();
+    // Taken before the object is served, so a change while the name is requested is still announced.
     let shown = Properties::of(&updates.borrow());
     // zbus would otherwise take the name from a running daemon and let the next one take it back.
     let connection = Builder::session()
@@ -185,10 +182,10 @@ impl Properties {
             one_bud_anc: state.one_bud_anc_mode,
             adaptive_level: state.adaptive_noise_level,
             batteries: BTreeMap::from([
-                ("left", battery(batteries.left)),
-                ("right", battery(batteries.right)),
-                ("case", battery(batteries.case)),
-                ("headset", battery(batteries.headset)),
+                ("left", battery_reading(batteries.left)),
+                ("right", battery_reading(batteries.right)),
+                ("case", battery_reading(batteries.case)),
+                ("headset", battery_reading(batteries.headset)),
             ]),
             in_ear: BTreeMap::from([
                 ("left", in_ear(state, Component::Left)),
@@ -231,45 +228,15 @@ impl Properties {
     }
 }
 
-/// A part with no reading shows as not available, not charging, level 0, as the status document shows it.
-fn battery(charge: Option<Charge>) -> (bool, bool, u8) {
-    charge.map_or((false, false, 0), |charge| {
-        (true, charge.charging, charge.level)
-    })
-}
-
-/// The value of the `noise:` verb that selects `mode`, such as `anc`.
+/// The word `set noise` takes for `mode`, such as `anc`.
 fn noise_mode_name(mode: NoiseMode) -> &'static str {
-    let request = LegacyRequest::Command(Command::SetNoise(NoiseTarget::Mode(mode)));
-    verb_value(request, NOISE_VERB_PREFIX)
+    let command = Command::SetNoise(NoiseTarget::Mode(mode));
+    settings::word(NOISE, command).unwrap_or_default()
 }
 
-/// The value of the `ear:` verb that selects `behavior`, such as `both`.
+/// The word `set ear_detection` takes for `behavior`, such as `both`; a test pins that every behaviour and mode has one.
 fn ear_detection_name(behavior: EarDetectionBehavior) -> &'static str {
-    verb_value(
-        LegacyRequest::Command(Command::SetEarDetection(behavior)),
-        EAR_VERB_PREFIX,
-    )
-}
-
-/// What follows `prefix` in the verb for `request`; a test pins that every mode and behaviour has one.
-fn verb_value(request: LegacyRequest, prefix: &str) -> &'static str {
-    verb_for(request)
-        .and_then(|verb| verb.strip_prefix(prefix))
-        .unwrap_or_default()
-}
-
-/// The command a method's string argument names under `prefix`, refusing anything that is not `wanted`.
-// Sample input: `anc` under `noise:`, `both` under `ear:`.
-fn command_named(
-    prefix: &str,
-    value: &str,
-    wanted: fn(Command) -> bool,
-) -> Result<Command, CallError> {
-    match parse_verb(format!("{prefix}{value}").as_bytes()) {
-        Some(LegacyRequest::Command(command)) if wanted(command) => Ok(command),
-        Some(_) | None => Err(CommandError::UnknownKey.into()),
-    }
+    settings::word(EAR_DETECTION, Command::SetEarDetection(behavior)).unwrap_or_default()
 }
 
 /// The object at `OBJECT_PATH`: properties read the hub's state, and methods submit commands to it.
@@ -281,6 +248,11 @@ struct Omapods {
 impl Omapods {
     fn now(&self) -> Properties {
         Properties::of(&self.hub.state())
+    }
+
+    /// Submits what `set <key> <value>` asks for on the control socket, by the same rules.
+    async fn set(&self, key: &str, value: &str) -> Result<&'static str, CallError> {
+        self.submit(settings::setting(key, value)?).await
     }
 
     async fn submit(&self, command: Command) -> Result<&'static str, CallError> {
@@ -364,31 +336,24 @@ impl Omapods {
     }
 
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {
-        let is_mode = |command| matches!(command, Command::SetNoise(NoiseTarget::Mode(_)));
-        self.submit(command_named(NOISE_VERB_PREFIX, mode, is_mode)?)
-            .await
+        self.set(NOISE, mode).await
     }
 
     async fn set_ear_detection(&self, behavior: &str) -> Result<&'static str, CallError> {
-        let is_behavior = |command| matches!(command, Command::SetEarDetection(_));
-        self.submit(command_named(EAR_VERB_PREFIX, behavior, is_behavior)?)
-            .await
+        self.set(EAR_DETECTION, behavior).await
     }
 
     async fn set_conversational_awareness(&self, enabled: bool) -> Result<&'static str, CallError> {
-        self.submit(Command::SetConversationalAwareness(enabled))
+        self.set(CONVERSATIONAL_AWARENESS, &enabled.to_string())
             .await
     }
 
     async fn set_one_bud_anc(&self, enabled: bool) -> Result<&'static str, CallError> {
-        self.submit(Command::SetOneBudAnc(enabled)).await
+        self.set(ONE_BUD_ANC, &enabled.to_string()).await
     }
 
     async fn set_adaptive_level(&self, level: u8) -> Result<&'static str, CallError> {
-        if level > ADAPTIVE_LEVEL_MAX {
-            return Err(CommandError::OutOfRange.into());
-        }
-        self.submit(Command::SetAdaptiveLevel(level)).await
+        self.set(ADAPTIVE_LEVEL, &level.to_string()).await
     }
 
     async fn connect(&self) -> Result<&'static str, CallError> {

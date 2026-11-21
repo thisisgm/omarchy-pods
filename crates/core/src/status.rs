@@ -126,13 +126,21 @@ fn object(fields: BTreeMap<&'static str, Value>) -> Value {
     )
 }
 
-/// A part with no reading shows as not available, level 0, not charging, as the C++ `Battery` reset leaves it.
 fn battery_fields(charge: Option<Charge>) -> BTreeMap<&'static str, Value> {
+    let (available, charging, level) = battery_reading(charge);
     BTreeMap::from([
-        ("available", Value::from(charge.is_some())),
-        ("level", Value::from(charge.map_or(0, |c| c.level))),
-        ("charging", Value::from(charge.is_some_and(|c| c.charging))),
+        ("available", Value::from(available)),
+        ("level", Value::from(level)),
+        ("charging", Value::from(charging)),
     ])
+}
+
+/// A part's battery as available, charging and level; with no reading it is not available, not charging, level 0, as the C++ `Battery` reset leaves it.
+#[must_use]
+pub fn battery_reading(charge: Option<Charge>) -> (bool, bool, u8) {
+    charge.map_or((false, false, 0), |charge| {
+        (true, charge.charging, charge.level)
+    })
 }
 
 fn battery_object(charge: Option<Charge>) -> Value {

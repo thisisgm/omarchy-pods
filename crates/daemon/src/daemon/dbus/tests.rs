@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use pods_core::status::to_status_line;
-use pods_proto::battery::Batteries;
+use pods_proto::battery::{Batteries, Charge};
 use pods_proto::ear::{EarPlacement, EarReport};
 use pods_proto::model::Model;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -412,19 +412,27 @@ fn set_adaptive_level_accepts_0_and_100() {
 }
 
 #[test]
-fn bad_noise_mode_string_is_unknown_key() {
+fn a_word_the_setting_does_not_take_is_bad_request_as_on_the_socket() {
     run(async {
         let peer = peer(Hub::new()).await;
-        let unknown_key = Err(format!("{ERROR_PREFIX}UnknownKey"));
-        for mode in ["cycle", "ANC", "", "noise:anc", "anc ", "one"] {
+        let bad_request = Err(format!("{ERROR_PREFIX}BadRequest"));
+        for mode in ["ANC", "", "noise:anc", "anc ", "one", "true"] {
             let reply = call(&peer.client, "SetNoiseMode", &(mode,)).await;
-            assert_eq!(reply, unknown_key, "{mode:?}");
+            assert_eq!(reply, bad_request, "{mode:?}");
+            assert_eq!(
+                settings::setting(NOISE, mode),
+                Err(CommandError::BadRequest)
+            );
         }
         for behavior in ["both ", "anc", "", "ear:off", "cycle"] {
             let reply = call(&peer.client, "SetEarDetection", &(behavior,)).await;
-            assert_eq!(reply, unknown_key, "{behavior:?}");
+            assert_eq!(reply, bad_request, "{behavior:?}");
         }
         assert_eq!(peer.hub.state(), State::default());
+        // The socket's `set noise cycle` is a noise command too, so the method takes it.
+        let reply = call(&peer.client, "SetNoiseMode", &("cycle",)).await;
+        assert_eq!(reply, Err(format!("{ERROR_PREFIX}NotConnected")));
+        assert_eq!(peer.hub.state().counters.noise_control_changes, 1);
     });
 }
 
