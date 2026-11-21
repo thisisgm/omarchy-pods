@@ -1,7 +1,7 @@
 //! Listening modes and the order the cycle steps through them.
 
 use crate::control::{ControlCommand, ControlId};
-use crate::error::ParseError;
+use crate::error::{ParseError, Parser};
 
 /// A listening mode, numbered as the status document publishes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,6 +44,7 @@ impl NoiseMode {
     pub fn from_command(command: &ControlCommand) -> Result<Self, ParseError> {
         if command.id != ControlId::NOISE_CONTROL {
             return Err(ParseError::UnknownValue {
+                parser: Parser::NoiseCommand,
                 field: "noise control id",
                 value: command.id.0,
             });
@@ -55,6 +56,7 @@ impl NoiseMode {
             0x03 => Ok(Self::Transparency),
             0x04 => Ok(Self::Adaptive),
             _ => Err(ParseError::UnknownValue {
+                parser: Parser::NoiseCommand,
                 field: "noise control value",
                 value: wire,
             }),
@@ -73,6 +75,7 @@ impl TryFrom<u8> for NoiseMode {
             2 => Ok(Self::Transparency),
             3 => Ok(Self::Adaptive),
             _ => Err(ParseError::UnknownValue {
+                parser: Parser::NoiseMode,
                 field: "noise mode",
                 value,
             }),
@@ -101,6 +104,7 @@ mod tests {
         assert_eq!(
             NoiseMode::try_from(4),
             Err(ParseError::UnknownValue {
+                parser: Parser::NoiseMode,
                 field: "noise mode",
                 value: 4
             })
@@ -148,12 +152,26 @@ mod tests {
     fn from_command_rejects_values_outside_the_modes_and_other_ids() {
         let off_by_zero =
             ControlCommand::parse(&[0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0d, 0x00]).unwrap();
-        assert!(NoiseMode::from_command(&off_by_zero).is_err());
+        assert_eq!(
+            NoiseMode::from_command(&off_by_zero),
+            Err(ParseError::UnknownValue {
+                parser: Parser::NoiseCommand,
+                field: "noise control value",
+                value: 0x00
+            })
+        );
         let past_adaptive =
             ControlCommand::parse(&[0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x0d, 0x05]).unwrap();
         assert!(NoiseMode::from_command(&past_adaptive).is_err());
         let other_id =
             ControlCommand::parse(&[0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x28, 0x01]).unwrap();
-        assert!(NoiseMode::from_command(&other_id).is_err());
+        assert_eq!(
+            NoiseMode::from_command(&other_id),
+            Err(ParseError::UnknownValue {
+                parser: Parser::NoiseCommand,
+                field: "noise control id",
+                value: 0x28
+            })
+        );
     }
 }

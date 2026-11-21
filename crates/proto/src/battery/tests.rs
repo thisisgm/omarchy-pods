@@ -46,7 +46,11 @@ fn parse_packet_rejects_header_only() {
     assert_eq!(HEADER.len(), 6);
     assert_eq!(
         BatteryReport::parse(&HEADER),
-        Err(ParseError::TooShort { need: 7, got: 6 })
+        Err(ParseError::TooShort {
+            parser: Parser::Battery,
+            need: 7,
+            got: 6
+        })
     );
 }
 
@@ -57,6 +61,7 @@ fn parse_packet_rejects_battery_count_too_high() {
     assert_eq!(
         BatteryReport::parse(&buf),
         Err(ParseError::UnknownValue {
+            parser: Parser::Battery,
             field: "battery count",
             value: 4
         })
@@ -71,6 +76,7 @@ fn parse_packet_rejects_count_size_mismatch() {
     assert_eq!(
         BatteryReport::parse(&buf),
         Err(ParseError::WrongLength {
+            parser: Parser::Battery,
             expected: 12,
             got: 10
         })
@@ -91,7 +97,14 @@ fn parse_packet_accepts_single_headset() {
 fn parse_packet_rejects_broken_spacer() {
     let mut buf = HEADER.to_vec();
     buf.extend([1, 0x04, 0x42, 50, DISCHARGING, 0x01]);
-    assert!(BatteryReport::parse(&buf).is_err());
+    assert_eq!(
+        BatteryReport::parse(&buf),
+        Err(ParseError::UnknownValue {
+            parser: Parser::Battery,
+            field: "battery spacer",
+            value: 0x42
+        })
+    );
 }
 
 #[test]
@@ -301,6 +314,14 @@ fn header_and_codes_match_the_cpp_battery_definitions() {
         let cpp = BATTERY.byte(component, &format!("{name} = "), ',');
         assert_eq!(Component::try_from(cpp), Ok(part), "{name}");
     }
+    assert_eq!(
+        Component::try_from(0x10),
+        Err(ParseError::UnknownValue {
+            parser: Parser::Battery,
+            field: "battery component",
+            value: 0x10
+        })
+    );
     let status = Some("enum class BatteryStatus");
     assert_eq!(STATUS_CHARGING, BATTERY.byte(status, "Charging = ", ','));
     assert_eq!(DISCHARGING, BATTERY.byte(status, "Discharging = ", ','));

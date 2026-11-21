@@ -1,9 +1,9 @@
 //! Control commands: the settings packets both sides send on the control channel.
 
-use crate::error::{ParseError, strip_header};
+use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 
 /// Every control command starts with these bytes.
-const HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00];
+const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00];
 /// Header, identifier and the first value byte, the shortest command the peer sends.
 const MIN_LEN: usize = 8;
 /// Header, identifier and four value bytes, the length the host always sends.
@@ -55,9 +55,10 @@ impl ControlCommand {
     /// Reads a command; missing value bytes read as 0 and bytes past the fourth are ignored.
     // 04 00 04 00 09 00 28 01 00 00 00: header, identifier, then up to four value bytes.
     pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-        let body = strip_header(bytes, &HEADER, MIN_LEN)?;
+        let body = strip_header(Parser::Control, bytes, HEADER, MIN_LEN)?;
         let Some((&id, rest)) = body.split_first() else {
             return Err(ParseError::TooShort {
+                parser: Parser::Control,
                 need: MIN_LEN,
                 got: bytes.len(),
             });
@@ -97,6 +98,7 @@ impl ControlCommand {
 mod tests {
     use super::*;
     use crate::cpp_header::{CONTROL, PACKETS};
+    use crate::error::Header;
 
     const TEST_ID: ControlId = ControlId(0x42);
 
@@ -119,13 +121,27 @@ mod tests {
         let mut buf = HEADER.to_vec();
         buf.push(0x42);
         assert_eq!(buf.len(), 7);
-        assert!(ControlCommand::parse(&buf).is_err());
+        assert_eq!(
+            ControlCommand::parse(&buf),
+            Err(ParseError::TooShort {
+                parser: Parser::Control,
+                need: 8,
+                got: 7
+            })
+        );
     }
 
     #[test]
     fn parse_active_rejects_wrong_header() {
         let buf = [0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x01, 0x01];
-        assert_eq!(ControlCommand::parse(&buf), Err(ParseError::BadHeader));
+        assert_eq!(
+            ControlCommand::parse(&buf),
+            Err(ParseError::BadHeader {
+                parser: Parser::Control,
+                expected: Header(HEADER),
+                got: Header([0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa]),
+            })
+        );
     }
 
     #[test]

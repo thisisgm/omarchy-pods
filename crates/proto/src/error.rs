@@ -1,33 +1,177 @@
 //! The one error type every parser returns.
 
-/// Why a packet was refused.
+use std::fmt;
+
+/// Every control channel packet this crate reads starts with a header this long.
+pub const HEADER_LEN: usize = 6;
+
+/// The parser that refused its input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Parser {
+    /// `BatteryReport::parse` and the component byte it reads.
+    Battery,
+    /// `BatteryReport::parse_decrypted`.
+    DecryptedBattery,
+    /// `EarReport::parse`.
+    Ear,
+    /// `ControlCommand::parse`.
+    Control,
+    /// `NoiseMode::from_command`.
+    NoiseCommand,
+    /// `NoiseMode::try_from`.
+    NoiseMode,
+}
+
+impl fmt::Display for Parser {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Battery => "battery packet",
+            Self::DecryptedBattery => "decrypted battery payload",
+            Self::Ear => "ear detection packet",
+            Self::Control => "control command",
+            Self::NoiseCommand => "noise control command",
+            Self::NoiseMode => "noise mode number",
+        })
+    }
+}
+
+/// The first bytes of a packet, shown in hex; headers are fixed protocol bytes and never carry an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Header(pub [u8; HEADER_LEN]);
+
+impl fmt::Display for Header {
+    // Sample output: 04 00 04 00 09 00
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (at, byte) in self.0.iter().enumerate() {
+            if at > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Why a packet was refused, naming the parser that refused it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ParseError {
     /// Fewer bytes than the shortest valid packet.
-    #[error("packet too short: need {need} bytes, got {got}")]
-    TooShort { need: usize, got: usize },
+    #[error("{parser} too short: need {need} bytes, got {got}")]
+    TooShort {
+        parser: Parser,
+        need: usize,
+        got: usize,
+    },
     /// The packet does not start with the header this parser reads.
-    #[error("packet does not start with the expected header")]
-    BadHeader,
+    #[error("{parser} has the wrong header: expected {expected}, got {got}")]
+    BadHeader {
+        parser: Parser,
+        expected: Header,
+        got: Header,
+    },
     /// A byte holds a value the protocol does not define for that field.
-    #[error("unknown {field} value {value:#04x}")]
-    UnknownValue { field: &'static str, value: u8 },
-    /// The length disagrees with the length the packet itself declares.
-    #[error("packet is {got} bytes, its count says {expected}")]
-    WrongLength { expected: usize, got: usize },
+    #[error("{parser} has an unknown {field} value {value:#04x}")]
+    UnknownValue {
+        parser: Parser,
+        field: &'static str,
+        value: u8,
+    },
+    /// The length disagrees with the length the packet must have.
+    #[error("{parser} is {got} bytes, expected {expected}")]
+    WrongLength {
+        parser: Parser,
+        expected: usize,
+        got: usize,
+    },
 }
 
 /// Checks the minimum length, then returns the bytes after `header`.
-pub(crate) fn strip_header<'a>(
-    bytes: &'a [u8],
-    header: &[u8],
+pub(crate) fn strip_header(
+    parser: Parser,
+    bytes: &[u8],
+    header: [u8; HEADER_LEN],
     need: usize,
-) -> Result<&'a [u8], ParseError> {
+) -> Result<&[u8], ParseError> {
+    let too_short = ParseError::TooShort {
+        parser,
+        need,
+        got: bytes.len(),
+    };
     if bytes.len() < need {
-        return Err(ParseError::TooShort {
-            need,
-            got: bytes.len(),
-        });
+        return Err(too_short);
     }
-    bytes.strip_prefix(header).ok_or(ParseError::BadHeader)
+    match bytes.split_first_chunk::<HEADER_LEN>() {
+        Some((seen, body)) if *seen == header => Ok(body),
+        Some((seen, _)) => Err(ParseError::BadHeader {
+            parser,
+            expected: Header(header),
+            got: Header(*seen),
+        }),
+        None => Err(too_short),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::battery::BatteryReport;
+    use crate::control::ControlCommand;
+    use crate::noise::NoiseMode;
+
+    use super::*;
+
+    #[test]
+    fn too_short_names_the_parser_and_both_lengths() {
+        let err = BatteryReport::parse(&[0x04, 0x00, 0x04, 0x00, 0x04, 0x00]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "battery packet too short: need 7 bytes, got 6"
+        );
+    }
+
+    #[test]
+    fn bad_header_names_the_parser_and_both_headers_in_hex() {
+        let err =
+            ControlCommand::parse(&[0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x01, 0x01]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "control command has the wrong header: expected 04 00 04 00 09 00, got ff ee dd cc bb aa"
+        );
+    }
+
+    #[test]
+    fn unknown_value_names_the_parser_field_and_value() {
+        let err = BatteryReport::parse(&[0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x04]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "battery packet has an unknown battery count value 0x04"
+        );
+    }
+
+    #[test]
+    fn wrong_length_names_the_parser_and_both_lengths() {
+        let err = BatteryReport::parse_decrypted(&[0; 15], true, false, false).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "decrypted battery payload is 15 bytes, expected 16"
+        );
+    }
+
+    #[test]
+    fn every_parser_has_a_name() {
+        for (parser, name) in [
+            (Parser::Battery, "battery packet"),
+            (Parser::DecryptedBattery, "decrypted battery payload"),
+            (Parser::Ear, "ear detection packet"),
+            (Parser::Control, "control command"),
+            (Parser::NoiseCommand, "noise control command"),
+            (Parser::NoiseMode, "noise mode number"),
+        ] {
+            assert_eq!(parser.to_string(), name);
+        }
+        let err = NoiseMode::try_from(4).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "noise mode number has an unknown noise mode value 0x04"
+        );
+    }
 }
