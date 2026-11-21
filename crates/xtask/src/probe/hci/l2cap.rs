@@ -49,6 +49,8 @@ pub(crate) const MAX_UNMAPPED: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Channel {
     pub handle: u16,
+    /// Which link of the trace it is on: links count from 0 as each one's first packet arrives, and a handle given out again after its link ended is a new link.
+    pub link: usize,
     pub psm: u16,
     /// The identifier the host chose for its end.
     pub host_cid: u16,
@@ -145,6 +147,8 @@ pub(crate) struct Channels {
 /// The channels of one ACL link and the PDU being joined in each direction.
 #[derive(Debug, Default)]
 struct Link {
+    /// The value its channels carry in `Channel::link`.
+    number: usize,
     /// What has arrived of a PDU the host is sending, its header included.
     from_host: Option<Vec<u8>>,
     /// What has arrived of a PDU the pods are sending, its header included.
@@ -183,6 +187,8 @@ struct Seen {
 #[derive(Debug, Default)]
 struct Reader {
     links: BTreeMap<u16, Link>,
+    /// How many links have carried a packet so far, which is the number the next one takes.
+    links_started: usize,
     /// Where each listed unmapped identifier sits in `found.unmapped`, by handle, identifier and whether the pods sent.
     unmapped_at: BTreeMap<(u16, u16, bool), usize>,
     found: Channels,
@@ -190,6 +196,22 @@ struct Reader {
 
 fn bump(count: &mut u64) {
     *count = count.saturating_add(1);
+}
+
+/// The link on `handle`, which takes the next number when this is its first packet.
+fn link_on<'a>(
+    links: &'a mut BTreeMap<u16, Link>,
+    started: &mut usize,
+    handle: u16,
+) -> &'a mut Link {
+    links.entry(handle).or_insert_with(|| {
+        let number = *started;
+        *started = started.saturating_add(1);
+        Link {
+            number,
+            ..Link::default()
+        }
+    })
 }
 
 fn other(direction: Direction) -> Direction {
@@ -248,7 +270,7 @@ impl Reader {
         }
         let field = u16::from_le_bytes(field);
         let handle = field & HANDLE_MASK;
-        let link = self.links.entry(handle).or_default();
+        let link = link_on(&mut self.links, &mut self.links_started, handle);
         let slot = match direction {
             Direction::ToPods => &mut link.from_host,
             Direction::FromPods => &mut link.from_pods,
@@ -363,7 +385,7 @@ impl Reader {
             bump(&mut self.found.counts.requests_over_limit);
             return Some(());
         }
-        let link = self.links.entry(seen.handle).or_default();
+        let link = link_on(&mut self.links, &mut self.links_started, seen.handle);
         link.waiting.push(self.found.requests.len());
         self.found.requests.push(Request {
             at_ns: seen.at_ns,
@@ -422,8 +444,13 @@ impl Reader {
         ] {
             self.close(stale, seen);
         }
+        let link = link_on(&mut self.links, &mut self.links_started, seen.handle);
+        link.host_cids.insert(host_cid, index);
+        link.pods_cids.insert(pods_cid, index);
+        let link = link.number;
         self.found.list.push(Channel {
             handle: seen.handle,
+            link,
             psm,
             host_cid,
             pods_cid,
@@ -436,9 +463,6 @@ impl Reader {
             closed: None,
             sdus: Vec::new(),
         });
-        let link = self.links.entry(seen.handle).or_default();
-        link.host_cids.insert(host_cid, index);
-        link.pods_cids.insert(pods_cid, index);
         Some(())
     }
 

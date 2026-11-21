@@ -1,5 +1,6 @@
 //! The `probe hci` command: reads a trace through the store's bounded read and writes its tables into a new run.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use pods_proto::sdulog::{Direction, LogError, format_line};
 
 use super::l2cap::Counts;
 use super::{Channel, Channels, Cut, HciRecord, Kind, Records, TraceError, channels, records};
-use crate::probe::a2dp::{self, Codec, CodecKind, Second, Unread, VENDOR_CODEC};
+use crate::probe::a2dp::{self, AVDTP_PSM, Codec, CodecKind, Music, Second, Unread, VENDOR_CODEC};
 use crate::probe::store::{self, Run, Session, StoreError};
 
 /// The log of the first channel on the control PSM; a second channel gets `sdu-2.log`.
@@ -18,10 +19,10 @@ const CONTROL_LOG: &str = "sdu";
 const ATT_LOG: &str = "att";
 /// The table of connection requests.
 const REQUESTS_NAME: &str = "psm.tsv";
-/// The table of the music stream, one row a second.
-const SECONDS_NAME: &str = "a2dp.tsv";
-/// The codecs the pods offered and the one that was set.
-const CODECS_NAME: &str = "avdtp.txt";
+/// The table of the music stream of the first pods' link, one row a second; a second link gets `a2dp-2.tsv`.
+const SECONDS_TABLE: &str = "a2dp";
+/// The codecs the pods offered on that link and the one that was set.
+const CODECS_LIST: &str = "avdtp";
 /// The counts, which the command also prints.
 const LINKS_NAME: &str = "links.txt";
 /// The column names of `psm.tsv`.
@@ -83,6 +84,15 @@ fn text(lines: &[String]) -> String {
         .iter()
         .flat_map(|line| [line.as_str(), "\n"])
         .collect()
+}
+
+// Sample output for ("sdu", 1, "log") and for ("a2dp", 2, "tsv"): `sdu.log` and `a2dp-2.tsv`.
+fn numbered(stem: &str, number: usize, extension: &str) -> String {
+    if number == 1 {
+        format!("{stem}.{extension}")
+    } else {
+        format!("{stem}-{number}.{extension}")
+    }
 }
 
 fn side(direction: Direction) -> &'static str {
@@ -182,16 +192,53 @@ fn codec_line(label: &str, codec: &Codec) -> String {
     format!("{label} {kind} bytes={}", Hex(&codec.bytes))
 }
 
-fn codecs_list(found: &Channels) -> String {
-    let mut lines: Vec<String> = a2dp::capabilities(found)
+fn codecs_list(music: &Music) -> String {
+    let mut lines: Vec<String> = music
+        .capabilities
         .iter()
         .map(|codec| codec_line("capability", codec))
         .collect();
-    lines.push(a2dp::configuration(found).map_or_else(
+    lines.push(music.configuration.as_ref().map_or_else(
         || "configuration none".to_owned(),
-        |codec| codec_line("configuration", &codec),
+        |codec| codec_line("configuration", codec),
     ));
     text(&lines)
+}
+
+/// The first control channel of each link that opened one; such a link is the pods', the one mark a trace of any host holds, while an address needs a connection event the trace may start after.
+fn pods_links(found: &Channels) -> Vec<&Channel> {
+    let mut seen = BTreeSet::new();
+    let on_control = |channel: &&Channel| channel.psm == CONTROL_PSM;
+    let firsts = found.list.iter().filter(on_control);
+    firsts.filter(|channel| seen.insert(channel.link)).collect()
+}
+
+/// The two music files of the pods' link `first` is on, read in one pass, and the line that names that link and counts what was not read.
+fn music_tables(number: usize, first: &Channel, found: &Channels) -> (String, [Output; 2]) {
+    let music = a2dp::music(found, first.link);
+    let Unread {
+        fragmented_signals,
+        malformed_signals,
+        not_rtp,
+        other_channels,
+    } = music.unread;
+    let seconds = numbered(SECONDS_TABLE, number, "tsv");
+    let codecs = numbered(CODECS_LIST, number, "txt");
+    let counted = format!(
+        "music {seconds} {codecs} handle={:#06x} avdtp_fragmented_signals={fragmented_signals} avdtp_malformed_signals={malformed_signals} avdtp_other_channels={other_channels} media_packets_not_rtp={not_rtp}",
+        first.handle
+    );
+    let tables = [
+        Output {
+            name: seconds,
+            text: seconds_table(&music.seconds),
+        },
+        Output {
+            name: codecs,
+            text: codecs_list(&music),
+        },
+    ];
+    (counted, tables)
 }
 
 /// Where zero is and how often the stamps of the records step back, as `links.txt` states them.
@@ -220,6 +267,7 @@ fn link_lines(
     clock: Clock,
     records: &[HciRecord],
     found: &Channels,
+    pods: &[&Channel],
 ) -> Vec<String> {
     let synchronous = |wanted: Option<bool>| {
         records
@@ -242,12 +290,10 @@ fn link_lines(
         requests_over_limit,
         unmapped_over_limit,
     } = found.counts;
-    let Unread {
-        fragmented_signals,
-        malformed_signals: avdtp_malformed_signals,
-        not_rtp,
-        other_channels,
-    } = a2dp::unread(found);
+    let pods_links: BTreeSet<usize> = pods.iter().map(|first| first.link).collect();
+    let on_other_links =
+        |channel: &&Channel| channel.psm == AVDTP_PSM && !pods_links.contains(&channel.link);
+    let avdtp_channels_on_other_links = found.list.iter().filter(on_other_links).count();
     let not_basic_mode_pdus = found.list.iter().fold(0_u64, |pdus, channel| {
         pdus.saturating_add(channel.not_basic_pdus)
     });
@@ -280,10 +326,10 @@ fn link_lines(
         ("requests_over_limit", requests_over_limit),
         ("unmapped_over_limit", unmapped_over_limit),
         ("not_basic_mode_pdus", not_basic_mode_pdus),
-        ("avdtp_fragmented_signals", fragmented_signals),
-        ("avdtp_malformed_signals", avdtp_malformed_signals),
-        ("avdtp_other_channels", other_channels),
-        ("media_packets_not_rtp", not_rtp),
+        (
+            "avdtp_channels_on_other_links",
+            u64::try_from(avdtp_channels_on_other_links).unwrap_or(u64::MAX),
+        ),
     ] {
         lines.push(format!("{name} {count}"));
     }
@@ -330,7 +376,8 @@ pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
         })
         .collect();
     let found = channels(&records);
-    let mut links = link_lines(read.cut, clock, &records, &found);
+    let pods = pods_links(&found);
+    let mut links = link_lines(read.cut, clock, &records, &found, &pods);
     let mut outputs = Vec::new();
     for (psm, stem) in [(CONTROL_PSM, CONTROL_LOG), (ATT_PSM, ATT_LOG)] {
         let on_psm = found.list.iter().filter(|channel| channel.psm == psm);
@@ -339,27 +386,31 @@ pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
             if !channel.is_basic() {
                 continue;
             }
-            let name = if number == 1 {
-                format!("{stem}.log")
-            } else {
-                format!("{stem}-{number}.log")
-            };
+            let name = numbered(stem, number, "log");
             let (text, counted) = log(&name, channel)?;
             links.push(counted);
             outputs.push(Output { name, text });
         }
     }
-    for (name, text) in [
-        (REQUESTS_NAME, requests_table(&found)),
-        (SECONDS_NAME, seconds_table(&a2dp::media(&found))),
-        (CODECS_NAME, codecs_list(&found)),
-        (LINKS_NAME, text(&links)),
-    ] {
-        outputs.push(Output {
-            name: name.to_owned(),
-            text,
-        });
+    outputs.push(Output {
+        name: REQUESTS_NAME.to_owned(),
+        text: requests_table(&found),
+    });
+    // Each pods' link gets tables of its own, since a row that sums two links describes neither.
+    for (number, first) in (1_usize..).zip(&pods) {
+        let (counted, tables) = music_tables(number, first, &found);
+        links.push(counted);
+        outputs.extend(tables);
     }
+    if pods.is_empty() {
+        links.push(format!(
+            "music_tables_not_written reason=no_link_opened_psm_{CONTROL_PSM:#06x}"
+        ));
+    }
+    outputs.push(Output {
+        name: LINKS_NAME.to_owned(),
+        text: text(&links),
+    });
     Ok(outputs)
 }
 
