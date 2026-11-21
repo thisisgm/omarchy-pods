@@ -32,9 +32,8 @@ proptest! {
 
     #[test]
     fn control_round_trips(id in any::<u8>(), v in any::<[u8; 4]>()) {
-        if let Ok(c) = ControlCommand::parse(&sample_frame(id, v)) {
-            prop_assert_eq!(ControlCommand::parse(&c.encode()).unwrap(), c);
-        }
+        let c = ControlCommand::parse(&sample_frame(id, v)).unwrap();
+        prop_assert_eq!(ControlCommand::parse(&c.encode()).unwrap(), c);
     }
 
     #[test]
