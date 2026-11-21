@@ -94,6 +94,7 @@ impl EarReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpp_header::PACKETS;
 
     fn packet(primary: u8, secondary: u8) -> Vec<u8> {
         let mut buf = HEADER.to_vec();
@@ -186,5 +187,13 @@ mod tests {
     #[test]
     fn rejects_a_packet_without_the_ear_header() {
         assert_eq!(EarReport::parse(&[0; 8]), Err(ParseError::BadHeader));
+    }
+
+    #[test]
+    fn header_matches_the_cpp_ear_detection_header() {
+        assert_eq!(
+            HEADER.to_vec(),
+            PACKETS.hex(Some("namespace Parse"), "EAR_DETECTION")
+        );
     }
 }

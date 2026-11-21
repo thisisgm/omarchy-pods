@@ -20,34 +20,20 @@ pub const REQUEST_NOTIFICATIONS: [u8; 11] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpp_header::PACKETS;
 
-    const CPP_PACKETS: &str = include_str!("../../../daemon/airpods_packets.h");
-
-    // Sample input: static const QByteArray HANDSHAKE = QByteArray::fromHex("00000400010002000000000000000000");
-    fn cpp_packet(name: &str) -> Vec<u8> {
-        let marker = format!("{name} = QByteArray::fromHex(\"");
-        let (_, rest) = CPP_PACKETS
-            .split_once(&marker)
-            .unwrap_or_else(|| panic!("daemon/airpods_packets.h has no {marker}"));
-        let (hex, _) = rest
-            .split_once('"')
-            .unwrap_or_else(|| panic!("daemon/airpods_packets.h: {name} has no closing quote"));
-        hex.as_bytes()
-            .chunks(2)
-            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-            .collect()
-    }
+    const CONNECTION: Option<&str> = Some("namespace Connection");
 
     #[test]
     fn requests_match_the_cpp_connection_packets() {
-        assert_eq!(HANDSHAKE.to_vec(), cpp_packet("HANDSHAKE"));
+        assert_eq!(HANDSHAKE.to_vec(), PACKETS.hex(CONNECTION, "HANDSHAKE"));
         assert_eq!(
             SET_SPECIFIC_FEATURES.to_vec(),
-            cpp_packet("SET_SPECIFIC_FEATURES")
+            PACKETS.hex(CONNECTION, "SET_SPECIFIC_FEATURES")
         );
         assert_eq!(
             REQUEST_NOTIFICATIONS.to_vec(),
-            cpp_packet("REQUEST_NOTIFICATIONS")
+            PACKETS.hex(CONNECTION, "REQUEST_NOTIFICATIONS")
         );
     }
 }
