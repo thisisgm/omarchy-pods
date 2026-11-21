@@ -2,7 +2,7 @@
 
 use pods_proto::noise::NoiseMode;
 
-use crate::command::{ADAPTIVE_LEVEL_MAX, Command, NoiseTarget};
+use crate::command::{ADAPTIVE_LEVEL_MAX, Command, CommandError, NoiseTarget};
 use crate::state::EarDetectionBehavior;
 
 /// What one legacy request asks for.
@@ -17,7 +17,7 @@ pub enum LegacyRequest {
 pub const REOPEN_VERB: &str = "reopen";
 
 /// Every whole-word verb of the C++ dispatch in `daemon/main.cpp`, in its order, with what it asks for.
-const VERBS: [(&str, LegacyRequest); 17] = [
+pub(crate) const VERBS: [(&str, LegacyRequest); 17] = [
     (REOPEN_VERB, LegacyRequest::Command(Command::Reopen)),
     ("noise:off", noise(NoiseTarget::Mode(NoiseMode::Off))),
     ("noise:anc", noise(NoiseTarget::Mode(NoiseMode::Anc))),
@@ -75,7 +75,8 @@ const fn ear(behavior: EarDetectionBehavior) -> LegacyRequest {
 pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
     let text = std::str::from_utf8(bytes).ok()?;
     if let Some(payload) = text.strip_prefix(ADAPTIVE_PREFIX) {
-        let level = adaptive_level(payload)?;
+        // The legacy dialect has no error reply, so a refused level is only an unknown request.
+        let level = adaptive_level(payload).ok()?;
         return Some(LegacyRequest::Command(Command::SetAdaptiveLevel(level)));
     }
     VERBS
@@ -84,13 +85,36 @@ pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
         .map(|&(_, request)| request)
 }
 
-/// The level in an `adaptive:` payload, by the rule of `parseIntVerb` over Qt's `toInt`.
-// Sample input: `37`, `+37`, `-0` or `37\n`; ` 37`, `37x` and `101` are refused.
-fn adaptive_level(payload: &str) -> Option<u8> {
-    let value: i32 = payload.trim_end_matches(QT_TRAILING_SPACE).parse().ok()?;
+/// The level in an `adaptive:` payload, by the rule of `parseIntVerb` over Qt's `toInt`: not an `i32` is a bad request, outside 0 to 100 is out of range.
+// Sample input: `37`, `+37`, `-0` or `37\n`; ` 37` and `37x` are bad, `101` is out of range.
+pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
+    let Ok(value) = payload.trim_end_matches(QT_TRAILING_SPACE).parse::<i32>() else {
+        return Err(CommandError::BadRequest);
+    };
     u8::try_from(value)
         .ok()
         .filter(|level| *level <= ADAPTIVE_LEVEL_MAX)
+        .ok_or(CommandError::OutOfRange)
+}
+
+/// The command of the table verb `<family>:<word>`, the way protocol 1 names a setting and its value.
+// Sample input: family `noise` with word `anc`, which is the verb `noise:anc`.
+pub(crate) fn family_command(family: &str, word: &str) -> Option<Command> {
+    VERBS.iter().find_map(|&(verb, request)| match request {
+        LegacyRequest::Command(command) if verb.split_once(':') == Some((family, word)) => {
+            Some(command)
+        }
+        LegacyRequest::Command(_) | LegacyRequest::Status => None,
+    })
+}
+
+/// The command of a table verb that is one whole word, the way protocol 1 names an action.
+// Sample input: `disconnect`.
+pub(crate) fn word_command(word: &str) -> Option<Command> {
+    VERBS.iter().find_map(|&(verb, request)| match request {
+        LegacyRequest::Command(command) if verb == word => Some(command),
+        LegacyRequest::Command(_) | LegacyRequest::Status => None,
+    })
 }
 
 #[cfg(test)]

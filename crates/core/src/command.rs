@@ -59,6 +59,21 @@ impl CommandError {
             Self::Headless => "headless",
         }
     }
+
+    /// The sentence a person reads for this refusal, beside the code a program reads.
+    #[must_use]
+    pub fn message(&self) -> &'static str {
+        match self {
+            Self::NotConnected => "The AirPods are not connected.",
+            Self::NotSupported => "These AirPods do not support that.",
+            Self::NotWorn => "The AirPods are not in an ear.",
+            Self::OutOfRange => "The value is outside the range the setting takes.",
+            Self::UnknownKey => "There is no setting by that name.",
+            Self::BadRequest => "The daemon could not read the request.",
+            Self::Timeout => "The AirPods did not answer in time.",
+            Self::Headless => "This daemon runs headless and has no window.",
+        }
+    }
 }
 
 /// How a command ended.
