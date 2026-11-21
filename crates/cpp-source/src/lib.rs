@@ -3,7 +3,7 @@
     test,
     expect(
         dead_code_pub_in_binary,
-        reason = "the test build calls only `enumerators`; the crates that depend on this one call the rest"
+        reason = "the test build calls only `enumerators` and `body`; the crates that depend on this one call the rest"
     )
 )]
 
@@ -47,6 +47,16 @@ pub const MEDIA_CONTROLLER: CppHeader = CppHeader {
 pub const BLE_MANAGER: CppHeader = CppHeader {
     path: "daemon/ble/blemanager.h",
     text: include_str!("../../../daemon/ble/blemanager.h"),
+};
+
+pub const MAIN: CppHeader = CppHeader {
+    path: "daemon/main.cpp",
+    text: include_str!("../../../daemon/main.cpp"),
+};
+
+pub const IPC_VERB: CppHeader = CppHeader {
+    path: "daemon/ipcverb.hpp",
+    text: include_str!("../../../daemon/ipcverb.hpp"),
 };
 
 impl CppHeader {
@@ -93,6 +103,50 @@ impl CppHeader {
             .split_once(end)
             .unwrap_or_else(|| missing(&format!("{}: `{start}` has no `{end}`", self.path)));
         found
+    }
+
+    /// Every piece of text that follows `start` up to the next `end`, in file order.
+    // Sample input: `if (msg == "noise:off") {` read with start `msg == "` and end `"`.
+    #[must_use]
+    pub fn all_between(&self, start: &str, end: &str) -> Vec<&'static str> {
+        let mut found = Vec::new();
+        let mut rest = self.text;
+        while let Some((_, after)) = rest.split_once(start) {
+            let (piece, tail) = after
+                .split_once(end)
+                .unwrap_or_else(|| missing(&format!("{}: `{start}` has no `{end}`", self.path)));
+            found.push(piece);
+            rest = tail;
+        }
+        found
+    }
+
+    /// The braced body of the first definition that starts with `signature`, braces matched, outer braces excluded.
+    // Sample input: `void forgetDevice() {\n if (x) { return; }\n ++m_total;\n }` read with signature `void forgetDevice(`.
+    #[must_use]
+    pub fn body(&self, signature: &str) -> &'static str {
+        let (_, after) = self
+            .text
+            .split_once(signature)
+            .unwrap_or_else(|| missing(&format!("{} has no `{signature}`", self.path)));
+        let (_, inside) = after
+            .split_once('{')
+            .unwrap_or_else(|| missing(&format!("{}: `{signature}` has no body", self.path)));
+        let mut depth = 1_usize;
+        for (at, character) in inside.char_indices() {
+            match character {
+                '{' => depth = depth.saturating_add(1),
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if depth == 0 {
+                return inside.get(..at).unwrap_or_default();
+            }
+        }
+        missing(&format!(
+            "{}: `{signature}` never closes its body",
+            self.path
+        ))
     }
 
     /// A byte written as `0x1B` or `3`, found between `start` and `end`.
@@ -208,5 +262,13 @@ mod tests {
                 ("UNKNOWN", 0xFF),
             ]
         );
+    }
+
+    #[test]
+    fn body_matches_nested_braces_and_stops_at_its_own_close() {
+        let body = MAIN.body("void forgetDevice(");
+        assert!(body.contains("++m_forgetCallsTotal;"), "{body}");
+        assert!(body.contains("proc->start(\"bluetoothctl\""), "{body}");
+        assert!(!body.contains("void connectToDevice("), "{body}");
     }
 }
