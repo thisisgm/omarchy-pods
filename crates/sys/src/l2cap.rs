@@ -8,7 +8,9 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use rustix::net::addr::{SocketAddrArg, SocketAddrLen, SocketAddrOpaque};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
-use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType, socket_with};
+use rustix::net::{
+    AddressFamily, RecvFlags, SendFlags, Shutdown, SocketFlags, SocketType, socket_with,
+};
 
 /// The size of `struct sockaddr_l2` in the kernel's include/net/bluetooth/l2cap.h.
 const SOCKADDR_L2_LEN: usize = 14;
@@ -64,6 +66,9 @@ pub enum ChannelError {
     /// The wait on several channels failed, a signal included.
     #[error("could not wait on the L2CAP channels: {0}")]
     Wait(Errno),
+    /// The kernel refused to shut the channel down.
+    #[error("could not shut down the L2CAP channel: {0}")]
+    Shutdown(Errno),
 }
 
 /// `struct sockaddr_l2` as bytes, so that no padding byte is left unwritten.
@@ -170,9 +175,22 @@ impl Channel {
 
     /// Writes one SDU.
     pub fn send(&self, sdu: &[u8]) -> Result<(), ChannelError> {
+        self.send_with(sdu, SendFlags::empty())
+    }
+
+    /// Writes one SDU without waiting; a full send buffer is `Err(ChannelError::Send(Errno::AGAIN))`.
+    pub fn try_send(&self, sdu: &[u8]) -> Result<(), ChannelError> {
+        self.send_with(sdu, SendFlags::DONTWAIT)
+    }
+
+    /// Shuts down both directions so a `recv` blocked in another thread returns `Closed`, proven on an `AF_UNIX` socket pair and not yet on an L2CAP socket.
+    pub fn shutdown(&self) -> Result<(), ChannelError> {
+        rustix::net::shutdown(&self.fd, Shutdown::Both).map_err(ChannelError::Shutdown)
+    }
+
+    fn send_with(&self, sdu: &[u8], flags: SendFlags) -> Result<(), ChannelError> {
         let len = sdu.len();
-        let sent =
-            rustix::net::send(&self.fd, sdu, SendFlags::empty()).map_err(ChannelError::Send)?;
+        let sent = rustix::net::send(&self.fd, sdu, flags).map_err(ChannelError::Send)?;
         if sent == len {
             Ok(())
         } else {
@@ -183,6 +201,8 @@ impl Channel {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::mpsc;
     use std::time::Instant;
 
     use pods_proto::att::{self, AttPdu, HandleInfo, Uuid};
@@ -198,6 +218,12 @@ mod tests {
     /// The range that reads a whole attribute table.
     const FIRST_HANDLE: u16 = 0x0001;
     const LAST_HANDLE: u16 = 0xffff;
+    /// The bound on a send that must not wait; a waiting send takes `SEND_TIMEOUT`.
+    const AT_ONCE: Duration = Duration::from_secs(1);
+    /// Longer than `AT_ONCE`, so a send that waits fails the time check instead of hanging the test.
+    const SEND_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Far more one byte SDUs than a socket pair's send buffer holds.
+    const FILL_LIMIT: usize = 100_000;
 
     fn channel_pair() -> (Channel, Channel) {
         let (near, far) = socketpair(
@@ -425,6 +451,107 @@ mod tests {
         assert_eq!(AttPdu::parse(recv_sdu(&host, &mut buf)), Ok(end_of_table));
     }
 
+    /// Polls until the thread at `task` under `/proc` sleeps, which for a reader means blocked in `recv`.
+    fn sleeps_within(task: &Path, wait: Duration) -> bool {
+        let stat = Path::new("/proc").join(task).join("stat");
+        let started = Instant::now();
+        while started.elapsed() < wait {
+            // Sample input: "1317937 (pods_sys-1a2b3c) S 1317935 1317936 ..."; the name may hold ") ", so the state follows the last one.
+            let line = std::fs::read_to_string(&stat).unwrap_or_default();
+            if line
+                .rsplit_once(") ")
+                .is_some_and(|(_, rest)| rest.starts_with('S'))
+            {
+                return true;
+            }
+            std::thread::yield_now();
+        }
+        false
+    }
+
+    #[test]
+    fn shutdown_wakes_a_recv_blocked_in_another_thread() {
+        let (near, far) = channel_pair();
+        let (task_tx, task_rx) = mpsc::channel();
+        let (woke_tx, woke_rx) = mpsc::channel();
+        let (blocked, shut, woke) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                task_tx
+                    .send(std::fs::read_link("/proc/thread-self"))
+                    .unwrap();
+                woke_tx.send(far.recv(&mut [0_u8; BUFFER_LEN])).unwrap();
+            });
+            let blocked = task_rx
+                .recv()
+                .is_ok_and(|task| task.is_ok_and(|task| sleeps_within(&task, READY_WAIT)));
+            let shut = far.shutdown();
+            let woke = woke_rx.recv_timeout(READY_WAIT);
+            // A reader still blocked would hold the scope open forever, so closing the peer releases it before any assert.
+            drop(near);
+            (blocked, shut, woke)
+        });
+        assert!(blocked, "the reader never blocked in recv");
+        assert_eq!(shut, Ok(()));
+        assert_eq!(woke, Ok(Ok(Received::Closed)));
+    }
+
+    #[test]
+    fn shutdown_closes_both_directions() {
+        let (near, far) = channel_pair();
+        near.set_recv_timeout(RECV_TIMEOUT).unwrap();
+        far.shutdown().unwrap();
+        let mut buf = [0_u8; BUFFER_LEN];
+        assert_eq!(near.recv(&mut buf).unwrap(), Received::Closed);
+        assert_eq!(near.send(&[0x04]), Err(ChannelError::Send(Errno::PIPE)));
+    }
+
+    #[test]
+    fn shutdown_twice_is_not_a_panic() {
+        let (_near, far) = channel_pair();
+        assert_eq!(far.shutdown(), Ok(()));
+        assert_eq!(far.shutdown(), Ok(()));
+    }
+
+    #[test]
+    fn shutdown_of_a_non_socket_is_an_error_naming_shutdown() {
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let error = from_fd(OwnedFd::from(reader)).shutdown().unwrap_err();
+        assert_eq!(error, ChannelError::Shutdown(Errno::NOTSOCK));
+        assert!(error.to_string().contains("shut down"), "{error}");
+    }
+
+    #[test]
+    fn try_send_on_a_full_buffer_is_again_and_returns_at_once() {
+        let (near, _far) = channel_pair();
+        set_socket_timeout(&near.fd, Timeout::Send, Some(SEND_TIMEOUT)).unwrap();
+        let mut last = None;
+        for _ in 0..FILL_LIMIT {
+            let before = Instant::now();
+            let sent = near.try_send(&[0x5a]);
+            if let Err(error) = sent {
+                last = Some((error, before.elapsed()));
+                break;
+            }
+        }
+        let (error, took) = last.expect("the send buffer never filled");
+        assert_eq!(error, ChannelError::Send(Errno::AGAIN));
+        assert!(took < AT_ONCE, "the full buffer took {took:?}");
+    }
+
+    #[test]
+    fn try_send_keeps_message_boundaries() {
+        let (near, far) = channel_pair();
+        let sizes = [1, 338, BUFFER_LEN];
+        for (fill, size) in [0x11_u8, 0x22, 0x33].into_iter().zip(sizes) {
+            near.try_send(&vec![fill; size]).unwrap();
+        }
+        let mut buf = [0_u8; BUFFER_LEN];
+        for (fill, size) in [0x11_u8, 0x22, 0x33].into_iter().zip(sizes) {
+            assert_eq!(far.recv(&mut buf).unwrap(), Received::Sdu(size));
+            assert!(buf[..size].iter().all(|byte| *byte == fill));
+        }
+    }
+
     #[test]
     fn connect_without_bluetooth_is_an_error_not_a_panic() {
         let peer = "02:00:00:00:00:01".parse().unwrap();
@@ -470,6 +597,10 @@ mod tests {
             (
                 ChannelError::Wait(errno),
                 "could not wait on the L2CAP channels",
+            ),
+            (
+                ChannelError::Shutdown(errno),
+                "could not shut down the L2CAP channel",
             ),
         ] {
             assert_eq!(error.to_string(), format!("{step}: {errno}"));
