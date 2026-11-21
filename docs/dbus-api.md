@@ -92,8 +92,9 @@ the message.
 | `io.github.thisisgm.Omapods1.Error.Headless` | `headless` |
 
 No method of this interface names a setting, opens a window or waits for the
-pods, so none returns `UnknownKey`, `Headless` or `Timeout`. A `Set` method
-given a word its key does not take returns `BadRequest`.
+pods, so none returns `UnknownKey` or `Headless`. Any method returns `Timeout`
+when the daemon already holds 64 commands waiting to be carried out. A `Set`
+method given a word its key does not take returns `BadRequest`.
 
 A call the bus layer refuses before it reaches the daemon, such as one with the
 wrong argument type or one that writes a property, gets a standard

@@ -32,16 +32,22 @@ pub(crate) fn pause(duration: Duration) {
 }
 
 /// Waits for `ready` to give a value, failing the test once `HANG_LIMIT` passes.
-pub(crate) fn wait_for<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
+pub(crate) fn wait_for<T>(what: &str, ready: impl FnMut() -> Option<T>) -> T {
+    wait_within(what, HANG_LIMIT, ready)
+}
+
+/// Waits for `ready` to give a value, failing the test once `limit` passes.
+pub(crate) fn wait_within<T>(
+    what: &str,
+    limit: Duration,
+    mut ready: impl FnMut() -> Option<T>,
+) -> T {
     let started = Instant::now();
     loop {
         if let Some(value) = ready() {
             return value;
         }
-        assert!(
-            started.elapsed() < HANG_LIMIT,
-            "{what} not seen after {HANG_LIMIT:?}"
-        );
+        assert!(started.elapsed() < limit, "{what} not seen after {limit:?}");
         pause(POLL);
     }
 }

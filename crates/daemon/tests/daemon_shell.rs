@@ -11,6 +11,7 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::Path;
+    use std::process::Stdio;
     use std::time::{Duration, Instant, UNIX_EPOCH};
 
     use cpp_source::MAIN;
@@ -20,7 +21,9 @@ mod tests {
     use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};
     use rustix::process::{Signal, kill_process};
 
-    use super::support::{BINARY, Daemon, HANG_LIMIT, Session, pause, read_to_close, wait_for};
+    use super::support::{
+        BINARY, Daemon, HANG_LIMIT, Session, pause, read_to_close, wait_for, wait_within,
+    };
 
     /// Half the daemon's 1000 ms request deadline: a reply slower than this waited on the silent client.
     const SERVED_WHILE_SILENT_LIMIT: Duration = Duration::from_millis(500);
@@ -73,6 +76,9 @@ mod tests {
 
     /// Bytes no daemon writes, standing for a running survivor's state file.
     const SURVIVOR_STATE: &[u8] = b"{\"survivor\":true}\n";
+
+    /// The runtime keeps an idle blocking thread for ten seconds; twice that, so a loaded host still settles.
+    const SETTLE_WAIT: Duration = Duration::from_secs(20);
 
     /// The sentinel's modification time, in 2001, so a rewrite with the same bytes still shows.
     const SURVIVOR_MTIME: Duration = Duration::from_secs(1_000_000_000);
@@ -716,5 +722,45 @@ mod tests {
                 assert_eq!(out.stderr, stderr, "{verb} via {}", program.display());
             }
         }
+    }
+
+    #[expect(clippy::print_stderr, reason = "a timing test prints how long it took")]
+    #[test]
+    fn the_idle_daemon_settles_to_one_thread() {
+        let session = Session::new();
+        let mut daemon = session.start();
+        assert_eq!(session.status(), to_status_line(&State::default()));
+        let set = session.run_client(Path::new(BINARY), &["set", "ear_detection", "both"]);
+        assert!(set.status.success(), "{set:?}");
+        let printed = session.dir.path().join("watch.out");
+        let child = session
+            .command(Path::new(BINARY), &["watch"])
+            .stdin(Stdio::null())
+            .stdout(File::create(&printed).unwrap())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let watch = Daemon {
+            child,
+            log: printed,
+        };
+        wait_for("the watch's first line", || {
+            (!watch.log().is_empty()).then_some(())
+        });
+        drop(watch);
+        let tasks = format!("/proc/{}/task", daemon.child.id());
+        let started = Instant::now();
+        wait_within("one daemon thread", SETTLE_WAIT, || {
+            (fs::read_dir(&tasks).unwrap().count() == 1).then_some(())
+        });
+        // An exited daemon not yet reaped still lists one task.
+        assert!(
+            daemon.child.try_wait().unwrap().is_none(),
+            "the daemon exited"
+        );
+        eprintln!(
+            "one thread {:?} after the watch closed, within {SETTLE_WAIT:?}",
+            started.elapsed()
+        );
     }
 }
