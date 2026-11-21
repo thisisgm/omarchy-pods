@@ -25,10 +25,13 @@ mod tests {
     use zbus::export::futures_core::Stream;
     use zbus::{Connection, MessageStream, OwnedVariant};
 
-    use super::support::{BINARY, Daemon, HANG_LIMIT, POLL, Session, wait_for};
+    use super::support::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
 
     /// The whole bus conversation of one test, longer than any one wait inside it so that wait reports first.
     const CONVERSATION_LIMIT: Duration = Duration::from_secs(30);
+
+    /// How often the async wait for the bus name asks again; the harness wait is blocking and cannot run here.
+    const BUS_POLL: Duration = Duration::from_millis(10);
 
     /// The names the daemon serves, from `src/daemon/dbus.rs`.
     const BUS_NAME: &str = "io.github.thisisgm.Omapods";
@@ -195,7 +198,7 @@ mod tests {
                     "{BUS_NAME} never owned: {}",
                     daemon.log()
                 );
-                tokio::time::sleep(POLL).await;
+                tokio::time::sleep(BUS_POLL).await;
             }
             let connected = bool::try_from(get(bus, "Connected").await).unwrap();
             assert!(!connected);
