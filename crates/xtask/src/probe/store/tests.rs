@@ -554,8 +554,8 @@ const FORBIDDEN: [&str; 12] = [
     "fs::copy",
 ];
 
-/// Where a source file's unit tests begin; the scan reads everything above it.
-const TESTS_MODULE: &str = "#[cfg(test)]\nmod tests";
+/// An inline tests module, which clippy's `items_after_test_module` keeps last, so the scan stops there.
+const TESTS_MODULE: &str = "#[cfg(test)]\nmod tests {";
 /// A file of unit tests, which names the forbidden calls itself.
 const TESTS_FILE: &str = "tests.rs";
 
