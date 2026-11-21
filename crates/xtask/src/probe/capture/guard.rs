@@ -15,7 +15,7 @@ pub(super) struct Dropped {
     pub(super) stop: Cell<Option<Sent>>,
     /// A side restore the log has not recorded yet, with the command it sent.
     pub(super) restore: Cell<Option<(ControlCommand, Sent)>>,
-    /// When the last STOP left, which is where the tail counts from.
+    /// When the last packet of a guard left, which is where the tail counts from.
     pub(super) tail_from_ns: Cell<Option<u64>>,
 }
 
@@ -45,11 +45,14 @@ pub(super) struct SideChange<'a> {
 impl Drop for SideChange<'_> {
     fn drop(&mut self) {
         let sent = self.link.send(&self.original.encode());
+        if sent.result.is_ok() {
+            self.dropped.tail_from_ns.set(Some(sent.at_ns));
+        }
         self.dropped.restore.set(Some((self.original, sent)));
     }
 }
 
-/// Keeps the channel open until the tail after the last STOP has passed; packets that arrive meanwhile are read and not logged.
+/// Keeps the channel open until the tail after the last packet of a guard has passed; packets that arrive meanwhile are read and not logged.
 pub(super) struct Tail<'a> {
     pub(super) link: Link<'a>,
     pub(super) length_ns: u64,
