@@ -24,6 +24,12 @@ use super::*;
 /// A test still waiting after this long has hung, and fails.
 const CEILING: Duration = Duration::from_secs(10);
 
+/// The interface's name as clients write it.
+const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+
+/// What every error name starts with.
+const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
+
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 /// The public description of this interface, which must list every error name.
