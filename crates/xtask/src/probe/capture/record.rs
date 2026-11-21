@@ -127,20 +127,24 @@ impl<'o> Recorder<'o> {
         write_mark(self.marks, at_ns, kind, text)
     }
 
-    /// Logs one packet in a single write; a packet the log format refuses is marked and counted in its place.
+    /// Logs one packet in a single write and says whether it is in the log; one the log format refuses is marked and counted in its place.
     pub(super) fn packet(
         &mut self,
         at_ns: u64,
         direction: Direction,
         sdu: &[u8],
-    ) -> Result<(), IoFailure> {
+    ) -> Result<bool, IoFailure> {
         match sdulog::format_line(at_ns, direction, sdu) {
             Ok(mut line) => {
                 line.push('\n');
                 let written = self.log.write_all(line.as_bytes());
-                written.map_err(|error| write_failure(LOG_NAME, &error))
+                written.map_err(|error| write_failure(LOG_NAME, &error))?;
+                Ok(true)
             }
-            Err(refusal) => self.unlogged(at_ns, sdu.len(), &refusal),
+            Err(refusal) => {
+                self.unlogged(at_ns, sdu.len(), &refusal)?;
+                Ok(false)
+            }
         }
     }
 
@@ -151,16 +155,21 @@ impl<'o> Recorder<'o> {
         len: usize,
         why: &dyn fmt::Display,
     ) -> Result<(), IoFailure> {
+        self.mark(at_ns, Mark::Truncated, &format_args!("{len} bytes: {why}"))?;
         self.truncated = self.truncated.saturating_add(1);
-        self.mark(at_ns, Mark::Truncated, &format_args!("{len} bytes: {why}"))
+        Ok(())
     }
 
+    /// Logs a packet from the pods and counts it only once its line is in the log.
     pub(super) fn received(&mut self, at_ns: u64, sdu: &[u8]) -> Result<(), IoFailure> {
+        if !self.packet(at_ns, Direction::FromPods, sdu)? {
+            return Ok(());
+        }
         self.sdus_in = self.sdus_in.saturating_add(1);
         if matches!(UplinkPacket::parse(sdu), Ok(Some(UplinkPacket::Audio(_)))) {
             self.audio_sdus = self.audio_sdus.saturating_add(1);
         }
-        self.packet(at_ns, Direction::FromPods, sdu)
+        Ok(())
     }
 
     /// Records a packet the host sent, or that it did not leave; the log line and the mark are both tried.

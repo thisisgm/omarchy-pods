@@ -8,7 +8,7 @@ use pods_proto::uplink::{START, STOP};
 
 use super::super::super::script::rescue;
 use super::super::*;
-use super::pods::{pair, queued};
+use super::pods::{audio_sdu, pair, queued};
 
 /// What the clock of a loop built by hand always reads.
 const BENCH_NOW_NS: u64 = 5;
@@ -216,8 +216,21 @@ fn the_side_is_read_only_before_the_gate() {
     assert_eq!(read(scripted), None);
 }
 
+/// A writer that takes nothing, as a full disk would.
+struct Full;
+
+impl io::Write for Full {
+    fn write(&mut self, _data: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("no space left"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
-fn a_packet_the_log_format_refuses_is_marked_and_counted() {
+fn a_packet_the_log_format_refuses_is_marked_and_counted_once() {
     let (mut log, mut marks, mut cues) = (Vec::new(), Vec::new(), Vec::new());
     let mut out = Outputs {
         log: &mut log,
@@ -225,11 +238,17 @@ fn a_packet_the_log_format_refuses_is_marked_and_counted() {
         cues: &mut cues,
     };
     let mut recorder = Recorder::new(&mut out);
-    recorder.packet(7, Direction::FromPods, &[]).unwrap();
+    recorder.received(7, &[]).unwrap();
     let too_long = vec![0x33; sdulog::MAX_SDU_LEN + 1];
-    recorder.packet(9, Direction::ToPods, &too_long).unwrap();
-    assert_eq!(recorder.truncated, 2);
-    assert_eq!(log, b"");
+    let logged = recorder.packet(9, Direction::ToPods, &too_long);
+    assert_eq!(logged, Ok(false));
+    recorder.received(11, &audio_sdu(0)).unwrap();
+    let counts = (recorder.sdus_in, recorder.audio_sdus, recorder.truncated);
+    assert_eq!(counts, (1, 1, 2));
+    let log = String::from_utf8(log).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert_eq!(sdulog::parse_line(lines[0]).unwrap().sdu, audio_sdu(0));
     let marks = String::from_utf8(marks).unwrap();
     let refused: Vec<&str> = marks.lines().collect();
     assert_eq!(refused.len(), 2, "{marks}");
@@ -238,4 +257,25 @@ fn a_packet_the_log_format_refuses_is_marked_and_counted() {
         refused[1].starts_with("9\ttruncated\t4097 bytes: "),
         "{marks}"
     );
+}
+
+#[test]
+fn a_packet_is_counted_only_once_its_line_or_mark_was_written() {
+    let (mut log, mut marks, mut cues) = (Full, Full, Vec::new());
+    let mut out = Outputs {
+        log: &mut log,
+        marks: &mut marks,
+        cues: &mut cues,
+    };
+    let mut recorder = Recorder::new(&mut out);
+    let full = |file| {
+        Err(IoFailure::Write {
+            file,
+            kind: io::ErrorKind::Other,
+        })
+    };
+    assert_eq!(recorder.received(7, &audio_sdu(0)), full(LOG_NAME));
+    assert_eq!(recorder.received(8, &[]), full(MARKS_NAME));
+    let counts = (recorder.sdus_in, recorder.audio_sdus, recorder.truncated);
+    assert_eq!(counts, (0, 0, 0));
 }
