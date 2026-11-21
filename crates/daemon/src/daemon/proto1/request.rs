@@ -31,29 +31,34 @@ pub(super) enum RequestError {
     UnsupportedVersion,
 }
 
-/// Reads one request line, newline excluded; a line with no usable `id`, `v` or `op` is refused with no id.
+/// Reads one request line, newline excluded; only a line with no usable `id` is refused with no id.
 // Sample input: `{"v":1,"id":9,"op":"set","key":"noise","value":"anc"}`
 pub(super) fn parse(line: &[u8]) -> Result<(u64, Request), Refusal> {
-    let unreadable = Refusal {
-        id: None,
-        error: RequestError::Command(CommandError::BadRequest),
-    };
+    let bad_request = RequestError::Command(CommandError::BadRequest);
     // The reply names the line as bad; why the JSON did not parse is no use to the client.
     let Ok(Value::Object(members)) = serde_json::from_slice::<Value>(line) else {
-        return Err(unreadable);
+        return Err(Refusal {
+            id: None,
+            error: bad_request,
+        });
     };
-    let id = members.get("id").and_then(Value::as_u64);
-    let (Some(id), Some(version), Some(op)) = (id, members.get("v"), members.get("op")) else {
-        return Err(unreadable);
+    let Some(id) = members.get("id").and_then(Value::as_u64) else {
+        return Err(Refusal {
+            id: None,
+            error: bad_request,
+        });
     };
     let refuse = |error| Refusal {
         id: Some(id),
         error,
     };
+    let Some(version) = members.get("v") else {
+        return Err(refuse(bad_request));
+    };
     if version.as_u64() != Some(VERSION) {
         return Err(refuse(RequestError::UnsupportedVersion));
     }
-    let request = match op.as_str() {
+    let request = match members.get("op").and_then(Value::as_str) {
         Some("get") => Ok(Request::Get),
         Some("subscribe") => Ok(Request::Subscribe),
         Some("set") => set(&members).map(Request::Submit),
