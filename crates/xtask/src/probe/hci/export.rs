@@ -97,7 +97,7 @@ fn mode_text(mode: u8) -> String {
     format!("{mode:#04x}")
 }
 
-/// One channel's packets as capture log lines, and the line that counts what the log format could not hold.
+/// One channel's packets as capture log lines, and the line that names its link and counts what the log format could not hold.
 fn log(name: &str, channel: &Channel) -> Result<(String, String), ExportError> {
     let mut lines = Vec::new();
     let (mut empty, mut too_long) = (0_u64, 0_u64);
@@ -120,8 +120,10 @@ fn log(name: &str, channel: &Channel) -> Result<(String, String), ExportError> {
         }
     }
     let written = lines.len();
-    let counted =
-        format!("log {name} written={written} refused_empty={empty} refused_too_long={too_long}");
+    let counted = format!(
+        "log {name} handle={:#06x} written={written} refused_empty={empty} refused_too_long={too_long}",
+        channel.handle
+    );
     Ok((text(&lines), counted))
 }
 
@@ -192,10 +194,30 @@ fn codecs_list(found: &Channels) -> String {
     text(&lines)
 }
 
-/// The counts of `links.txt`: a cut first when there is one, where zero is, the synchronous connections, and everything the reader could not use.
+/// Where zero is and how often the stamps of the records step back, as `links.txt` states them.
+#[derive(Debug, Clone, Copy)]
+struct Clock {
+    zero_ns: u64,
+    steps_back: u64,
+}
+
+/// Zero is the earliest stamp, so no stamp is moved; a stamp earlier than the one before it is a step back of the recorder's wall clock.
+fn clock(kept: &[HciRecord]) -> Clock {
+    let zero_ns = kept.iter().map(|record| record.at_ns).min().unwrap_or(0);
+    let steps_back = kept
+        .windows(2)
+        .filter(|pair| matches!(pair, [before, after] if after.at_ns < before.at_ns))
+        .count();
+    Clock {
+        zero_ns,
+        steps_back: u64::try_from(steps_back).unwrap_or(u64::MAX),
+    }
+}
+
+/// The counts of `links.txt`: a cut first when there is one, the clock, the synchronous connections, and everything the reader could not use.
 fn link_lines(
     cut: Option<Cut>,
-    zero_ns: u64,
+    clock: Clock,
     records: &[HciRecord],
     found: &Channels,
 ) -> Vec<String> {
@@ -233,13 +255,16 @@ fn link_lines(
         .iter()
         .map(|cut| {
             format!(
-                "trace_cut_short record={} offset={}",
-                cut.record, cut.offset
+                "{} record={} offset={}",
+                cut.damage.key(),
+                cut.record,
+                cut.offset
             )
         })
         .collect();
     lines.extend([
-        format!("realtime_at_zero_ns {zero_ns}"),
+        format!("realtime_at_zero_ns {}", clock.zero_ns),
+        format!("stamps_stepping_back {}", clock.steps_back),
         format!("synchronous_connection_events {}", synchronous(None)),
         format!("synchronous_connections_opened {}", synchronous(Some(true))),
     ]);
@@ -282,30 +307,30 @@ fn link_lines(
             channel.not_basic_pdus
         ));
     }
-    let offered = found
-        .list
-        .iter()
-        .filter(|channel| channel.psm == ATT_PSM)
-        .filter_map(|channel| channel.pods_mtu);
-    for mtu in offered.filter(|mtu| *mtu < ATT_MTU_NEEDED) {
-        lines.push(format!("att_pods_mtu_under_{ATT_MTU_NEEDED} {mtu}"));
+    // The attribute MTU of a classic link is the smaller of the two sides' L2CAP MTUs, so either side's offer can be too small.
+    for channel in found.list.iter().filter(|channel| channel.psm == ATT_PSM) {
+        for (side, offered) in [("host", channel.host_mtu), ("pods", channel.pods_mtu)] {
+            if let Some(mtu) = offered.filter(|mtu| *mtu < ATT_MTU_NEEDED) {
+                lines.push(format!("att_{side}_mtu_under_{ATT_MTU_NEEDED} {mtu}"));
+            }
+        }
     }
     lines
 }
 
-/// Every file of the run, from records whose stamps are counted from the first one kept.
+/// Every file of the run, from records whose stamps are counted from the earliest one kept.
 pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
-    let zero_ns = read.kept.first().map_or(0, |record| record.at_ns);
+    let clock = clock(&read.kept);
     let records: Vec<HciRecord> = read
         .kept
         .into_iter()
         .map(|record| HciRecord {
-            at_ns: record.at_ns.saturating_sub(zero_ns),
+            at_ns: record.at_ns.saturating_sub(clock.zero_ns),
             ..record
         })
         .collect();
     let found = channels(&records);
-    let mut links = link_lines(read.cut, zero_ns, &records, &found);
+    let mut links = link_lines(read.cut, clock, &records, &found);
     let mut outputs = Vec::new();
     for (psm, stem) in [(CONTROL_PSM, CONTROL_LOG), (ATT_PSM, ATT_LOG)] {
         let on_psm = found.list.iter().filter(|channel| channel.psm == psm);
@@ -363,6 +388,8 @@ pub(crate) fn export(
         path: trace.to_path_buf(),
         source,
     })?;
+    // The kept records hold copies of what they need, so the trace leaves memory before the tables are built.
+    drop(bytes);
     let cut = read.cut;
     let outputs = render(read)?;
     let session = Session::open(root, stamp)?;

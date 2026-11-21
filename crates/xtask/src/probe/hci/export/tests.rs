@@ -4,9 +4,10 @@ use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{Direction, MAX_SDU_LEN, parse_line};
 
 use super::super::fixture::{
-    ATT_CIDS, AVDTP_PSM, CONTROL_CIDS, Trace, att_packets, control_packets, counting_bytes, session,
+    ATT_CIDS, AVDTP_PSM, CONTROL_CIDS, KEYBOARD_HANDLE, PODS_HANDLE, Trace, att_packets,
+    control_packets, counting_bytes, session,
 };
-use super::super::records;
+use super::super::{Damage, records};
 use super::*;
 
 const HOST: Direction = Direction::ToPods;
@@ -22,6 +23,8 @@ const SYSTEM_FILE: &str = "/etc/passwd";
 const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
 /// One millisecond, the step of the fixture's clock.
 const MS: u64 = 1_000_000;
+/// Where the timestamp starts in a record header.
+const STAMP_AT: usize = 16;
 
 fn rendered(trace: &Trace) -> Vec<Output> {
     render(records(&trace.bytes()).unwrap()).unwrap()
@@ -105,7 +108,7 @@ fn the_psm_0x001f_channel_goes_to_att_log_and_is_absent_when_never_opened() {
     assert_eq!(text(&outputs, "att.log"), "");
     assert!(
         text(&outputs, "links.txt")
-            .contains("log att.log written=0 refused_empty=0 refused_too_long=0\n")
+            .contains("log att.log handle=0x000b written=0 refused_empty=0 refused_too_long=0\n")
     );
 }
 
@@ -115,9 +118,12 @@ fn two_channels_on_one_psm_get_a_log_each() {
     trace.open(HOST, CONTROL_PSM, CONTROL_CIDS);
     trace.open(HOST, CONTROL_PSM, SECOND);
     trace.open(PODS, ATT_PSM, ATT_CIDS);
+    trace.on(KEYBOARD_HANDLE);
     trace.open(HOST, CONTROL_PSM, (0x0049, 0x0059));
+    trace.on(PODS_HANDLE);
     trace.send(PODS, SECOND, &[2]);
     trace.send(PODS, CONTROL_CIDS, &[1]);
+    trace.on(KEYBOARD_HANDLE);
     trace.send(HOST, (0x0049, 0x0059), &[3]);
     let outputs = rendered(&trace);
     assert_eq!(
@@ -136,6 +142,19 @@ fn two_channels_on_one_psm_get_a_log_each() {
     assert_eq!(text(&outputs, "sdu.log"), "9000000 < 01\n");
     assert_eq!(text(&outputs, "sdu-2.log"), "8000000 < 02\n");
     assert_eq!(text(&outputs, "sdu-3.log"), "10000000 > 03\n");
+    let logs: Vec<&str> = text(&outputs, "links.txt")
+        .lines()
+        .filter(|line| line.starts_with("log "))
+        .collect();
+    assert_eq!(
+        logs,
+        [
+            "log sdu.log handle=0x000b written=1 refused_empty=0 refused_too_long=0",
+            "log sdu-2.log handle=0x000b written=1 refused_empty=0 refused_too_long=0",
+            "log sdu-3.log handle=0x000c written=1 refused_empty=0 refused_too_long=0",
+            "log att.log handle=0x000b written=0 refused_empty=0 refused_too_long=0",
+        ]
+    );
 }
 
 #[test]
@@ -154,25 +173,38 @@ fn a_packet_the_log_cannot_hold_is_counted_not_written() {
     assert_eq!(lines[1], (6 * MS, PODS, vec![7]));
     assert!(
         text(&outputs, "links.txt")
-            .contains("log sdu.log written=2 refused_empty=2 refused_too_long=1\n")
+            .contains("log sdu.log handle=0x000b written=2 refused_empty=2 refused_too_long=1\n")
     );
 }
 
 #[test]
-fn stamps_count_from_the_first_record_kept() {
+fn stamps_count_from_the_earliest_record_kept_and_steps_back_are_counted() {
     let mut trace = Trace::new();
     trace.record(12, b"a note");
     trace.at_ms(250);
     trace.open(HOST, CONTROL_PSM, CONTROL_CIDS);
     trace.at_ms(1_750);
     trace.send(PODS, CONTROL_CIDS, &[1]);
+    let outputs = rendered(&trace);
+    assert_eq!(text(&outputs, "sdu.log"), "1500000000 < 01\n");
+    let clock = "realtime_at_zero_ns 1795176000250000000\nstamps_stepping_back 0\n";
+    assert!(text(&outputs, "links.txt").starts_with(clock));
+    assert!(text(&outputs, "psm.tsv").contains("\n0\thost\t0x1001\t"));
+
     trace.at_ms(100);
     trace.send(PODS, CONTROL_CIDS, &[2]);
+    trace.at_ms(1_800);
+    trace.send(PODS, CONTROL_CIDS, &[3]);
+    trace.at_ms(1_700);
+    trace.send(PODS, CONTROL_CIDS, &[4]);
     let outputs = rendered(&trace);
-    assert_eq!(text(&outputs, "sdu.log"), "1500000000 < 01\n0 < 02\n");
-    let zero = "realtime_at_zero_ns 1795176000250000000\n";
-    assert!(text(&outputs, "links.txt").starts_with(zero));
-    assert!(text(&outputs, "psm.tsv").contains("\n0\thost\t0x1001\t"));
+    assert_eq!(
+        text(&outputs, "sdu.log"),
+        "1650000000 < 01\n0 < 02\n1700000000 < 03\n1600000000 < 04\n"
+    );
+    let clock = "realtime_at_zero_ns 1795176000100000000\nstamps_stepping_back 2\n";
+    assert!(text(&outputs, "links.txt").starts_with(clock));
+    assert!(text(&outputs, "psm.tsv").contains("\n150000000\thost\t0x1001\t"));
 }
 
 #[test]
@@ -197,28 +229,41 @@ fn the_request_table_lists_sides_results_and_mtu_options() {
 
 #[test]
 fn an_attribute_channel_too_small_for_dictation_is_named() {
-    let note = |pods_mtu: Option<u16>, psm: u16| {
+    let note = |host_mtu: Option<u16>, pods_mtu: Option<u16>, psm: u16| {
         let mut trace = Trace::new();
         trace.open(PODS, psm, ATT_CIDS);
-        trace.offer_mtu(HOST, ATT_CIDS, 100);
-        if let Some(mtu) = pods_mtu {
-            trace.offer_mtu(PODS, ATT_CIDS, mtu);
+        for (side, offered) in [(HOST, host_mtu), (PODS, pods_mtu)] {
+            if let Some(mtu) = offered {
+                trace.offer_mtu(side, ATT_CIDS, mtu);
+            }
         }
         let outputs = rendered(&trace);
         let links = text(&outputs, "links.txt");
         let notes: Vec<String> = links
             .lines()
-            .filter(|line| line.starts_with("att_pods_mtu"))
+            .filter(|line| line.starts_with("att_"))
             .map(str::to_owned)
             .collect();
         notes
     };
-    assert_eq!(note(Some(440), ATT_PSM), ["att_pods_mtu_under_441 440"]);
-    assert_eq!(note(Some(48), ATT_PSM), ["att_pods_mtu_under_441 48"]);
-    assert_eq!(note(Some(441), ATT_PSM), Vec::<String>::new());
-    assert_eq!(note(Some(672), ATT_PSM), Vec::<String>::new());
-    assert_eq!(note(None, ATT_PSM), Vec::<String>::new());
-    assert_eq!(note(Some(48), CONTROL_PSM), Vec::<String>::new());
+    let silent = Vec::<String>::new();
+    assert_eq!(
+        note(Some(672), Some(440), ATT_PSM),
+        ["att_pods_mtu_under_441 440"]
+    );
+    assert_eq!(note(None, Some(48), ATT_PSM), ["att_pods_mtu_under_441 48"]);
+    assert_eq!(
+        note(Some(300), Some(672), ATT_PSM),
+        ["att_host_mtu_under_441 300"]
+    );
+    assert_eq!(
+        note(Some(440), Some(100), ATT_PSM),
+        ["att_host_mtu_under_441 440", "att_pods_mtu_under_441 100"]
+    );
+    assert_eq!(note(Some(441), Some(441), ATT_PSM), silent);
+    assert_eq!(note(Some(672), Some(672), ATT_PSM), silent);
+    assert_eq!(note(None, None, ATT_PSM), silent);
+    assert_eq!(note(Some(48), Some(48), CONTROL_PSM), silent);
 }
 
 #[test]
@@ -249,6 +294,7 @@ fn the_music_tables_of_the_session() {
 fn the_link_summary_of_the_session() {
     let outputs = rendered(&session());
     let expected = "realtime_at_zero_ns 1795176000004000000\n\
+        stamps_stepping_back 0\n\
         synchronous_connection_events 0\n\
         synchronous_connections_opened 0\n\
         acl_packets 44\n\
@@ -266,8 +312,8 @@ fn the_link_summary_of_the_session() {
         avdtp_malformed_signals 0\n\
         avdtp_other_channels 0\n\
         media_packets_not_rtp 0\n\
-        log sdu.log written=7 refused_empty=0 refused_too_long=0\n\
-        log att.log written=2 refused_empty=0 refused_too_long=0\n";
+        log sdu.log handle=0x000b written=7 refused_empty=0 refused_too_long=0\n\
+        log att.log handle=0x000b written=2 refused_empty=0 refused_too_long=0\n";
     assert_eq!(text(&outputs, "links.txt"), expected);
 }
 
@@ -341,8 +387,8 @@ fn a_channel_not_in_basic_mode_is_listed_counted_and_not_exported() {
         [
             "not_basic_mode_pdus 2",
             "channel_not_read handle=0x000b psm=0x001f host_mode=- pods_mode=0x03 pdus=2 reason=l2cap_mode_is_not_basic",
-            "log sdu.log written=1 refused_empty=0 refused_too_long=0",
-            "log att-2.log written=1 refused_empty=0 refused_too_long=0",
+            "log sdu.log handle=0x000b written=1 refused_empty=0 refused_too_long=0",
+            "log att-2.log handle=0x000b written=1 refused_empty=0 refused_too_long=0",
         ]
     );
 }
@@ -373,6 +419,22 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
     }
     assert!(text(&outputs, "a2dp.tsv").lines().count() > 1);
     assert!(text(&before, "links.txt").starts_with("realtime_at_zero_ns "));
+
+    let mut damaged = bytes.clone();
+    damaged[cut.offset + STAMP_AT..][..8].copy_from_slice(&[0; 8]);
+    let read = records(&damaged).unwrap();
+    let stopped = read.cut.unwrap();
+    assert_eq!(
+        (stopped.record, stopped.offset, stopped.damage),
+        (cut.record, cut.offset, Damage::StampOutOfRange)
+    );
+    let named = format!(
+        "trace_stamp_out_of_range record={} offset={}\n{}",
+        cut.record,
+        cut.offset,
+        text(&before, "links.txt")
+    );
+    assert_eq!(text(&render(read).unwrap(), "links.txt"), named);
 }
 
 #[test]

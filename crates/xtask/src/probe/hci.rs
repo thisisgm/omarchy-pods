@@ -8,6 +8,8 @@ mod l2cap;
 pub(crate) use export::export;
 pub(crate) use l2cap::{Channel, Channels, channels};
 
+use std::fmt;
+
 use pods_proto::sdulog::Direction;
 
 /// The identification pattern that opens a btsnoop file (`BlueZ` src/shared/btsnoop.c, `btsnoop_id`).
@@ -62,7 +64,7 @@ pub(crate) struct HciRecord {
     pub data: Vec<u8>,
 }
 
-/// Why a trace was refused; each names the record and the rule it broke, never a byte of the trace.
+/// Why a trace was refused; each names the rule it broke and the header field or record it read, never a byte of a record's data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TraceError {
     #[error("btsnoop trace is {len} bytes, shorter than its {FILE_HEADER_LEN} byte file header")]
@@ -83,22 +85,47 @@ pub(crate) enum TraceError {
         offset: usize,
         len: u32,
     },
-    #[error(
-        "btsnoop record {record} at byte offset {offset} has a timestamp outside the years 1970 to 2554, which is all a nanosecond stamp holds"
-    )]
-    BadStamp { record: usize, offset: usize },
 }
 
-/// Where a trace ends inside a record, as one whose recorder was stopped does; every record before it is whole and is read.
+/// What is wrong with the record a trace stops being read at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Damage {
+    /// The file ends inside it, as it does when the recorder was stopped.
+    CutShort,
+    /// Its timestamp lies outside the years 1970 to 2554, which is all a nanosecond stamp holds.
+    StampOutOfRange,
+}
+
+impl Damage {
+    /// The key `links.txt` states it under.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::CutShort => "trace_cut_short",
+            Self::StampOutOfRange => "trace_stamp_out_of_range",
+        }
+    }
+}
+
+impl fmt::Display for Damage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::CutShort => "is cut short",
+            Self::StampOutOfRange => "has a timestamp outside the years 1970 to 2554",
+        })
+    }
+}
+
+/// Where a trace stops being read; every record before it is whole and is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "btsnoop record {record} at byte offset {offset} is cut short, so the trace is read only up to the whole records before it"
+    "btsnoop record {record} at byte offset {offset} {damage}, so the trace is read only up to the whole records before it"
 )]
 pub(crate) struct Cut {
-    /// The index of the cut record, which is also how many whole records come before it.
+    /// The index of the damaged record, which is also how many whole records come before it.
     pub record: usize,
-    /// The byte offset the cut record starts at.
+    /// The byte offset the damaged record starts at.
     pub offset: usize,
+    pub damage: Damage,
 }
 
 /// What `records` read from a trace.
@@ -106,7 +133,7 @@ pub(crate) struct Cut {
 pub(crate) struct Records {
     /// The records the tables need, in trace order.
     pub kept: Vec<HciRecord>,
-    /// Set when the trace ends inside a record.
+    /// Set when a damaged record ends the reading before the end of the file.
     pub cut: Option<Cut>,
 }
 
@@ -197,8 +224,15 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
     let mut record = 0_usize;
     while !rest.is_empty() {
         let offset = trace.len().saturating_sub(rest.len());
+        let stop = |damage| {
+            Some(Cut {
+                record,
+                offset,
+                damage,
+            })
+        };
         let Some(header) = record_header(&mut rest) else {
-            cut = Some(Cut { record, offset });
+            cut = stop(Damage::CutShort);
             break;
         };
         let too_long = TraceError::RecordTooLong {
@@ -213,15 +247,18 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
             return Err(too_long);
         };
         let Some((data, after)) = rest.split_at_checked(len) else {
-            cut = Some(Cut { record, offset });
+            cut = stop(Damage::CutShort);
             break;
         };
         rest = after;
-        let at_ns = header
+        let stamp = header
             .micros
             .checked_sub(YEAR_0_TO_1970_MICROS)
-            .and_then(|micros| micros.checked_mul(NANOS_PER_MICRO))
-            .ok_or(TraceError::BadStamp { record, offset })?;
+            .and_then(|micros| micros.checked_mul(NANOS_PER_MICRO));
+        let Some(at_ns) = stamp else {
+            cut = stop(Damage::StampOutOfRange);
+            break;
+        };
         let kind = match header.opcode {
             OPCODE_ACL_TX => Some(Kind::AclSent),
             OPCODE_ACL_RX => Some(Kind::AclReceived),

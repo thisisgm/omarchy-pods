@@ -126,6 +126,7 @@ fn a_truncated_record_ends_the_trace_and_is_named_with_its_offset() {
     let cut = Cut {
         record: 1,
         offset: second,
+        damage: Damage::CutShort,
     };
     let up_to_the_cut = Records {
         cut: Some(cut),
@@ -139,6 +140,7 @@ fn a_truncated_record_ends_the_trace_and_is_named_with_its_offset() {
         let at_the_first = Cut {
             record: 0,
             offset: FILE_HEADER,
+            damage: Damage::CutShort,
         };
         assert_eq!((read.kept.len(), read.cut), (0, Some(at_the_first)));
     }
@@ -165,6 +167,7 @@ fn a_record_length_past_65535_is_refused_and_one_past_the_file_is_a_cut() {
         cut: Some(Cut {
             record: 0,
             offset: FILE_HEADER,
+            damage: Damage::CutShort,
         }),
     };
     assert_eq!(records(&claims(65_535)), Ok(past_the_file));
@@ -185,26 +188,41 @@ fn a_record_length_past_65535_is_refused_and_one_past_the_file_is_a_cut() {
 }
 
 #[test]
-fn a_stamp_outside_the_nanosecond_range_is_refused() {
+fn a_stamp_outside_the_nanosecond_range_ends_the_trace_and_is_named() {
     let mut trace = Trace::new();
+    trace.acl(Direction::ToPods, 0b00, &[1]);
     trace.record(OPCODE_SYSTEM_NOTE, b"note");
     trace.acl(Direction::ToPods, 0b00, &[1]);
     let bytes = trace.bytes();
-    let second = FILE_HEADER + RECORD_HEADER + 4;
+    let first = records(&bytes).unwrap().kept[..1].to_vec();
+    let second = FILE_HEADER + RECORD_HEADER + 5;
+    let stopped = Cut {
+        record: 1,
+        offset: second,
+        damage: Damage::StampOutOfRange,
+    };
     for stamp in [0_u64, 62_168_255_999_999_999, u64::MAX] {
         let other = with_bytes(bytes.clone(), second + STAMP_AT, &stamp.to_be_bytes());
-        let refused = TraceError::BadStamp {
-            record: 1,
-            offset: second,
+        let up_to_it = Records {
+            kept: first.clone(),
+            cut: Some(stopped),
         };
-        assert_eq!(records(&other), Err(refused), "{stamp}");
+        assert_eq!(records(&other), Ok(up_to_it), "{stamp}");
     }
+    let mut zero_tail = bytes[..second].to_vec();
+    zero_tail.extend_from_slice(&[0; RECORD_HEADER]);
+    assert_eq!(records(&zero_tail).unwrap().cut, Some(stopped));
+    assert_eq!(
+        stopped.to_string(),
+        "btsnoop record 1 at byte offset 45 has a timestamp outside the years 1970 to 2554, so the trace is read only up to the whole records before it"
+    );
+    let third = second + RECORD_HEADER + 4;
     let epoch = with_bytes(
         bytes.clone(),
-        second + STAMP_AT,
+        third + STAMP_AT,
         &62_168_256_000_000_000_u64.to_be_bytes(),
     );
-    assert_eq!(records(&epoch).unwrap().kept[0].at_ns, 0);
+    assert_eq!(records(&epoch).unwrap().kept[1].at_ns, 0);
 }
 
 #[test]
@@ -262,13 +280,6 @@ fn every_error_names_the_record_and_the_rule() {
                 len: 65_536,
             },
             "btsnoop record 3 at byte offset 90 claims 65536 bytes of data, and a record holds at most 65535",
-        ),
-        (
-            TraceError::BadStamp {
-                record: 3,
-                offset: 90,
-            },
-            "btsnoop record 3 at byte offset 90 has a timestamp outside the years 1970 to 2554, which is all a nanosecond stamp holds",
         ),
     ] {
         assert_eq!(error.to_string(), text);
