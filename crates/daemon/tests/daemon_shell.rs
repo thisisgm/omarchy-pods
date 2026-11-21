@@ -48,8 +48,14 @@ mod tests {
     /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/socket.rs`.
     const MAX_CONNECTIONS: usize = 64;
 
+    /// The daemon's request deadline, from `REQUEST_DEADLINE` in `src/daemon/legacy_dialect.rs`; a tokio timeout never fires early.
+    const REQUEST_DEADLINE: Duration = Duration::from_millis(1000);
+
     /// Half the daemon's 1000 ms request deadline: a client closed sooner was closed at accept, not by the deadline.
     const CLOSED_AT_ACCEPT_WITHIN: Duration = Duration::from_millis(500);
+
+    /// Twice the daemon's 4096 byte cap, `MAX_REQUEST_BYTES` in `src/daemon/legacy_dialect.rs`: small enough to sit in the socket buffer.
+    const PAST_THE_CAP_BYTES: usize = 2 * 4096;
 
     /// Two and a half of the daemon's one second write retries, long enough to see a repeated log line.
     const RETRIES_WATCHED: Duration = Duration::from_millis(2500);
@@ -135,7 +141,7 @@ mod tests {
             Daemon { child, log }
         }
 
-        /// Starts a daemon and waits until its socket answers `status`.
+        /// Starts a daemon and waits until its socket accepts, which the daemon binds only after its first state file write.
         fn start(&self) -> Daemon {
             let daemon = self.spawn(&["daemon"], "daemon.log");
             wait_for("the daemon socket", || {
@@ -146,9 +152,17 @@ mod tests {
 
         /// Sends `verb` without closing the write side, as `librepods-ctl` does, and reads until the daemon closes.
         fn ask(&self, verb: &[u8]) -> Vec<u8> {
-            let mut stream = UnixStream::connect(self.socket()).unwrap();
-            stream.write_all(verb).unwrap();
-            read_to_close(&mut stream)
+            self.try_ask(verb).unwrap()
+        }
+
+        /// `ask`, giving back the error of a connection the daemon closed at accept.
+        fn try_ask(&self, verb: &[u8]) -> std::io::Result<Vec<u8>> {
+            let mut stream = UnixStream::connect(self.socket())?;
+            stream.write_all(verb)?;
+            stream.set_read_timeout(Some(HANG_LIMIT))?;
+            let mut reply = Vec::new();
+            stream.read_to_end(&mut reply)?;
+            Ok(reply)
         }
 
         /// Sends `verb`, closes the write side, and reads until the daemon closes.
@@ -331,6 +345,13 @@ mod tests {
             );
             pause(POLL);
         }
+        for (index, mut client) in clients.iter().take(MAX_CONNECTIONS - 1).enumerate() {
+            let read = client.read(&mut byte);
+            assert!(
+                matches!(&read, Err(error) if error.kind() == ErrorKind::WouldBlock),
+                "client {index} within the limit: {read:?}"
+            );
+        }
         assert!(
             daemon.log().contains("clients already connected"),
             "{}",
@@ -340,7 +361,7 @@ mod tests {
         // The daemon frees a slot only once it has run the departed clients' tasks, so the first try may be closed at accept.
         let default = to_status_line(&State::default()).into_bytes();
         wait_for("a slot freed by the departed clients", || {
-            (session.ask(b"status") == default).then_some(())
+            (session.try_ask(b"status").ok()? == default).then_some(())
         });
     }
 
@@ -378,7 +399,7 @@ mod tests {
         assert_eq!(status, to_status_line(&expected));
         assert_eq!(total(&status, "reopen_calls_total"), 1);
         assert_eq!(total(&status, "ear_detection_changes_total"), 3);
-        assert!(!daemon.log().contains("unknown"), "{}", daemon.log());
+        assert_eq!(daemon.log(), "");
     }
 
     #[test]
@@ -474,7 +495,7 @@ mod tests {
         let _daemon = session.start();
         let before = fs::metadata(session.state_file()).unwrap();
         assert_eq!(session.send(b"noise:off"), b"");
-        session.status();
+        assert_eq!(session.status(), to_status_line(&State::default()));
         pause(UNCHANGED_FOR);
         let after = fs::metadata(session.state_file()).unwrap();
         assert_eq!(after.ino(), before.ino());
@@ -496,7 +517,11 @@ mod tests {
             .unwrap();
         let mut byte = [0_u8; 1];
         assert_eq!(silent.read(&mut byte).unwrap(), 0);
-        assert!(connected.elapsed() < SILENT_CLIENT_DROPPED_BY);
+        let dropped = connected.elapsed();
+        assert!(
+            (REQUEST_DEADLINE..SILENT_CLIENT_DROPPED_BY).contains(&dropped),
+            "{dropped:?}"
+        );
     }
 
     #[test]
@@ -540,6 +565,13 @@ mod tests {
         );
         let grown = daemon.rss_kib().saturating_sub(before);
         assert!(grown < OVERSIZED_RSS_GROWTH_KIB, "grew {grown} KiB");
+        // Linux resets the peer of a socket closed with bytes unread, which only a daemon that stopped at its cap leaves.
+        let mut stream = UnixStream::connect(session.socket()).unwrap();
+        stream.write_all(&[b'a'; PAST_THE_CAP_BYTES]).unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+        let error = stream.read_to_end(&mut Vec::new()).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ConnectionReset, "{error}");
         assert_eq!(session.status(), to_status_line(&State::default()));
     }
 
