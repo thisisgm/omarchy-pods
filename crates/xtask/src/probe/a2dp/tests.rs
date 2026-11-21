@@ -1,14 +1,15 @@
 //! The music tables, driven with traces the fixture builds.
 
+use pods_proto::packets::CONTROL_PSM;
 use pods_proto::sdulog::Direction;
 use proptest::prelude::*;
 
 use super::super::hci::fixture::{
-    AAC_BYTES, ACCEPT, AVDTP_PSM, AVDTP_START, AVDTP_SUSPEND, COMMAND,
-    EVENT_DISCONNECTION_COMPLETE, GET_ALL_CAPABILITIES, GET_CAPABILITIES, KEYBOARD_HANDLE,
-    MEDIA_CIDS, MEDIA_CODEC, MEDIA_PAYLOAD_LEN, MEDIA_TRANSPORT, PODS_HANDLE, SBC_BYTES,
-    SET_CONFIGURATION, SIGNALLING_CIDS, START_UNIX_MICROS, Trace, VENDOR_BYTES, avdtp, capability,
-    media_codec, rtp, session,
+    AAC_BYTES, ACCEPT, AVDTP_PSM, AVDTP_START, AVDTP_SUSPEND, CODEC_AAC, CODEC_SBC, CODEC_VENDOR,
+    COMMAND, FIRST_SEID, GET_ALL_CAPABILITIES, GET_CAPABILITIES, KEYBOARD_HANDLE, MEDIA_CIDS,
+    MEDIA_CODEC, MEDIA_PAYLOAD_LEN, MEDIA_TRANSPORT, PODS_HANDLE, SBC_BYTES, SET_CONFIGURATION,
+    SIGNALLING_CIDS, START_UNIX_MICROS, Trace, VENDOR_BYTES, avdtp, capability, media_codec, rtp,
+    session,
 };
 use super::super::hci::{channels, records};
 use super::*;
@@ -17,14 +18,31 @@ const HOST: Direction = Direction::ToPods;
 const PODS: Direction = Direction::FromPods;
 /// AVDTP message type of a refused command.
 const REJECT: u8 = 0b11;
-/// The first byte of a signal that starts a fragmented message: label 1, start packet, response accept.
+/// `L2CAP_DISCONNECTION_REQ` (Core 6.1 Vol 3 Part A 4.6).
+const DISCONNECTION_REQUEST: u8 = 0x06;
+/// The first bytes of the packets of a fragmented message: label 1, response accept, in a start, a continue and an end packet (AVDTP 1.3 section 8.4.2, Table 8.4).
 const START_PACKET_ACCEPT: u8 = 0x16;
+const CONTINUE_PACKET_ACCEPT: u8 = 0x1a;
+const END_PACKET_ACCEPT: u8 = 0x1e;
+/// How many packets the start packet says its message takes.
+const SIGNAL_PACKETS: u8 = 0x02;
+/// What a rejected Set Configuration ends with: the category at fault and the error (`BlueZ` profiles/audio/avdtp.h, `AVDTP_UNSUPPORTED_CONFIGURATION`).
+const REFUSED_CONFIGURATION: [u8; 2] = [MEDIA_CODEC, 0x29];
+/// What a rejected Suspend ends with: the stream end point at fault and the error (`BlueZ` profiles/audio/avdtp.h, `AVDTP_BAD_STATE`).
+const REFUSED_SUSPEND: [u8; 2] = [FIRST_SEID, 0x31];
+/// The first byte of an RTP header of version 1 and of version 3, which no media packet carries (RFC 3550 section 5.1).
+const RTP_VERSION_1: u8 = 0x40;
+const RTP_VERSION_3: u8 = 0xc0;
+/// The vendor and the codec identifier a vendor codec element opens with, 4 and 2 bytes (A2DP 1.3 section 4.7.2).
+const VENDOR_IDENTIFIERS_LEN: u8 = 6;
+/// Microseconds in one second.
+const MICROS_PER_SECOND: u64 = 1_000_000;
 /// The RTP header in front of every media packet.
 const RTP_HEADER_LEN: usize = 12;
 /// The identifiers of a third AVDTP channel.
 const THIRD_CIDS: (u16, u16) = (0x0044, 0x0054);
 /// The whole second every synthetic trace starts in.
-const START_SECOND: u64 = START_UNIX_MICROS / 1_000_000;
+const START_SECOND: u64 = START_UNIX_MICROS / MICROS_PER_SECOND;
 
 fn read(trace: &Trace) -> Channels {
     channels(&records(&trace.bytes()).unwrap().kept)
@@ -51,7 +69,7 @@ fn standard(codec_type: u8, bytes: &[u8]) -> Codec {
 
 /// The body of a Set Configuration command: two stream end point bytes, then the capabilities.
 fn choice(capabilities: &[u8]) -> Vec<u8> {
-    let mut body = vec![0x04, 0x04];
+    let mut body = vec![FIRST_SEID, FIRST_SEID];
     body.extend(capabilities);
     body
 }
@@ -69,18 +87,18 @@ fn avdtp_capabilities_and_configuration_are_listed() {
     assert_eq!(
         capabilities(&found),
         [
-            standard(0x00, &SBC_BYTES),
-            standard(0x02, &AAC_BYTES),
+            standard(CODEC_SBC, &SBC_BYTES),
+            standard(CODEC_AAC, &AAC_BYTES),
             vendor
         ]
     );
-    assert_eq!(configuration(&found), Some(standard(0x02, &AAC_BYTES)));
+    assert_eq!(configuration(&found), Some(standard(CODEC_AAC, &AAC_BYTES)));
     assert_eq!(unread(&found), Unread::default());
 }
 
 #[test]
 fn only_what_the_pods_accepted_is_a_capability() {
-    let sbc = media_codec(0x00, &SBC_BYTES);
+    let sbc = media_codec(CODEC_SBC, &SBC_BYTES);
     let mut trace = streaming();
     signal(&mut trace, HOST, 1, COMMAND, GET_CAPABILITIES, &sbc);
     signal(&mut trace, HOST, 1, ACCEPT, GET_CAPABILITIES, &sbc);
@@ -93,16 +111,19 @@ fn only_what_the_pods_accepted_is_a_capability() {
     let found = read(&trace);
     assert_eq!(
         capabilities(&found),
-        [standard(0x00, &SBC_BYTES), standard(0x00, &SBC_BYTES)]
+        [
+            standard(CODEC_SBC, &SBC_BYTES),
+            standard(CODEC_SBC, &SBC_BYTES)
+        ]
     );
     assert_eq!(configuration(&found), None);
 }
 
 #[test]
 fn a_configuration_is_set_only_when_its_command_is_accepted() {
-    let sbc = choice(&media_codec(0x00, &SBC_BYTES));
-    let aac = choice(&media_codec(0x02, &AAC_BYTES));
-    let sbc_set = Some(standard(0x00, &SBC_BYTES));
+    let sbc = choice(&media_codec(CODEC_SBC, &SBC_BYTES));
+    let aac = choice(&media_codec(CODEC_AAC, &AAC_BYTES));
+    let sbc_set = Some(standard(CODEC_SBC, &SBC_BYTES));
     let mut trace = streaming();
     signal(&mut trace, HOST, 3, COMMAND, SET_CONFIGURATION, &sbc);
     assert_eq!(configuration(&read(&trace)), None);
@@ -120,7 +141,7 @@ fn a_configuration_is_set_only_when_its_command_is_accepted() {
         5,
         REJECT,
         SET_CONFIGURATION,
-        &[0x07, 0x29],
+        &REFUSED_CONFIGURATION,
     );
     signal(&mut trace, HOST, 5, ACCEPT, SET_CONFIGURATION, &[]);
     assert_eq!(configuration(&read(&trace)), sbc_set);
@@ -129,7 +150,7 @@ fn a_configuration_is_set_only_when_its_command_is_accepted() {
     signal(&mut trace, PODS, 6, ACCEPT, SET_CONFIGURATION, &[]);
     assert_eq!(
         configuration(&read(&trace)),
-        Some(standard(0x02, &AAC_BYTES))
+        Some(standard(CODEC_AAC, &AAC_BYTES))
     );
     signal(
         &mut trace,
@@ -137,19 +158,38 @@ fn a_configuration_is_set_only_when_its_command_is_accepted() {
         7,
         COMMAND,
         SET_CONFIGURATION,
-        &[0x04, 0x04],
+        &choice(&[]),
     );
     signal(&mut trace, HOST, 7, ACCEPT, SET_CONFIGURATION, &[]);
     assert_eq!(
         configuration(&read(&trace)),
-        Some(standard(0x02, &AAC_BYTES))
+        Some(standard(CODEC_AAC, &AAC_BYTES))
     );
+}
+
+#[test]
+fn a_set_configuration_command_cut_short_replaces_the_one_before_it() {
+    let aac = choice(&media_codec(CODEC_AAC, &AAC_BYTES));
+    let mut trace = streaming();
+    signal(&mut trace, HOST, 3, COMMAND, SET_CONFIGURATION, &aac);
+    signal(
+        &mut trace,
+        HOST,
+        3,
+        COMMAND,
+        SET_CONFIGURATION,
+        &[FIRST_SEID],
+    );
+    signal(&mut trace, PODS, 3, ACCEPT, SET_CONFIGURATION, &[]);
+    let found = read(&trace);
+    assert_eq!(configuration(&found), None);
+    assert_eq!(unread(&found).malformed_signals, 1);
 }
 
 #[test]
 fn a_vendor_codec_reports_vendor_and_codec_identifier() {
     let mut offered = capability(MEDIA_TRANSPORT, &[]);
-    offered.extend(media_codec(0xff, &VENDOR_BYTES));
+    offered.extend(media_codec(CODEC_VENDOR, &VENDOR_BYTES));
     let mut trace = streaming();
     signal(&mut trace, PODS, 1, ACCEPT, GET_CAPABILITIES, &offered);
     let found = read(&trace);
@@ -163,7 +203,10 @@ fn a_vendor_codec_reports_vendor_and_codec_identifier() {
     assert_eq!(capabilities(&found), [vendor]);
     assert_eq!(unread(&found).malformed_signals, 0);
 
-    let identifiers_only = media_codec(0xff, &VENDOR_BYTES[..6]);
+    let identifiers_only = media_codec(
+        CODEC_VENDOR,
+        &VENDOR_BYTES[..usize::from(VENDOR_IDENTIFIERS_LEN)],
+    );
     signal(
         &mut trace,
         PODS,
@@ -173,7 +216,8 @@ fn a_vendor_codec_reports_vendor_and_codec_identifier() {
         &identifiers_only,
     );
     assert_eq!(capabilities(&read(&trace)).len(), 2);
-    let cut = media_codec(0xff, &VENDOR_BYTES[..5]);
+    let short = usize::from(VENDOR_IDENTIFIERS_LEN) - 1;
+    let cut = media_codec(CODEC_VENDOR, &VENDOR_BYTES[..short]);
     signal(&mut trace, PODS, 3, ACCEPT, GET_CAPABILITIES, &cut);
     let found = read(&trace);
     assert_eq!(capabilities(&found).len(), 2);
@@ -182,8 +226,8 @@ fn a_vendor_codec_reports_vendor_and_codec_identifier() {
 
 #[test]
 fn a_capability_list_cut_short_is_counted() {
-    let mut cut = media_codec(0x00, &SBC_BYTES);
-    cut.extend([MEDIA_CODEC, 0x06, 0x00, 0x02]);
+    let mut cut = media_codec(CODEC_SBC, &SBC_BYTES);
+    cut.extend(&media_codec(CODEC_AAC, &AAC_BYTES)[..4]);
     let mut trace = streaming();
     signal(&mut trace, PODS, 1, ACCEPT, GET_CAPABILITIES, &cut);
     signal(
@@ -192,23 +236,32 @@ fn a_capability_list_cut_short_is_counted() {
         2,
         ACCEPT,
         GET_CAPABILITIES,
-        &[MEDIA_CODEC, 0x01, 0x00],
+        &capability(MEDIA_CODEC, &SBC_BYTES[..1]),
     );
-    trace.send(PODS, SIGNALLING_CIDS, &[0x12]);
+    trace.send(
+        PODS,
+        SIGNALLING_CIDS,
+        &avdtp(1, ACCEPT, GET_CAPABILITIES, &[])[..1],
+    );
     trace.send(PODS, SIGNALLING_CIDS, &[]);
     let found = read(&trace);
-    assert_eq!(capabilities(&found), [standard(0x00, &SBC_BYTES)]);
+    assert_eq!(capabilities(&found), [standard(CODEC_SBC, &SBC_BYTES)]);
     assert_eq!(unread(&found).malformed_signals, 4);
 }
 
 #[test]
 fn a_fragmented_signal_is_counted_and_not_read() {
-    let mut start = vec![START_PACKET_ACCEPT, 0x02, GET_CAPABILITIES];
-    start.extend(media_codec(0x00, &SBC_BYTES));
+    let mut start = vec![START_PACKET_ACCEPT, SIGNAL_PACKETS, GET_CAPABILITIES];
+    start.extend(media_codec(CODEC_SBC, &SBC_BYTES));
     let mut trace = streaming();
     trace.send(PODS, SIGNALLING_CIDS, &start);
-    trace.send(PODS, SIGNALLING_CIDS, &[0x1e, GET_CAPABILITIES, 0x07]);
-    trace.send(PODS, SIGNALLING_CIDS, &[0x1a, GET_CAPABILITIES]);
+    let end = [END_PACKET_ACCEPT, GET_CAPABILITIES, MEDIA_CODEC];
+    trace.send(PODS, SIGNALLING_CIDS, &end);
+    trace.send(
+        PODS,
+        SIGNALLING_CIDS,
+        &[CONTINUE_PACKET_ACCEPT, GET_CAPABILITIES],
+    );
     let found = read(&trace);
     assert_eq!(capabilities(&found), []);
     let counted = Unread {
@@ -222,18 +275,22 @@ fn a_fragmented_signal_is_counted_and_not_read() {
 fn avdtp_suspend_and_start_are_counted() {
     let mut trace = streaming();
     trace.at_ms(100);
-    signal(&mut trace, HOST, 1, COMMAND, AVDTP_START, &[0x04]);
+    signal(&mut trace, HOST, 1, COMMAND, AVDTP_START, &[FIRST_SEID]);
     signal(&mut trace, PODS, 1, ACCEPT, AVDTP_START, &[]);
     trace.at_ms(1_200);
-    signal(&mut trace, HOST, 2, COMMAND, AVDTP_SUSPEND, &[0x04]);
+    signal(&mut trace, HOST, 2, COMMAND, AVDTP_SUSPEND, &[FIRST_SEID]);
     signal(&mut trace, PODS, 2, ACCEPT, AVDTP_SUSPEND, &[]);
-    signal(&mut trace, PODS, 3, COMMAND, AVDTP_START, &[0x04]);
-    signal(&mut trace, PODS, 4, COMMAND, AVDTP_SUSPEND, &[0x04]);
-    signal(&mut trace, HOST, 4, REJECT, AVDTP_SUSPEND, &[0x04, 0x31]);
-    signal(&mut trace, HOST, 5, COMMAND, AVDTP_SUSPEND, &[0x04]);
+    signal(&mut trace, PODS, 3, COMMAND, AVDTP_START, &[FIRST_SEID]);
+    signal(&mut trace, PODS, 4, COMMAND, AVDTP_SUSPEND, &[FIRST_SEID]);
+    signal(&mut trace, HOST, 4, REJECT, AVDTP_SUSPEND, &REFUSED_SUSPEND);
+    signal(&mut trace, HOST, 5, COMMAND, AVDTP_SUSPEND, &[FIRST_SEID]);
     trace.at_ms(5_000);
-    signal(&mut trace, HOST, 6, COMMAND, AVDTP_START, &[0x04]);
-    trace.send(HOST, MEDIA_CIDS, &avdtp(7, COMMAND, AVDTP_START, &[0x04]));
+    signal(&mut trace, HOST, 6, COMMAND, AVDTP_START, &[FIRST_SEID]);
+    trace.send(
+        HOST,
+        MEDIA_CIDS,
+        &avdtp(7, COMMAND, AVDTP_START, &[FIRST_SEID]),
+    );
     let rows: Vec<_> = media(&read(&trace))
         .iter()
         .map(|second| (second.at_s - START_SECOND, second.suspends, second.starts))
@@ -264,8 +321,8 @@ fn rtp_gaps_are_counted_across_the_16_bit_wrap() {
 
 #[test]
 fn both_sides_may_wait_for_an_answer_with_one_label() {
-    let aac = choice(&media_codec(0x02, &AAC_BYTES));
-    let sbc = choice(&media_codec(0x00, &SBC_BYTES));
+    let aac = choice(&media_codec(CODEC_AAC, &AAC_BYTES));
+    let sbc = choice(&media_codec(CODEC_SBC, &SBC_BYTES));
     let crossed = |answered_first: Direction| {
         let mut trace = streaming();
         signal(&mut trace, HOST, 3, COMMAND, SET_CONFIGURATION, &aac);
@@ -288,12 +345,12 @@ fn both_sides_may_wait_for_an_answer_with_one_label() {
             3,
             REJECT,
             SET_CONFIGURATION,
-            &[0x07, 0x29],
+            &REFUSED_CONFIGURATION,
         );
         configuration(&read(&trace))
     };
-    assert_eq!(crossed(PODS), Some(standard(0x02, &AAC_BYTES)));
-    assert_eq!(crossed(HOST), Some(standard(0x00, &SBC_BYTES)));
+    assert_eq!(crossed(PODS), Some(standard(CODEC_AAC, &AAC_BYTES)));
+    assert_eq!(crossed(HOST), Some(standard(CODEC_SBC, &SBC_BYTES)));
 }
 
 #[test]
@@ -302,10 +359,10 @@ fn a_start_command_lets_the_source_begin_a_new_sequence() {
     let mut trace = streaming();
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
     trace.send(HOST, MEDIA_CIDS, &rtp(101));
-    signal(&mut trace, HOST, 1, COMMAND, AVDTP_SUSPEND, &[0x04]);
+    signal(&mut trace, HOST, 1, COMMAND, AVDTP_SUSPEND, &[FIRST_SEID]);
     signal(&mut trace, PODS, 1, ACCEPT, AVDTP_SUSPEND, &[]);
     trace.send(HOST, MEDIA_CIDS, &rtp(500));
-    signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+    signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
     trace.send(HOST, MEDIA_CIDS, &rtp(0));
     trace.send(HOST, MEDIA_CIDS, &rtp(1));
     trace.send(HOST, MEDIA_CIDS, &rtp(3));
@@ -315,10 +372,13 @@ fn a_start_command_lets_the_source_begin_a_new_sequence() {
     elsewhere.send(HOST, MEDIA_CIDS, &rtp(100));
     elsewhere.on(KEYBOARD_HANDLE);
     elsewhere.open(HOST, AVDTP_PSM, SIGNALLING_CIDS);
-    signal(&mut elsewhere, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+    signal(&mut elsewhere, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
     elsewhere.on(PODS_HANDLE);
     elsewhere.send(HOST, MEDIA_CIDS, &rtp(0));
     assert_eq!(gaps(&elsewhere), 1);
+    let found = read(&elsewhere);
+    let starts: u64 = media(&found).iter().map(|row| row.starts).sum();
+    assert_eq!((starts, unread(&found).other_channels), (1, 0));
 }
 
 #[test]
@@ -328,7 +388,7 @@ fn a_start_counts_from_just_after_one_packet_up_to_the_next() {
         trace.at_ms(5_000);
         trace.send(HOST, MEDIA_CIDS, &rtp(100));
         trace.at_ms(start_ms);
-        signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+        signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
         trace.at_ms(5_020);
         trace.send(HOST, MEDIA_CIDS, &rtp(0));
         media(&read(&trace)).iter().map(|row| row.gaps).sum()
@@ -346,11 +406,36 @@ fn a_clock_that_steps_back_between_two_packets_hides_no_gap() {
     trace.at_ms(5_000);
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
     trace.at_ms(4_000);
-    signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[0x04]);
+    signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
     trace.at_ms(3_000);
     trace.send(HOST, MEDIA_CIDS, &rtp(0));
-    let gaps: u64 = media(&read(&trace)).iter().map(|row| row.gaps).sum();
-    assert_eq!(gaps, 1);
+    let rows: Vec<_> = media(&read(&trace))
+        .iter()
+        .map(|row| {
+            (
+                row.at_s - START_SECOND,
+                row.packets,
+                row.gaps,
+                row.largest_interval_ns,
+            )
+        })
+        .collect();
+    let two_seconds = 2 * NANOS_PER_SECOND;
+    assert_eq!(rows, [(3, 1, 1, 0), (4, 0, 0, 0), (5, 1, 0, two_seconds)]);
+}
+
+#[test]
+fn a_gap_is_counted_in_the_second_of_the_packet_that_shows_it() {
+    let mut trace = streaming();
+    trace.at_ms(5_990);
+    trace.send(HOST, MEDIA_CIDS, &rtp(100));
+    trace.at_ms(6_010);
+    trace.send(HOST, MEDIA_CIDS, &rtp(102));
+    let rows: Vec<_> = media(&read(&trace))
+        .iter()
+        .map(|row| (row.at_s - START_SECOND, row.gaps))
+        .collect();
+    assert_eq!(rows, [(5, 0), (6, 1)]);
 }
 
 #[test]
@@ -359,7 +444,7 @@ fn a_new_media_channel_starts_a_new_sequence() {
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
     let mut closing = MEDIA_CIDS.1.to_le_bytes().to_vec();
     closing.extend(MEDIA_CIDS.0.to_le_bytes());
-    trace.signal(HOST, 0x06, &closing);
+    trace.signal(HOST, DISCONNECTION_REQUEST, &closing);
     trace.open(HOST, AVDTP_PSM, THIRD_CIDS);
     trace.send(HOST, THIRD_CIDS, &rtp(0));
     trace.send(HOST, THIRD_CIDS, &rtp(1));
@@ -407,9 +492,11 @@ fn only_rtp_packets_the_host_sent_are_media() {
     trace.send(HOST, MEDIA_CIDS, &rtp(1));
     trace.send(PODS, MEDIA_CIDS, &rtp(9));
     trace.send(HOST, MEDIA_CIDS, &rtp(2)[..RTP_HEADER_LEN - 1]);
-    let mut version_1 = rtp(2);
-    version_1[0] = 0x40;
-    trace.send(HOST, MEDIA_CIDS, &version_1);
+    for first_byte in [RTP_VERSION_1, RTP_VERSION_3] {
+        let mut other_version = rtp(2);
+        other_version[0] = first_byte;
+        trace.send(HOST, MEDIA_CIDS, &other_version);
+    }
     trace.send(HOST, MEDIA_CIDS, &rtp(2)[..RTP_HEADER_LEN]);
     let found = read(&trace);
     let rows = media(&found);
@@ -417,12 +504,12 @@ fn only_rtp_packets_the_host_sent_are_media() {
     assert_eq!((rows[0].packets, rows[0].gaps), (2, 0));
     let bytes = u64::try_from(2 * RTP_HEADER_LEN + MEDIA_PAYLOAD_LEN).unwrap();
     assert_eq!(rows[0].bytes, bytes);
-    assert_eq!(unread(&found).not_rtp, 2);
+    assert_eq!(unread(&found).not_rtp, 3);
 }
 
 #[test]
 fn channels_are_told_apart_by_the_order_they_open_in() {
-    let sbc = media_codec(0x00, &SBC_BYTES);
+    let sbc = media_codec(CODEC_SBC, &SBC_BYTES);
     let mut trace = streaming();
     trace.open(HOST, AVDTP_PSM, THIRD_CIDS);
     trace.send(HOST, THIRD_CIDS, &rtp(1));
@@ -432,16 +519,13 @@ fn channels_are_told_apart_by_the_order_they_open_in() {
     assert_eq!(capabilities(&found), []);
     assert_eq!(unread(&found).other_channels, 1);
 
-    let mut ended = vec![0x00];
-    ended.extend(PODS_HANDLE.to_le_bytes());
-    ended.push(0x13);
-    trace.event(EVENT_DISCONNECTION_COMPLETE, &ended);
+    trace.end_link(PODS_HANDLE);
     trace.open(HOST, AVDTP_PSM, THIRD_CIDS);
     trace.send(PODS, THIRD_CIDS, &avdtp(1, ACCEPT, GET_CAPABILITIES, &sbc));
     trace.open(HOST, AVDTP_PSM, MEDIA_CIDS);
     trace.send(HOST, MEDIA_CIDS, &rtp(1));
     let found = read(&trace);
-    assert_eq!(capabilities(&found), [standard(0x00, &SBC_BYTES)]);
+    assert_eq!(capabilities(&found), [standard(CODEC_SBC, &SBC_BYTES)]);
     assert_eq!(media(&found).len(), 1);
     assert_eq!(unread(&found).other_channels, 1);
 }
@@ -449,12 +533,17 @@ fn channels_are_told_apart_by_the_order_they_open_in() {
 #[test]
 fn a_trace_with_no_avdtp_channel_has_no_rows() {
     let mut trace = Trace::new();
-    trace.open(HOST, 0x1001, SIGNALLING_CIDS);
-    trace.open(HOST, 0x1001, MEDIA_CIDS);
+    trace.open(HOST, CONTROL_PSM, SIGNALLING_CIDS);
+    trace.open(HOST, CONTROL_PSM, MEDIA_CIDS);
     trace.send(
         PODS,
         SIGNALLING_CIDS,
-        &avdtp(1, ACCEPT, GET_CAPABILITIES, &media_codec(0, &SBC_BYTES)),
+        &avdtp(
+            1,
+            ACCEPT,
+            GET_CAPABILITIES,
+            &media_codec(CODEC_SBC, &SBC_BYTES),
+        ),
     );
     trace.send(HOST, MEDIA_CIDS, &rtp(1));
     let found = read(&trace);
@@ -489,7 +578,7 @@ proptest! {
     fn never_panics_on_a_signal_with_a_known_header(
         message in 0_u8..4,
         id in prop_oneof![Just(GET_CAPABILITIES), Just(SET_CONFIGURATION), Just(GET_ALL_CAPABILITIES)],
-        body in proptest::collection::vec(prop_oneof![Just(MEDIA_CODEC), Just(0xff_u8), Just(0x06), any::<u8>()], 0..24),
+        body in proptest::collection::vec(prop_oneof![Just(MEDIA_CODEC), Just(CODEC_VENDOR), Just(VENDOR_IDENTIFIERS_LEN), any::<u8>()], 0..24),
     ) {
         let mut trace = streaming();
         signal(&mut trace, PODS, 1, message, id, &body);
