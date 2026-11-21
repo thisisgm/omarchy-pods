@@ -26,8 +26,12 @@ mod tests {
     // Sample input: static const QByteArray HANDSHAKE = QByteArray::fromHex("00000400010002000000000000000000");
     fn cpp_packet(name: &str) -> Vec<u8> {
         let marker = format!("{name} = QByteArray::fromHex(\"");
-        let (_, rest) = CPP_PACKETS.split_once(&marker).unwrap();
-        let (hex, _) = rest.split_once('"').unwrap();
+        let (_, rest) = CPP_PACKETS
+            .split_once(&marker)
+            .unwrap_or_else(|| panic!("daemon/airpods_packets.h has no {marker}"));
+        let (hex, _) = rest
+            .split_once('"')
+            .unwrap_or_else(|| panic!("daemon/airpods_packets.h: {name} has no closing quote"));
         hex.as_bytes()
             .chunks(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
