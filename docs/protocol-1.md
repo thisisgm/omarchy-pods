@@ -106,6 +106,9 @@ A reply carries the request's `id` and `ok`.
   shows it.
 - A refused request replies with `error`: `code` for programs and `message`, one
   sentence for people.
+- A refused `set` may still have stored its value and counted the change: the
+  state and its event are the truth, and the AirPods' own report replaces the
+  value when they connect.
 
 ## Events
 

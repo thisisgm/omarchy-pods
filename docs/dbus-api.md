@@ -20,6 +20,10 @@ daemon logs one line and keeps serving the control socket and the state file
 without this interface. The daemon never takes the name from another owner and
 never lets another process take it.
 
+The daemon offers the interface once, at start: if the session bus goes away
+later, the daemon keeps serving the control socket and the state file, and
+restarting the daemon brings the interface back.
+
 ## Properties
 
 Every property is read only. Every property except `ApiVersion` emits
@@ -50,6 +54,9 @@ nothing, and a command that changes nothing sends none.
 Each method returns `s`: `sent` when the pods have the command and have not
 answered yet, or `confirmed` when the state already shows it carried out. A
 method never waits for the pods. A refused command is an error reply instead.
+A refused `Set` call may still have stored its value and counted the change:
+the properties and their signal are the truth, and the AirPods' own report
+replaces the value when they connect.
 
 A `Set` method is the protocol 1 `set` request for the key in the table, as
 described in [protocol-1.md](protocol-1.md): it takes the same values and
