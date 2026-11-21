@@ -11,6 +11,8 @@ use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType, 
 
 /// The size of `struct sockaddr_l2` in the kernel's include/net/bluetooth/l2cap.h.
 const SOCKADDR_L2_LEN: usize = 14;
+/// That size as the length the kernel is told; `TryFrom` is not const, so a test holds the two equal.
+const SOCKADDR_L2_SOCKLEN: SocketAddrLen = 14;
 /// `l2_cid` is zero for a channel that is reached through a PSM.
 const NO_FIXED_CHANNEL: u8 = 0x00;
 /// `l2_bdaddr_type` for a classic link, `BDADDR_BREDR` in include/net/bluetooth/bluetooth.h.
@@ -43,7 +45,7 @@ pub enum ChannelError {
     /// The kernel would not create the socket, as when it has no Bluetooth support.
     #[error("could not open the L2CAP socket: {0}")]
     Socket(Errno),
-    /// The peer did not answer, refused, or the timeout passed first.
+    /// The peer did not answer or refused; a connect that outlasts the timeout is `EINPROGRESS` (`bt_sock_wait_state` in `net/bluetooth/af_bluetooth.c`).
     #[error("could not connect the L2CAP channel: {0}")]
     Connect(Errno),
     /// The send or the receive timeout could not be set.
@@ -96,15 +98,13 @@ impl SockaddrL2 {
     unsafe_code,
     reason = "rustix has no L2CAP address type, so this crate supplies the one socket address it lacks"
 )]
-// SAFETY: `f` gets a pointer to the initialised bytes of `self.0`, which outlive the call, never a length past them, and they are a `struct sockaddr_l2`.
+// SAFETY: `f` gets the start of `self.0`, initialised bytes borrowed for the whole call, and `SOCKADDR_L2_SOCKLEN`, which `sockaddr_bytes_are_the_kernel_layout` holds equal to their count; the bytes are a `struct sockaddr_l2`, read and never written.
 unsafe impl SocketAddrArg for SockaddrL2 {
     unsafe fn with_sockaddr<R>(
         &self,
         f: impl FnOnce(*const SocketAddrOpaque, SocketAddrLen) -> R,
     ) -> R {
-        // 14 always converts; the fallback of zero makes the kernel refuse the address, never read past it.
-        let len = SocketAddrLen::try_from(self.0.len()).unwrap_or_default();
-        f(self.0.as_ptr().cast(), len)
+        f(self.0.as_ptr().cast(), SOCKADDR_L2_SOCKLEN)
     }
 }
 
@@ -136,7 +136,7 @@ impl Channel {
         set_socket_timeout(&self.fd, Timeout::Recv, Some(timeout)).map_err(ChannelError::Option)
     }
 
-    /// Reads one SDU into `buf`.
+    /// Reads one SDU into `buf`; a signal is `Err(ChannelError::Recv(Errno::INTR))` and is never retried here, so the caller can check its stop flag.
     pub fn recv(&self, buf: &mut [u8]) -> Result<Received, ChannelError> {
         // `TRUNC` makes the kernel return the length of the whole SDU, not of the part that fitted.
         match rustix::net::recv(&self.fd, buf, RecvFlags::TRUNC) {
@@ -187,14 +187,17 @@ mod tests {
     fn sockaddr_bytes_are_the_kernel_layout() {
         let peer = "11:22:33:44:55:66".parse().unwrap();
         let addr = SockaddrL2::new(peer, 0x1001);
+        // The family reads `1f 00` on a little endian host, which x86-64 and aarch64 Linux both are.
         assert_eq!(
             addr.0,
             [
                 0x1f, 0x00, 0x01, 0x10, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00
             ]
         );
+        // Checked before `as_any`, which copies that many bytes out of the array.
+        assert_eq!(usize::try_from(SOCKADDR_L2_SOCKLEN), Ok(addr.0.len()));
         let any = addr.as_any();
-        assert_eq!(any.addr_len(), 14);
+        assert_eq!(any.addr_len(), SOCKADDR_L2_SOCKLEN);
         assert_eq!(any.address_family(), AddressFamily::BLUETOOTH);
     }
 
@@ -262,10 +265,16 @@ mod tests {
     fn connect_without_bluetooth_is_an_error_not_a_panic() {
         let peer = "02:00:00:00:00:01".parse().unwrap();
         let error = connect(peer, 0x1001, Duration::from_secs(1)).unwrap_err();
-        assert!(
-            matches!(error, ChannelError::Socket(_) | ChannelError::Connect(_)),
-            "{error:?}"
-        );
+        // A host that cannot open a Bluetooth socket must fail at `Socket`, and one that can must fail at `Connect`.
+        match socket_with(
+            AddressFamily::BLUETOOTH,
+            SocketType::SEQPACKET,
+            SocketFlags::CLOEXEC,
+            None,
+        ) {
+            Ok(_) => assert!(matches!(error, ChannelError::Connect(_)), "{error:?}"),
+            Err(errno) => assert_eq!(error, ChannelError::Socket(errno)),
+        }
         assert!(!error.to_string().contains("02:00"), "{error}");
         assert!(!format!("{error:?}").contains("02:00"), "{error:?}");
     }
