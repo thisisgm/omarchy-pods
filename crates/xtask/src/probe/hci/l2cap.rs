@@ -9,7 +9,7 @@ use super::{HANDLE_MASK, HciRecord, Kind, sender, take};
 
 /// The packet boundary flag sits above the 12 bit handle (`BlueZ` monitor/bt.h, `acl_flags`).
 const BOUNDARY_SHIFT: u32 = 12;
-/// The packet boundary flag is two bits; the two above it are the broadcast flag.
+/// The packet boundary flag is two bits; the two above it are the broadcast flag (`BlueZ` monitor/bt.h, `acl_flags`).
 const BOUNDARY_MASK: u16 = 0b11;
 /// Packet boundary flag of a continuing fragment; every other value starts a PDU (`BlueZ` monitor/l2cap.c, `l2cap_packet`).
 const CONTINUING_FRAGMENT: u16 = 0b01;
@@ -36,8 +36,10 @@ const BASIC_MODE: u8 = 0x00;
 /// The top bit of an option type marks a hint and is not part of the type (Core 6.1 Vol 3 Part A 5).
 const OPTION_TYPE_MASK: u8 = 0x7f;
 
-/// The result of a connection response that opened the channel.
+/// The result of a connection response that opened the channel (Core 6.1 Vol 3 Part A 4.3).
 pub(crate) const RESULT_SUCCESS: u16 = 0x0000;
+/// The result of a connection response that says a final one follows (Core 6.1 Vol 3 Part A 4.3).
+const RESULT_PENDING: u16 = 0x0001;
 /// The most connection requests listed, and so channels tracked, in one trace; the rest are counted.
 pub(crate) const MAX_REQUESTS: usize = 1024;
 /// The most unmapped channel identifiers listed in one trace; PDUs on the rest are counted.
@@ -151,6 +153,8 @@ struct Link {
     host_cids: BTreeMap<u16, usize>,
     /// The same channels by the identifier the pods chose.
     pods_cids: BTreeMap<u16, usize>,
+    /// Requests on this link still waiting for a final response, as positions in `Channels::requests`.
+    waiting: Vec<usize>,
 }
 
 impl Link {
@@ -357,6 +361,8 @@ impl Reader {
             bump(&mut self.found.counts.requests_over_limit);
             return Some(());
         }
+        let link = self.links.entry(seen.handle).or_default();
+        link.waiting.push(self.found.requests.len());
         self.found.requests.push(Request {
             at_ns: seen.at_ns,
             handle: seen.handle,
@@ -380,13 +386,20 @@ impl Reader {
             return None;
         }
         let index = self.found.list.len();
-        let answered = self.found.requests.iter_mut().rev().find(|request| {
-            request.handle == seen.handle
-                && request.direction != seen.direction
-                && request.source_cid == requester_cid
-                && request.channel.is_none()
+        let requests = &mut self.found.requests;
+        // Only a request of this link still waiting is answered, so a stale or settled one never lends its PSM.
+        let waiting = self.links.get_mut(&seen.handle).and_then(|link| {
+            let position = link.waiting.iter().rev().copied().find(|position| {
+                requests.get(*position).is_some_and(|request| {
+                    request.direction != seen.direction && request.source_cid == requester_cid
+                })
+            })?;
+            if result != RESULT_PENDING {
+                link.waiting.retain(|other| *other != position);
+            }
+            Some(position)
         });
-        let Some(request) = answered else {
+        let Some(request) = waiting.and_then(|position| requests.get_mut(position)) else {
             bump(&mut self.found.counts.responses_without_request);
             return Some(());
         };
