@@ -66,18 +66,24 @@ refuses the same way.
 
 ## Errors
 
-An error reply carries one of these names and the error's code as its message.
+An error reply carries one of these names. Its message is the sentence
+protocol 1 sends with the same code, as listed in
+[protocol-1.md](protocol-1.md), so a program reads the name and a person reads
+the message.
 
-| Name | Meaning |
+| Name | Code |
 |---|---|
-| `io.github.thisisgm.Omapods1.Error.NotConnected` | The command needs the pods and they are not connected. |
-| `io.github.thisisgm.Omapods1.Error.NotSupported` | The model cannot do this. |
-| `io.github.thisisgm.Omapods1.Error.NotWorn` | The command needs the pods in the ears. |
-| `io.github.thisisgm.Omapods1.Error.OutOfRange` | A number is outside its range, such as an adaptive level above 100. |
-| `io.github.thisisgm.Omapods1.Error.UnknownKey` | The setting does not exist. No method of this interface returns it. |
-| `io.github.thisisgm.Omapods1.Error.BadRequest` | A string argument is not one of the accepted values. |
-| `io.github.thisisgm.Omapods1.Error.Timeout` | The pods did not answer in time. |
-| `io.github.thisisgm.Omapods1.Error.Headless` | The request needs a window, which the daemon does not have. |
+| `io.github.thisisgm.Omapods1.Error.NotConnected` | `not_connected` |
+| `io.github.thisisgm.Omapods1.Error.NotSupported` | `not_supported` |
+| `io.github.thisisgm.Omapods1.Error.NotWorn` | `not_worn` |
+| `io.github.thisisgm.Omapods1.Error.OutOfRange` | `out_of_range` |
+| `io.github.thisisgm.Omapods1.Error.UnknownKey` | `unknown_key` |
+| `io.github.thisisgm.Omapods1.Error.BadRequest` | `bad_request` |
+| `io.github.thisisgm.Omapods1.Error.Timeout` | `timeout` |
+| `io.github.thisisgm.Omapods1.Error.Headless` | `headless` |
+
+No method of this interface names a setting, so none returns `UnknownKey`. A
+`Set` method given a word its key does not take returns `BadRequest`.
 
 ## Examples
 
