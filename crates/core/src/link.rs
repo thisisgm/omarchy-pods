@@ -128,7 +128,7 @@ pub struct Machine {
     pending: Vec<commands::Pending>,
     /// A battery report came on this channel, so the notification request needs no repeat.
     battery_seen: bool,
-    /// The settings this channel reported, the only ones a command may answer without a write.
+    /// The settings this channel reported, or stored for the adaptive level, the only ones a command may answer without a write.
     known_settings: commands::KnownSettings,
 }
 
