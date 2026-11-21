@@ -4,7 +4,7 @@ use std::os::fd::OwnedFd;
 use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
-use pods_proto::packets::CONTROL_PSM;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use rustix::net::addr::{SocketAddrArg, SocketAddrLen, SocketAddrOpaque};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
@@ -61,20 +61,23 @@ pub enum ChannelError {
     /// The kernel took part of the SDU, which a sequenced packet socket must never do.
     #[error("could not send on the L2CAP channel: only {sent} of {len} bytes went out")]
     ShortSend { sent: usize, len: usize },
+    /// The wait on several channels failed, a signal included.
+    #[error("could not wait on the L2CAP channels: {0}")]
+    Wait(Errno),
 }
 
 /// `struct sockaddr_l2` as bytes, so that no padding byte is left unwritten.
 struct SockaddrL2([u8; SOCKADDR_L2_LEN]);
 
 impl SockaddrL2 {
-    // Sample output for 11:22:33:44:55:66 and the control PSM 0x1001: 1f 00 01 10 66 55 44 33 22 11 00 00 00 00.
+    // Sample output for 11:22:33:44:55:66 and PSM 0x1001: 1f 00 01 10 66 55 44 33 22 11 00 00 00 00.
     #[expect(
         clippy::host_endian_bytes,
         reason = "the kernel reads sa_family_t in host order; the PSM is little endian on every host"
     )]
-    fn new(peer: BdAddr) -> Self {
+    fn new(peer: BdAddr, psm: u16) -> Self {
         let [family_0, family_1] = AddressFamily::BLUETOOTH.as_raw().to_ne_bytes();
-        let [psm_0, psm_1] = CONTROL_PSM.to_le_bytes();
+        let [psm_0, psm_1] = psm.to_le_bytes();
         let [a0, a1, a2, a3, a4, a5] = peer.octets();
         Self([
             family_0,
@@ -109,8 +112,8 @@ unsafe impl SocketAddrArg for SockaddrL2 {
     }
 }
 
-/// Opens the control channel on `peer`; `timeout` bounds the connect and every later send.
-pub fn connect(peer: BdAddr, timeout: Duration) -> Result<Channel, ChannelError> {
+/// Opens the channel `psm` names on `peer`; `timeout` bounds the connect and every later send.
+pub fn connect(peer: BdAddr, psm: u16, timeout: Duration) -> Result<Channel, ChannelError> {
     // Protocol `None` is 0, which is `BTPROTO_L2CAP` in include/net/bluetooth/bluetooth.h.
     let fd = socket_with(
         AddressFamily::BLUETOOTH,
@@ -121,8 +124,23 @@ pub fn connect(peer: BdAddr, timeout: Duration) -> Result<Channel, ChannelError>
     .map_err(ChannelError::Socket)?;
     // A blocking L2CAP connect waits no longer than the send timeout (l2cap_sock_connect in net/bluetooth/l2cap_sock.c).
     set_socket_timeout(&fd, Timeout::Send, Some(timeout)).map_err(ChannelError::Option)?;
-    rustix::net::connect(&fd, &SockaddrL2::new(peer)).map_err(ChannelError::Connect)?;
+    rustix::net::connect(&fd, &SockaddrL2::new(peer, psm)).map_err(ChannelError::Connect)?;
     Ok(Channel { fd })
+}
+
+/// Waits until one of `channels` has something to read or has hung up and returns its index, the lowest when several do; `None` is `timeout` passing first. A signal that runs a handler ends the wait as `Err(ChannelError::Wait(Errno::INTR))`, whatever its restart flag, and is never retried here, so the caller can check its stop flag.
+pub fn wait_any(channels: &[&Channel], timeout: Duration) -> Result<Option<usize>, ChannelError> {
+    // A wait longer than the kernel's seconds field holds is refused with the errno the kernel gives a bad timeout.
+    let Ok(timeout) = Timespec::try_from(timeout) else {
+        return Err(ChannelError::Wait(Errno::INVAL));
+    };
+    let mut fds: Vec<PollFd<'_>> = channels
+        .iter()
+        .map(|channel| PollFd::new(&channel.fd, PollFlags::IN))
+        .collect();
+    poll(&mut fds, Some(&timeout)).map_err(ChannelError::Wait)?;
+    // The kernel reports a hang up or an error whether asked or not, and `recv` then says which it was.
+    Ok(fds.iter().position(|fd| !fd.revents().is_empty()))
 }
 
 /// Wraps any connected `SOCK_SEQPACKET` socket.
@@ -166,12 +184,19 @@ impl Channel {
 mod tests {
     use std::time::Instant;
 
+    use pods_proto::att::{self, AttPdu, HandleInfo, Uuid};
+    use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
     use rustix::net::socketpair;
 
     use super::*;
 
     const BUFFER_LEN: usize = 4096;
     const RECV_TIMEOUT: Duration = Duration::from_millis(10);
+    /// Longer than any loaded host takes to hand over a packet that is already queued.
+    const READY_WAIT: Duration = Duration::from_secs(5);
+    /// The range that reads a whole attribute table.
+    const FIRST_HANDLE: u16 = 0x0001;
+    const LAST_HANDLE: u16 = 0xffff;
 
     fn channel_pair() -> (Channel, Channel) {
         let (near, far) = socketpair(
@@ -187,19 +212,31 @@ mod tests {
     #[test]
     fn sockaddr_bytes_are_the_kernel_layout() {
         let peer = "11:22:33:44:55:66".parse().unwrap();
-        let addr = SockaddrL2::new(peer);
         // The family reads `1f 00` on a little endian host, which x86-64 and aarch64 Linux both are.
-        assert_eq!(
-            addr.0,
-            [
-                0x1f, 0x00, 0x01, 0x10, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00, 0x00
-            ]
-        );
-        // Checked before `as_any`, which copies that many bytes out of the array.
-        assert_eq!(usize::try_from(SOCKADDR_L2_SOCKLEN), Ok(addr.0.len()));
-        let any = addr.as_any();
-        assert_eq!(any.addr_len(), SOCKADDR_L2_SOCKLEN);
-        assert_eq!(any.address_family(), AddressFamily::BLUETOOTH);
+        for (psm, bytes) in [
+            (
+                CONTROL_PSM,
+                [
+                    0x1f, 0x00, 0x01, 0x10, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00,
+                    0x00,
+                ],
+            ),
+            (
+                ATT_PSM,
+                [
+                    0x1f, 0x00, 0x1f, 0x00, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0x00, 0x00,
+                    0x00,
+                ],
+            ),
+        ] {
+            let addr = SockaddrL2::new(peer, psm);
+            assert_eq!(addr.0, bytes, "PSM {psm:#06x}");
+            // Checked before `as_any`, which copies that many bytes out of the array.
+            assert_eq!(usize::try_from(SOCKADDR_L2_SOCKLEN), Ok(addr.0.len()));
+            let any = addr.as_any();
+            assert_eq!(any.addr_len(), SOCKADDR_L2_SOCKLEN);
+            assert_eq!(any.address_family(), AddressFamily::BLUETOOTH);
+        }
     }
 
     #[test]
@@ -263,9 +300,134 @@ mod tests {
     }
 
     #[test]
+    fn wait_any_names_the_channel_that_has_data() {
+        let (first_near, first_far) = channel_pair();
+        let (second_near, second_far) = channel_pair();
+        let watched = [&first_far, &second_far];
+        second_near.send(&[0x1b]).unwrap();
+        assert_eq!(wait_any(&watched, READY_WAIT), Ok(Some(1)));
+        let mut buf = [0_u8; BUFFER_LEN];
+        assert_eq!(second_far.recv(&mut buf).unwrap(), Received::Sdu(1));
+        first_near.send(&[0x1b]).unwrap();
+        assert_eq!(wait_any(&watched, READY_WAIT), Ok(Some(0)));
+    }
+
+    #[test]
+    fn wait_any_times_out_with_none() {
+        let (_first_near, first_far) = channel_pair();
+        let (_second_near, second_far) = channel_pair();
+        let before = Instant::now();
+        assert_eq!(wait_any(&[&first_far, &second_far], RECV_TIMEOUT), Ok(None));
+        assert!(before.elapsed() >= RECV_TIMEOUT);
+        assert_eq!(wait_any(&[], RECV_TIMEOUT), Ok(None));
+    }
+
+    #[test]
+    fn wait_any_reports_a_hung_up_channel_as_ready() {
+        let (_first_near, first_far) = channel_pair();
+        let (second_near, second_far) = channel_pair();
+        drop(second_near);
+        assert_eq!(
+            wait_any(&[&first_far, &second_far], READY_WAIT),
+            Ok(Some(1))
+        );
+        let mut buf = [0_u8; BUFFER_LEN];
+        assert_eq!(second_far.recv(&mut buf).unwrap(), Received::Closed);
+    }
+
+    #[test]
+    fn wait_any_reports_an_error_with_nothing_to_read_as_ready() {
+        let (_near, far) = channel_pair();
+        // A socket pair raises IN with every hang up, so a pipe's write end with no reader stands in for a channel that raises ERR alone.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let broken = from_fd(OwnedFd::from(writer));
+        assert_eq!(wait_any(&[&far, &broken], READY_WAIT), Ok(Some(1)));
+    }
+
+    #[test]
+    fn wait_any_with_both_ready_names_the_first() {
+        let (first_near, first_far) = channel_pair();
+        let (second_near, second_far) = channel_pair();
+        second_near.send(&[0x1b]).unwrap();
+        first_near.send(&[0x1b]).unwrap();
+        assert_eq!(
+            wait_any(&[&first_far, &second_far], READY_WAIT),
+            Ok(Some(0))
+        );
+        assert_eq!(
+            wait_any(&[&second_far, &first_far], READY_WAIT),
+            Ok(Some(0))
+        );
+    }
+
+    #[test]
+    fn wait_any_refuses_a_timeout_longer_than_the_kernel_can_hold() {
+        let (_near, far) = channel_pair();
+        let error = wait_any(&[&far], Duration::MAX).unwrap_err();
+        assert_eq!(error, ChannelError::Wait(Errno::INVAL));
+        assert!(error.to_string().contains("wait"), "{error}");
+    }
+
+    /// Receives one SDU, which the test has already seen arrive or sent itself.
+    fn recv_sdu<'a>(channel: &Channel, buf: &'a mut [u8; BUFFER_LEN]) -> &'a [u8] {
+        let received = channel.recv(buf).unwrap();
+        let Received::Sdu(len) = received else {
+            panic!("not a whole SDU: {received:?}");
+        };
+        &buf[..len]
+    }
+
+    #[test]
+    fn a_find_information_exchange_reads_back_across_a_socketpair() {
+        let (host, pods) = channel_pair();
+        let (idle_host, _idle_pods) = channel_pair();
+        let watched = [&idle_host, &host];
+        let mut buf = [0_u8; BUFFER_LEN];
+
+        host.send(&att::find_information_request(FIRST_HANDLE, LAST_HANDLE))
+            .unwrap();
+        let request = recv_sdu(&pods, &mut buf);
+        assert_eq!(request, [0x04, 0x01, 0x00, 0xff, 0xff]);
+        assert_eq!(AttPdu::parse(request), Ok(AttPdu::Request { opcode: 0x04 }));
+        pods.send(&[0x05, 0x01, 0x01, 0x00, 0x00, 0x28, 0x02, 0x00, 0x03, 0x28])
+            .unwrap();
+        assert_eq!(wait_any(&watched, READY_WAIT), Ok(Some(1)));
+        let reply = recv_sdu(&host, &mut buf);
+        let Ok(AttPdu::Information(pairs)) = AttPdu::parse(reply) else {
+            panic!("not a Find Information reply: {reply:02x?}");
+        };
+        let listed: Vec<_> = pairs.collect();
+        let expected =
+            [(0x0001, 0x2800), (0x0002, att::CHARACTERISTIC_DECLARATION)].map(|(handle, uuid)| {
+                HandleInfo {
+                    handle,
+                    uuid: Uuid::Short(uuid),
+                }
+            });
+        assert_eq!(listed, expected);
+
+        let next = listed[1].handle + 1;
+        host.send(&att::find_information_request(next, LAST_HANDLE))
+            .unwrap();
+        let [opcode, ..] = *recv_sdu(&pods, &mut buf) else {
+            panic!("the second request arrived empty");
+        };
+        pods.send(&att::error_response(opcode, next, att::ATTRIBUTE_NOT_FOUND))
+            .unwrap();
+        assert_eq!(wait_any(&watched, READY_WAIT), Ok(Some(1)));
+        let end_of_table = AttPdu::Error {
+            request: 0x04,
+            handle: 0x0003,
+            code: att::ATTRIBUTE_NOT_FOUND,
+        };
+        assert_eq!(AttPdu::parse(recv_sdu(&host, &mut buf)), Ok(end_of_table));
+    }
+
+    #[test]
     fn connect_without_bluetooth_is_an_error_not_a_panic() {
         let peer = "02:00:00:00:00:01".parse().unwrap();
-        let error = connect(peer, Duration::from_secs(1)).unwrap_err();
+        let error = connect(peer, CONTROL_PSM, Duration::from_secs(1)).unwrap_err();
         // A host that cannot open a Bluetooth socket must fail at `Socket`, and one that can must fail at `Connect`.
         match socket_with(
             AddressFamily::BLUETOOTH,
@@ -303,6 +465,10 @@ mod tests {
             (
                 ChannelError::Send(errno),
                 "could not send on the L2CAP channel",
+            ),
+            (
+                ChannelError::Wait(errno),
+                "could not wait on the L2CAP channels",
             ),
         ] {
             assert_eq!(error.to_string(), format!("{step}: {errno}"));

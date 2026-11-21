@@ -1,6 +1,7 @@
 //! Random input never panics a parser, and a parsed control command survives a round trip.
 
 use pods_proto::addr::BdAddr;
+use pods_proto::att::{self, AttPdu, HandleInfo, Uuid};
 use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
 use pods_proto::ear::EarReport;
@@ -25,6 +26,30 @@ const UPLINK_AUDIO_GATE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01, 0x
 const UPLINK_CONTROL_GATE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00];
 /// Length bound of a generated SDU, room for sixteen access units of the longest kind.
 const MAX_SDU: usize = 4200;
+/// Opcode of a Find Information reply, which its format byte follows.
+const ATT_FIND_INFORMATION_REPLY: u8 = 0x05;
+/// The format byte for pairs with 16 bit identifiers, and the length of one such pair.
+const ATT_SHORT_FORMAT: (u8, usize) = (0x01, 4);
+/// The format byte for pairs with 128 bit identifiers, and the length of one such pair.
+const ATT_LONG_FORMAT: (u8, usize) = (0x02, 18);
+/// Opcode of a Read By Type reply, which its entry length follows.
+const ATT_READ_BY_TYPE_REPLY: u8 = 0x09;
+/// The shortest entry a Read By Type reply may declare, one handle.
+const ATT_ENTRY_MIN_LEN: u8 = 2;
+/// Entry lengths of a characteristic declaration with a 16 bit and with a 128 bit identifier.
+const ATT_DECLARATION_LENS: [usize; 2] = [7, 21];
+/// Opcode of a notification, which a handle and a value follow.
+const ATT_NOTIFICATION: u8 = 0x1b;
+/// Opcode of an indication, which a handle and a value follow.
+const ATT_INDICATION: u8 = 0x1d;
+/// A handle, the fixed part behind the opcode of a notification or an indication.
+const ATT_HANDLE_LEN: usize = 2;
+/// Opcode and handle, the shortest notification or indication.
+const ATT_HANDLE_VALUE_MIN_LEN: usize = 3;
+/// Opcode of an error response, and the only length one has.
+const ATT_ERROR: (u8, usize) = (0x01, 5);
+/// Length bound of a generated error response, twice the only valid length and more.
+const ATT_ERROR_BOUND: usize = 12;
 /// Bytes 8 and 9 of an uplink control packet, its declared length.
 const DECLARED_LEN_BYTES: usize = 2;
 /// The gate plus the declared length, the shortest uplink control packet.
@@ -55,6 +80,27 @@ fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
     let mark = prop_oneof![9 => Just(0x01_u8), 1 => any::<u8>()];
     (kind, mark.clone(), any::<u8>(), status, mark)
         .prop_map(|(kind, spacer, level, status, end)| [kind, spacer, level, status, end])
+}
+
+/// Parses one PDU and walks whatever list it holds to its end, reading every entry as a declaration.
+fn walk_att(pdu: &[u8]) {
+    match AttPdu::parse(pdu) {
+        Ok(AttPdu::Information(pairs)) => assert!(pairs.count() <= pdu.len()),
+        Ok(AttPdu::ByType(entries)) => {
+            assert!(entries.map(att::characteristic).count() <= pdu.len());
+        }
+        Ok(_) | Err(_) => {}
+    }
+}
+
+// Sample output: [01, 00, 00, 28] for handle 0x0001 and identifier 0x2800, the pair as a Find Information reply carries it.
+fn att_pair_bytes(pair: HandleInfo<'_>) -> Vec<u8> {
+    let mut bytes = pair.handle.to_le_bytes().to_vec();
+    match pair.uuid {
+        Uuid::Short(uuid) => bytes.extend(uuid.to_le_bytes()),
+        Uuid::Long(uuid) => bytes.extend(uuid),
+    }
+    bytes
 }
 
 // Sample output: `AA:bb:CC:dd:EE:ff`, with about one part in ten replaced by text the format does not allow.
@@ -207,6 +253,110 @@ proptest! {
             0x01 => prop_assert_eq!(state, Some(true)),
             0x02 => prop_assert_eq!(state, Some(false)),
             _ => prop_assert_eq!(state, None),
+        }
+    }
+
+    #[test]
+    fn att_parse_never_panics(b in proptest::collection::vec(any::<u8>(), 0..MAX_SDU)) {
+        walk_att(&b);
+    }
+
+    // A reply behind a valid two byte prefix yields every whole entry in order and counts a tail shorter than one.
+    #[test]
+    fn att_list_replies_account_for_every_byte(
+        (prefix, entry_len) in prop_oneof![
+            Just(([ATT_FIND_INFORMATION_REPLY, ATT_SHORT_FORMAT.0], ATT_SHORT_FORMAT.1)),
+            Just(([ATT_FIND_INFORMATION_REPLY, ATT_LONG_FORMAT.0], ATT_LONG_FORMAT.1)),
+            (ATT_ENTRY_MIN_LEN..=u8::MAX).prop_map(|len| ([ATT_READ_BY_TYPE_REPLY, len], usize::from(len))),
+        ],
+        body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+    ) {
+        let mut pdu = prefix.to_vec();
+        pdu.extend(&body);
+        let whole: Vec<&[u8]> = body.chunks_exact(entry_len).collect();
+        let tail = body.chunks_exact(entry_len).remainder().len();
+        match AttPdu::parse(&pdu) {
+            Ok(AttPdu::Information(mut pairs)) => {
+                let seen: Vec<Vec<u8>> = pairs.by_ref().map(att_pair_bytes).collect();
+                prop_assert_eq!(seen, whole);
+                prop_assert_eq!(pairs.trailing(), tail);
+            }
+            Ok(AttPdu::ByType(mut entries)) => {
+                let seen: Vec<&[u8]> = entries.by_ref().collect();
+                prop_assert_eq!(&seen, &whole);
+                prop_assert_eq!(entries.trailing(), tail);
+                for entry in seen {
+                    prop_assert_eq!(att::characteristic(entry).is_some(), ATT_DECLARATION_LENS.contains(&entry_len));
+                }
+            }
+            other => prop_assert!(false, "a list reply did not parse as one: {:?}", other),
+        }
+    }
+
+    // A format other than the two defined ones is refused whatever follows it.
+    #[test]
+    fn att_find_information_with_an_undefined_format_is_refused(
+        format in any::<u8>().prop_filter("the format is a defined one", |format| ![ATT_SHORT_FORMAT.0, ATT_LONG_FORMAT.0].contains(format)),
+        body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+    ) {
+        let mut pdu = vec![ATT_FIND_INFORMATION_REPLY, format];
+        pdu.extend(&body);
+        let refused = ParseError::UnknownValue { parser: Parser::Att, field: "information format", value: format };
+        prop_assert_eq!(AttPdu::parse(&pdu), Err(refused));
+    }
+
+    // An entry length that cannot hold a handle is refused whatever follows it, the zero that would never end included.
+    #[test]
+    fn att_read_by_type_with_an_entry_shorter_than_a_handle_is_refused(
+        entry_len in 0..ATT_ENTRY_MIN_LEN,
+        body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+    ) {
+        let mut pdu = vec![ATT_READ_BY_TYPE_REPLY, entry_len];
+        pdu.extend(&body);
+        let refused = ParseError::UnknownValue { parser: Parser::Att, field: "entry length", value: entry_len };
+        prop_assert_eq!(AttPdu::parse(&pdu), Err(refused));
+    }
+
+    #[test]
+    fn att_handle_values_keep_every_byte_behind_the_handle(
+        opcode in prop_oneof![Just(ATT_NOTIFICATION), Just(ATT_INDICATION)],
+        body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+    ) {
+        let mut pdu = vec![opcode];
+        pdu.extend(&body);
+        match AttPdu::parse(&pdu) {
+            Ok(AttPdu::Notification { handle, value }) => {
+                prop_assert_eq!(opcode, ATT_NOTIFICATION);
+                prop_assert_eq!(handle, u16::from_le_bytes([body[0], body[1]]));
+                prop_assert_eq!(value, &body[ATT_HANDLE_LEN..]);
+            }
+            Ok(AttPdu::Indication { handle, value }) => {
+                prop_assert_eq!(opcode, ATT_INDICATION);
+                prop_assert_eq!(handle, u16::from_le_bytes([body[0], body[1]]));
+                prop_assert_eq!(value, &body[ATT_HANDLE_LEN..]);
+            }
+            other => {
+                prop_assert!(body.len() < ATT_HANDLE_LEN, "{:?}", other);
+                let too_short = ParseError::TooShort { parser: Parser::Att, need: ATT_HANDLE_VALUE_MIN_LEN, got: pdu.len() };
+                prop_assert_eq!(other, Err(too_short));
+            }
+        }
+    }
+
+    #[test]
+    fn att_error_response_round_trips(request in any::<u8>(), handle in any::<u16>(), code in any::<u8>()) {
+        let built = att::error_response(request, handle, code);
+        prop_assert_eq!(AttPdu::parse(&built), Ok(AttPdu::Error { request, handle, code }));
+    }
+
+    #[test]
+    fn att_error_response_is_read_at_one_length_only(body in proptest::collection::vec(any::<u8>(), 0..ATT_ERROR_BOUND)) {
+        let mut pdu = vec![ATT_ERROR.0];
+        pdu.extend(&body);
+        let wrong_length = ParseError::WrongLength { parser: Parser::Att, expected: ATT_ERROR.1, got: pdu.len() };
+        match AttPdu::parse(&pdu) {
+            Ok(AttPdu::Error { .. }) => prop_assert_eq!(pdu.len(), ATT_ERROR.1),
+            other => prop_assert_eq!(other, Err(wrong_length)),
         }
     }
 

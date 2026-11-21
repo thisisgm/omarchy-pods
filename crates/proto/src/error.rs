@@ -26,6 +26,8 @@ pub enum Parser {
     UplinkAudio,
     /// `UplinkPacket::parse` reading a control packet.
     UplinkControl,
+    /// `AttPdu::parse`.
+    Att,
 }
 
 impl fmt::Display for Parser {
@@ -40,6 +42,7 @@ impl fmt::Display for Parser {
             Self::Uplink => "uplink packet",
             Self::UplinkAudio => "uplink audio packet",
             Self::UplinkControl => "uplink control packet",
+            Self::Att => "attribute protocol packet",
         })
     }
 }
@@ -183,6 +186,7 @@ mod tests {
             (Parser::Uplink, "uplink packet"),
             (Parser::UplinkAudio, "uplink audio packet"),
             (Parser::UplinkControl, "uplink control packet"),
+            (Parser::Att, "attribute protocol packet"),
         ] {
             assert_eq!(parser.to_string(), name);
         }

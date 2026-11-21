@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod addr;
+pub mod att;
 pub mod battery;
 pub mod control;
 pub mod ear;

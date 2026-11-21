@@ -26,6 +26,9 @@ pub const FEATURES_ACK_PREFIX: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x2b, 0x00];
 /// The L2CAP PSM of the control channel, the one upstream librepods connects to.
 pub const CONTROL_PSM: u16 = 0x1001;
 
+/// The L2CAP PSM of the attribute protocol on a classic link, `ATT` in the Bluetooth Assigned Numbers list of PSMs.
+pub const ATT_PSM: u16 = 0x001F;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +69,14 @@ mod tests {
         assert_eq!(lower % 2, 1);
         assert_eq!(upper % 2, 0);
         assert!(upper >= 0x10);
+    }
+
+    // Bluetooth Core, Vol 3 Part A 4.2: a PSM is odd, its upper octet is even, and those the SIG assigns end at 0x0EFF.
+    #[test]
+    fn att_psm_is_a_valid_assigned_psm() {
+        let [upper, lower] = ATT_PSM.to_be_bytes();
+        assert_eq!(lower % 2, 1);
+        assert_eq!(upper % 2, 0);
+        assert!(upper <= 0x0e);
     }
 }
