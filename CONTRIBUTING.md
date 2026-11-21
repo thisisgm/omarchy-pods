@@ -47,6 +47,15 @@ those by itself. `cargo-nextest` and `cargo-deny` are separate tools and need th
 install line once; without them the gate stops at the first one missing. The D-Bus
 tests start a private `dbus-daemon`, so it must be on `PATH` as well.
 
+Git hooks are optional and run the same gates. With [hk](https://hk.jdx.dev) 2.4.0 or
+newer installed, `hk install` in your clone sets them up from `hk.pkl`: a commit runs
+the format and lint gates and checks that the message is a Conventional Commit, and a
+push runs the whole gate. `cargo xtask ci fmt clippy` runs the named gates alone. The
+hooks never change a file, and they check the working tree rather than what git
+records: a commit is refused while the tree differs from the index, a push while it
+differs from the checked out commit, and either while an untracked file is present.
+A push is judged by the checked out commit, so push the branch you have checked out.
+
 A green suite is not evidence that a fix works. See the next section.
 
 ## Prove it, then send it

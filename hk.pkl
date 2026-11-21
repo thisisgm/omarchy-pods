@@ -1,0 +1,45 @@
+// Read-only git hooks for hk 2.4.0; the gates they run are defined in `cargo xtask ci`, not here.
+amends "package://github.com/jdx/hk/releases/download/v2.4.0/hk@2.4.0#/Config.pkl"
+
+min_hk_version = "2.4.0"
+
+// With stash none the gates read the working tree, so each hook first refuses one that holds bytes git would not record.
+local function same_tree(clean: String, remedy: String) = "\(clean) && test -z \"$(git ls-files --others --exclude-standard)\" || { echo 'the hooks check the working tree: \(remedy), and remove or ignore untracked files' >&2; exit 1; }"
+
+hooks {
+  ["pre-commit"] {
+    fix = false
+    stage = false
+    stash = "none"
+    steps {
+      ["same-tree"] {
+        check = same_tree("git diff --quiet", "stage or stash every change")
+      }
+      ["gates"] {
+        depends = "same-tree"
+        check = "cargo xtask ci fmt clippy"
+      }
+    }
+  }
+  ["commit-msg"] {
+    steps {
+      // A structured command keeps the message file one argument whatever its path holds.
+      ["conventional-commit"] {
+        check = new Command {
+          argv = List("hk", "util", "check-conventional-commit", "{{commit_msg_file}}")
+        }
+      }
+    }
+  }
+  ["pre-push"] {
+    steps {
+      ["same-tree"] {
+        check = same_tree("git diff --quiet HEAD", "commit or stash every change")
+      }
+      ["gates"] {
+        depends = "same-tree"
+        check = "cargo xtask ci"
+      }
+    }
+  }
+}
