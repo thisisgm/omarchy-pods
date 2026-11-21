@@ -1,4 +1,4 @@
-//! The verb table and the integer rule, read against `daemon/main.cpp`, `daemon/ipcverb.hpp` and `tst_ipcverb.cpp`.
+//! Read against `daemon/main.cpp`, `daemon/ipcverb.hpp` and `tst_ipcverb.cpp`.
 
 use cpp_source::{IPC_VERB, MAIN, MEDIA_CONTROLLER};
 use proptest::prelude::*;
@@ -118,7 +118,6 @@ fn bytes_that_are_not_utf8_are_refused() {
 
 // One case per whole-word verb, with the C++ call each one makes.
 
-/// The C++ call each verb's handler makes, written from the Rust request.
 fn cpp_call(request: LegacyRequest) -> String {
     let command = match request {
         LegacyRequest::Status => return "statusJson()".to_owned(),

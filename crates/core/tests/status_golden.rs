@@ -18,8 +18,7 @@ fn fixture_state() -> State {
     }
 }
 
-/// The keys of the outermost object, in the order the line writes them.
-// Sample input: {"a":1,"b":{"c":"x:y"},"d":[{"e":0}]} gives a, b, d.
+// Sample input: `{"a":1,"b":{"c":"x:y"},"d":[{"e":0}]}` gives a, b, d.
 fn top_level_keys(line: &str) -> Vec<String> {
     let mut keys = Vec::new();
     let mut depth: u32 = 0;

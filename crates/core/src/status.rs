@@ -7,16 +7,16 @@ use serde_json::{Map, Value};
 
 use crate::state::State;
 
-/// The document shape version; it changes only when a key changes meaning or goes away.
+/// Changes only when a key changes meaning or goes away.
 const SCHEMA_VERSION: u8 = 1;
 
-/// The status document as compact JSON with a trailing newline, keys in ascending byte order like the C++ `QJsonObject`.
+/// Keys in ascending byte order, as the C++ `QJsonObject` writes them.
 #[must_use]
 pub fn to_status_line(state: &State) -> String {
     format!("{}\n", to_status_object(state))
 }
 
-/// The status document as a JSON object, which protocol 1 replies and events carry as their `state`.
+/// What protocol 1 replies and events carry as their `state`.
 #[must_use]
 pub fn to_status_object(state: &State) -> Value {
     let counters = &state.counters;
@@ -116,7 +116,7 @@ pub fn to_status_object(state: &State) -> Value {
     ]))
 }
 
-/// A JSON object whose keys come out in the map's byte order, whatever `serde_json` features are on.
+/// Keys in the map's byte order, whatever `serde_json` features are on.
 fn object(fields: BTreeMap<&'static str, Value>) -> Value {
     Value::Object(
         fields
@@ -135,7 +135,7 @@ fn battery_fields(charge: Option<Charge>) -> BTreeMap<&'static str, Value> {
     ])
 }
 
-/// A part's battery as available, charging and level; with no reading it is not available, not charging, level 0, as the C++ `Battery` reset leaves it.
+/// No reading is not available, not charging, level 0, as the C++ `Battery` reset leaves it.
 #[must_use]
 pub fn battery_reading(charge: Option<Charge>) -> (bool, bool, u8) {
     charge.map_or((false, false, 0), |charge| {
@@ -153,7 +153,7 @@ fn pod_object(charge: Option<Charge>, in_ear: bool) -> Value {
     object(fields)
 }
 
-/// The ear report names primary and secondary; a side that is not the primary reads the secondary, as the C++ does.
+/// A side that is not the primary reads the secondary, as the C++ does.
 #[must_use]
 pub fn in_ear(state: &State, side: Component) -> bool {
     if state.primary == Some(side) {

@@ -1,21 +1,18 @@
-//! Everything the daemon knows that the status document shows.
-
 use pods_proto::battery::{Batteries, Component};
 use pods_proto::ear::EarReport;
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 
-/// The adaptive noise level before the user sets one, the C++ `m_adaptiveNoiseLevel` initial value.
+/// The C++ `m_adaptiveNoiseLevel` initial value.
 const DEFAULT_ADAPTIVE_NOISE_LEVEL: u8 = 50;
 
-/// The whole daemon state; the default is a daemon with no pods connected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct State {
-    /// The control channel link, not the daemon; battery keeps arriving over BLE while it is false.
+    /// The control channel link, not the daemon; battery keeps arriving over BLE while false.
     pub connected: bool,
     pub device_name: String,
     pub model: Model,
-    /// The raw `A<NNNN>` code from the metadata packet, kept when `model` is `Unknown` or reset.
+    /// The raw `A<NNNN>` metadata code, kept when `model` is `Unknown` or reset.
     pub model_number: String,
     pub noise_mode: NoiseMode,
     /// Percent from 0 to 100.
@@ -24,7 +21,7 @@ pub struct State {
     pub one_bud_anc_mode: bool,
     pub batteries: Batteries,
     pub ear: EarReport,
-    /// The bud the ear report calls primary, `None` before a battery report names one.
+    /// `None` before a battery report names the primary bud.
     pub primary: Option<Component>,
     pub ear_detection_behavior: EarDetectionBehavior,
     pub lid_state: LidState,
@@ -90,7 +87,6 @@ impl LidState {
     }
 }
 
-/// Process lifetime totals, each published as its `*_total` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counters {
     pub reconnect_attempts: u64,
