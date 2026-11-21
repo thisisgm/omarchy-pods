@@ -87,6 +87,15 @@ pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
         .map(|&(_, request)| request)
 }
 
+/// The verb that asks for `request`, or `None` for a request no whole-word verb carries, such as an adaptive level.
+#[must_use]
+pub fn verb_for(request: LegacyRequest) -> Option<&'static str> {
+    VERBS
+        .iter()
+        .find(|(_, carried)| *carried == request)
+        .map(|&(verb, _)| verb)
+}
+
 /// The level in an `adaptive:` payload, by the rule of `parseIntVerb` over Qt's `toInt`: not a whole number is a bad request, outside 0 to 100 is out of range.
 // Sample input: `37`, `+37`, `-0` or `37\n`; ` 37` and `37x` are bad, `101` and `3000000000` are out of range.
 pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
