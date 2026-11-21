@@ -7,10 +7,7 @@ use pods_core::command::{Command, Outcome, apply};
 use pods_core::state::State;
 use tokio::sync::{mpsc, watch};
 
-use super::socket::MAX_CONNECTIONS;
-
-/// Changes a subscriber may leave untaken before the hub drops it; each client makes at most one change between two turns of a subscriber's task.
-const SUBSCRIBER_BACKLOG: usize = MAX_CONNECTIONS;
+use super::SUBSCRIBER_BACKLOG;
 
 /// A handle on the state; every clone shares it, and only `submit` changes it.
 #[derive(Debug, Clone)]
@@ -197,11 +194,12 @@ mod tests {
         drop(departed);
         block_on(hub.submit(ear_change(0)));
         assert_eq!(hub.subscribers().len(), 1, "the departed subscriber");
-        for turn in 1..=SUBSCRIBER_BACKLOG {
+        let backlog = 64;
+        for turn in 1..=backlog {
             block_on(hub.submit(ear_change(turn)));
         }
         let mut expected = copy.counters.ear_detection_changes;
-        for _ in 0..SUBSCRIBER_BACKLOG {
+        for _ in 0..backlog {
             expected += 1;
             let change = changes.try_recv().unwrap();
             assert_eq!(change.counters.ear_detection_changes, expected);

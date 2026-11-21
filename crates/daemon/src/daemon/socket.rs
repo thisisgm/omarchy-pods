@@ -16,7 +16,7 @@ use tokio::task::{JoinSet, spawn_blocking};
 use tokio::time::{Instant, sleep, timeout};
 
 use super::hub::Hub;
-use super::{legacy_dialect, log, proto1};
+use super::{MAX_CONNECTIONS, legacy_dialect, log, proto1};
 
 /// How long the start waits for a live daemon to accept, as the C++ `waitForConnected(300)` does.
 const LIVE_DAEMON_PROBE: Duration = Duration::from_millis(300);
@@ -32,9 +32,6 @@ const LOCK_EXTENSION: &str = "lock";
 
 /// Mode of the lock file.
 const LOCK_MODE: u32 = 0o600;
-
-/// Clients served at once; a client past this is closed as soon as it is accepted.
-pub(super) const MAX_CONNECTIONS: usize = 64;
 
 /// The pause after a failed accept, so a lasting failure such as no free descriptors does not spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);

@@ -29,6 +29,12 @@ pub(crate) const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot place 
 pub(crate) const NO_STATE_HOME: &str =
     "XDG_STATE_HOME is not an absolute path and HOME is unset; cannot place the state file";
 
+/// Clients served at once; a client past this is closed as soon as it is accepted.
+const MAX_CONNECTIONS: usize = 64;
+
+/// Changes a subscriber may leave untaken before the hub drops it; each client makes at most one change between two turns of a subscriber's task.
+const SUBSCRIBER_BACKLOG: usize = MAX_CONNECTIONS;
+
 /// Where one daemon serves and publishes.
 #[derive(Debug)]
 pub(crate) struct Paths {

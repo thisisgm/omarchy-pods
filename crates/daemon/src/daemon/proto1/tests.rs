@@ -34,7 +34,7 @@ fn the_protocol_document_states_the_limits_in_force() {
         );
     }
     let stall = STALL_DEADLINE.as_secs();
-    let clients = crate::daemon::socket::MAX_CONNECTIONS;
+    let clients = crate::daemon::MAX_CONNECTIONS;
     // Each number in the wording the document gives it; `second` also matches `seconds`.
     for wanted in [
         format!("holds at most {MAX_LINE_BYTES} bytes"),
