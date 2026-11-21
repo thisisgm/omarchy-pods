@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 use pods_core::command::{AdaptiveLevel, Command, CommandError, Outcome};
 use pods_core::link::ladder::HANDSHAKE_STEP_TIMEOUT_MS;
 use pods_fake::pair;
-use pods_proto::control::{ControlCommand, ControlId};
 use pods_proto::noise::NoiseMode;
-use pods_samples::{NOISE, setting};
+use pods_samples::{ADAPTIVE_LEVEL, NOISE, setting};
 use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 use rustix::time::{ClockId, clock_gettime};
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::sleep;
 
 use super::super::reader::RECV_BUFFER_LEN;
@@ -52,14 +52,6 @@ fn hand_held() -> (Running, Channel, Instant) {
     device_up(running.inputs());
     let (pods_end, connected) = far.recv_timeout(HANG_LIMIT).unwrap();
     (running, pods_end, connected)
-}
-
-fn level_frame(level: AdaptiveLevel) -> Vec<u8> {
-    let frame = ControlCommand {
-        id: ControlId::ADAPTIVE_NOISE_LEVEL,
-        value: [level.percent(), 0, 0, 0],
-    };
-    frame.encode()
 }
 
 /// Every SDU left on `pods_end` until the host's close shows.
@@ -99,23 +91,29 @@ fn packets_never_hold_back_a_passed_deadline() {
             scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {
                     let sdu = Input::Sdu(flood.clone().into_boxed_slice());
-                    if inputs.blocking_send(sdu).is_err() {
-                        return;
+                    match inputs.try_send(sdu) {
+                        Ok(()) => {}
+                        // Never blocks, so the stop ends a flooder even when the driver no longer reads.
+                        Err(TrySendError::Full(_)) => thread::yield_now(),
+                        Err(TrySendError::Closed(_)) => return,
                     }
                 }
             });
         }
         let seen = loop {
             match pods_end.recv(&mut buf) {
-                Ok(Received::Closed) => break Some(connected.elapsed()),
+                Ok(Received::Closed) => break Ok(connected.elapsed()),
                 Ok(Received::Sdu(_) | Received::Truncated { .. }) => {}
-                Ok(Received::TimedOut) | Err(_) => break None,
+                Ok(Received::TimedOut) => {
+                    break Err(format!("still in the handshake after {HANG_LIMIT:?}"));
+                }
+                Err(error) => break Err(format!("recv on the pods end failed: {error}")),
             }
         };
         stop.store(true, Ordering::Relaxed);
         seen
     });
-    let closed = seen.unwrap_or_else(|| panic!("still in the handshake after {HANG_LIMIT:?}"));
+    let closed = seen.unwrap_or_else(|why| panic!("{why}"));
     let delay = Duration::from_millis(HANDSHAKE_STEP_TIMEOUT_MS);
     report(&format!(
         "the unanswered handshake closed {closed:?} after the connect"
@@ -160,13 +158,19 @@ fn a_failed_write_is_refused_and_never_known() {
     };
     report(&format!("a write failed after {sent} were sent"));
     assert_eq!(refusal, Outcome::Refused(CommandError::NotConnected));
+    // Read before the repeat, which stores the level while no link is up, as the C++ daemon does.
+    assert_ne!(
+        hub.state().adaptive_noise_level,
+        failed,
+        "the level whose write failed was stored"
+    );
     let repeat = block_on(hub.submit(Command::SetAdaptiveLevel(failed)));
     assert!(
         !matches!(repeat, Outcome::Sent | Outcome::Confirmed),
         "the failed level asked again: {repeat:?}"
     );
     wait_for_state(&hub, HANG_LIMIT, "the link down", |state| !state.connected);
-    let written = levels.map(level_frame);
+    let written = levels.map(|level| setting(ADAPTIVE_LEVEL, level.percent()));
     let heard = drain(&pods_end)
         .iter()
         .filter(|sdu| written.contains(sdu))
