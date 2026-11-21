@@ -130,13 +130,20 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(state.counters.ear_detection_changes, 1);
 }
 
-/// Asserts that the C++ `function` sends without checking whether the packet went out.
+/// Asserts that the C++ `function` sends as a statement of its own, so nothing reads whether the packet went out.
 fn assert_send_is_unchecked(function: &str) {
     let body = MAIN.body(&format!("void {function}("));
-    assert!(
-        body.contains("writePacketToSocket(") && !body.contains("if (writePacketToSocket("),
-        "{function} does not send unchecked: {body}"
-    );
+    let sends: Vec<&str> = body
+        .lines()
+        .filter(|line| line.contains("writePacketToSocket("))
+        .collect();
+    assert!(!sends.is_empty(), "{function} sends nothing: {body}");
+    for send in sends {
+        assert!(
+            send.trim_start().starts_with("writePacketToSocket("),
+            "{function} checks its send: {send}"
+        );
+    }
 }
 
 // The C++ setters store the value after a send whose failure they ignore.
