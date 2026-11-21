@@ -12,12 +12,13 @@ mod hci {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
 
+    use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
     use pods_proto::sdulog::{Direction, parse_line};
     use tempfile::TempDir;
 
     use super::fixture::{
-        DEVICE_NAME, HOST_ADDRESS, KEYSTROKES, LINK_KEY, PODS_ADDRESS, att_packets,
-        control_packets, session,
+        ATT_CIDS, CONTROL_CIDS, DEVICE_NAME, HOST_ADDRESS, KEYSTROKES, LINK_KEY, PODS_ADDRESS,
+        Trace, att_packets, control_packets, session,
     };
 
     /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
@@ -38,6 +39,8 @@ mod hci {
     const LONGEST_RECORD: usize = 65_535;
     /// Enough longest records to pass `CAPTURE_BOUND`: each takes 65 559 bytes with its header.
     const NOTES_PAST_CAPTURE_BOUND: usize = 1024;
+    /// The L2CAP mode a channel must not be in to be exported: enhanced retransmission.
+    const ENHANCED_RETRANSMISSION: u8 = 0x03;
     /// The identification pattern, the version and the datalink type.
     const FILE_HEADER: usize = 16;
     /// Two lengths, flags, drops and the timestamp.
@@ -248,6 +251,36 @@ mod hci {
             assert!(error.contains(rule), "{rule}: {error}");
             assert!(error.contains(&path.display().to_string()), "{error}");
             assert!(!home.path().join("omapods-captures").exists(), "{rule}");
+        }
+    }
+
+    #[test]
+    fn a_channel_not_in_basic_mode_gets_no_log_and_the_summary_says_why() {
+        let mut trace = Trace::new();
+        trace.open(Direction::ToPods, CONTROL_PSM, CONTROL_CIDS);
+        trace.open(Direction::FromPods, ATT_PSM, ATT_CIDS);
+        trace.offer_mode(Direction::FromPods, ATT_CIDS, ENHANCED_RETRANSMISSION);
+        trace.send(Direction::FromPods, CONTROL_CIDS, &[0x01]);
+        trace.send(
+            Direction::FromPods,
+            ATT_CIDS,
+            &[0x00, 0x00, 0x1b, 0x0d, 0x00],
+        );
+        let (home, path) = home_with_trace(&trace.bytes());
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        let written = files(&run_dir(&home, RUN));
+        let names: Vec<&str> = written.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv", "sdu.log"]
+        );
+        let said = "channel_not_read handle=0x000b psm=0x001f host_mode=- pods_mode=0x03 pdus=1 reason=l2cap_mode_is_not_basic\n";
+        let stdout = String::from_utf8(ran.stdout).unwrap();
+        assert!(stdout.contains(said), "{stdout}");
+        assert!(stdout.contains("not_basic_mode_pdus 1\n"), "{stdout}");
+        for (name, contents) in &written {
+            assert!(!holds(contents, b"1b0d00"), "{name} holds the packet");
         }
     }
 

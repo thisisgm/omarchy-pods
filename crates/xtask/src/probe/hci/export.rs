@@ -25,7 +25,8 @@ const CODECS_NAME: &str = "avdtp.txt";
 /// The counts, which the command also prints.
 const LINKS_NAME: &str = "links.txt";
 /// The column names of `psm.tsv`.
-const REQUESTS_HEADER: &str = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu";
+const REQUESTS_HEADER: &str =
+    "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode";
 /// The column names of `a2dp.tsv`.
 const SECONDS_HEADER: &str =
     "second\tmedia_packets\tmedia_bytes\trtp_gaps\tlargest_interval_ns\tavdtp_suspend\tavdtp_start";
@@ -87,6 +88,11 @@ fn side(direction: Direction) -> &'static str {
     }
 }
 
+/// An L2CAP mode as `psm.tsv` and `links.txt` write it: 0x00 is basic, 0x03 enhanced retransmission, 0x04 streaming.
+fn mode_text(mode: u8) -> String {
+    format!("{mode:#04x}")
+}
+
 /// One channel's packets as capture log lines, and the line that counts what the log format could not hold.
 fn log(name: &str, channel: &Channel) -> Result<(String, String), ExportError> {
     let mut lines = Vec::new();
@@ -115,7 +121,7 @@ fn log(name: &str, channel: &Channel) -> Result<(String, String), ExportError> {
     Ok((text(&lines), counted))
 }
 
-/// Every connection request with who sent it, how it was answered and the MTU option each side sent for its channel.
+/// Every connection request with who sent it, how it was answered and the MTU and the mode each side asked for its channel.
 fn requests_table(found: &Channels) -> String {
     let mut lines = vec![REQUESTS_HEADER.to_owned()];
     let or_absent = |value: Option<String>| value.unwrap_or_else(|| ABSENT.to_owned());
@@ -124,8 +130,10 @@ fn requests_table(found: &Channels) -> String {
         let result = request.result.map(|result| format!("{result:#06x}"));
         let host_mtu = channel.and_then(|channel| channel.host_mtu);
         let pods_mtu = channel.and_then(|channel| channel.pods_mtu);
+        let host_mode = channel.and_then(|channel| channel.host_mode);
+        let pods_mode = channel.and_then(|channel| channel.pods_mode);
         lines.push(format!(
-            "{at_ns}\t{side}\t{psm:#06x}\t{result}\t{handle:#06x}\t{host_mtu}\t{pods_mtu}",
+            "{at_ns}\t{side}\t{psm:#06x}\t{result}\t{handle:#06x}\t{host_mtu}\t{pods_mtu}\t{host_mode}\t{pods_mode}",
             at_ns = request.at_ns,
             side = side(request.direction),
             psm = request.psm,
@@ -133,6 +141,8 @@ fn requests_table(found: &Channels) -> String {
             handle = request.handle,
             host_mtu = or_absent(host_mtu.map(|mtu| mtu.to_string())),
             pods_mtu = or_absent(pods_mtu.map(|mtu| mtu.to_string())),
+            host_mode = or_absent(host_mode.map(mode_text)),
+            pods_mode = or_absent(pods_mode.map(mode_text)),
         ));
     }
     text(&lines)
@@ -212,6 +222,9 @@ fn link_lines(
         not_rtp,
         other_channels,
     } = a2dp::unread(found);
+    let not_basic_mode_pdus = found.list.iter().fold(0_u64, |pdus, channel| {
+        pdus.saturating_add(channel.not_basic_pdus)
+    });
     let mut lines: Vec<String> = cut
         .iter()
         .map(|cut| {
@@ -237,6 +250,7 @@ fn link_lines(
         ("fixed_channel_pdus", fixed_channel_pdus),
         ("requests_over_limit", requests_over_limit),
         ("unmapped_over_limit", unmapped_over_limit),
+        ("not_basic_mode_pdus", not_basic_mode_pdus),
         ("avdtp_fragmented_signals", fragmented_signals),
         ("avdtp_malformed_signals", avdtp_malformed_signals),
         ("avdtp_other_channels", other_channels),
@@ -251,6 +265,17 @@ fn link_lines(
             unmapped.cid,
             side(unmapped.direction),
             unmapped.pdus
+        ));
+    }
+    let or_absent = |mode: Option<u8>| mode.map_or_else(|| ABSENT.to_owned(), mode_text);
+    for channel in found.list.iter().filter(|channel| !channel.is_basic()) {
+        lines.push(format!(
+            "channel_not_read handle={:#06x} psm={:#06x} host_mode={} pods_mode={} pdus={} reason=l2cap_mode_is_not_basic",
+            channel.handle,
+            channel.psm,
+            or_absent(channel.host_mode),
+            or_absent(channel.pods_mode),
+            channel.not_basic_pdus
         ));
     }
     let offered = found
@@ -281,6 +306,10 @@ pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
     for (psm, stem) in [(CONTROL_PSM, CONTROL_LOG), (ATT_PSM, ATT_LOG)] {
         let on_psm = found.list.iter().filter(|channel| channel.psm == psm);
         for (number, channel) in (1_usize..).zip(on_psm) {
+            // A channel in another mode keeps its number and gets no log; links.txt says why.
+            if !channel.is_basic() {
+                continue;
+            }
             let name = if number == 1 {
                 format!("{stem}.log")
             } else {

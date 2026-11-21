@@ -27,6 +27,12 @@ const CONFIGURATION_REQUEST: u8 = 0x04;
 const DISCONNECTION_REQUEST: u8 = 0x06;
 /// The MTU configuration option (Core 6.1 Vol 3 Part A 5.1).
 const OPTION_MTU: u8 = 0x01;
+/// The retransmission and flow control option, whose first byte is the mode (Core 6.1 Vol 3 Part A 5.4).
+const OPTION_RETRANSMISSION_AND_FLOW_CONTROL: u8 = 0x04;
+/// The size of that option's data; one of another size is not that option (`BlueZ` monitor/l2cap.c, `options_table`).
+const RETRANSMISSION_OPTION_LEN: usize = 9;
+/// Basic mode, the only one whose PDU payload is one whole packet (`BlueZ` lib/bluetooth/l2cap.h, `L2CAP_MODE_BASIC`).
+const BASIC_MODE: u8 = 0x00;
 /// The top bit of an option type marks a hint and is not part of the type (Core 6.1 Vol 3 Part A 5).
 const OPTION_TYPE_MASK: u8 = 0x7f;
 
@@ -50,12 +56,26 @@ pub(crate) struct Channel {
     pub host_mtu: Option<u16>,
     /// The MTU option of the pods' last configuration request.
     pub pods_mtu: Option<u16>,
+    /// The mode in the retransmission and flow control option of the host's last configuration request that held one.
+    pub host_mode: Option<u8>,
+    /// The same for the pods.
+    pub pods_mode: Option<u8>,
+    /// PDUs not kept because a side had asked for a mode other than basic, where a payload opens with control fields.
+    pub not_basic_pdus: u64,
     /// The position of the record that opened it, among the records `channels` was given.
     pub opened: usize,
     /// The position of the record that closed it; `None` while it is open at the end of the trace.
     pub closed: Option<usize>,
     /// Every SDU on it, in trace order, stamped when its last fragment was seen.
     pub sdus: Vec<Record>,
+}
+
+impl Channel {
+    /// Whether no side's last configuration request asked for a mode other than basic; only then are its PDUs kept.
+    pub(crate) fn is_basic(&self) -> bool {
+        let asked = [self.host_mode, self.pods_mode];
+        asked.iter().flatten().all(|mode| *mode == BASIC_MODE)
+    }
 }
 
 /// One connection request and how the trace shows it was answered.
@@ -175,24 +195,39 @@ fn other(direction: Direction) -> Direction {
     }
 }
 
-// Sample input: 01 02 a0 02, then 02 02 ff ff: the MTU option with 672 in little endian, then a flush timeout option.
-fn mtu_option(mut options: &[u8]) -> (Option<u16>, bool) {
-    let mut mtu = None;
-    while !options.is_empty() {
-        let Some([kind, len]) = take(&mut options) else {
-            return (mtu, false);
+/// The options of one configuration request that the reader uses.
+#[derive(Debug, Clone, Copy, Default)]
+struct Options {
+    mtu: Option<u16>,
+    mode: Option<u8>,
+}
+
+// Sample input: 01 02 a0 02, then 04 09 03 3f 03 d0 07 e0 2e f0 03: the MTU option with 672 in little endian, then retransmission and flow control with mode 3.
+fn options(mut rest: &[u8]) -> (Options, bool) {
+    let mut found = Options::default();
+    while !rest.is_empty() {
+        let Some([kind, len]) = take(&mut rest) else {
+            return (found, false);
         };
-        let Some((data, after)) = options.split_at_checked(usize::from(len)) else {
-            return (mtu, false);
+        let Some((data, after)) = rest.split_at_checked(usize::from(len)) else {
+            return (found, false);
         };
-        options = after;
-        if kind & OPTION_TYPE_MASK == OPTION_MTU
-            && let Ok(value) = <[u8; 2]>::try_from(data)
-        {
-            mtu = Some(u16::from_le_bytes(value));
+        rest = after;
+        match kind & OPTION_TYPE_MASK {
+            OPTION_MTU => {
+                if let Ok(value) = <[u8; 2]>::try_from(data) {
+                    found.mtu = Some(u16::from_le_bytes(value));
+                }
+            }
+            OPTION_RETRANSMISSION_AND_FLOW_CONTROL => {
+                if let Ok([mode, ..]) = <[u8; RETRANSMISSION_OPTION_LEN]>::try_from(data) {
+                    found.mode = Some(mode);
+                }
+            }
+            _ => {}
         }
     }
-    (mtu, true)
+    (found, true)
 }
 
 impl Reader {
@@ -262,11 +297,15 @@ impl Reader {
             .and_then(|link| link.receiving(seen.direction, cid))
             .and_then(|index| self.found.list.get_mut(index));
         if let Some(channel) = open {
-            channel.sdus.push(Record {
-                at_ns: seen.at_ns,
-                direction: seen.direction,
-                sdu: payload.to_vec(),
-            });
+            if channel.is_basic() {
+                channel.sdus.push(Record {
+                    at_ns: seen.at_ns,
+                    direction: seen.direction,
+                    sdu: payload.to_vec(),
+                });
+            } else {
+                bump(&mut channel.not_basic_pdus);
+            }
             return;
         }
         let key = (seen.handle, cid, seen.direction == Direction::FromPods);
@@ -375,6 +414,9 @@ impl Reader {
             pods_cid,
             host_mtu: None,
             pods_mtu: None,
+            host_mode: None,
+            pods_mode: None,
+            not_basic_pdus: 0,
             opened: seen.position,
             closed: None,
             sdus: Vec::new(),
@@ -390,15 +432,17 @@ impl Reader {
         let mut rest = data;
         let cid = u16::from_le_bytes(take(&mut rest)?);
         let _flags: [u8; 2] = take(&mut rest)?;
-        let (mtu, whole) = mtu_option(rest);
+        let (sent, whole) = options(rest);
         let channel = self
             .open(seen.handle, seen.direction, cid)
             .and_then(|index| self.found.list.get_mut(index));
-        if let (Some(channel), Some(mtu)) = (channel, mtu) {
-            match seen.direction {
-                Direction::ToPods => channel.host_mtu = Some(mtu),
-                Direction::FromPods => channel.pods_mtu = Some(mtu),
-            }
+        if let Some(channel) = channel {
+            let (mtu, mode) = match seen.direction {
+                Direction::ToPods => (&mut channel.host_mtu, &mut channel.host_mode),
+                Direction::FromPods => (&mut channel.pods_mtu, &mut channel.pods_mode),
+            };
+            *mtu = sent.mtu.or(*mtu);
+            *mode = sent.mode.or(*mode);
         }
         whole.then_some(())
     }
