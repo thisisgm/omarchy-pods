@@ -7,7 +7,6 @@
     )
 )]
 
-/// One C++ source file and the path its lookups name when they fail.
 #[derive(Debug)]
 pub struct CppHeader {
     path: &'static str,
@@ -75,13 +74,12 @@ pub const CONTROL_RECONNECT: CppHeader = CppHeader {
 };
 
 impl CppHeader {
-    /// The whole file, for a reader that parses whole statements itself.
     #[must_use]
     pub fn text(&self) -> &'static str {
         self.text
     }
 
-    /// The text from `scope` (such as `namespace Parse`) to its first closing brace, where every constant read here sits.
+    /// From `scope` to its first closing brace, where every constant read here sits.
     #[must_use]
     pub fn scope(&self, scope: &str) -> &'static str {
         let (_, rest) = [" ", "\n", "{"]
@@ -94,7 +92,6 @@ impl CppHeader {
         block
     }
 
-    /// The text after `start` up to the next `end`, inside `scope` or anywhere when `scope` is `None`.
     #[must_use]
     pub fn find(&self, scope: Option<&str>, start: &str, end: char) -> &'static str {
         let (text, place) = match scope {
@@ -113,7 +110,7 @@ impl CppHeader {
         found.trim()
     }
 
-    /// The text after `start` up to the next `end`, for a block whose entries hold the characters `find` stops at.
+    /// For a block whose entries hold the characters `find` stops at.
     #[must_use]
     pub fn between(&self, start: &str, end: &str) -> &'static str {
         let (_, rest) = self
@@ -126,7 +123,7 @@ impl CppHeader {
         found
     }
 
-    /// Every piece of text that follows `start` up to the next `end`, in file order; sample input: `if (msg == "noise:off") {` read with start `msg == "` and end `"`.
+    // Sample input: `if (msg == "noise:off") {` read with start `msg == "` and end `"`.
     #[must_use]
     pub fn all_between(&self, start: &str, end: &str) -> Vec<&'static str> {
         let mut found = Vec::new();
@@ -141,7 +138,7 @@ impl CppHeader {
         found
     }
 
-    /// The braced body after the first occurrence of `signature`, braces matched, outer braces excluded; sample input: `void forgetDevice() {\n if (x) { return; }\n ++m_total;\n }` read with signature `void forgetDevice(`.
+    // Sample input: `void forgetDevice() {\n if (x) { return; }\n ++m_total;\n }` read with signature `void forgetDevice(`.
     #[must_use]
     pub fn body(&self, signature: &str) -> &'static str {
         let (_, after) = self
@@ -168,13 +165,13 @@ impl CppHeader {
         ))
     }
 
-    /// A byte written as `0x1B` or `3`, found between `start` and `end`; sample input: `using Type = BasicControlCommand<0x1B>;` read with start `BasicControlCommand<` and end `>`.
+    // Sample input: `using Type = BasicControlCommand<0x1B>;` read with start `BasicControlCommand<` and end `>`.
     #[must_use]
     pub fn byte(&self, scope: Option<&str>, start: &str, end: char) -> u8 {
         parse_byte(self.find(scope, start, end))
     }
 
-    /// The bytes of `symbol = QByteArray::fromHex("...")`; sample input: `static const QByteArray HANDSHAKE = QByteArray::fromHex("00000400010002000000000000000000");`
+    // Sample input: static const QByteArray HANDSHAKE = QByteArray::fromHex("00000400010002000000000000000000");
     #[must_use]
     pub fn hex(&self, scope: Option<&str>, symbol: &str) -> Vec<u8> {
         let hex = self.find(scope, &format!("{symbol} = QByteArray::fromHex(\""), '"');
@@ -191,7 +188,7 @@ impl CppHeader {
             .collect()
     }
 
-    /// The frame `symbol = ControlCommand::createCommand(...)` builds, value bytes the call leaves out read as 0; sample input: `static const QByteArray OFF = ControlCommand::createCommand(0x0D, 0x01);`
+    // Sample input: static const QByteArray OFF = ControlCommand::createCommand(0x0D, 0x01);
     #[must_use]
     pub fn command(&self, scope: Option<&str>, symbol: &str) -> Vec<u8> {
         let args = self.find(
@@ -206,7 +203,7 @@ impl CppHeader {
         frame
     }
 
-    /// Every enumerator of `scope` in order with its number, counting on from the last explicit value as C++ does; sample input: `enum class LidState : uint8_t\n{\n OPEN = 0x0,\n CLOSED = 0x1, // note\n UNKNOWN,\n}`, one enumerator per line.
+    // Sample input: `enum class LidState : uint8_t\n{\n OPEN = 0x0,\n CLOSED = 0x1, // note\n UNKNOWN,\n}`, one enumerator per line.
     #[must_use]
     pub fn enumerators(&self, scope: &str) -> Vec<(&'static str, u8)> {
         let (_, body) = self
@@ -250,7 +247,6 @@ fn parse_byte(text: &str) -> u8 {
     .unwrap_or_else(|_| missing(&format!("`{text}` is not a byte")))
 }
 
-/// Stops the test that asked for a C++ definition the sources no longer hold, naming it.
 #[expect(
     clippy::panic,
     reason = "a failed lookup must stop the calling test and name the missing C++ definition"
