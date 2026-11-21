@@ -383,6 +383,8 @@ pub(crate) fn export(
     stamp: &str,
     run: &str,
 ) -> Result<Exported, ExportError> {
+    // A run name the store refuses must leave no session directory behind, so it is judged before anything is read or made.
+    store::check_run_name(run)?;
     let bytes = store::read_trace(trace, MAX_TRACE_BYTES).map_err(refused_read)?;
     let read = records(&bytes).map_err(|source| ExportError::Trace {
         path: trace.to_path_buf(),

@@ -468,8 +468,16 @@ mod hci {
     #[test]
     fn a_run_name_the_store_refuses_makes_no_directory() {
         let too_long = "a".repeat(RUN_NAME_MAX + 1);
-        for bad in ["../escape", "", "Trace", too_long.as_str()] {
-            let (home, path) = home_with_trace(&session().bytes());
+        let whole = session().bytes();
+        // The last trace is one the reader refuses, so its name line shows the name is judged before the trace.
+        for (bad, trace) in [
+            ("../escape", &whole[..]),
+            ("", &whole[..]),
+            ("Trace", &whole[..]),
+            (too_long.as_str(), &whole[..]),
+            ("Trace", &[][..]),
+        ] {
+            let (home, path) = home_with_trace(trace);
             let refused = hci(&home, &path, bad);
             assert!(!refused.status.success(), "{bad}: {refused:?}");
             assert_eq!(refused.stdout, b"", "{bad}");
@@ -477,10 +485,7 @@ mod hci {
                 "xtask probe: run name {bad:?} is not 1 to 32 characters of a-z, 0-9 and -\n"
             );
             assert_eq!(String::from_utf8(refused.stderr).unwrap(), said);
-            let root = home.path().join("omapods-captures");
-            assert_eq!(names_in(home.path()), ["hci.btsnoop", "omapods-captures"]);
-            assert_eq!(names_in(&root), [STAMP], "{bad}");
-            assert_eq!(names_in(&root.join(STAMP)), [""; 0], "{bad}");
+            assert_eq!(names_in(home.path()), ["hci.btsnoop"], "{bad}");
         }
     }
 }

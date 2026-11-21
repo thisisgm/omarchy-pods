@@ -297,7 +297,7 @@ fn check_stamp(stamp: &str) -> Result<(), StoreError> {
 }
 
 // Sample input: left-mic-2, one to 32 characters of a-z, 0-9 and -.
-fn check_run_name(name: &str) -> Result<(), StoreError> {
+pub(crate) fn check_run_name(name: &str) -> Result<(), StoreError> {
     let fits = (1..=RUN_NAME_MAX).contains(&name.len())
         && name
             .bytes()
