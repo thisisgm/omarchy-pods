@@ -124,12 +124,20 @@ mod tests {
         format!("{{\"event\":\"state\",\"state\":{state}}}\n")
     }
 
+    /// The count `name` in the state of a reply or event line.
+    fn counter(line: &str, name: &str) -> u64 {
+        let line: Value = serde_json::from_str(line).unwrap();
+        line["state"][name].as_u64().unwrap()
+    }
+
     /// The ear detection change count in a reply or event line, which rises by one per change made here.
     fn ear_changes(line: &str) -> u64 {
-        let line: Value = serde_json::from_str(line).unwrap();
-        line["state"]["ear_detection_changes_total"]
-            .as_u64()
-            .unwrap()
+        counter(line, "ear_detection_changes_total")
+    }
+
+    /// The noise control change count in a reply or event line, which a refused noise set raises too.
+    fn noise_changes(line: &str) -> u64 {
+        counter(line, "noise_control_changes_total")
     }
 
     /// The `set` request that moves ear detection to the `n`th of two values, so each one is a change.
@@ -420,7 +428,7 @@ mod tests {
         let session = Session::new();
         let _daemon = session.start();
         let mut subscriber = Client::connect(&session);
-        subscriber.ask(SUBSCRIBE);
+        let mut expected = noise_changes(&subscriber.ask(SUBSCRIBE));
         // A refused set still counts a change, and lines this short put more changes in one read than the hub holds.
         let refused = r#"{"v":1,"id":0,"op":"set","key":"noise","value":"anc"}"#;
         subscriber.send(format!("{refused}\n").repeat(CHANGES).as_bytes());
@@ -429,6 +437,12 @@ mod tests {
         while replies < CHANGES || events < CHANGES {
             let line = subscriber.line();
             if line.starts_with(r#"{"event""#) {
+                expected += 1;
+                assert_eq!(
+                    noise_changes(&line),
+                    expected,
+                    "after {replies} replies and {events} events"
+                );
                 events += 1;
             } else {
                 assert_eq!(
@@ -439,6 +453,8 @@ mod tests {
                 replies += 1;
             }
         }
+        // Every change has had its event, so the next line answers this get.
+        assert_eq!(subscriber.ask(GET), state_reply(7, &legacy_state(&session)));
     }
 
     #[test]
