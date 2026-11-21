@@ -79,6 +79,8 @@ const FRAME_LENGTH_AT: usize = 4;
 const FRAME_COUNT_BOUND: usize = 8;
 /// Length bound of a generated value that is noise, longer than both known status replies.
 const VALUE_NOISE_BOUND: usize = 16;
+/// Noise bytes after the marker of a cut audio notification: the packet counter, the two length bytes, then one frame prefix.
+const CUT_NOISE_LEN: usize = 8;
 
 // Sample output: [04, 01, 55, 02, 01], kind, spacer, level, status, end; marks are mostly 0x01 so the entry loop runs.
 fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
@@ -215,11 +217,12 @@ fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![known(), flipped, longer, shorter, noise]
 }
 
-// Sample output: 1b 0d 00 01 00 2a, the audio gate then noise, cut at any length from nothing to three bytes past the audio prefix.
+// Sample output: 1b 0d 00 01 00 2a, the audio gate and marker then noise, cut at any length from nothing to one frame prefix past the audio prefix.
 fn dictation_cut_audio_notification() -> impl Strategy<Value = Vec<u8>> {
-    let noise = proptest::collection::vec(any::<u8>(), dictation::AUDIO_PREFIX_LEN);
+    let noise = proptest::collection::vec(any::<u8>(), CUT_NOISE_LEN);
     (noise, any::<proptest::sample::Index>()).prop_map(|(noise, kept)| {
         let mut pdu = DICTATION_AUDIO_GATE.to_vec();
+        pdu.extend(DICTATION_AUDIO_MARKER);
         pdu.extend(noise);
         pdu.truncate(kept.index(pdu.len().saturating_add(1)));
         pdu
@@ -580,7 +583,7 @@ proptest! {
         }
     }
 
-    // A uniform length under MAX_SDU almost never draws a notification cut inside its prefix, so half the cases are the audio gate and noise cut that short.
+    // A uniform length under MAX_SDU almost never draws a notification cut inside its prefix, so half the cases are an audio notification cut that short.
     #[test]
     fn dictation_parse_never_panics(b in prop_oneof![
         proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
