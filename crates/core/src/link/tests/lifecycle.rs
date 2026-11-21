@@ -9,7 +9,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::ladders::PARKED_AT_MS;
 use super::sim::{Answer, Input, Sim, addr, ms};
-use crate::command::{Command, CommandError, Outcome};
+use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::KNOWN_MAX;
 use crate::link::{Event, Machine, Phase};
 use crate::state::{EarDetectionBehavior, LidState, State};
@@ -380,11 +380,14 @@ fn commands_are_answered_at_once_in_every_phase() {
             EarDetectionBehavior::Disabled,
         )));
         assert_eq!(sim.last(), ["Resolve(0)"], "{phase:?}");
-        assert_eq!(sim.outcomes(), [Outcome::Confirmed], "{phase:?}");
         assert_eq!(
             sim.state.ear_detection_behavior,
             EarDetectionBehavior::Disabled
         );
+        sim.feed(Input::Command(Command::SetNoise(NoiseTarget::Cycle)));
+        assert_eq!(sim.last(), ["Resolve(1)"], "{phase:?}");
+        let refused = Outcome::Refused(CommandError::NotConnected);
+        assert_eq!(sim.outcomes(), [Outcome::Confirmed, refused], "{phase:?}");
         sim.feed(Input::CallFailed);
         assert_eq!(sim.last(), NO_ACTIONS, "{phase:?}");
         assert_eq!(sim.machine.phase(), phase);
