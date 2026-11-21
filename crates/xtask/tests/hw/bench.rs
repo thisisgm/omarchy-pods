@@ -466,6 +466,7 @@ impl Bench {
         });
         let mut output = finish(child, RUN_DEADLINE);
         output.stderr = person.join().unwrap();
+        said(&output.stderr);
         done.store(true, Ordering::SeqCst);
         (output, server.join().unwrap())
     }
@@ -589,10 +590,12 @@ pub(crate) fn finish(mut child: Child, limit: Duration) -> Output {
     let joined = |reader: Option<JoinHandle<Vec<u8>>>| {
         reader.map_or_else(Vec::new, |reader| reader.join().unwrap())
     };
+    let stderr = joined(stderr);
+    said(&stderr);
     Output {
         status,
         stdout: joined(stdout),
-        stderr: joined(stderr),
+        stderr,
     }
 }
 
@@ -602,6 +605,11 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
         pipe.read_to_end(&mut bytes).unwrap();
         bytes
     })
+}
+
+/// Echoes what a run wrote to stderr: the test runner shows it only for a test that fails, which is when it is wanted.
+fn said(stderr: &[u8]) {
+    drop(std::io::stderr().write_all(stderr));
 }
 
 pub(crate) fn text(bytes: &[u8]) -> String {
