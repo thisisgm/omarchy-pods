@@ -11,7 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use pods_core::legacy::REOPEN_VERB;
+use pods_core::legacy::{REOPEN_VERB, STATUS_VERB};
 
 /// How long the client waits to connect, as `waitForConnected(500)` does.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
@@ -24,8 +24,6 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Upper bound on a reply, so a peer that never sends a newline cannot grow memory.
 const MAX_REPLY_BYTES: usize = 65536;
-
-const STATUS_VERB: &str = "status";
 
 const ERROR_PREFIX: &[u8] = b"error:";
 
