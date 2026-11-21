@@ -183,7 +183,7 @@ impl Channel {
         self.send_with(sdu, SendFlags::DONTWAIT)
     }
 
-    /// Shuts down both directions so a `recv` blocked in another thread returns `Closed`, proven on an `AF_UNIX` socket pair and not yet on an L2CAP socket.
+    /// Shuts down both directions so a `recv` blocked in another thread returns `Closed`, proven on an `AF_UNIX` socket pair and not yet on an L2CAP socket; an error from a channel already down is expected.
     pub fn shutdown(&self) -> Result<(), ChannelError> {
         rustix::net::shutdown(&self.fd, Shutdown::Both).map_err(ChannelError::Shutdown)
     }
@@ -212,6 +212,8 @@ mod tests {
     use super::*;
 
     const BUFFER_LEN: usize = 4096;
+    /// Any size strictly between one byte and `BUFFER_LEN`, so the middle SDU is at neither edge.
+    const MIDDLE_SDU_LEN: usize = 338;
     const RECV_TIMEOUT: Duration = Duration::from_millis(10);
     /// Longer than any loaded host takes to hand over a packet that is already queued.
     const READY_WAIT: Duration = Duration::from_secs(5);
@@ -269,7 +271,7 @@ mod tests {
     #[test]
     fn message_boundaries_are_kept() {
         let (near, far) = channel_pair();
-        let sizes = [1, 338, BUFFER_LEN];
+        let sizes = [1, MIDDLE_SDU_LEN, BUFFER_LEN];
         for size in sizes {
             near.send(&vec![0xa5; size]).unwrap();
         }
@@ -541,7 +543,7 @@ mod tests {
     #[test]
     fn try_send_keeps_message_boundaries() {
         let (near, far) = channel_pair();
-        let sizes = [1, 338, BUFFER_LEN];
+        let sizes = [1, MIDDLE_SDU_LEN, BUFFER_LEN];
         for (fill, size) in [0x11_u8, 0x22, 0x33].into_iter().zip(sizes) {
             near.try_send(&vec![fill; size]).unwrap();
         }
