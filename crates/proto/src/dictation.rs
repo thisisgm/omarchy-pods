@@ -56,9 +56,8 @@ pub const TOC_CELT_WIDEBAND_20MS_MONO: u8 = 0xb8;
 pub enum DictationPacket<'a> {
     Audio(AudioNotification<'a>),
     Status(Status<'a>),
-    /// A value on the audio handle that does not start with the audio marker, kept whole so the caller can log or count it.
+    /// A notification on `AUDIO_HANDLE` whose value does not start with the audio marker `01 00`, kept whole so the caller can log or count it.
     Unknown {
-        handle: u16,
         /// Everything after the handle.
         value: &'a [u8],
     },
@@ -78,11 +77,10 @@ impl<'a> DictationPacket<'a> {
                 got: pdu.len(),
             });
         };
-        let handle = u16::from_le_bytes(*handle);
-        match handle {
+        match u16::from_le_bytes(*handle) {
             AUDIO_HANDLE => match AudioNotification::parse(value, pdu.len())? {
                 Some(audio) => Ok(Some(Self::Audio(audio))),
-                None => Ok(Some(Self::Unknown { handle, value })),
+                None => Ok(Some(Self::Unknown { value })),
             },
             STATUS_HANDLE => Ok(Some(Self::Status(Status::parse(pdu, value)))),
             _ => Ok(None),
@@ -643,7 +641,6 @@ mod tests {
             hex("1b 0d 00 00 01 2a 08 00 80 d5 04 01 03 b8 10 11"),
         ] {
             let expected = DictationPacket::Unknown {
-                handle: 0x000d,
                 value: &pdu[NOTIFICATION_MIN_LEN..],
             };
             assert_eq!(
