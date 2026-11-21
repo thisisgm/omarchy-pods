@@ -1,6 +1,8 @@
 //! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run into it, and `stop` ends an uplink a killed capture left running.
 
+mod a2dp;
 mod capture;
+mod hci;
 mod script;
 mod store;
 
@@ -8,6 +10,7 @@ use std::env;
 use std::ffi::{OsString, c_int};
 use std::fmt;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -56,6 +59,17 @@ enum ProbeCommand {
     Capture(CaptureArgs),
     /// Sends STOP to the pods, for a capture that was killed before it could.
     Stop,
+    /// Reads a trace written by btmon -w and writes its channel logs and tables into a new run.
+    Hci {
+        /// The btsnoop file: the caller's own, with no access for group or others.
+        file: PathBuf,
+        /// The session stamp, from date -u +%Y%m%dT%H%M%SZ.
+        #[arg(long)]
+        stamp: String,
+        /// The name of the run to create: 1 to 32 characters of a-z, 0-9 and -.
+        #[arg(long)]
+        run: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -145,6 +159,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             }
         },
         ProbeCommand::Stop => stop(&mut host),
+        ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
     }
 }
 
@@ -336,5 +351,19 @@ fn usage(error: &clap::Error) -> ExitCode {
     } else {
         print_line(text.trim_end());
         ExitCode::SUCCESS
+    }
+}
+
+/// Writes the tables of one trace into a new run and prints the counts, which is all hci writes on stdout.
+fn hci(file: &Path, stamp: &str, run: &str, home: &str) -> ExitCode {
+    match hci::export(&store::root(home.as_ref()), file, stamp, run) {
+        Ok(counts) => {
+            counts.lines().for_each(print_line);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            report(&format!("xtask probe: {error}"));
+            ExitCode::FAILURE
+        }
     }
 }
