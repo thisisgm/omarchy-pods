@@ -3,13 +3,43 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, ChildStdout, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 
 use rustix::process::{Signal, kill_process};
 
-use super::support::{BINARY, Session, wait_for};
+use super::support::{BINARY, HANG_LIMIT, Session, wait_for};
+
+/// A running `librepods watch`, killed once `HANG_LIMIT` passes so a read of its output ends, and killed and reaped when dropped.
+struct Watch {
+    child: Arc<Mutex<Child>>,
+    /// Dropping it wakes the watchdog, which then ends without a kill.
+    disarm: Option<mpsc::Sender<()>>,
+    watchdog: Option<JoinHandle<()>>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        drop(self.disarm.take());
+        if let Some(watchdog) = self.watchdog.take() {
+            // A watchdog that panicked has nothing left to end.
+            drop(watchdog.join());
+        }
+        let mut child = lock(&self.child);
+        // A watch that already exited refuses the kill, which is the outcome wanted.
+        drop(child.kill());
+        drop(child.wait());
+    }
+}
+
+/// The child, even after a panic while it was held, so a drop during a failed test still kills it.
+fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
+    child.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Starts `librepods watch` with its stdout piped back here.
-fn spawn_watch(session: &Session) -> (Child, BufReader<ChildStdout>) {
+fn spawn_watch(session: &Session) -> (Watch, BufReader<ChildStdout>) {
     let mut child = session
         .command(Path::new(BINARY), &["watch"])
         .stdout(Stdio::piped())
@@ -17,20 +47,37 @@ fn spawn_watch(session: &Session) -> (Child, BufReader<ChildStdout>) {
         .spawn()
         .unwrap();
     let stdout = BufReader::new(child.stdout.take().unwrap());
-    (child, stdout)
+    let child = Arc::new(Mutex::new(child));
+    let (disarm, disarmed) = mpsc::channel::<()>();
+    let watched = Arc::clone(&child);
+    let watchdog = thread::spawn(move || {
+        if disarmed.recv_timeout(HANG_LIMIT) == Err(RecvTimeoutError::Timeout) {
+            // std signals no child it has already reaped, so a late kill cannot reach a reused pid.
+            drop(lock(&watched).kill());
+        }
+    });
+    let watch = Watch {
+        child,
+        disarm: Some(disarm),
+        watchdog: Some(watchdog),
+    };
+    (watch, stdout)
 }
 
+/// The next line `watch` printed, or empty once it exited or its watchdog killed it.
 fn read_watch_line(stdout: &mut BufReader<ChildStdout>) -> String {
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     line
 }
 
-/// Waits for `child` to exit and returns its code and stderr.
-fn finish(child: &mut Child) -> (Option<i32>, String) {
-    let status = wait_for("the client to exit", || child.try_wait().unwrap());
+/// Waits for `watch` to exit and returns its code and stderr.
+fn finish(watch: &Watch) -> (Option<i32>, String) {
+    let status = wait_for("the client to exit", || {
+        lock(&watch.child).try_wait().unwrap()
+    });
     let mut stderr = String::new();
-    child
+    lock(&watch.child)
         .stderr
         .take()
         .unwrap()
@@ -43,7 +90,7 @@ fn finish(child: &mut Child) -> (Option<i32>, String) {
 fn watch_prints_a_line_per_change_and_exits_one_when_daemon_stops() {
     let session = Session::new();
     let mut daemon = session.start();
-    let (mut watch, mut stdout) = spawn_watch(&session);
+    let (watch, mut stdout) = spawn_watch(&session);
     assert_eq!(read_watch_line(&mut stdout), session.status());
     let set = session.run_client(Path::new(BINARY), &["set", "ear_detection", "both"]);
     assert_eq!(set.status.code(), Some(0));
@@ -54,7 +101,7 @@ fn watch_prints_a_line_per_change_and_exits_one_when_daemon_stops() {
     assert!(daemon.wait_exit().success());
     assert_eq!(read_watch_line(&mut stdout), "");
     assert_eq!(
-        finish(&mut watch),
+        finish(&watch),
         (Some(1), "The daemon went away.\n".to_owned())
     );
 }
@@ -63,11 +110,11 @@ fn watch_prints_a_line_per_change_and_exits_one_when_daemon_stops() {
 fn watch_ends_quietly_when_nothing_reads_its_output() {
     let session = Session::new();
     let _daemon = session.start();
-    let (mut watch, mut stdout) = spawn_watch(&session);
+    let (watch, mut stdout) = spawn_watch(&session);
     assert_eq!(read_watch_line(&mut stdout), session.status());
     drop(stdout);
     assert_eq!(session.send(b"ear:both"), b"");
-    assert_eq!(finish(&mut watch), (Some(0), String::new()));
+    assert_eq!(finish(&watch), (Some(0), String::new()));
 }
 
 #[test]
