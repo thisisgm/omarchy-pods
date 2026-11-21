@@ -20,6 +20,10 @@ const OCTETS: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const OWNER_DIR: u32 = 0o700;
 /// The mode a test gives a file it builds to pass the checks.
 const OWNER_FILE: u32 = 0o600;
+/// A directory every Linux host has, owned by uid 0.
+const SYSTEM_DIR: &str = "/usr";
+/// A regular file every Linux host has, owned by uid 0 and readable by everyone.
+const SYSTEM_FILE: &str = "/etc/passwd";
 
 fn mode_of(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & PERMISSION_BITS
@@ -128,11 +132,17 @@ fn refuses_a_root_with_group_or_other_bits() {
 }
 
 #[test]
-fn refuses_a_directory_owned_by_another_user() {
-    let root_dir = Path::new("/");
-    let error = Run::open(root_dir).unwrap_err();
+fn refuses_a_directory_or_file_owned_by_another_user() {
+    let system_dir = Path::new(SYSTEM_DIR);
+    let error = Run::open(system_dir).unwrap_err();
     assert!(matches!(error, StoreError::WrongOwner { .. }), "{error}");
-    assert!(names_path(&error, root_dir), "{error}");
+    assert!(names_path(&error, system_dir), "{error}");
+
+    let system_file = Path::new(SYSTEM_FILE);
+    let rule = ModeRule::OwnerOnly;
+    let error = read_bounded(CWD, SYSTEM_FILE, system_file, rule, MAX_READ_BYTES).unwrap_err();
+    assert!(matches!(error, StoreError::WrongOwner { .. }), "{error}");
+    assert!(names_path(&error, system_file), "{error}");
 }
 
 #[test]
@@ -207,6 +217,33 @@ fn refuses_a_directory_inside_a_git_work_tree() {
     let error = Session::open(&root, STAMP).unwrap_err();
     assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
     assert!(!root.join(STAMP).exists());
+}
+
+#[test]
+fn run_opened_inside_a_git_work_tree_is_refused() {
+    let repo = tempfile::tempdir().unwrap();
+    fs::create_dir(repo.path().join(".git")).unwrap();
+    let run = repo.path().join("run");
+    fs::create_dir(&run).unwrap();
+    set_mode(&run, OWNER_DIR);
+    let error = Run::open(&run).unwrap_err();
+    assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
+    assert!(names_path(&error, &run), "{error}");
+
+    let home = tempfile::tempdir().unwrap();
+    let root = made_root(&home, OWNER_DIR);
+    symlink(repo.path(), root.join(STAMP)).unwrap();
+    let error = Run::open(&root.join(STAMP).join("run")).unwrap_err();
+    assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
+
+    let plain = tempfile::tempdir().unwrap();
+    let run = plain.path().join("run");
+    fs::create_dir(&run).unwrap();
+    set_mode(&run, OWNER_DIR);
+    fs::create_dir(run.join(".git")).unwrap();
+    let error = Run::open(&run).unwrap_err();
+    assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
+    assert_eq!(fs::read_dir(&run).unwrap().count(), 1);
 }
 
 #[test]
