@@ -10,7 +10,7 @@ use crate::legacy::{LegacyRequest, parse_verb};
 use crate::status::to_status_line;
 
 /// Every command a client can send, for the properties that cover them all.
-fn any_command() -> impl Strategy<Value = Command> {
+pub(crate) fn any_command() -> impl Strategy<Value = Command> {
     let mode = prop_oneof![
         Just(NoiseMode::Off),
         Just(NoiseMode::Anc),
