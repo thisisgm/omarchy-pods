@@ -15,6 +15,7 @@ pub enum LegacyRequest {
 
 /// A second daemon sends this to the first to open its window.
 pub const REOPEN_VERB: &str = "reopen";
+pub const STATUS_VERB: &str = "status";
 
 /// A verb as the C++ dispatch compares it with the whole message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +77,7 @@ pub(crate) const VERBS: [(Verb, LegacyRequest); 17] = [
         Verb::Family("onebud", "off"),
         LegacyRequest::Command(Command::SetOneBudAnc(false)),
     ),
-    (Verb::Whole("status"), LegacyRequest::Status),
+    (Verb::Whole(STATUS_VERB), LegacyRequest::Status),
 ];
 
 const ADAPTIVE_PREFIX: &str = "adaptive:";
