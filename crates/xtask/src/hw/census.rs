@@ -1,6 +1,6 @@
 //! C6, the command census: each setting command ten times over protocol 1, the originals put back, then one with no bud in.
 
-use std::io::{self, BufRead, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -638,7 +638,7 @@ fn say(text: &str) {
     crate::report(text);
 }
 
-/// Waits for the person to press Enter, waking to notice a stop signal.
+/// Waits for the person to press Enter, a byte at a time so a line left unfinished cannot hold up a stop signal.
 fn answered() -> Result<bool, Interrupted> {
     let stdin = io::stdin();
     let tick = Timespec {
@@ -652,8 +652,13 @@ fn answered() -> Result<bool, Interrupted> {
         }
         let mut fds = [PollFd::new(&stdin, PollFlags::IN)];
         if poll(&mut fds, Some(&tick)).is_ok_and(|ready| ready > 0) {
-            let mut line = String::new();
-            return Ok(stdin.lock().read_line(&mut line).is_ok_and(|read| read > 0));
+            let mut byte = [0_u8; 1];
+            match rustix::io::read(&stdin, &mut byte) {
+                Ok(0) => return Ok(false),
+                Ok(_) if byte == *b"\n" => return Ok(true),
+                Ok(_) | Err(Errno::INTR | Errno::AGAIN) => {}
+                Err(_) => return Ok(false),
+            }
         }
     }
     Ok(false)

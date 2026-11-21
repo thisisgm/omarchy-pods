@@ -413,6 +413,22 @@ fn an_adapter_left_discovering_fails_c5() {
 }
 
 #[test]
+fn a_watch_that_ends_inside_the_window_fails_c5() {
+    let bench = Bench::new();
+    bench.set("watch-ends", "");
+    let output = bench.run(&[]);
+    let stdout = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
+    assert!(
+        stdout.contains("  link up: librepods watch ended before the window did: "),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("G3 link up:"), "{stdout}");
+    assert_eq!(bench.left_running(), Vec::<i32>::new());
+}
+
+#[test]
 fn a_watch_that_cannot_start_fails_c5() {
     let bench = Bench::new();
     bench.set("watch-unstartable", "");
