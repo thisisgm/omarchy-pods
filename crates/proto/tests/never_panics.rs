@@ -13,11 +13,59 @@ fn sample_frame(id: u8, v: [u8; 4]) -> Vec<u8> {
 }
 
 const CONTROL_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x09, 0x00];
+const BATTERY_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x04, 0x00];
+const EAR_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00];
+
+// Sample output: [04, 01, 55, 02, 01], kind, spacer, level, status, end; marks are mostly 0x01 so the entry loop runs.
+fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
+    let kind = prop_oneof![
+        Just(0x01_u8),
+        Just(0x02),
+        Just(0x04),
+        Just(0x08),
+        any::<u8>()
+    ];
+    let status = prop_oneof![Just(0x01_u8), Just(0x02), Just(0x04), any::<u8>()];
+    let mark = prop_oneof![9 => Just(0x01_u8), 1 => any::<u8>()];
+    (kind, mark.clone(), any::<u8>(), status, mark)
+        .prop_map(|(kind, spacer, level, status, end)| [kind, spacer, level, status, end])
+}
 
 proptest! {
     #[test]
     fn battery_parse_never_panics(b in proptest::collection::vec(any::<u8>(), 0..512)) {
         let _outcome = BatteryReport::parse(&b);
+    }
+
+    #[test]
+    fn battery_parse_never_panics_behind_the_header(body in proptest::collection::vec(any::<u8>(), 0..64)) {
+        let mut packet = BATTERY_HEADER.to_vec();
+        packet.extend(body);
+        let _outcome = BatteryReport::parse(&packet);
+    }
+
+    // A count that agrees with the entries and marks of 0x01 parses; a nearby count or length is refused.
+    #[test]
+    fn battery_parse_walks_the_entries(
+        entries in proptest::collection::vec(battery_entry(), 0..=4),
+        count_shift in prop_oneof![8 => Just(0_u8), 1 => Just(1), 1 => Just(u8::MAX)],
+        trailing in prop_oneof![8 => Just(Vec::new()), 2 => proptest::collection::vec(any::<u8>(), 1..5)],
+    ) {
+        let count = u8::try_from(entries.len()).unwrap().wrapping_add(count_shift);
+        let mut packet = BATTERY_HEADER.to_vec();
+        packet.push(count);
+        packet.extend(entries.iter().flatten());
+        packet.extend(&trailing);
+        let marks_valid = entries.iter().all(|e| e[1] == 0x01 && e[4] == 0x01);
+        let well_formed = count_shift == 0 && trailing.is_empty() && entries.len() <= 3 && marks_valid;
+        prop_assert_eq!(BatteryReport::parse(&packet).is_ok(), well_formed);
+    }
+
+    #[test]
+    fn ear_parse_reads_any_body_behind_the_header(body in proptest::collection::vec(any::<u8>(), 0..16)) {
+        let mut packet = EAR_HEADER.to_vec();
+        packet.extend(&body);
+        prop_assert_eq!(EarReport::parse(&packet).is_ok(), body.len() >= 2);
     }
 
     #[test]
@@ -45,6 +93,16 @@ proptest! {
         headset in any::<bool>(),
     ) {
         let _outcome = BatteryReport::parse_decrypted(&b, primary_left, pod_in_case, headset);
+    }
+
+    #[test]
+    fn decrypted_battery_parse_reads_every_sixteen_byte_payload(
+        payload in any::<[u8; 16]>(),
+        primary_left in any::<bool>(),
+        pod_in_case in any::<bool>(),
+        headset in any::<bool>(),
+    ) {
+        prop_assert!(BatteryReport::parse_decrypted(&payload, primary_left, pod_in_case, headset).is_ok());
     }
 
     // tst_stress parseActive_fuzzShape: pure random, header plus tail, and a short prefix of the header.
