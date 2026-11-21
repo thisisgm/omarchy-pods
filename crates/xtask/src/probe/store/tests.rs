@@ -536,7 +536,7 @@ fn reads_are_regular_owner_only_and_bounded() {
 }
 
 /// Calls that remove, rename or overwrite; the code before the tests holds none of them.
-const FORBIDDEN: [&str; 10] = [
+const FORBIDDEN: [&str; 12] = [
     "remove_",
     "unlink",
     "rename",
@@ -545,6 +545,8 @@ const FORBIDDEN: [&str; 10] = [
     "truncate",
     "set_len",
     "OpenOptions",
+    "File::create",
+    "File::options",
     "fs::write",
     "fs::copy",
 ];
