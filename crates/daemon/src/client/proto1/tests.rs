@@ -47,6 +47,33 @@ const MEMBER_PRESENT: f64 = 0.9;
 /// Runs of the properties over generated objects; they touch no socket, and the rare shapes need many runs.
 const OBJECT_CASES: u32 = 1024;
 
+/// Longest line in the properties over arbitrary bytes, long enough for a small reply object.
+const ANY_LINE_BYTES: usize = 256;
+
+/// Any string or object key up to 12 characters, long enough for every word the protocol uses.
+const ANY_STRING: &str = ".{0,12}";
+
+/// How deep a generated JSON value nests; the parsers read only the top two levels.
+const VALUE_DEPTH: u32 = 3;
+
+/// Most nodes in one generated JSON value.
+const VALUE_NODES: u32 = 24;
+
+/// Most items in one generated array or object, as `prop_recursive` takes it.
+const VALUE_BRANCH: u32 = 4;
+
+/// Most items in one generated array or object, as a collection size.
+const VALUE_ITEMS: usize = 4;
+
+/// Weight of the documented shapes among a generated member's values, so they come up most.
+const DOCUMENTED_WEIGHT: u32 = 3;
+
+/// Weight of a null `id`, the one other `id` a refusal may carry.
+const NULL_ID_WEIGHT: u32 = 2;
+
+/// Weight of every other value a generated member may take.
+const OTHER_WEIGHT: u32 = 1;
+
 /// Members a reply or an event may hold.
 const MEMBERS: [&str; 6] = ["id", "ok", "state", "result", "error", "event"];
 
@@ -270,12 +297,12 @@ fn any_value() -> impl Strategy<Value = Value> {
             Just("message"),
         ]
         .prop_map(Value::from),
-        ".{0,12}".prop_map(Value::from),
+        ANY_STRING.prop_map(Value::from),
     ];
-    leaf.prop_recursive(3, 24, 4, |inner| {
+    leaf.prop_recursive(VALUE_DEPTH, VALUE_NODES, VALUE_BRANCH, |inner| {
         prop_oneof![
-            proptest::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
-            proptest::collection::btree_map(".{0,6}", inner, 0..4)
+            proptest::collection::vec(inner.clone(), 0..VALUE_ITEMS).prop_map(Value::Array),
+            proptest::collection::btree_map(ANY_STRING, inner, 0..VALUE_ITEMS)
                 .prop_map(|map| Value::Object(map.into_iter().collect())),
         ]
     })
@@ -303,18 +330,18 @@ fn any_error() -> impl Strategy<Value = Value> {
             }
             Value::Object(error)
         });
-    prop_oneof![3 => object, 1 => any_value()]
+    prop_oneof![DOCUMENTED_WEIGHT => object, OTHER_WEIGHT => any_value()]
 }
 
 /// An object of reply and event members, each present or not, near the documented shapes as often as not.
 fn any_line_object() -> impl Strategy<Value = Value> {
     let id = prop_oneof![
-        3 => Just(json!(1)),
-        1 => Just(json!(2)),
-        1 => Just(json!(1.0)),
-        2 => Just(Value::Null),
-        1 => Just(json!("1")),
-        1 => any_value(),
+        DOCUMENTED_WEIGHT => Just(json!(1)),
+        OTHER_WEIGHT => Just(json!(2)),
+        OTHER_WEIGHT => Just(json!(1.0)),
+        NULL_ID_WEIGHT => Just(Value::Null),
+        OTHER_WEIGHT => Just(json!("1")),
+        OTHER_WEIGHT => any_value(),
     ];
     let ok = prop_oneof![Just(json!(true)), Just(json!(false)), any_value()];
     let state = prop_oneof![
@@ -644,10 +671,12 @@ fn set_and_do_succeed_only_on_their_own_documented_reply() {
             let dir = tempfile::tempdir().unwrap();
             let (socket, daemon) = stub(dir.path(), reply.to_vec());
             let mut err = Vec::new();
-            let exit = if command == "set" {
-                set("noise", "anc", &socket, &mut err)
+            let (exit, sent) = if command == "set" {
+                let exit = set("noise", "anc", &socket, &mut err);
+                (exit, request("set", &[("key", "noise"), ("value", "anc")]))
             } else {
-                act("connect", &socket, &mut err)
+                let exit = act("connect", &socket, &mut err);
+                (exit, request("do", &[("action", "connect")]))
             };
             let expected = match &wanted {
                 Outcome::Taken(_) => (ExitCode::SUCCESS, String::new()),
@@ -662,8 +691,7 @@ fn set_and_do_succeed_only_on_their_own_documented_reply() {
                 expected,
                 "{command} {reply:?}"
             );
-            let sent = String::from_utf8(daemon.join().unwrap()).unwrap();
-            assert!(sent.contains(&format!("\"op\":\"{command}\"")), "{sent}");
+            assert_eq!(daemon.join().unwrap(), sent.into_bytes(), "{command}");
         }
     }
 }
@@ -694,7 +722,7 @@ fn a_daemon_that_accepts_but_never_replies_times_out() {
 
 proptest! {
     #[test]
-    fn any_reply_bytes_meet_the_reply_rule(line in proptest::collection::vec(any::<u8>(), 0..256)) {
+    fn any_reply_bytes_meet_the_reply_rule(line in proptest::collection::vec(any::<u8>(), 0..ANY_LINE_BYTES)) {
         let value = as_json(&line);
         let state = value.as_ref().map_or(Outcome::NotUnderstood, |value| expected_reply(value, state_success));
         let result = value.as_ref().map_or(Outcome::NotUnderstood, |value| expected_reply(value, result_success));
@@ -710,7 +738,7 @@ proptest! {
     }
 
     #[test]
-    fn any_event_bytes_meet_the_event_rule(line in proptest::collection::vec(any::<u8>(), 0..256)) {
+    fn any_event_bytes_meet_the_event_rule(line in proptest::collection::vec(any::<u8>(), 0..ANY_LINE_BYTES)) {
         let expected = as_json(&line).map_or(Outcome::NotUnderstood, |value| expected_event(&value));
         prop_assert_eq!(outcome(event_state_line(&line)), expected);
     }
