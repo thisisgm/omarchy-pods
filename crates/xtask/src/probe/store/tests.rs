@@ -23,6 +23,8 @@ const OCTETS: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 const OWNER_DIR: u32 = 0o700;
 /// The mode a test gives a file it builds to pass the checks.
 const OWNER_FILE: u32 = 0o600;
+/// A mode with a group bit, which a read refuses.
+const GROUP_READABLE: u32 = 0o640;
 /// A directory every Linux host has, owned by uid 0.
 const SYSTEM_DIR: &str = "/usr";
 /// A regular file every Linux host has, owned by uid 0 and readable by everyone.
@@ -552,7 +554,7 @@ fn a_trace_is_read_up_to_the_bound_it_is_given() {
     );
     assert!(names_path(&error, &path), "{error}");
 
-    set_mode(&path, 0o640);
+    set_mode(&path, GROUP_READABLE);
     let error = read_trace(&path, 10).unwrap_err();
     assert!(matches!(error, StoreError::NotOwnerOnly { .. }), "{error}");
     let error = read_trace(Path::new(SYSTEM_FILE), 10).unwrap_err();

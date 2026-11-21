@@ -4,17 +4,26 @@ use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{Direction, MAX_SDU_LEN, parse_line};
 
 use super::super::fixture::{
-    ATT_CIDS, AVDTP_PSM, CONTROL_CIDS, EVENT_SYNCHRONOUS_CONNECTION, KEYBOARD_HANDLE, PODS_HANDLE,
-    Trace, att_packets, control_packets, counting_bytes, session,
+    ATT_CIDS, AVDTP_PSM, CONNECTION_REQUEST, CONTINUATION, CONTROL_CIDS,
+    EVENT_SYNCHRONOUS_CONNECTION, KEYBOARD_HANDLE, PODS_HANDLE, Trace, att_packets,
+    control_packets, counting_bytes, session,
 };
 use super::super::{Damage, records};
 use super::*;
 
 const HOST: Direction = Direction::ToPods;
 const PODS: Direction = Direction::FromPods;
-/// The identifiers of a second channel.
+/// The identifiers of a second and a third channel.
 const SECOND: (u16, u16) = (0x0048, 0x0058);
-/// The L2CAP modes the tests ask for: basic and enhanced retransmission.
+const THIRD: (u16, u16) = (0x0049, 0x0059);
+/// A dynamic channel identifier no request of these traces opens.
+const NEVER_OPENED_CID: u16 = 0x0a40;
+/// The fixed channel of the Attribute Protocol, which only an LE link uses (Core 6.1 Vol 3 Part A 2.1).
+const ATT_FIXED_CID: u16 = 0x0004;
+/// Connection results that refuse a channel: PSM not supported and security block (Core 6.1 Vol 3 Part A 4.3).
+const PSM_NOT_SUPPORTED: u16 = 0x0002;
+const SECURITY_BLOCK: u16 = 0x0003;
+/// The L2CAP modes the tests ask for: basic and enhanced retransmission (Core 6.1 Vol 3 Part A 5.4).
 const BASIC: u8 = 0x00;
 const ENHANCED_RETRANSMISSION: u8 = 0x03;
 /// A regular file every Linux host has, owned by uid 0.
@@ -23,6 +32,17 @@ const SYSTEM_FILE: &str = "/etc/passwd";
 const MS: u64 = 1_000_000;
 /// Where the timestamp starts in a record header.
 const STAMP_AT: usize = 16;
+/// Bytes off the end of the session trace that cut into its last media packet: past the 30 byte record of the link's end.
+const CUT_INTO_LAST_MEDIA: usize = 100;
+/// Monitor opcode of a system note, a record the reader skips (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_SYSTEM_NOTE`).
+const OPCODE_SYSTEM_NOTE: u16 = 12;
+/// The parameters of a Synchronous Connection Complete event, 17 bytes, the status first (Core 6.1 Vol 4 Part E 7.7.35).
+const SYNCHRONOUS_PARAMETERS: usize = 17;
+/// Event statuses: success, and the error Unsupported Remote Feature (Core 6.1 Vol 1 Part F 2.26).
+const STATUS_SUCCESS: u8 = 0x00;
+const UNSUPPORTED_REMOTE_FEATURE: u8 = 0x1a;
+/// An ATT Handle Value Notification for handle 0x000d with no value (Core 6.1 Vol 3 Part F 3.4.7.1).
+const NOTIFICATION: [u8; 3] = [0x1b, 0x0d, 0x00];
 
 fn rendered(trace: &Trace) -> Vec<Output> {
     render(records(&trace.bytes()).unwrap()).unwrap()
@@ -87,8 +107,8 @@ fn the_psm_0x001f_channel_goes_to_att_log_and_is_absent_when_never_opened() {
     let mut trace = Trace::new();
     trace.open(HOST, CONTROL_PSM, CONTROL_CIDS);
     trace.send(PODS, CONTROL_CIDS, &[1]);
-    trace.connect(PODS, ATT_PSM, ATT_CIDS, 0x0002);
-    trace.send(PODS, ATT_CIDS, &[0x1b, 0x0d, 0x00]);
+    trace.connect(PODS, ATT_PSM, ATT_CIDS, PSM_NOT_SUPPORTED);
+    trace.send(PODS, ATT_CIDS, &NOTIFICATION);
     assert_eq!(
         names(&rendered(&trace)),
         ["sdu.log", "psm.tsv", "a2dp.tsv", "avdtp.txt", "links.txt"]
@@ -117,12 +137,12 @@ fn two_channels_on_one_psm_get_a_log_each() {
     trace.open(HOST, CONTROL_PSM, SECOND);
     trace.open(PODS, ATT_PSM, ATT_CIDS);
     trace.on(KEYBOARD_HANDLE);
-    trace.open(HOST, CONTROL_PSM, (0x0049, 0x0059));
+    trace.open(HOST, CONTROL_PSM, THIRD);
     trace.on(PODS_HANDLE);
     trace.send(PODS, SECOND, &[2]);
     trace.send(PODS, CONTROL_CIDS, &[1]);
     trace.on(KEYBOARD_HANDLE);
-    trace.send(HOST, (0x0049, 0x0059), &[3]);
+    trace.send(HOST, THIRD, &[3]);
     let outputs = rendered(&trace);
     assert_eq!(
         names(&outputs),
@@ -178,7 +198,7 @@ fn a_packet_the_log_cannot_hold_is_counted_not_written() {
 #[test]
 fn stamps_count_from_the_earliest_record_kept_and_steps_back_are_counted() {
     let mut trace = Trace::new();
-    trace.record(12, b"a note");
+    trace.record(OPCODE_SYSTEM_NOTE, b"a note");
     trace.at_ms(250);
     trace.open(HOST, CONTROL_PSM, CONTROL_CIDS);
     trace.at_ms(1_750);
@@ -217,8 +237,10 @@ fn the_request_table_lists_sides_results_and_mtu_options() {
     assert_eq!(text(&outputs, "psm.tsv"), expected);
 
     let mut trace = Trace::new();
-    trace.connect(PODS, ATT_PSM, ATT_CIDS, 0x0003);
-    trace.signal(HOST, 0x02, &[0x1f, 0x00, 0x44, 0x00]);
+    trace.connect(PODS, ATT_PSM, ATT_CIDS, SECURITY_BLOCK);
+    let mut unanswered = ATT_PSM.to_le_bytes().to_vec();
+    unanswered.extend(SECOND.0.to_le_bytes());
+    trace.signal(HOST, CONNECTION_REQUEST, &unanswered);
     let expected = "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode\n\
         0\tpods\t0x001f\t0x0003\t0x000b\t-\t-\t-\t-\n\
         2000000\thost\t0x001f\t-\t0x000b\t-\t-\t-\t-\n";
@@ -318,14 +340,16 @@ fn the_link_summary_of_the_session() {
 #[test]
 fn synchronous_connections_and_what_could_not_be_read_are_counted() {
     let mut trace = Trace::new();
-    trace.event(EVENT_SYNCHRONOUS_CONNECTION, &[0x00; 17]);
-    trace.event(EVENT_SYNCHRONOUS_CONNECTION, &[0x1a; 17]);
-    trace.event(EVENT_SYNCHRONOUS_CONNECTION, &[0x00; 17]);
-    trace.acl(PODS, 0b01, &[1, 2, 3]);
-    trace.pdu(HOST, 0x0050, &[1]);
-    trace.pdu(HOST, 0x0050, &[2]);
-    trace.pdu(PODS, 0x0a40, &[3]);
-    trace.pdu(PODS, 0x0004, &[4]);
+    let opened = [STATUS_SUCCESS; SYNCHRONOUS_PARAMETERS];
+    let refused = [UNSUPPORTED_REMOTE_FEATURE; SYNCHRONOUS_PARAMETERS];
+    trace.event(EVENT_SYNCHRONOUS_CONNECTION, &opened);
+    trace.event(EVENT_SYNCHRONOUS_CONNECTION, &refused);
+    trace.event(EVENT_SYNCHRONOUS_CONNECTION, &opened);
+    trace.acl(PODS, CONTINUATION, &[1, 2, 3]);
+    trace.pdu(HOST, CONTROL_CIDS.1, &[1]);
+    trace.pdu(HOST, CONTROL_CIDS.1, &[2]);
+    trace.pdu(PODS, NEVER_OPENED_CID, &[3]);
+    trace.pdu(PODS, ATT_FIXED_CID, &[4]);
     let outputs = rendered(&trace);
     let links = text(&outputs, "links.txt");
     for line in [
@@ -354,7 +378,7 @@ fn a_channel_not_in_basic_mode_is_listed_counted_and_not_exported() {
     trace.offer_mode(HOST, CONTROL_CIDS, BASIC);
     trace.open(PODS, ATT_PSM, SECOND);
     for cids in [ATT_CIDS, CONTROL_CIDS, SECOND, ATT_CIDS] {
-        trace.send(PODS, cids, &[0x1b, 0x0d, 0x00]);
+        trace.send(PODS, cids, &NOTIFICATION);
     }
     let outputs = rendered(&trace);
     assert_eq!(
@@ -396,12 +420,20 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
     let bytes = session().bytes();
     let whole = records(&bytes).unwrap();
     assert_eq!(whole.cut, None);
+    let kept_whole = whole.kept.len();
     assert!(!text(&render(whole).unwrap(), "links.txt").contains("trace_cut_short"));
 
-    let cut_bytes = &bytes[..bytes.len() - 100];
+    let cut_bytes = &bytes[..bytes.len() - CUT_INTO_LAST_MEDIA];
     let read = records(cut_bytes).unwrap();
     let cut = read.cut.unwrap();
+    assert_eq!(
+        read.kept.len() + 2,
+        kept_whole,
+        "only the cut packet and the link's end are lost"
+    );
     let outputs = render(read).unwrap();
+    let last_second = "3\t1\t112\t0\t1100000000\t0\t1\n";
+    assert!(text(&outputs, "a2dp.tsv").ends_with(last_second));
     let before = render(records(&bytes[..cut.offset]).unwrap()).unwrap();
     assert_eq!(names(&outputs), names(&before));
     for (cut_output, whole_output) in outputs.iter().zip(&before) {
@@ -415,7 +447,6 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
             assert_eq!(cut_output, whole_output);
         }
     }
-    assert!(text(&outputs, "a2dp.tsv").lines().count() > 1);
     assert!(text(&before, "links.txt").starts_with("realtime_at_zero_ns "));
 
     let mut damaged = bytes.clone();

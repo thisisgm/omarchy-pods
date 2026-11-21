@@ -25,28 +25,40 @@ mod hci {
     const STAMP: &str = "20261120T120000Z";
     /// The run every test creates.
     const RUN: &str = "trace-1";
-    /// The mode the store gives every file it creates.
+    /// The modes the store gives every file and every directory it creates.
     const OWNER_FILE: u32 = 0o600;
+    const OWNER_DIR: u32 = 0o700;
+    /// The permission bits of a mode, with set-user-ID, set-group-ID and sticky.
+    const PERMISSION_BITS: u32 = 0o7777;
+    /// The longest run name the store takes.
+    const RUN_NAME_MAX: usize = 32;
     /// A mode with a group bit, which the bounded read refuses.
     const GROUP_READABLE: u32 = 0o640;
     /// The store's bound on a capture read, 64 MiB, which a trace may pass.
     const CAPTURE_BOUND: usize = 64 * 1024 * 1024;
     /// The bound on a trace, 512 MiB, written out so the test pins the number.
     const TRACE_BOUND: u64 = 536_870_912;
-    /// Monitor opcode of a system note, a record the reader skips.
+    /// Monitor opcode of a system note, a record the reader skips (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_SYSTEM_NOTE`).
     const OPCODE_SYSTEM_NOTE: u16 = 12;
     /// The most data bytes one record holds.
     const LONGEST_RECORD: usize = 65_535;
     /// Enough longest records to pass `CAPTURE_BOUND`: each takes 65 559 bytes with its header.
     const NOTES_PAST_CAPTURE_BOUND: usize = 1024;
-    /// The L2CAP mode a channel must not be in to be exported: enhanced retransmission.
+    /// The L2CAP mode a channel must not be in to be exported: enhanced retransmission (Core 6.1 Vol 3 Part A 5.4).
     const ENHANCED_RETRANSMISSION: u8 = 0x03;
+    /// An enhanced retransmission I-frame: two control bytes, then an ATT notification for handle 0x000d (Core 6.1 Vol 3 Part A 3.3.2).
+    const I_FRAME: [u8; 5] = [0x00, 0x00, 0x1b, 0x0d, 0x00];
+    const CONTROL_FIELD_LEN: usize = 2;
     /// The identification pattern, the version and the datalink type.
     const FILE_HEADER: usize = 16;
     /// A datalink type the reader refuses: HCI with no monitor header (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_FORMAT_HCI`).
     const WRONG_DATALINK: u32 = 1001;
+    /// Where the datalink type sits in the file header.
+    const DATALINK_AT: std::ops::Range<usize> = 12..16;
     /// Two lengths, flags, drops and the timestamp.
     const RECORD_HEADER: usize = 24;
+    /// Where the included length sits in a record header: after the original length.
+    const INCLUDED_LEN: std::ops::Range<usize> = 4..8;
     /// Where the first record's included length sits: after the file header and the original length.
     const FIRST_INCLUDED_LEN: std::ops::Range<usize> = 20..24;
     /// Every file a run of the session trace holds.
@@ -80,6 +92,16 @@ mod hci {
 
     fn run_dir(home: &TempDir, run: &str) -> PathBuf {
         home.path().join("omapods-captures").join(STAMP).join(run)
+    }
+
+    /// Every name in a directory, sorted.
+    fn names_in(dir: &Path) -> Vec<String> {
+        let entries = fs::read_dir(dir).unwrap();
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
     }
 
     /// The name and contents of every file in a run, sorted by name.
@@ -217,7 +239,12 @@ mod hci {
         );
         for name in SESSION_FILES {
             let mode = fs::metadata(dir.join(name)).unwrap().permissions().mode();
-            assert_eq!(mode & 0o7777, OWNER_FILE, "{name}");
+            assert_eq!(mode & PERMISSION_BITS, OWNER_FILE, "{name}");
+        }
+        let root = home.path().join("omapods-captures");
+        for private in [root.as_path(), &root.join(STAMP), &dir] {
+            let mode = fs::metadata(private).unwrap().permissions().mode();
+            assert_eq!(mode & PERMISSION_BITS, OWNER_DIR, "{}", private.display());
         }
         assert_eq!(fs::read(&path).unwrap(), trace);
 
@@ -236,31 +263,38 @@ mod hci {
         let mut wrong_magic = trace.clone();
         wrong_magic[0] = b'B';
         let mut wrong_datalink = trace.clone();
-        wrong_datalink[12..16].copy_from_slice(&WRONG_DATALINK.to_be_bytes());
+        wrong_datalink[DATALINK_AT].copy_from_slice(&WRONG_DATALINK.to_be_bytes());
         let mut long_record = trace.clone();
         long_record[FIRST_INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
         for (bytes, rule) in [
-            (&[][..], "shorter than its 16 byte file header"),
+            (
+                &[][..],
+                "btsnoop trace is 0 bytes, shorter than its 16 byte file header",
+            ),
             (
                 &trace[..FILE_HEADER - 1],
-                "shorter than its 16 byte file header",
+                "btsnoop trace is 15 bytes, shorter than its 16 byte file header",
             ),
-            (&wrong_magic[..], "identification pattern"),
-            (&wrong_datalink[..], "other than the monitor datalink 2001"),
-            (&long_record[..], "the 65535 bytes a record holds"),
+            (
+                &wrong_magic[..],
+                "btsnoop trace does not start with the btsnoop identification pattern",
+            ),
+            (
+                &wrong_datalink[..],
+                "btsnoop trace has a datalink type other than the monitor datalink 2001, which btmon -w writes",
+            ),
+            (
+                &long_record[..],
+                "btsnoop record 0 at byte offset 16 claims more data than the 65535 bytes a record holds",
+            ),
         ] {
             let (home, path) = home_with_trace(bytes);
             let refused = hci(&home, &path, RUN);
             assert!(!refused.status.success(), "{rule}: {refused:?}");
             assert_eq!(refused.stdout, b"", "{rule}");
-            let error = String::from_utf8(refused.stderr).unwrap();
-            assert!(error.contains(rule), "{rule}: {error}");
-            let named = path.display().to_string();
-            assert!(error.contains(&named), "{error}");
-            let said = error.replace(&named, "");
-            for value in [WRONG_DATALINK.to_string(), u32::MAX.to_string()] {
-                assert!(!said.contains(&value), "{rule} echoes {value}: {said}");
-            }
+            // The whole line is compared, so no value of the trace can ride along in any spelling.
+            let said = format!("xtask probe: {}: {rule}\n", path.display());
+            assert_eq!(String::from_utf8(refused.stderr).unwrap(), said);
             assert!(!home.path().join("omapods-captures").exists(), "{rule}");
         }
     }
@@ -272,11 +306,7 @@ mod hci {
         trace.open(Direction::FromPods, ATT_PSM, ATT_CIDS);
         trace.offer_mode(Direction::FromPods, ATT_CIDS, ENHANCED_RETRANSMISSION);
         trace.send(Direction::FromPods, CONTROL_CIDS, &[0x01]);
-        trace.send(
-            Direction::FromPods,
-            ATT_CIDS,
-            &[0x00, 0x00, 0x1b, 0x0d, 0x00],
-        );
+        trace.send(Direction::FromPods, ATT_CIDS, &I_FRAME);
         let (home, path) = home_with_trace(&trace.bytes());
         let ran = hci(&home, &path, RUN);
         assert!(ran.status.success(), "{ran:?}");
@@ -286,22 +316,28 @@ mod hci {
             names,
             ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv", "sdu.log"]
         );
+        let control = [(Direction::FromPods, vec![0x01])];
+        assert_eq!(log(&run_dir(&home, RUN), "sdu.log"), control);
         let said = "channel_not_read handle=0x000b psm=0x001f host_mode=- pods_mode=0x03 pdus=1 reason=l2cap_mode_is_not_basic\n";
         let stdout = String::from_utf8(ran.stdout).unwrap();
         assert!(stdout.contains(said), "{stdout}");
         assert!(stdout.contains("not_basic_mode_pdus 1\n"), "{stdout}");
+        let packet = hex(&I_FRAME[CONTROL_FIELD_LEN..], "");
         for (name, contents) in &written {
-            assert!(!holds(contents, b"1b0d00"), "{name} holds the packet");
+            assert!(
+                !holds(contents, packet.as_bytes()),
+                "{name} holds the packet"
+            );
         }
     }
 
-    /// The byte offset every record of a well formed trace starts at.
+    // Sample input: the 16 byte file header, then records: a 24 byte header whose bytes 4 to 8 are the included length, big endian, then that many data bytes.
     fn record_offsets(trace: &[u8]) -> Vec<usize> {
         let mut offsets = Vec::new();
         let mut rest = &trace[FILE_HEADER..];
         while !rest.is_empty() {
             offsets.push(trace.len().checked_sub(rest.len()).unwrap());
-            let included = u32::from_be_bytes(rest[4..8].try_into().unwrap());
+            let included = u32::from_be_bytes(rest[INCLUDED_LEN].try_into().unwrap());
             let record_len = RECORD_HEADER.checked_add(usize::try_from(included).unwrap());
             rest = &rest[record_len.unwrap()..];
         }
@@ -414,5 +450,24 @@ mod hci {
             .unwrap();
         assert!(!bad_stamp.status.success(), "{bad_stamp:?}");
         assert!(!home.path().join("omapods-captures").exists());
+    }
+
+    #[test]
+    fn a_run_name_the_store_refuses_makes_no_directory() {
+        let too_long = "a".repeat(RUN_NAME_MAX + 1);
+        for bad in ["../escape", "", "Trace", too_long.as_str()] {
+            let (home, path) = home_with_trace(&session().bytes());
+            let refused = hci(&home, &path, bad);
+            assert!(!refused.status.success(), "{bad}: {refused:?}");
+            assert_eq!(refused.stdout, b"", "{bad}");
+            let said = format!(
+                "xtask probe: run name {bad:?} is not 1 to 32 characters of a-z, 0-9 and -\n"
+            );
+            assert_eq!(String::from_utf8(refused.stderr).unwrap(), said);
+            let root = home.path().join("omapods-captures");
+            assert_eq!(names_in(home.path()), ["hci.btsnoop", "omapods-captures"]);
+            assert_eq!(names_in(&root), [STAMP], "{bad}");
+            assert_eq!(names_in(&root.join(STAMP)), [""; 0], "{bad}");
+        }
     }
 }
