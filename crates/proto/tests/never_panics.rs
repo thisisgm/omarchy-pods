@@ -295,21 +295,21 @@ proptest! {
         let _outcome = parse_line(&line);
     }
 
-    // A valid line with one character changed is refused, or it is still exactly what format_line writes for the record read.
+    // A written line with one character changed is refused, or it is still exactly what format_line writes for the record read.
     #[test]
     fn parse_line_reads_a_changed_line_only_as_format_line_writes_it(
         at_ns in any::<u64>(),
         direction in prop_oneof![Just(Direction::FromPods), Just(Direction::ToPods)],
-        sdu in proptest::collection::vec(any::<u8>(), 0..=CHANGED_SDU_MAX),
+        sdu in proptest::collection::vec(any::<u8>(), 1..=CHANGED_SDU_MAX),
         at in any::<proptest::sample::Index>(),
         changed_to in proptest::sample::select(CHANGED_TO),
     ) {
-        let mut chars: Vec<char> = format_line(at_ns, direction, &sdu).chars().collect();
+        let mut chars: Vec<char> = format_line(at_ns, direction, &sdu).unwrap().chars().collect();
         let at = at.index(chars.len());
         chars[at] = changed_to;
         let line: String = chars.into_iter().collect();
         if let Ok(record) = parse_line(&line) {
-            prop_assert_eq!(format_line(record.at_ns, record.direction, &record.sdu), line);
+            prop_assert_eq!(format_line(record.at_ns, record.direction, &record.sdu), Ok(line));
         }
     }
 }

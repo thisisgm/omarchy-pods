@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// The most bytes of one packet a line carries; a longer line is refused.
+/// The most bytes of one packet a line carries: this log format's own bound on one line, not a protocol constant.
 pub const MAX_SDU_LEN: usize = 4096;
 /// Marks a packet the pods sent.
 const FROM_PODS_MARK: &str = "<";
@@ -32,7 +32,7 @@ pub struct Record {
     pub sdu: Vec<u8>,
 }
 
-/// Why a line was refused; it never repeats the line, whose bytes can identify a device.
+/// Why a line was not read or not written; it never repeats the line, whose bytes can identify a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum LogError {
     /// Fewer than two spaces, so fewer than three fields.
@@ -56,10 +56,10 @@ pub enum LogError {
         "capture log line has bad hex: byte {byte} of the third field, counting from 0, is not two lowercase hex digits"
     )]
     BadHex { byte: usize },
-    /// The third field holds no byte.
+    /// The third field holds no byte, or `format_line` was handed an empty packet.
     #[error("capture log line carries no bytes: the third field is empty")]
     Empty,
-    /// The third field is long enough for `len` bytes.
+    /// The third field is long enough for `len` bytes; checked before any digit is read, so it wins over `BadHex`.
     #[error(
         "capture log line is too long: the third field is long enough for {len} bytes, at most {max} fit",
         max = MAX_SDU_LEN
@@ -98,14 +98,19 @@ impl fmt::Display for Hex<'_> {
     }
 }
 
-/// Writes one line with no newline; `parse_line` refuses it when `sdu` is empty or longer than `MAX_SDU_LEN`.
-#[must_use]
-pub fn format_line(at_ns: u64, direction: Direction, sdu: &[u8]) -> String {
-    format!(
+/// Writes one line with no newline, and only a line `parse_line` reads back: an empty or too long packet is refused.
+pub fn format_line(at_ns: u64, direction: Direction, sdu: &[u8]) -> Result<String, LogError> {
+    if sdu.is_empty() {
+        return Err(LogError::Empty);
+    }
+    if sdu.len() > MAX_SDU_LEN {
+        return Err(LogError::TooLong { len: sdu.len() });
+    }
+    Ok(format!(
         "{at_ns} {mark} {hex}",
         mark = direction.mark(),
         hex = Hex(sdu)
-    )
+    ))
 }
 
 /// Reads one line without its newline, and only in the exact form `format_line` writes.
@@ -199,12 +204,14 @@ mod tests {
         prop_oneof![Just(Direction::FromPods), Just(Direction::ToPods)]
     }
 
-    /// A packet of the shortest length, of the longest, or of any length between.
+    /// A packet of the shortest length, of the longest, of any length between, or of a length no line carries.
     fn packet() -> impl Strategy<Value = Vec<u8>> {
         prop_oneof![
+            Just(Vec::new()),
             proptest::collection::vec(any::<u8>(), MIN_SDU_LEN),
             proptest::collection::vec(any::<u8>(), MAX_SDU_LEN),
             proptest::collection::vec(any::<u8>(), MIN_SDU_LEN..=MAX_SDU_LEN),
+            proptest::collection::vec(any::<u8>(), TOO_LONG),
         ]
     }
 
@@ -212,9 +219,27 @@ mod tests {
     fn formats_the_documented_sample() {
         assert_eq!(
             format_line(SAMPLE_AT_NS, Direction::FromPods, &SAMPLE_SDU),
-            SAMPLE_LINE
+            Ok(SAMPLE_LINE.to_owned())
         );
-        assert_eq!(format_line(0, Direction::ToPods, &[0xff, 0x0a]), "0 > ff0a");
+        assert_eq!(
+            format_line(0, Direction::ToPods, &[0xff, 0x0a]),
+            Ok("0 > ff0a".to_owned())
+        );
+    }
+
+    #[test]
+    fn format_line_refuses_what_parse_line_refuses() {
+        for direction in [Direction::FromPods, Direction::ToPods] {
+            assert_eq!(format_line(1, direction, &[]), Err(LogError::Empty));
+            assert_eq!(
+                format_line(1, direction, &counting_bytes(TOO_LONG)),
+                Err(LogError::TooLong { len: TOO_LONG })
+            );
+            for len in [MIN_SDU_LEN, LONGEST] {
+                let written = format_line(1, direction, &counting_bytes(len));
+                assert!(written.is_ok(), "{direction:?} {len}: {written:?}");
+            }
+        }
     }
 
     #[test]
@@ -239,7 +264,7 @@ mod tests {
             for direction in [Direction::FromPods, Direction::ToPods] {
                 for len in [MIN_SDU_LEN, MAX_SDU_LEN] {
                     let sdu = counting_bytes(len);
-                    let line = format_line(at_ns, direction, &sdu);
+                    let line = format_line(at_ns, direction, &sdu).unwrap();
                     let record = Record {
                         at_ns,
                         direction,
@@ -258,8 +283,11 @@ mod tests {
             direction in direction(),
             sdu in packet(),
         ) {
-            let line = format_line(at_ns, direction, &sdu);
-            prop_assert_eq!(parse_line(&line), Ok(Record { at_ns, direction, sdu }));
+            let written = format_line(at_ns, direction, &sdu);
+            prop_assert_eq!(written.is_ok(), (MIN_SDU_LEN..=LONGEST).contains(&sdu.len()));
+            if let Ok(line) = written {
+                prop_assert_eq!(parse_line(&line), Ok(Record { at_ns, direction, sdu }));
+            }
         }
     }
 
@@ -280,10 +308,6 @@ mod tests {
             assert_eq!(parse_line(line), Err(LogError::BadHex { byte }), "{line:?}");
         }
         assert_eq!(parse_line("1 < "), Err(LogError::Empty));
-        assert_eq!(
-            parse_line(&format_line(1, Direction::FromPods, &[])),
-            Err(LogError::Empty)
-        );
     }
 
     #[test]
@@ -317,11 +341,25 @@ mod tests {
     #[test]
     fn rejects_4097_bytes() {
         let longest = counting_bytes(LONGEST);
-        let line = format_line(1, Direction::FromPods, &longest);
+        let line = format_line(1, Direction::FromPods, &longest).unwrap();
         assert_eq!(parse_line(&line).map(|record| record.sdu), Ok(longest));
-        let too_long = format_line(1, Direction::FromPods, &counting_bytes(TOO_LONG));
+        let too_long = format!("{line}00");
         assert_eq!(
             parse_line(&too_long),
+            Err(LogError::TooLong { len: TOO_LONG })
+        );
+    }
+
+    #[test]
+    fn too_long_wins_over_bad_hex() {
+        let not_hex_and_longest = format!("1 < {}", "zz".repeat(LONGEST));
+        assert_eq!(
+            parse_line(&not_hex_and_longest),
+            Err(LogError::BadHex { byte: 0 })
+        );
+        let not_hex_and_too_long = format!("1 < {}", "zz".repeat(TOO_LONG));
+        assert_eq!(
+            parse_line(&not_hex_and_too_long),
             Err(LogError::TooLong { len: TOO_LONG })
         );
     }
