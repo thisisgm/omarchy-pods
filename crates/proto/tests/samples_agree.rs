@@ -3,7 +3,6 @@
 // Inside cfg(test) so the lint table lets the tests unwrap.
 #[cfg(test)]
 mod tests {
-    use cpp_source::PACKETS;
     use pods_proto::battery::{Batteries, BatteryReport, Charge, Component};
     use pods_proto::control::{ControlCommand, ControlId};
     use pods_proto::ear::{EarPlacement, EarReport};
@@ -16,7 +15,6 @@ mod tests {
     };
     use proptest::prelude::*;
 
-    const CONNECTION: Option<&str> = Some("namespace Connection");
     /// Every manufacturer field the samples carry.
     const MANUFACTURER: &str = "Apple Inc.";
     const PLACEMENTS: [(Placed, EarPlacement); 3] = [
@@ -56,23 +54,22 @@ mod tests {
             ),
         ] {
             assert_eq!(frame, daemon, "{symbol}");
-            assert_eq!(frame, PACKETS.hex(CONNECTION, symbol), "{symbol}");
         }
     }
 
     #[test]
-    fn a_host_setting_equals_the_command_the_daemon_builds() {
-        assert_eq!(host::setting(NOISE, 2), NoiseMode::Anc.command().encode());
+    fn a_setting_equals_the_command_the_daemon_builds() {
+        assert_eq!(setting(NOISE, 2), NoiseMode::Anc.command().encode());
         for (identifier, id) in [
             (CONVERSATION_AWARENESS, ControlId::CONVERSATIONAL_AWARENESS),
             (ONE_BUD_ANC, ControlId::ONE_BUD_ANC),
         ] {
             assert_eq!(
-                host::setting(identifier, 1),
+                setting(identifier, 1),
                 ControlCommand::switch(id, true).encode()
             );
             assert_eq!(
-                host::setting(identifier, 2),
+                setting(identifier, 2),
                 ControlCommand::switch(id, false).encode()
             );
         }

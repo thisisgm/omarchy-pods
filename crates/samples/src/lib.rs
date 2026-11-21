@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_setting_is_the_eleven_bytes_the_cpp_daemon_writes() {
+    fn a_setting_is_the_eleven_bytes_the_cpp_daemon_writes() {
         // What `ControlCommand::createCommand` in daemon/BasicControlCommand.hpp returns.
         let written = [
             [
@@ -284,8 +284,8 @@ mod tests {
                 0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x1b, 0x01, 0x00, 0x00, 0x00,
             ],
         ];
-        assert_eq!(host::setting(CONVERSATION_AWARENESS, 2), written[0]);
-        assert_eq!(host::setting(ONE_BUD_ANC, 1), written[1]);
+        assert_eq!(setting(CONVERSATION_AWARENESS, 2), written[0]);
+        assert_eq!(setting(ONE_BUD_ANC, 1), written[1]);
     }
 
     #[test]

@@ -383,6 +383,9 @@ dependencies = [
 [[package]]
 name = "pods-samples"
 version = "0.0.0"
+dependencies = [
+ "cpp-source",
+]
 
 [[package]]
 name = "pods-sys"
