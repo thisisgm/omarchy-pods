@@ -251,21 +251,6 @@ fn one_packet_makes_at_most_one_change() {
 
 #[test]
 fn unknown_opcodes_and_bad_packets_change_nothing() {
-    let mut sim = Sim::new();
-    sim.bring_up(0);
-    // Each switch on and the mode not Off, so a bad value read as off or Off shows as a change.
-    for packet in [
-        pods_samples::battery(),
-        pods_samples::ear(),
-        pods_samples::metadata(),
-        pods_samples::control(),
-        report(ControlId::ONE_BUD_ANC, 0x01),
-        report(ControlId::NOISE_CONTROL, 0x03),
-    ] {
-        sim.feed(Input::Packet(packet));
-    }
-    assert!(sim.state.conversational_awareness && sim.state.one_bud_anc_mode);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Transparency);
     let mut packets: Vec<Vec<u8>> = pods_samples::first_burst()
         .into_iter()
         .filter(|packet| matches!(classify(packet), Ok(Incoming::Other { .. })))
@@ -286,15 +271,36 @@ fn unknown_opcodes_and_bad_packets_change_nothing() {
         report(ControlId::ONE_BUD_ANC, 0x00),
         Vec::new(),
     ]);
-    for packet in packets {
-        let before = sim.state.clone();
-        let phase = sim.machine.phase();
-        sim.feed(Input::Packet(packet.clone()));
-        assert_eq!(sim.state, before, "{packet:02x?}");
-        assert_eq!(sim.last(), NO_ACTIONS, "{packet:02x?}");
-        assert_eq!(sim.machine.phase(), phase, "{packet:02x?}");
+    // Switches on then off (01, 02) and the mode set both ways, so a bad value read as either shows as a change.
+    for (switch, on, mode) in [
+        (0x01, true, NoiseMode::Transparency),
+        (0x02, false, NoiseMode::Off),
+    ] {
+        let mut sim = Sim::new();
+        sim.bring_up(0);
+        for packet in [
+            pods_samples::battery(),
+            pods_samples::ear(),
+            pods_samples::metadata(),
+            report(ControlId::CONVERSATIONAL_AWARENESS, switch),
+            report(ControlId::ONE_BUD_ANC, switch),
+            mode.command().encode(),
+        ] {
+            sim.feed(Input::Packet(packet));
+        }
+        assert_eq!(sim.state.conversational_awareness, on);
+        assert_eq!(sim.state.one_bud_anc_mode, on);
+        assert_eq!(sim.state.noise_mode, mode);
+        for packet in &packets {
+            let before = sim.state.clone();
+            let phase = sim.machine.phase();
+            sim.feed(Input::Packet(packet.clone()));
+            assert_eq!(sim.state, before, "{packet:02x?}");
+            assert_eq!(sim.last(), NO_ACTIONS, "{packet:02x?}");
+            assert_eq!(sim.machine.phase(), phase, "{packet:02x?}");
+        }
+        sim.check();
     }
-    sim.check();
 }
 
 #[test]
