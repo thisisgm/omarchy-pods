@@ -2,9 +2,12 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+mod support;
+
+#[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
-    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::process::{Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, mpsc};
     use std::time::{Duration, Instant};
@@ -17,22 +20,12 @@ mod tests {
     use rustix::io::Errno;
     use rustix::net::{AddressFamily, RecvFlags, SocketAddrUnix, SocketFlags, SocketType};
 
+    use super::support::{Reaped, STAND_IN};
+
     const WAIT: Duration = Duration::from_secs(5);
     /// What a loaded host may add to a delay the trap keeps.
     const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
     const DEVICE: &str = "02:00:00:00:00:01";
-    const STAND_IN: &str = env!("CARGO_BIN_EXE_trap-dial");
-
-    /// A started stand-in, killed and reaped on every path out of the test.
-    struct Reaped(Child);
-
-    impl Drop for Reaped {
-        fn drop(&mut self) {
-            // An error here means the child is already gone, which is what this guard wants.
-            let _killed = self.0.kill();
-            let _reaped = self.0.wait();
-        }
-    }
 
     fn addr(text: &str) -> BdAddr {
         text.parse().unwrap()

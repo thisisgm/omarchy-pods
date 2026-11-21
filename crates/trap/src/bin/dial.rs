@@ -63,6 +63,7 @@ enum Mode {
 }
 
 impl Mode {
+    // Sample input: `dial 02:00:00:00:00:01 0x1001`.
     fn parse(args: &[&str]) -> Option<Self> {
         Some(match *args {
             ["dial", device, psm] => Self::Dial {
