@@ -3,6 +3,9 @@
 use std::fs::{self, Permissions};
 use std::io::Write;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use proptest::prelude::*;
 use rustix::fs::{CWD, FileType, Mode};
@@ -24,6 +27,8 @@ const OWNER_FILE: u32 = 0o600;
 const SYSTEM_DIR: &str = "/usr";
 /// A regular file every Linux host has, owned by uid 0 and readable by everyone.
 const SYSTEM_FILE: &str = "/etc/passwd";
+/// A read of a planted FIFO that has not returned by then is a hang, and the test fails.
+const FIFO_DEADLINE: Duration = Duration::from_secs(5);
 
 fn mode_of(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & PERMISSION_BITS
@@ -54,6 +59,15 @@ fn make_fifo(path: &Path) {
         0,
     )
     .unwrap();
+}
+
+/// Runs `read` on its own thread so a read that blocks on a FIFO fails the test instead of hanging it.
+fn within_deadline<T: Send + 'static>(read: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || sender.send(read()));
+    receiver
+        .recv_timeout(FIFO_DEADLINE)
+        .expect("the read blocked on a FIFO")
 }
 
 fn names_path(error: &StoreError, path: &Path) -> bool {
@@ -390,7 +404,7 @@ fn device_file_must_be_0600_regular_and_short() {
     let home = tempfile::tempdir().unwrap();
     let root = made_root(&home, OWNER_DIR);
     make_fifo(&root.join("device"));
-    let error = read_device(&root).unwrap_err();
+    let error = within_deadline(move || read_device(&root)).unwrap_err();
     assert!(matches!(error, StoreError::WrongType { .. }), "{error}");
 
     let home = tempfile::tempdir().unwrap();
@@ -464,7 +478,8 @@ fn reads_are_regular_owner_only_and_bounded() {
     let error = run.read("dir.bin").unwrap_err();
     assert!(matches!(error, StoreError::WrongType { .. }), "{error}");
     make_fifo(&run_path.join("fifo.bin"));
-    let error = run.read("fifo.bin").unwrap_err();
+    let fifo_run = Run::open(&run_path).unwrap();
+    let error = within_deadline(move || fifo_run.read("fifo.bin")).unwrap_err();
     assert!(matches!(error, StoreError::WrongType { .. }), "{error}");
 
     let largest = run.create_file("largest.bin").unwrap();
