@@ -2,32 +2,25 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+mod support;
+
+#[cfg(test)]
 mod tests {
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Command, Stdio};
     use std::sync::{Mutex, PoisonError};
     use std::time::{Duration, Instant};
 
     use pods_trap::{STOP_WAIT, TrapError, spawn};
 
+    use super::support::{Reaped, STAND_IN};
+
     /// Far longer than a thread takes to be named or to leave /proc, far shorter than the idle stand-in's 2 s.
     const SETTLE: Duration = Duration::from_millis(500);
-    const STAND_IN: &str = env!("CARGO_BIN_EXE_trap-dial");
     /// The name the trap gives its thread.
     const TRAP_THREAD: &str = "trap";
 
     /// Both tests count trap threads, so a parallel test runner must not overlap them.
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-
-    /// A started stand-in, killed and reaped on every path out of the test.
-    struct Reaped(Child);
-
-    impl Drop for Reaped {
-        fn drop(&mut self) {
-            // An error here means the child is already gone, which is what this guard wants.
-            let _killed = self.0.kill();
-            let _reaped = self.0.wait();
-        }
-    }
 
     // Sample input: `/proc/self/task/<tid>/comm` holds `trap\n`.
     fn trap_threads() -> usize {
