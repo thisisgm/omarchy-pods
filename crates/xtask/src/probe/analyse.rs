@@ -73,13 +73,13 @@ pub(crate) fn analyse_run(run_dir: &Path) -> Result<String, AnalyseError> {
     Ok(table)
 }
 
-/// Writes every file whole before any gets its name, so a write that fails leaves nothing in the run.
+/// Writes every file whole before any gets its name and gives all the names or none, so a failure leaves the run as it was.
 fn write_new(run: &Run, files: &[(&str, &str)]) -> Result<(), StoreError> {
     let mut whole = Vec::new();
     for &(file, contents) in files {
         whole.push(run.write_unnamed(file, contents.as_bytes())?);
     }
-    whole.iter().try_for_each(Unnamed::give_name)
+    Unnamed::name_all(&whole)
 }
 
 #[cfg(test)]

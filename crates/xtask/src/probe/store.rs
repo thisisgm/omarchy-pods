@@ -272,8 +272,25 @@ pub(crate) struct Unnamed<'run> {
 }
 
 impl Unnamed<'_> {
+    /// Gives every file its name or none: when one is refused, the names given before it are taken back and the run is as it was.
+    pub(crate) fn name_all(files: &[Self]) -> Result<(), StoreError> {
+        for (given, file) in files.iter().enumerate() {
+            let Err(refused) = file.give_name() else {
+                continue;
+            };
+            let mut taken_back = Ok(());
+            for named in files.iter().take(given) {
+                taken_back = taken_back.and(named.take_name_back());
+            }
+            // A name that stays blocks the next attempt, so it is the fault to report.
+            taken_back?;
+            return Err(refused);
+        }
+        Ok(())
+    }
+
     /// Gives the file its name in the run; a name taken since it was written is refused, never replaced.
-    pub(crate) fn give_name(&self) -> Result<(), StoreError> {
+    fn give_name(&self) -> Result<(), StoreError> {
         let path = self.run.path.join(self.name);
         // A file with no name is reached through its descriptor under /proc, which the link call follows.
         let written = format!("{PROC_FD_DIR}/{}", self.file.as_raw_fd());
@@ -283,6 +300,13 @@ impl Unnamed<'_> {
             Err(Errno::EXIST) => Err(StoreError::FileExists { path }),
             Err(errno) => Err(StoreError::io(&path, "name", errno)),
         }
+    }
+
+    /// Removes the name `give_name` gave: the link refuses a name that exists, so the name was made by this call and no older file goes.
+    fn take_name_back(&self) -> Result<(), StoreError> {
+        let path = self.run.path.join(self.name);
+        rustix::fs::unlinkat(self.run.dir.as_fd(), self.name, AtFlags::empty())
+            .map_err(|errno| StoreError::io(&path, "remove", errno))
     }
 }
 
