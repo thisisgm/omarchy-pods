@@ -5,8 +5,8 @@ use pods_proto::uplink::START;
 
 use super::super::super::input::{CutLines, MarkKind};
 use super::super::super::support::{
-    NS_PER_MS, NS_PER_SECOND, OPAQUE, SEED, SILENT_UNIT, audio, close, from_pods, mark, ppm_apart,
-    shifted, stall, stream, to_pods,
+    NS_PER_MS, NS_PER_SECOND, OPAQUE, SDU_INTERVAL_NS, SEED, SILENT_UNIT, audio, close, from_pods,
+    mark, ppm_apart, shifted, stall, stream, to_pods,
 };
 use super::super::super::synth::synth;
 use super::super::analyse;
@@ -25,6 +25,9 @@ const fn refused(
     (key, "refused", unit, THIN)
 }
 
+/// What a lead row says when too few packets deliver audio.
+const TOO_FEW_FOR_A_LEAD: &str =
+    "start 1; fewer than 50 packets with a whole unit in the first 10 s";
 /// The rows `lead` gives, each cut by a frame length.
 const LEAD_KEYS: [&str; 4] = ["lead_ms", "burst_packets", "burst_frames", "burst_ms"];
 const OWN_FRAME: &str = "frame from clock_units_per_second";
@@ -129,30 +132,10 @@ const START_ROWS: &[(&str, &str, &str, &str)] = &[
     ("max_sfb_invalid", "0", "units", "start 1; over 35"),
     ("max_sfb_unread", "1", "units", "start 1; under two bytes"),
     ("max_sfb_hz", "refused", "Hz", THIN),
-    (
-        "lead_ms",
-        "none",
-        "ms",
-        "start 1; fewer than 50 packets in the first 10 s",
-    ),
-    (
-        "burst_packets",
-        "none",
-        "packets",
-        "start 1; fewer than 50 packets in the first 10 s",
-    ),
-    (
-        "burst_frames",
-        "none",
-        "frames",
-        "start 1; fewer than 50 packets in the first 10 s",
-    ),
-    (
-        "burst_ms",
-        "none",
-        "ms",
-        "start 1; fewer than 50 packets in the first 10 s",
-    ),
+    ("lead_ms", "refused", "ms", TOO_FEW_FOR_A_LEAD),
+    ("burst_packets", "refused", "packets", TOO_FEW_FOR_A_LEAD),
+    ("burst_frames", "refused", "frames", TOO_FEW_FOR_A_LEAD),
+    ("burst_ms", "refused", "ms", TOO_FEW_FOR_A_LEAD),
     (
         "after_stop_audio_sdus",
         "0",
@@ -201,7 +184,10 @@ fn a_start_with_no_audio_still_gets_its_rows() {
     assert_eq!(one(&report, "max_sfb_histogram").value, "none");
     assert_eq!(one(&report, "max_sfb_max").value, "none");
     assert_eq!(one(&report, "max_sfb_hz").value, "none");
-    assert_eq!(one(&report, "lead_ms").value, "none");
+    for key in LEAD_KEYS {
+        assert_eq!(one(&report, key).value, "refused", "{key}");
+        assert_eq!(one(&report, key).note, TOO_FEW_FOR_A_LEAD, "{key}");
+    }
     assert_eq!(one(&report, "after_stop_audio_sdus").value, "0");
     assert_eq!(one(&report, "after_stop_audio_ms").value, "none");
     assert_eq!(one(&report, "largest_packet").value, "8");
@@ -355,6 +341,47 @@ fn lead_rows_use_the_segment_clock_or_say_nominal() {
             "{row:?}"
         );
     }
+}
+
+#[test]
+fn a_packet_with_no_whole_unit_is_no_evidence_for_the_lead() {
+    /// The packets a lead needs in its window.
+    const LEAD_NEEDS: u32 = 50;
+    /// Ten packets over what a lead needs.
+    const MORE_THAN_NEEDED: u64 = 60;
+    /// The stream with units comes this late, so its line lies far behind the packet put before it.
+    const HEARD_LATE_NS: u64 = 100 * NS_PER_MS;
+    let marks = start_at_zero();
+    let empty = |sdu: u64| audio(sdu * SDU_INTERVAL_NS, &OPAQUE, &[]);
+    let lead_values = |records: &[Record]| {
+        let report = analyse(records, &marks, "trials", CutLines::default());
+        LEAD_KEYS.map(|key| one(&report, key).value.clone())
+    };
+    let assert_refused = |records: &[Record]| {
+        let report = analyse(records, &marks, "trials", CutLines::default());
+        for key in LEAD_KEYS {
+            let row = one(&report, key);
+            assert_eq!(row.value, "refused", "{row:?}");
+            assert_eq!(row.note, TOO_FEW_FOR_A_LEAD, "{row:?}");
+        }
+    };
+
+    let header_only: Vec<Record> = (1..=MORE_THAN_NEEDED).map(empty).collect();
+    assert_refused(&header_only);
+
+    // One packet with units short of the count, then packets with none up to ten over it.
+    let mut mixed = stream(LEAD_NEEDS - 1, |_| OPAQUE);
+    mixed.extend((u64::from(LEAD_NEEDS)..=MORE_THAN_NEEDED).map(empty));
+    assert_eq!(mixed.len(), usize::try_from(MORE_THAN_NEEDED).unwrap());
+    assert_refused(&mixed);
+
+    // Enough packets with units give a lead, and a packet with none 70 ms before the first of them moves no figure.
+    let heard = shifted(stream(LEAD_NEEDS, |_| OPAQUE), HEARD_LATE_NS);
+    let mut behind_an_empty = vec![empty(2)];
+    behind_an_empty.extend(heard.clone());
+    let alone = lead_values(&heard);
+    assert_eq!(alone, ["-100.000", "0", "0", "0.000"]);
+    assert_eq!(lead_values(&behind_an_empty), alone);
 }
 
 #[test]

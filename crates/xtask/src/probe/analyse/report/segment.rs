@@ -461,10 +461,11 @@ impl Segment {
         ]
     }
 
-    /// Every audio SDU as an arrival: when it came and how many units the segment had delivered by then.
+    /// Every audio SDU with a whole unit as an arrival: when it came and the units delivered by then; one with none brings no audio and cannot place its start.
     fn arrivals(&self) -> Vec<Arrival> {
         let mut frames_done = 0_u64;
-        let arrivals = self.loaded.audio.iter().map(|sdu| {
+        let heard = self.loaded.audio.iter().filter(|sdu| !sdu.units.is_empty());
+        let arrivals = heard.map(|sdu| {
             // No Rust target has a usize wider than 64 bits, so the fallback is never taken.
             let frames = u64::try_from(sdu.units.len()).unwrap_or(u64::MAX);
             frames_done = frames_done.saturating_add(frames);
@@ -482,7 +483,9 @@ impl Segment {
         let frame_ns = own.map_or(NOMINAL_FRAME_NS, own_frame_ns);
         let Some(found) = lead(&self.arrivals(), self.start_ns, frame_ns) else {
             let window_s = seconds(LEAD_WINDOW_NS);
-            let why = format!("fewer than {LEAD_MIN_PACKETS} packets in the first {window_s:.0} s");
+            let why = format!(
+                "fewer than {LEAD_MIN_PACKETS} packets with a whole unit in the first {window_s:.0} s"
+            );
             let note = self.note(&[&why]);
             let keys = [
                 ("lead_ms", MS),
@@ -490,7 +493,7 @@ impl Segment {
                 ("burst_frames", "frames"),
                 ("burst_ms", MS),
             ];
-            let rows = keys.map(|(key, unit)| Row::new(key, &NONE, unit, &note));
+            let rows = keys.map(|(key, unit)| Row::new(key, &REFUSED, unit, &note));
             return rows.into();
         };
         // The line and the burst are both cut by the frame length, so every row says where the length came from.

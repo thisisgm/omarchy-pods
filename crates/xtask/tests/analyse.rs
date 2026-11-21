@@ -14,9 +14,10 @@ mod tests {
     use std::process::{Command, Output};
 
     use pods_proto::sdulog::{Direction, Record, format_line};
+    use pods_proto::uplink::encode_audio;
     use tempfile::TempDir;
 
-    use super::synth::{shows, synth};
+    use super::synth::{OPAQUE, shows, synth};
 
     /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
     const STAMP: &str = "20261120T120000Z";
@@ -60,6 +61,12 @@ mod tests {
     /// A word of each made up string, which no output but the device file may show.
     const PRIVATE: [&str; 2] = ["Probe", "SERIAL0XYZ"];
 
+    /// Audio SDUs with a header and no unit: over the 50 packets a lead needs, and none of them delivers a frame.
+    const HEADER_ONLY_SDUS: u64 = 60;
+    /// 30 ms between two of them, so all arrive in the ten seconds after the start mark that a lead reads.
+    const SDU_INTERVAL_NS: u64 = 30_000_000;
+    /// What a lead row says when too few packets deliver audio.
+    const TOO_FEW_FOR_A_LEAD: &str = "fewer than 50 packets with a whole unit in the first 10 s";
     /// Two packets from the pods too short for an opcode, and one sent to the pods, which no count from the pods reads.
     const NO_OPCODE_LOG: &str = "1 < 01\n2 < 010004\n3 > 040004000600\n";
 
@@ -251,6 +258,37 @@ mod tests {
         let error = String::from_utf8(refused.stderr).unwrap();
         assert!(error.contains("sdu.log holds no packet"), "{error}");
         assert_eq!(names_in(&empty), ["marks.tsv", "meta.txt", "sdu.log"]);
+    }
+
+    #[test]
+    fn audio_packets_that_hold_no_unit_give_no_lead() {
+        let home = tempfile::tempdir().unwrap();
+        let header_only = encode_audio(&OPAQUE, &[]).unwrap();
+        let records: Vec<Record> = (1..=HEADER_ONLY_SDUS)
+            .map(|k| Record {
+                at_ns: k * SDU_INTERVAL_NS,
+                direction: Direction::FromPods,
+                sdu: header_only.clone(),
+            })
+            .collect();
+        let run = make_run(&home, "header-only", &log_text(&records));
+
+        let done = analyse(&home, &run);
+        assert!(done.status.success(), "{done:?}");
+        let table = String::from_utf8(done.stdout).unwrap();
+        assert_eq!(row(&table, "audio_sdus").0, HEADER_ONLY_SDUS.to_string());
+        assert_eq!(
+            row(&table, "segment_audio_sdus").0,
+            HEADER_ONLY_SDUS.to_string()
+        );
+        for key in ["lead_ms", "burst_packets", "burst_frames", "burst_ms"] {
+            let (value, note) = row(&table, key);
+            assert_eq!(value, "refused", "{key}");
+            assert!(
+                note.split("; ").any(|item| item == TOO_FEW_FOR_A_LEAD),
+                "{key}: {note}"
+            );
+        }
     }
 
     #[test]
