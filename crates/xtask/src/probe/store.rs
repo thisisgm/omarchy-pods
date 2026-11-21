@@ -196,7 +196,9 @@ impl Run {
 
     /// Opens an existing run directory with the same checks as the root.
     pub(crate) fn open(path: &Path) -> Result<Run, StoreError> {
+        refuse_repository_ancestors(path)?;
         let dir = open_dir(CWD, path, path)?;
+        refuse_git_marker(&dir, path)?;
         Ok(Run {
             path: path.to_path_buf(),
             dir,
@@ -300,15 +302,15 @@ fn check_file_name(name: &str) -> Result<(), StoreError> {
     }
 }
 
-/// Refuses a root whose parent, or any directory above it, holds a git marker.
-fn refuse_repository_ancestors(root: &Path) -> Result<(), StoreError> {
+/// Refuses a store directory whose parent, or any directory above it, holds a git marker.
+fn refuse_repository_ancestors(path: &Path) -> Result<(), StoreError> {
     let bad_root = || StoreError::BadRoot {
-        path: root.to_path_buf(),
+        path: path.to_path_buf(),
     };
-    if !root.is_absolute() {
+    if !path.is_absolute() {
         return Err(bad_root());
     }
-    let parent = root.parent().ok_or_else(bad_root)?;
+    let parent = path.parent().ok_or_else(bad_root)?;
     // Resolved, so a home reached through a symbolic link is judged by where it really is.
     let real_parent =
         fs::canonicalize(parent).map_err(|source| StoreError::io(parent, "resolve", source))?;
@@ -317,7 +319,7 @@ fn refuse_repository_ancestors(root: &Path) -> Result<(), StoreError> {
         match fs::symlink_metadata(&marker) {
             Ok(_) => {
                 return Err(StoreError::InRepository {
-                    path: root.to_path_buf(),
+                    path: path.to_path_buf(),
                     marker,
                 });
             }
@@ -328,12 +330,12 @@ fn refuse_repository_ancestors(root: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Refuses an open root that holds a git marker itself.
-fn refuse_git_marker(root_dir: &OwnedFd, root: &Path) -> Result<(), StoreError> {
-    let marker = root.join(GIT_MARKER);
-    match rustix::fs::statat(root_dir, GIT_MARKER, AtFlags::SYMLINK_NOFOLLOW) {
+/// Refuses an open store directory that holds a git marker itself.
+fn refuse_git_marker(dir: &OwnedFd, path: &Path) -> Result<(), StoreError> {
+    let marker = path.join(GIT_MARKER);
+    match rustix::fs::statat(dir, GIT_MARKER, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(_) => Err(StoreError::InRepository {
-            path: root.to_path_buf(),
+            path: path.to_path_buf(),
             marker,
         }),
         Err(Errno::NOENT) => Ok(()),
