@@ -253,6 +253,38 @@ fn a_pending_response_is_followed_by_the_final_one() {
 }
 
 #[test]
+fn a_response_answers_only_a_request_of_its_link_still_waiting() {
+    let response = |responder_cid: u16, requester_cid: u16| {
+        let mut data = responder_cid.to_le_bytes().to_vec();
+        data.extend(requester_cid.to_le_bytes());
+        data.extend([0x00; 4]);
+        data
+    };
+    let mut trace = Trace::new();
+    trace.connect(HOST, CONTROL_PSM, FIRST, PSM_NOT_SUPPORTED);
+    trace.signal(PODS, CONNECTION_RESPONSE, &response(FIRST.1, FIRST.0));
+    let mut waiting = CONTROL_PSM.to_le_bytes().to_vec();
+    waiting.extend(SECOND.0.to_le_bytes());
+    trace.signal(HOST, CONNECTION_REQUEST, &waiting);
+    let mut ended = vec![0x00];
+    ended.extend(PODS_HANDLE.to_le_bytes());
+    ended.push(0x13);
+    trace.event(EVENT_DISCONNECTION_COMPLETE, &ended);
+    trace.signal(PODS, CONNECTION_RESPONSE, &response(SECOND.1, SECOND.0));
+    trace.send(PODS, SECOND, &[0x6b]);
+    let found = read(&trace);
+    assert_eq!(found.list, []);
+    let results: Vec<_> = found
+        .requests
+        .iter()
+        .map(|request| request.result)
+        .collect();
+    assert_eq!(results, [Some(PSM_NOT_SUPPORTED), None]);
+    assert_eq!(found.counts.responses_without_request, 2);
+    assert_eq!(found.unmapped.len(), 1);
+}
+
+#[test]
 fn the_mtu_option_each_side_sends_is_kept() {
     let mut trace = Trace::new();
     trace.open(PODS, ATT_PSM, FIRST);
