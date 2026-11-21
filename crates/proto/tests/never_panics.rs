@@ -187,7 +187,7 @@ fn dictation_frame() -> impl Strategy<Value = (u8, u8, u16, Vec<u8>)> {
     (any::<u8>(), any::<u8>(), counter, data)
 }
 
-// Sample output: 01 00 03 00, a status value: a known reply, a known reply with one bit flipped, or noise.
+// Sample output: 01 00 03 00, a status value: a known reply, one with a bit flipped, one a byte longer or shorter, or noise.
 fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
     let value_of = |reply: &[u8]| -> Vec<u8> {
         let after_the_gate = reply.iter().skip(DICTATION_STATUS_GATE.len());
@@ -203,8 +203,35 @@ fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
             value
         },
     );
+    let longer = (known(), any::<u8>()).prop_map(|(mut value, more)| {
+        value.push(more);
+        value
+    });
+    let shorter = known().prop_map(|mut value| {
+        value.pop();
+        value
+    });
     let noise = proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND);
-    prop_oneof![known(), flipped, noise]
+    prop_oneof![known(), flipped, longer, shorter, noise]
+}
+
+// Sample output: 1b 0d 00 01 00 2a, the audio gate then noise, cut at any length from nothing to three bytes past the audio prefix.
+fn dictation_cut_audio_notification() -> impl Strategy<Value = Vec<u8>> {
+    let noise = proptest::collection::vec(any::<u8>(), dictation::AUDIO_PREFIX_LEN);
+    (noise, any::<proptest::sample::Index>()).prop_map(|(noise, kept)| {
+        let mut pdu = DICTATION_AUDIO_GATE.to_vec();
+        pdu.extend(noise);
+        pdu.truncate(kept.index(pdu.len().saturating_add(1)));
+        pdu
+    })
+}
+
+// Sample output: [01, 80], the audio marker with one of its sixteen bits flipped.
+fn dictation_near_marker() -> impl Strategy<Value = [u8; 2]> {
+    (0..u16::BITS).prop_map(|bit| {
+        let flipped = u16::from_le_bytes(DICTATION_AUDIO_MARKER) ^ 1_u16.rotate_left(bit);
+        flipped.to_le_bytes()
+    })
 }
 
 proptest! {
@@ -553,11 +580,11 @@ proptest! {
         }
     }
 
-    // A uniform length under MAX_SDU almost never draws a PDU cut inside the prefix, so half the cases are that short.
+    // A uniform length under MAX_SDU almost never draws a notification cut inside its prefix, so half the cases are the audio gate and noise cut that short.
     #[test]
     fn dictation_parse_never_panics(b in prop_oneof![
         proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
-        proptest::collection::vec(any::<u8>(), 0..=dictation::AUDIO_PREFIX_LEN),
+        dictation_cut_audio_notification(),
     ]) {
         let _outcome = DictationPacket::parse(&b);
     }
@@ -597,7 +624,7 @@ proptest! {
     // A value on the audio handle is too short before its length bytes end, unknown without the marker, and audio otherwise.
     #[test]
     fn dictation_audio_handle_sorts_every_value(
-        marker in prop_oneof![Just(DICTATION_AUDIO_MARKER), any::<[u8; 2]>()],
+        marker in prop_oneof![Just(DICTATION_AUDIO_MARKER), dictation_near_marker(), any::<[u8; 2]>()],
         rest in proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND),
         kept in any::<proptest::sample::Index>(),
     ) {
