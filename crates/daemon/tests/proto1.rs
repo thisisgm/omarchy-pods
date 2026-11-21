@@ -29,8 +29,8 @@ mod tests {
     /// The changes the slow subscriber and burst tests make, past what one socket buffer and the daemon's queues hold.
     const CHANGES: usize = 200;
 
-    /// The bound on a `get` answered while a slow subscriber holds a full queue.
-    const GET_WHILE_SLOW_LIMIT: Duration = Duration::from_millis(200);
+    /// Half the 2000 ms stall deadline: the bound on a set and a get answered while a slow subscriber falls behind.
+    const OTHERS_ANSWERED_WITHIN: Duration = Duration::from_millis(1000);
 
     /// Half the daemon's 1000 ms first byte deadline: a client closed sooner was closed at accept.
     const CLOSED_AT_ACCEPT_WITHIN: Duration = Duration::from_millis(500);
@@ -454,11 +454,15 @@ mod tests {
         thread::scope(|scope| {
             let reader = scope.spawn(move || (0..CHANGES).map(|_| fast.line()).collect::<Vec<_>>());
             for id in 0..CHANGES {
-                assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
+                // The set runs every subscriber's task before its reply, so it is timed too.
                 let started = Instant::now();
+                assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
                 getter.ask(GET);
                 let waited = started.elapsed();
-                assert!(waited < GET_WHILE_SLOW_LIMIT, "get {id} took {waited:?}");
+                assert!(
+                    waited < OTHERS_ANSWERED_WITHIN,
+                    "change {id} and a get took {waited:?}"
+                );
             }
             let events = reader.join().unwrap();
             let mut expected = ear_changes(&first_reply);
