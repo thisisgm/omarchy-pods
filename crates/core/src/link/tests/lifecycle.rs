@@ -128,6 +128,7 @@ fn a_duplicate_device_up_does_not_reset_the_ladder() {
     assert_eq!(sim.machine.phase(), backoff);
     sim.run_until(ms(7000));
     assert_eq!(sim.times_of("Open(0)"), [0, 1000, 3000, 7000]);
+    sim.check();
 
     let mut sim = Sim::new();
     sim.bring_up(0);
@@ -220,6 +221,7 @@ fn device_down_while_opening_waits_for_the_end() {
             until: ms(1000)
         }
     );
+    sim.check();
 
     let mut sim = Sim::answering(Answer::Hold);
     sim.feed(Input::Up(0));
@@ -242,12 +244,14 @@ fn device_gone_resets_at_once() {
     assert!(!sim.state.connected);
     assert!(sim.machine.last_linked.is_none());
     assert_eq!(sim.machine.known, []);
+    sim.check();
 
     let mut sim = Sim::answering(Answer::Refuse);
     sim.feed(Input::Up(0));
     sim.feed(Input::Gone(0));
     assert_eq!(sim.last(), ["Sweep"]);
     assert_eq!(sim.machine.phase(), Phase::Idle);
+    sim.check();
 
     let mut sim = Sim::answering(Answer::Hold);
     sim.feed(Input::Up(0));
@@ -273,6 +277,7 @@ fn bluez_lost_while_up_keeps_the_channel() {
     assert!(sim.state.connected);
     sim.feed(Input::PeerCloses);
     assert_eq!(sim.machine.phase(), Phase::Grace { until: ms(7750) });
+    sim.check();
 
     let mut sim = Sim::answering(Answer::Refuse);
     sim.feed(Input::Up(0));
@@ -368,6 +373,7 @@ fn shutdown_closes_and_ignores_everything_after() {
     assert_eq!(sim.machine.phase(), Phase::Stopped);
     sim.run_until(ms(600_000));
     assert_eq!(sim.times_of("Open(0)"), [0]);
+    sim.check();
 
     let mut sim = Sim::answering(Answer::Hold);
     sim.feed(Input::Up(0));
