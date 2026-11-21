@@ -296,6 +296,34 @@ fn synchronous_connections_and_what_could_not_be_read_are_counted() {
 }
 
 #[test]
+fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
+    let bytes = session().bytes();
+    let whole = records(&bytes).unwrap();
+    assert_eq!(whole.cut, None);
+    assert!(!text(&render(whole).unwrap(), "links.txt").contains("trace_cut_short"));
+
+    let cut_bytes = &bytes[..bytes.len() - 100];
+    let read = records(cut_bytes).unwrap();
+    let cut = read.cut.unwrap();
+    let outputs = render(read).unwrap();
+    let before = render(records(&bytes[..cut.offset]).unwrap()).unwrap();
+    assert_eq!(names(&outputs), names(&before));
+    for (cut_output, whole_output) in outputs.iter().zip(&before) {
+        if cut_output.name == "links.txt" {
+            let named = format!(
+                "trace_cut_short record={} offset={}\n{}",
+                cut.record, cut.offset, whole_output.text
+            );
+            assert_eq!(cut_output.text, named);
+        } else {
+            assert_eq!(cut_output, whole_output);
+        }
+    }
+    assert!(text(&outputs, "a2dp.tsv").lines().count() > 1);
+    assert!(text(&before, "links.txt").starts_with("realtime_at_zero_ns "));
+}
+
+#[test]
 fn an_empty_trace_renders_empty_tables() {
     let outputs = rendered(&Trace::new());
     assert_eq!(

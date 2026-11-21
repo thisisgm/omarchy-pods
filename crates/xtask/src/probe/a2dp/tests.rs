@@ -26,7 +26,7 @@ const THIRD_CIDS: (u16, u16) = (0x0044, 0x0054);
 const START_SECOND: u64 = START_UNIX_MICROS / 1_000_000;
 
 fn read(trace: &Trace) -> Channels {
-    channels(&records(&trace.bytes()).unwrap())
+    channels(&records(&trace.bytes()).unwrap().kept)
 }
 
 /// A trace with the signalling channel and the media channel open.

@@ -25,7 +25,7 @@ const PENDING: u16 = 0x0001;
 const PSM_NOT_SUPPORTED: u16 = 0x0002;
 
 fn read(trace: &Trace) -> Channels {
-    channels(&records(&trace.bytes()).unwrap())
+    channels(&records(&trace.bytes()).unwrap().kept)
 }
 
 /// The stamp of a record written `ms` milliseconds into a synthetic trace.

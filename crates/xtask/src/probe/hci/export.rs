@@ -8,7 +8,7 @@ use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{Direction, LogError, format_line};
 
 use super::l2cap::Counts;
-use super::{Channel, Channels, HciRecord, Kind, TraceError, channels, records};
+use super::{Channel, Channels, Cut, HciRecord, Kind, Records, TraceError, channels, records};
 use crate::probe::a2dp::{self, Codec, CodecKind, Second, Unread, VENDOR_CODEC};
 use crate::probe::store::{self, Run, Session, StoreError};
 
@@ -35,6 +35,13 @@ const ABSENT: &str = "-";
 const MAX_TRACE_BYTES: u64 = 512 * 1024 * 1024;
 /// The smallest attribute MTU that fits a 438 byte notification behind its 3 byte header (Core 6.1 Vol 3 Part F 3.4.7.1).
 const ATT_MTU_NEEDED: u16 = 441;
+
+/// What the command did: the text of `links.txt`, and where the trace was cut when it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Exported {
+    pub summary: String,
+    pub cut: Option<Cut>,
+}
 
 /// One file of the run: its name and its whole text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,8 +178,13 @@ fn codecs_list(found: &Channels) -> String {
     text(&lines)
 }
 
-/// The counts of `links.txt`: where zero is, the synchronous connections, and everything the reader could not use.
-fn link_lines(zero_ns: u64, records: &[HciRecord], found: &Channels) -> Vec<String> {
+/// The counts of `links.txt`: a cut first when there is one, where zero is, the synchronous connections, and everything the reader could not use.
+fn link_lines(
+    cut: Option<Cut>,
+    zero_ns: u64,
+    records: &[HciRecord],
+    found: &Channels,
+) -> Vec<String> {
     let synchronous = |wanted: Option<bool>| {
         records
             .iter()
@@ -200,11 +212,20 @@ fn link_lines(zero_ns: u64, records: &[HciRecord], found: &Channels) -> Vec<Stri
         not_rtp,
         other_channels,
     } = a2dp::unread(found);
-    let mut lines = vec![
+    let mut lines: Vec<String> = cut
+        .iter()
+        .map(|cut| {
+            format!(
+                "trace_cut_short record={} offset={}",
+                cut.record, cut.offset
+            )
+        })
+        .collect();
+    lines.extend([
         format!("realtime_at_zero_ns {zero_ns}"),
         format!("synchronous_connection_events {}", synchronous(None)),
         format!("synchronous_connections_opened {}", synchronous(Some(true))),
-    ];
+    ]);
     for (name, count) in [
         ("acl_packets", acl_packets),
         ("malformed_acl_packets", malformed_acl_packets),
@@ -244,9 +265,10 @@ fn link_lines(zero_ns: u64, records: &[HciRecord], found: &Channels) -> Vec<Stri
 }
 
 /// Every file of the run, from records whose stamps are counted from the first one kept.
-pub(crate) fn render(records: Vec<HciRecord>) -> Result<Vec<Output>, ExportError> {
-    let zero_ns = records.first().map_or(0, |record| record.at_ns);
-    let records: Vec<HciRecord> = records
+pub(crate) fn render(read: Records) -> Result<Vec<Output>, ExportError> {
+    let zero_ns = read.kept.first().map_or(0, |record| record.at_ns);
+    let records: Vec<HciRecord> = read
+        .kept
         .into_iter()
         .map(|record| HciRecord {
             at_ns: record.at_ns.saturating_sub(zero_ns),
@@ -254,7 +276,7 @@ pub(crate) fn render(records: Vec<HciRecord>) -> Result<Vec<Output>, ExportError
         })
         .collect();
     let found = channels(&records);
-    let mut links = link_lines(zero_ns, &records, &found);
+    let mut links = link_lines(read.cut, zero_ns, &records, &found);
     let mut outputs = Vec::new();
     for (psm, stem) in [(CONTROL_PSM, CONTROL_LOG), (ATT_PSM, ATT_LOG)] {
         let on_psm = found.list.iter().filter(|channel| channel.psm == psm);
@@ -289,13 +311,14 @@ pub(crate) fn export(
     trace: &Path,
     stamp: &str,
     run: &str,
-) -> Result<String, ExportError> {
+) -> Result<Exported, ExportError> {
     let bytes = store::read_trace(trace, MAX_TRACE_BYTES)?;
-    let records = records(&bytes).map_err(|source| ExportError::Trace {
+    let read = records(&bytes).map_err(|source| ExportError::Trace {
         path: trace.to_path_buf(),
         source,
     })?;
-    let outputs = render(records)?;
+    let cut = read.cut;
+    let outputs = render(read)?;
     let session = Session::open(root, stamp)?;
     let created = Run::create(&session, run)?;
     let mut summary = String::new();
@@ -310,7 +333,7 @@ pub(crate) fn export(
             summary = output.text;
         }
     }
-    Ok(summary)
+    Ok(Exported { summary, cut })
 }
 
 #[cfg(test)]

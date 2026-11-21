@@ -354,11 +354,14 @@ fn usage(error: &clap::Error) -> ExitCode {
     }
 }
 
-/// Writes the tables of one trace into a new run and prints the counts, which is all hci writes on stdout.
+/// Writes the tables of one trace into a new run and prints the counts, which is all hci writes on stdout; a cut trace is named on stderr.
 fn hci(file: &Path, stamp: &str, run: &str, home: &str) -> ExitCode {
     match hci::export(&store::root(home.as_ref()), file, stamp, run) {
-        Ok(counts) => {
-            counts.lines().for_each(print_line);
+        Ok(exported) => {
+            if let Some(cut) = exported.cut {
+                report(&format!("xtask probe: {}: {cut}", file.display()));
+            }
+            exported.summary.lines().for_each(print_line);
             ExitCode::SUCCESS
         }
         Err(error) => {
