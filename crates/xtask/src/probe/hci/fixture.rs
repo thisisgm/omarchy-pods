@@ -42,7 +42,7 @@ const OPCODE_EVENT: u16 = 3;
 const OPCODE_ACL_TX: u16 = 4;
 /// Monitor opcode of ACL data the host received.
 pub(crate) const OPCODE_ACL_RX: u16 = 5;
-/// The packet boundary flag sits above the 12 bit handle (`BlueZ` monitor/bt.h, `acl_flags`).
+/// The packet boundary flag sits above the 12 bit handle (`BlueZ` lib/bluetooth/hci.h, `acl_flags`).
 const BOUNDARY_SHIFT: u32 = 12;
 /// Packet boundary flag of a continuing fragment.
 pub(crate) const CONTINUATION: u16 = 0b01;

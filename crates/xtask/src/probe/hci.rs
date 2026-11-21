@@ -38,7 +38,7 @@ const EVENT_DISCONNECTION_COMPLETE: u8 = 0x05;
 const EVENT_SYNCHRONOUS_CONNECTION_COMPLETE: u8 = 0x2c;
 /// The status of an event that reports success.
 const STATUS_SUCCESS: u8 = 0x00;
-/// A connection handle is the low 12 bits of the field that holds it (`BlueZ` monitor/bt.h, `acl_handle`).
+/// A connection handle is the low 12 bits of the field that holds it (`BlueZ` lib/bluetooth/hci.h, `acl_handle`).
 pub(crate) const HANDLE_MASK: u16 = 0x0fff;
 
 /// What one kept record is; every other record of a trace is skipped and none of its bytes is kept.
@@ -64,7 +64,7 @@ pub(crate) struct HciRecord {
     pub data: Vec<u8>,
 }
 
-/// Why a trace was refused; each names the rule it broke and the record it read, never a value the trace holds.
+/// Why a trace was refused: a rule its file header broke; none holds a value read from the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TraceError {
     #[error("btsnoop trace is {len} bytes, shorter than its {FILE_HEADER_LEN} byte file header")]
@@ -77,10 +77,6 @@ pub(crate) enum TraceError {
         "btsnoop trace has a datalink type other than the monitor datalink {MONITOR_DATALINK}, which btmon -w writes"
     )]
     UnknownDatalink,
-    #[error(
-        "btsnoop record {record} at byte offset {offset} claims more data than the {MAX_RECORD_LEN} bytes a record holds"
-    )]
-    RecordTooLong { record: usize, offset: usize },
 }
 
 /// What is wrong with the record a trace stops being read at.
@@ -88,6 +84,8 @@ pub(crate) enum TraceError {
 pub(crate) enum Damage {
     /// The file ends inside it, as it does when the recorder was stopped.
     CutShort,
+    /// It claims more data than a record holds, so nothing says where the next record starts.
+    TooLong,
     /// Its timestamp lies outside the years 1970 to 2554, which is all a nanosecond stamp holds.
     StampOutOfRange,
 }
@@ -97,6 +95,7 @@ impl Damage {
     pub(crate) fn key(self) -> &'static str {
         match self {
             Self::CutShort => "trace_cut_short",
+            Self::TooLong => "trace_record_too_long",
             Self::StampOutOfRange => "trace_stamp_out_of_range",
         }
     }
@@ -104,10 +103,14 @@ impl Damage {
 
 impl fmt::Display for Damage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::CutShort => "is cut short",
-            Self::StampOutOfRange => "has a timestamp outside the years 1970 to 2554",
-        })
+        match self {
+            Self::CutShort => f.write_str("is cut short"),
+            Self::TooLong => write!(
+                f,
+                "claims more data than the {MAX_RECORD_LEN} bytes a record holds"
+            ),
+            Self::StampOutOfRange => f.write_str("has a timestamp outside the years 1970 to 2554"),
+        }
     }
 }
 
@@ -229,12 +232,10 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
             cut = stop(Damage::CutShort);
             break;
         };
-        let too_long = TraceError::RecordTooLong { record, offset };
-        if header.included > MAX_RECORD_LEN {
-            return Err(too_long);
-        }
-        let Ok(len) = usize::try_from(header.included) else {
-            return Err(too_long);
+        let len = usize::try_from(header.included).ok();
+        let Some(len) = len.filter(|_| header.included <= MAX_RECORD_LEN) else {
+            cut = stop(Damage::TooLong);
+            break;
         };
         let Some((data, after)) = rest.split_at_checked(len) else {
             cut = stop(Damage::CutShort);

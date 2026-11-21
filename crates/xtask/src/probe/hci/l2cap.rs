@@ -7,9 +7,9 @@ use pods_proto::sdulog::{Direction, Record};
 
 use super::{HANDLE_MASK, HciRecord, Kind, sender, take};
 
-/// The packet boundary flag sits above the 12 bit handle (`BlueZ` monitor/bt.h, `acl_flags`).
+/// The packet boundary flag sits above the 12 bit handle (`BlueZ` lib/bluetooth/hci.h, `acl_flags`).
 const BOUNDARY_SHIFT: u32 = 12;
-/// The packet boundary flag is two bits; the two above it are the broadcast flag (`BlueZ` monitor/bt.h, `acl_flags`).
+/// The packet boundary flag is two bits; the two above it are the broadcast flag (Core 6.1 Vol 4 Part E 5.4.2).
 const BOUNDARY_MASK: u16 = 0b11;
 /// Packet boundary flag of a continuing fragment; every other value starts a PDU (`BlueZ` monitor/l2cap.c, `l2cap_packet`).
 const CONTINUING_FRAGMENT: u16 = 0b01;
