@@ -36,6 +36,11 @@ const ROUTED_BODY_BOUND: usize = 64;
 const METADATA_SKIPPED_LEN: usize = 5;
 /// One more than the most strings a generated metadata packet carries, more than the three read.
 const METADATA_STRING_BOUND: usize = 6;
+/// Longest generated printable field, short enough that no field is cut.
+const SHORT_FIELD_LEN: usize = 40;
+const _: () = assert!(SHORT_FIELD_LEN < FIELD_MAX_BYTES);
+/// Length bound of a generated metadata body, long enough that random fields often run past `FIELD_MAX_BYTES`.
+const METADATA_BODY_BOUND: usize = 1024;
 const UPLINK_AUDIO_GATE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01, 0x00];
 const UPLINK_CONTROL_GATE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00];
 /// Length bound of a generated SDU, room for sixteen access units of the longest kind.
@@ -347,7 +352,10 @@ proptest! {
     #[test]
     fn metadata_reads_the_first_three_strings(
         skipped in any::<[u8; METADATA_SKIPPED_LEN]>(),
-        strings in proptest::collection::vec("[ -~]{0,40}", 0..METADATA_STRING_BOUND),
+        strings in proptest::collection::vec(
+            proptest::collection::vec(proptest::char::range(' ', '~'), 0..=SHORT_FIELD_LEN).prop_map(String::from_iter),
+            0..METADATA_STRING_BOUND,
+        ),
     ) {
         let mut sdu = METADATA_HEADER.to_vec();
         sdu.extend(skipped);
@@ -355,6 +363,19 @@ proptest! {
         let m = Metadata::parse(&sdu).unwrap();
         let expected = |at: usize| strings.get(at).map_or("", String::as_str);
         prop_assert_eq!((m.name.as_str(), m.model_number.as_str(), m.manufacturer.as_str()), (expected(0), expected(1), expected(2)));
+    }
+
+    // Random bytes behind a valid header make long fields, some invalid UTF-8 that grows when replaced; each comes back cut to the bound.
+    #[test]
+    fn metadata_fields_are_cut_to_the_bound(
+        skipped in any::<[u8; METADATA_SKIPPED_LEN]>(),
+        body in proptest::collection::vec(any::<u8>(), 0..METADATA_BODY_BOUND),
+    ) {
+        let mut sdu = METADATA_HEADER.to_vec();
+        sdu.extend(skipped);
+        sdu.extend(&body);
+        let m = Metadata::parse(&sdu).unwrap();
+        prop_assert!(m.name.len() <= FIELD_MAX_BYTES && m.model_number.len() <= FIELD_MAX_BYTES && m.manufacturer.len() <= FIELD_MAX_BYTES);
     }
 
     #[test]
