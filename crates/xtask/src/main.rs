@@ -59,3 +59,44 @@ fn run_ci() -> ExitCode {
 fn report(message: &str) {
     eprintln!("{message}");
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    const FORBID_UNSAFE: &str = r#"unsafe_code = "forbid""#;
+    const DENY_UNSAFE: &str = r#"unsafe_code = "deny""#;
+
+    /// The lint tables of one manifest, headers included, without blank lines and comments.
+    // Sample input: `[workspace.lints.rust]` then `unsafe_code = "forbid"`, read with prefix `workspace.`.
+    fn lint_lines(manifest: &str, prefix: &str) -> Vec<String> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(manifest);
+        let text = fs::read_to_string(&path).unwrap();
+        let header = format!("[{prefix}lints.");
+        let mut in_lints = false;
+        let mut lines = Vec::new();
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_lints = line.starts_with(&header);
+            }
+            if in_lints && !line.is_empty() && !line.starts_with('#') {
+                lines.push(line.replacen(&header, "[lints.", 1));
+            }
+        }
+        lines
+    }
+
+    #[test]
+    fn sys_lint_table_matches_the_workspace_except_unsafe_code() {
+        let workspace = lint_lines("../../Cargo.toml", "workspace.");
+        let sys = lint_lines("../sys/Cargo.toml", "");
+        let forbids = workspace.iter().filter(|line| *line == FORBID_UNSAFE);
+        assert_eq!(forbids.count(), 1, "the workspace forbids unsafe code once");
+        let expected: Vec<String> = workspace
+            .iter()
+            .map(|line| line.replace(FORBID_UNSAFE, DENY_UNSAFE))
+            .collect();
+        assert_eq!(sys, expected);
+    }
+}

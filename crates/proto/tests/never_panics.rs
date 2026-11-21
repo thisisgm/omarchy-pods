@@ -1,5 +1,6 @@
 //! Random input never panics a parser, and a parsed control command survives a round trip.
 
+use pods_proto::addr::BdAddr;
 use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
 use pods_proto::ear::EarReport;
@@ -47,7 +48,54 @@ fn battery_entry() -> impl Strategy<Value = [u8; 5]> {
         .prop_map(|(kind, spacer, level, status, end)| [kind, spacer, level, status, end])
 }
 
+// Sample output: `AA:bb:CC:dd:EE:ff`, with about one part in ten replaced by text the format does not allow.
+fn address_text() -> impl Strategy<Value = String> {
+    let pair = || prop_oneof![9 => "[0-9a-fA-F]{2}", 1 => "[ -~]{0,3}"];
+    let colon = || prop_oneof![9 => Just(":".to_owned()), 1 => "[ -~]{0,2}"];
+    (
+        [pair(), pair(), pair(), pair(), pair(), pair()],
+        [colon(), colon(), colon(), colon(), colon()],
+    )
+        .prop_map(|(pairs, colons)| {
+            let mut text = String::new();
+            for (at, pair) in pairs.iter().enumerate() {
+                text.push_str(pair);
+                text.push_str(colons.get(at).map_or("", String::as_str));
+            }
+            text
+        })
+}
+
+// The address shape, checked one byte at a time: colons at 2, 5, 8, 11 and 14, hex digits elsewhere.
+fn octets_of(text: &str) -> Option<Vec<u8>> {
+    let shaped = text.len() == 17
+        && text.bytes().enumerate().all(|(at, byte)| {
+            if at % 3 == 2 {
+                byte == b':'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    if !shaped {
+        return None;
+    }
+    text.split(':')
+        .map(|pair| u8::from_str_radix(pair, 16).ok())
+        .collect()
+}
+
 proptest! {
+    #[test]
+    fn address_parse_never_panics(text in any::<String>()) {
+        let _outcome = text.parse::<BdAddr>();
+    }
+
+    #[test]
+    fn address_parse_reads_exactly_the_colon_and_hex_shape(text in address_text()) {
+        let parsed = text.parse::<BdAddr>().ok().map(|addr| addr.octets().to_vec());
+        prop_assert_eq!(parsed, octets_of(&text));
+    }
+
     #[test]
     fn battery_parse_never_panics(b in proptest::collection::vec(any::<u8>(), 0..512)) {
         let _outcome = BatteryReport::parse(&b);

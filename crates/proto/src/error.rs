@@ -1,4 +1,4 @@
-//! The one error type every parser returns.
+//! The one error type every packet parser returns.
 
 use std::fmt;
 
