@@ -69,6 +69,11 @@ pub const CTL: CppHeader = CppHeader {
     text: include_str!("../../../daemon/librepods-ctl.cpp"),
 };
 
+pub const CONTROL_RECONNECT: CppHeader = CppHeader {
+    path: "daemon/controlreconnect.hpp",
+    text: include_str!("../../../daemon/controlreconnect.hpp"),
+};
+
 impl CppHeader {
     /// The whole file, for a reader that parses whole statements itself.
     #[must_use]
@@ -121,8 +126,7 @@ impl CppHeader {
         found
     }
 
-    /// Every piece of text that follows `start` up to the next `end`, in file order.
-    // Sample input: `if (msg == "noise:off") {` read with start `msg == "` and end `"`.
+    /// Every piece of text that follows `start` up to the next `end`, in file order; sample input: `if (msg == "noise:off") {` read with start `msg == "` and end `"`.
     #[must_use]
     pub fn all_between(&self, start: &str, end: &str) -> Vec<&'static str> {
         let mut found = Vec::new();
@@ -137,8 +141,7 @@ impl CppHeader {
         found
     }
 
-    /// The braced body after the first occurrence of `signature`, braces matched, outer braces excluded.
-    // Sample input: `void forgetDevice() {\n if (x) { return; }\n ++m_total;\n }` read with signature `void forgetDevice(`.
+    /// The braced body after the first occurrence of `signature`, braces matched, outer braces excluded; sample input: `void forgetDevice() {\n if (x) { return; }\n ++m_total;\n }` read with signature `void forgetDevice(`.
     #[must_use]
     pub fn body(&self, signature: &str) -> &'static str {
         let (_, after) = self
@@ -165,15 +168,13 @@ impl CppHeader {
         ))
     }
 
-    /// A byte written as `0x1B` or `3`, found between `start` and `end`.
-    // Sample input: `using Type = BasicControlCommand<0x1B>;` read with start `BasicControlCommand<` and end `>`.
+    /// A byte written as `0x1B` or `3`, found between `start` and `end`; sample input: `using Type = BasicControlCommand<0x1B>;` read with start `BasicControlCommand<` and end `>`.
     #[must_use]
     pub fn byte(&self, scope: Option<&str>, start: &str, end: char) -> u8 {
         parse_byte(self.find(scope, start, end))
     }
 
-    /// The bytes of `symbol = QByteArray::fromHex("...")`.
-    // Sample input: static const QByteArray HANDSHAKE = QByteArray::fromHex("00000400010002000000000000000000");
+    /// The bytes of `symbol = QByteArray::fromHex("...")`; sample input: `static const QByteArray HANDSHAKE = QByteArray::fromHex("00000400010002000000000000000000");`
     #[must_use]
     pub fn hex(&self, scope: Option<&str>, symbol: &str) -> Vec<u8> {
         let hex = self.find(scope, &format!("{symbol} = QByteArray::fromHex(\""), '"');
@@ -190,8 +191,7 @@ impl CppHeader {
             .collect()
     }
 
-    /// The frame `symbol = ControlCommand::createCommand(...)` builds, value bytes the call leaves out read as 0.
-    // Sample input: static const QByteArray OFF = ControlCommand::createCommand(0x0D, 0x01);
+    /// The frame `symbol = ControlCommand::createCommand(...)` builds, value bytes the call leaves out read as 0; sample input: `static const QByteArray OFF = ControlCommand::createCommand(0x0D, 0x01);`
     #[must_use]
     pub fn command(&self, scope: Option<&str>, symbol: &str) -> Vec<u8> {
         let args = self.find(
@@ -206,8 +206,7 @@ impl CppHeader {
         frame
     }
 
-    /// Every enumerator of `scope` in order with its number, counting on from the last explicit value as C++ does.
-    // Sample input: `enum class LidState : uint8_t\n{\n OPEN = 0x0,\n CLOSED = 0x1, // note\n UNKNOWN,\n}`, one enumerator per line.
+    /// Every enumerator of `scope` in order with its number, counting on from the last explicit value as C++ does; sample input: `enum class LidState : uint8_t\n{\n OPEN = 0x0,\n CLOSED = 0x1, // note\n UNKNOWN,\n}`, one enumerator per line.
     #[must_use]
     pub fn enumerators(&self, scope: &str) -> Vec<(&'static str, u8)> {
         let (_, body) = self

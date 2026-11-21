@@ -608,6 +608,7 @@ fn raise(counter: &mut u64) {
 
 #[cfg(test)]
 mod tests {
+    mod cpp_ladder;
     mod invariants;
     mod ladders;
     mod lifecycle;
