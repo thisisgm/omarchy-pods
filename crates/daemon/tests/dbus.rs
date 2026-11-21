@@ -9,7 +9,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs::{self, File};
     use std::future::poll_fn;
-    use std::io::{BufRead, BufReader, ErrorKind};
+    use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::pin::Pin;
@@ -39,6 +39,12 @@ mod tests {
     const NO_BUS_LOG: &str =
         "D-Bus interface off: cannot own io.github.thisisgm.Omapods on the session bus:";
 
+    /// How zbus 6 words a name another connection owns, after `NO_BUS_LOG`.
+    const NAME_TAKEN: &str = "name already taken on the bus";
+
+    /// How zbus 6 starts an address it cannot reach, after `NO_BUS_LOG`; the address follows in backquotes.
+    const CONNECT_FAILED: &str = "failed to connect to";
+
     const BUS_DAEMON: &str = "dbus-daemon";
     const BUS_ADDRESS_VAR: &str = "DBUS_SESSION_BUS_ADDRESS";
     const DRIVER_NAME: &str = "org.freedesktop.DBus";
@@ -46,14 +52,6 @@ mod tests {
     const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
     const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
     const CHANGES_RULE: &str = "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/io/github/thisisgm/Omapods'";
-
-    #[expect(
-        clippy::print_stderr,
-        reason = "a skipped test says why where the test runner shows it"
-    )]
-    fn say_skipped(why: &str) {
-        eprintln!("skipped: {why}");
-    }
 
     /// The session's directory for the private bus, its socket and its log.
     fn bus_dir(session: &Session) -> PathBuf {
@@ -77,7 +75,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(File::create(&log).unwrap())
             .spawn()
-            .unwrap();
+            .unwrap_or_else(|error| panic!("cannot start {BUS_DAEMON}: {error}"));
         let stdout = child.stdout.take().unwrap();
         let bus = Daemon { child, log };
         let (sender, address) = mpsc::channel();
@@ -85,6 +83,7 @@ mod tests {
             let mut line = String::new();
             // A bus that dies before printing closes stdout, which leaves the line empty.
             drop(BufReader::new(stdout).read_line(&mut line));
+            // The receiver is gone only after `recv_timeout` gave up, and the test has failed by then.
             drop(sender.send(line));
         });
         let address = address.recv_timeout(HANG_LIMIT).unwrap();
@@ -157,8 +156,10 @@ mod tests {
 
     /// The next `PropertiesChanged` from the daemon, as its changed properties.
     async fn next_change(stream: &mut MessageStream) -> HashMap<String, OwnedVariant> {
-        let message = poll_fn(|context| Pin::new(&mut *stream).poll_next(context))
+        let next = poll_fn(|context| Pin::new(&mut *stream).poll_next(context));
+        let message = tokio::time::timeout(HANG_LIMIT, next)
             .await
+            .unwrap_or_else(|_| panic!("no PropertiesChanged within {HANG_LIMIT:?}"))
             .unwrap()
             .unwrap();
         let (interface, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
@@ -171,21 +172,8 @@ mod tests {
         String::try_from(value.try_clone().unwrap()).unwrap()
     }
 
-    /// Whether the bus daemon can be started at all; a host without it skips the test that needs it.
-    fn bus_daemon_installed() -> bool {
-        match Command::new(BUS_DAEMON).arg("--version").output() {
-            Ok(_) => true,
-            Err(error) if error.kind() == ErrorKind::NotFound => false,
-            Err(error) => panic!("cannot run {BUS_DAEMON}: {error}"),
-        }
-    }
-
     #[test]
     fn daemon_owns_the_name_and_busctl_style_get_works() {
-        if !bus_daemon_installed() {
-            say_skipped(&format!("{BUS_DAEMON} is not installed"));
-            return;
-        }
         let session = Session::new();
         let (_bus, address) = start_bus(&session);
         let mut daemon = start_daemon(&session, &address, "daemon.log");
@@ -194,7 +182,11 @@ mod tests {
             .build()
             .unwrap();
         let wait = async {
-            let client_connection = Builder::address(address.as_str()).build().await.unwrap();
+            let client_connection = Builder::address(address.as_str())
+                .method_timeout(HANG_LIMIT)
+                .build()
+                .await
+                .unwrap();
             let bus = &client_connection;
             let started = Instant::now();
             while !name_has_owner(bus).await {
@@ -272,17 +264,14 @@ mod tests {
         // A second daemon on the same bus finds the name owned, says so once and still serves its socket.
         let second = Session::new();
         let mut other = start_daemon(&second, &address, "second.log");
+        let taken = format!("{NO_BUS_LOG} {NAME_TAKEN}");
         wait_for("the second daemon's bus line", || {
-            other.log().contains(NO_BUS_LOG).then_some(())
+            other.log().contains(&taken).then_some(())
         });
         assert!(second.status().starts_with('{'));
-        assert_eq!(
-            other.log().matches(NO_BUS_LOG).count(),
-            1,
-            "{}",
-            other.log()
-        );
         assert_eq!(stop(&mut other).code(), Some(0));
+        let log = other.log();
+        assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
         assert_eq!(stop(&mut daemon).code(), Some(0));
         assert_eq!(daemon.log(), "SIGTERM received, stopping\n");
     }
@@ -298,7 +287,12 @@ mod tests {
         // With no address at all the daemon tries the bus in its runtime directory, which the session never creates.
         let unset = Session::new();
         let fallback = unset.start();
-        for (session, mut daemon) in [(pointing_nowhere, daemon), (unset, fallback)] {
+        let runtime_bus = format!("unix:path={}", unset.runtime_dir().join("bus").display());
+        let cases = [
+            (pointing_nowhere, daemon, missing),
+            (unset, fallback, runtime_bus),
+        ];
+        for (session, mut daemon, address) in cases {
             let status = session.status();
             let state_file = session.state_home().join("librepods").join("status.json");
             assert_eq!(status, fs::read_to_string(state_file).unwrap());
@@ -311,6 +305,8 @@ mod tests {
             let log = daemon.log();
             assert_eq!(log.lines().count(), 2, "{log}");
             assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
+            let unreachable = format!("{NO_BUS_LOG} {CONNECT_FAILED} `{address}`:");
+            assert!(log.contains(&unreachable), "{log}");
             assert!(log.ends_with("SIGTERM received, stopping\n"), "{log}");
         }
     }
