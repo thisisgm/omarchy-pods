@@ -17,7 +17,7 @@ const NAMES: [&str; 8] = [
     "early",
     "firstword",
 ];
-/// Twice the longest run and more, so the property test reaches both ends of the allowed range.
+/// Past twice the longest run, so about half of the draws up to it are allowed minutes and the rest are refused.
 const NEAR_RANGE_MINUTES: u32 = 200;
 
 /// The minutes a script must be built with: some for the timed two, none for the rest.
@@ -144,6 +144,61 @@ fn only_side_changes_the_microphone_side_and_it_puts_it_back() {
             assert!(changes.is_empty(), "{name}");
         }
     }
+}
+
+#[test]
+fn voice_and_side_do_what_their_scripts_say_and_when() {
+    let tap = Action::Cue("Tap the left bud twice");
+    let voice = [
+        at(0, Action::Start),
+        at(3_000, tap),
+        at(
+            8_000,
+            Action::Cue("Count one to ten slowly, then say the fox sentence"),
+        ),
+        at(33_000, Action::Cue("Say the fox sentence quietly")),
+        at(41_000, Action::Cue("Say the fox sentence loudly")),
+        at(
+            49_000,
+            Action::Cue("Say sss for three seconds, then shh for three seconds"),
+        ),
+        at(59_000, Action::Cue("Jingle your keys for five seconds")),
+        at(67_000, Action::Cue("Stay silent")),
+        at(79_000, tap),
+        at(84_000, Action::Stop),
+        at(89_000, Action::End),
+    ];
+    assert_eq!(built(ScriptName::Voice).events, voice);
+    let side = [
+        at(0, Action::Start),
+        at(3_000, Action::SetSide(MicSide::Left)),
+        at(
+            3_000,
+            Action::Cue("Say left left left. Tap the left bud twice, then the right bud twice"),
+        ),
+        at(18_000, Action::SetSide(MicSide::Right)),
+        at(
+            18_000,
+            Action::Cue("Say right right right. Tap the left bud twice, then the right bud twice"),
+        ),
+        at(33_000, Action::RestoreSide),
+        at(
+            33_000,
+            Action::Cue("Say automatic. Tap the left bud twice, then the right bud twice"),
+        ),
+        at(
+            48_000,
+            Action::Cue("Take the left bud out and hold it. Say one two three"),
+        ),
+        at(
+            58_000,
+            Action::Cue("Put it back. Take the right bud out. Say one two three"),
+        ),
+        at(68_000, Action::Cue("Put it back")),
+        at(75_000, Action::Stop),
+        at(80_000, Action::End),
+    ];
+    assert_eq!(built(ScriptName::Side).events, side);
 }
 
 #[test]
@@ -281,7 +336,10 @@ proptest! {
                 prop_assert!(!(1..=90).contains(&minutes));
             }
             (Err(error), Some(_)) => prop_assert_eq!(error, ScriptError::MinutesRefused { name }),
-            (Err(error), None) => prop_assert_eq!(error, ScriptError::MinutesRequired { name }),
+            (Err(error), None) => {
+                prop_assert!(timed);
+                prop_assert_eq!(error, ScriptError::MinutesRequired { name });
+            }
         }
     }
 }
