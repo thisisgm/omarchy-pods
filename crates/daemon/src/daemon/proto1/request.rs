@@ -4,8 +4,7 @@ use pods_core::command::{Command, CommandError};
 use pods_core::settings;
 use serde_json::{Map, Value};
 
-/// The one protocol version this daemon speaks.
-pub(super) const VERSION: u64 = 1;
+use crate::protocol::VERSION;
 
 /// What a valid request asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,6 +4,7 @@ mod cli;
 mod client;
 mod daemon;
 mod ipc_path;
+mod protocol;
 
 use std::env;
 use std::ffi::OsString;

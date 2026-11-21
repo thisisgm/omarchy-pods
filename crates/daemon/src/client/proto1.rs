@@ -9,9 +9,7 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 
 use super::{MAX_REPLY_BYTES, REPLY_TIMEOUT, WRITE_TIMEOUT, connect, emit, no_daemon, timed_out};
-
-/// The protocol version these commands speak.
-const VERSION: u64 = 1;
+use crate::protocol::VERSION;
 
 /// The id of the one request each command sends.
 const REQUEST_ID: u64 = 1;

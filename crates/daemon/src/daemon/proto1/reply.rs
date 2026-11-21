@@ -5,7 +5,8 @@ use pods_core::state::State;
 use pods_core::status::to_status_object;
 use serde_json::{Value, json};
 
-use super::request::{RequestError, VERSION};
+use super::request::RequestError;
+use crate::protocol::VERSION;
 
 /// The code of a request in a version this daemon does not speak; every other code is a `CommandError` code.
 const UNSUPPORTED_VERSION: &str = "unsupported_version";
