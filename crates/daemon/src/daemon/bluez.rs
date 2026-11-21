@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 use zbus::export::futures_core::Stream;
+use zbus::export::ordered_stream::{IntoStream, JoinMultiple, OrderedStreamExt, Peekable};
 use zbus::export::serde::Deserialize;
 use zbus::names::MemberName;
 use zbus::zvariant::Type;
@@ -45,6 +46,9 @@ const CLASSIFYING: [&str; 3] = ["Connected", "UUIDs", "ServicesResolved"];
 
 /// The changes that make a path not kept yet worth reading: its `Connected` comes before its `UUIDs`.
 const WORTH_A_READ: [&str; 2] = ["UUIDs", "ServicesResolved"];
+
+/// The signals of every match rule merged in the order the connection received them.
+type Signals = IntoStream<JoinMultiple<Vec<Peekable<MessageStream>>>>;
 
 /// The body of `GetManagedObjects`: path, then interface, then property.
 type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>;
@@ -102,7 +106,7 @@ impl Watcher<'_> {
         let mut streams = Vec::new();
         for rule in [OWNER_RULE, OBJECTS_RULE, PROPERTIES_RULE] {
             match MessageStream::for_match_rule(rule, &self.connection, None).await {
-                Ok(stream) => streams.push(stream),
+                Ok(stream) => streams.push(stream.peekable()),
                 Err(error) => {
                     self.errors
                         .note(format!("bluez: cannot subscribe to BlueZ: {error}"));
@@ -110,9 +114,10 @@ impl Watcher<'_> {
                 }
             }
         }
+        let mut signals = JoinMultiple(streams).into_stream();
         self.sweep().await?;
         loop {
-            match next(&mut streams, requests).await {
+            match next(&mut signals, requests).await {
                 Next::Signal(message) => self.take(&message).await?,
                 Next::Request(Request::Sweep) => self.sweep().await?,
                 Next::Request(Request::Call { action, .. }) => {
@@ -260,16 +265,14 @@ where
     }
 }
 
-/// The next signal of any stream, or the next request.
-async fn next(streams: &mut [MessageStream], requests: &mut mpsc::Receiver<Request>) -> Next {
+/// The next signal, or the next request.
+async fn next(signals: &mut Signals, requests: &mut mpsc::Receiver<Request>) -> Next {
     poll_fn(|context| {
-        for stream in streams.iter_mut() {
-            match Pin::new(stream).poll_next(context) {
-                Poll::Ready(Some(Ok(message))) => return Poll::Ready(Next::Signal(message)),
-                // A read error ends the connection, and its streams end after it.
-                Poll::Ready(Some(Err(_)) | None) => return Poll::Ready(Next::Closed),
-                Poll::Pending => {}
-            }
+        match Pin::new(&mut *signals).poll_next(context) {
+            Poll::Ready(Some(Ok(message))) => return Poll::Ready(Next::Signal(message)),
+            // A read error ends the connection, and its streams end after it.
+            Poll::Ready(Some(Err(_)) | None) => return Poll::Ready(Next::Closed),
+            Poll::Pending => {}
         }
         requests.poll_recv(context).map(|request| match request {
             Some(request) => Next::Request(request),
