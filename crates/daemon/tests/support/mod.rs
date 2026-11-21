@@ -138,7 +138,16 @@ impl Session {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        wait_for("the client to exit", || child.try_wait().unwrap());
+        let started = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() >= HANG_LIMIT {
+                // Dropping a Child leaves it running; a client that exited meanwhile refuses the kill, which is fine.
+                drop(child.kill());
+                drop(child.wait());
+                panic!("the client {program:?} {args:?} still running after {HANG_LIMIT:?}");
+            }
+            pause(POLL);
+        }
         child.wait_with_output().unwrap()
     }
 }
