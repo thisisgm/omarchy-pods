@@ -127,10 +127,14 @@ pub fn first_burst() -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// The opcode is a little endian u16 right after the accessory header.
+    const OPCODE_LEN: usize = 2;
+
     /// The opcode of a packet that starts with the accessory header, read here without the parser under test.
+    // 04 00 04 00 06 00 00 00: accessory header, then opcode 0x0006 little endian; 01 00 04 00 .. has none.
     fn opcode(sdu: &[u8]) -> Option<u16> {
         let rest = sdu.strip_prefix(&ACCESSORY_HEADER)?;
-        rest.first_chunk::<2>()
+        rest.first_chunk::<OPCODE_LEN>()
             .map(|bytes| u16::from_le_bytes(*bytes))
     }
 
