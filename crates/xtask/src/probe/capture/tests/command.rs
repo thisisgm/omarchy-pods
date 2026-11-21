@@ -22,16 +22,14 @@ use super::super::super::script::ScriptName;
 use super::super::super::{CaptureArgs, Host, capture, exit_code, stop, summary, watch_signals};
 use super::super::{EndReason, IoFailure, Outcome};
 use super::pods::{self, DEADLINE, EAR_PACKET, Pods};
-use super::{ROOT_NAME, home_with_device};
+use super::{DEVICE_LINE, ROOT_NAME, home_with_device};
 
 /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
 const STAMP: &str = "20261120T120000Z";
 /// The octets of the address in the device file.
 const DEVICE_OCTETS: [u8; 6] = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
-/// The address in the forms a leak could take, compared after lowering the output.
-const ADDRESS_FORMS: [&str; 4] = ["aa:bb", "ff:ee", "aabbccddeeff", "ffeeddccbbaa"];
-/// What a formatter could put between two bytes of the address; the last two forms are also looked for with these removed.
-const SEPARATORS: [&str; 9] = ["0x", ":", "-", ",", ".", " ", "[", "]", "\t"];
+/// How many octets in a row count as the address: half of it, which already names the maker or the device.
+const TRACE_OCTETS: usize = 3;
 
 /// How a command exited and what it left on its two streams.
 struct Ran {
@@ -58,6 +56,7 @@ fn run_command(
             stdout: &mut stdout,
             stderr: &mut stderr,
         });
+        // The send fails only when the test has stopped waiting for it, and a wait that ran out has already failed the test.
         done.send(Ran {
             code: format!("{code:?}"),
             stdout: String::from_utf8(stdout).unwrap(),
@@ -68,6 +67,98 @@ fn run_command(
     ran.expect("the command did not return before the deadline")
 }
 
+/// Part of the device address that `text` holds: octets in a row, in either order, as hex or as decimal numbers.
+// Sample input: "AA:BB:CC", "ccbbaa", "[170, 187, 204]" and "0xdd 0xee 0xff" each hold a part; "aa bb" and "170" hold none.
+fn address_trace(text: &str) -> Option<String> {
+    let lowered = text.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|letter: char| !letter.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| word.strip_prefix("0x").unwrap_or(word))
+        .collect();
+    let mut backwards = DEVICE_OCTETS;
+    backwards.reverse();
+    for octets in [DEVICE_OCTETS, backwards] {
+        for run in octets.windows(TRACE_OCTETS) {
+            let hex: Vec<String> = run.iter().map(|octet| format!("{octet:02x}")).collect();
+            let decimal: Vec<String> = run.iter().map(u8::to_string).collect();
+            if lowered.contains(&hex.concat()) {
+                return Some(hex.concat());
+            }
+            for spelled in [hex, decimal] {
+                if words.windows(TRACE_OCTETS).any(|at| at == spelled) {
+                    return Some(spelled.join(" "));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Every entry under `root`, directories too, by its path from `root` and in order; a file comes with its bytes as text.
+fn entries_under(root: &Path) -> Vec<(String, Option<String>)> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut entries = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.strip_prefix(root).unwrap().display().to_string();
+            if path.is_dir() {
+                entries.push((name, None));
+                pending.push(path);
+            } else {
+                let text = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+                entries.push((name, Some(text)));
+            }
+        }
+    }
+    entries.sort();
+    entries
+}
+
+/// Fails when a stream of a command, or the name or text of an entry under `run`, holds part of the device address.
+fn assert_no_address(stdout: &str, stderr: &str, run: Option<&Path>) {
+    let streams = [("stdout", stdout), ("stderr", stderr)].map(|(name, text)| {
+        let text = Some(text.to_owned());
+        (name.to_owned(), text)
+    });
+    let files = run.map_or_default(entries_under);
+    for (name, text) in streams.into_iter().chain(files) {
+        let text = text.unwrap_or_default();
+        let found = address_trace(&format!("{name}\n{text}"));
+        assert_eq!(found, None, "in {name}:\n{text}");
+    }
+}
+
+#[test]
+fn the_address_scan_finds_every_form_a_leak_could_take() {
+    for leak in [
+        "peer AA:BB:CC:DD:EE:FF",
+        "aabbccddeeff",
+        "ffeeddccbbaa",
+        "XX:XX:XX:DD:EE:FF",
+        "ff-ee-dd",
+        "[170, 187, 204, 221, 238, 255]",
+        "BdAddr([170, 187, 204, 221, 238, 255])",
+        "0xbb, 0xcc, 0xdd",
+        "bb cc\tdd",
+        "255.238.221",
+    ] {
+        assert!(address_trace(leak).is_some(), "{leak}");
+    }
+    for clean in [
+        "",
+        "packets in 170, with audio 187, not logged 204",
+        "aa:bb",
+        "170 187",
+        "1701 187 204",
+        "aa bb xx cc",
+        "could not connect the L2CAP channel: Host is down (os error 112)",
+    ] {
+        assert_eq!(address_trace(clean), None, "{clean}");
+    }
+}
+
 #[test]
 fn the_summary_says_whether_stop_followed_start() {
     let outcome = |starts, stops, end| Outcome {
@@ -75,15 +166,19 @@ fn the_summary_says_whether_stop_followed_start() {
         audio_sdus: 4,
         starts,
         stops,
-        truncated: 0,
+        truncated: 7,
         end,
     };
-    let done = summary(&outcome(1, 1, EndReason::ScriptDone));
-    assert!(done.contains("packets in 9, with audio 4, "), "{done}");
+    // Every count differs from the others, so one printed under another's name is seen.
+    let done = summary(&outcome(3, 5, EndReason::ScriptDone));
+    assert_eq!(
+        done,
+        "capture complete: packets in 9, with audio 4, not logged 7, START sent 3, STOP sent 5"
+    );
     let stopped = summary(&outcome(1, 1, EndReason::Interrupted));
-    assert!(
-        stopped.contains("interrupted") && stopped.contains("STOP was sent"),
-        "{stopped}"
+    assert_eq!(
+        stopped,
+        "capture ended early: interrupted by a signal; STOP was sent (packets in 9, with audio 4, not logged 7, START sent 1, STOP sent 1)"
     );
     let running = summary(&outcome(2, 1, EndReason::PeerClosed));
     assert!(running.contains("STOP was NOT sent"), "{running}");
@@ -185,6 +280,7 @@ fn the_knock_command_records_a_run_and_exits_zero() {
         meta.starts_with("script=knock\ntool=xtask probe capture "),
         "{meta}"
     );
+    assert_no_address(&ran.stdout, &ran.stderr, Some(&run));
 }
 
 #[test]
@@ -233,6 +329,7 @@ fn an_interrupted_soak_shows_its_cue_on_stdout_and_says_stop_was_sent() {
         marks.ends_with("\tend\tinterrupted by a signal\n"),
         "{marks}"
     );
+    assert_no_address(&ran.stdout, &ran.stderr, Some(&run));
 }
 
 #[test]
@@ -262,8 +359,10 @@ fn the_stop_command_sends_stop_and_keeps_nothing() {
         "xtask probe: STOP was sent and the channel was kept open for 1000 ms\n"
     );
     assert_eq!(ran.stdout, "");
-    let kept = files_under(&home.path().join(ROOT_NAME));
-    assert_eq!(kept.len(), 1, "{kept:?}");
+    let kept = entries_under(&home.path().join(ROOT_NAME));
+    let device = ("device".to_owned(), Some(DEVICE_LINE.to_owned()));
+    assert_eq!(kept, [device]);
+    assert_no_address(&ran.stdout, &ran.stderr, None);
 }
 
 #[test]
@@ -285,21 +384,7 @@ fn the_stop_command_says_when_stop_was_not_sent() {
         ran.stderr,
         "xtask probe: STOP was not sent: the pods closed the channel\n"
     );
-}
-
-/// Every regular file under `dir`, with its path and its bytes read as text.
-fn files_under(dir: &Path) -> Vec<(String, String)> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            files.extend(files_under(&path));
-        } else {
-            let text = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
-            files.push((path.display().to_string(), text));
-        }
-    }
-    files
+    assert_no_address(&ran.stdout, &ran.stderr, None);
 }
 
 #[test]
@@ -338,38 +423,36 @@ fn output_never_contains_the_device_address() {
         "{stderr}"
     );
     let run = root.join(STAMP).join("page");
-    let mut outputs = vec![
-        ("stdout".to_owned(), String::from_utf8(stdout).unwrap()),
-        ("stderr".to_owned(), stderr),
-    ];
-    outputs.extend(files_under(&run));
-    let names: Vec<&str> = outputs.iter().map(|(name, _)| name.as_str()).collect();
-    for file in ["sdu.log", "marks.tsv", "meta.txt"] {
-        assert!(names.iter().any(|name| name.ends_with(file)), "{names:?}");
-    }
-    for (name, text) in &outputs {
-        let lowered = format!("{name}\n{text}").to_lowercase();
-        let mut bare = lowered.clone();
-        for separator in SEPARATORS {
-            bare = bare.replace(separator, "");
-        }
-        for form in ADDRESS_FORMS {
-            assert!(!lowered.contains(form), "{form} is in {name}:\n{text}");
-            assert!(!bare.contains(form), "{form} is in {name}:\n{text}");
-        }
-        if name.ends_with("marks.tsv") {
-            assert!(
-                text.contains("\tend\tcould not connect the L2CAP channel"),
-                "{text}"
-            );
-        }
-        if name.ends_with("meta.txt") {
-            let keys: Vec<&str> = text
-                .lines()
-                .map(|line| line.split('=').next().unwrap())
-                .collect();
-            assert_eq!(keys, ["script", "tool", "realtime_at_zero_ns"], "{text}");
-            assert!(text.starts_with("script=listen\n"), "{text}");
-        }
-    }
+    assert_no_address(&String::from_utf8(stdout).unwrap(), &stderr, Some(&run));
+    let files = entries_under(&run);
+    let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["marks.tsv", "meta.txt", "sdu.log"]);
+    let marks = fs::read_to_string(run.join("marks.tsv")).unwrap();
+    assert!(
+        marks.contains("\tend\tcould not connect the L2CAP channel"),
+        "{marks}"
+    );
+    let meta = fs::read_to_string(run.join("meta.txt")).unwrap();
+    let keys: Vec<&str> = meta
+        .lines()
+        .map(|line| line.split('=').next().unwrap())
+        .collect();
+    assert_eq!(keys, ["script", "tool", "realtime_at_zero_ns"], "{meta}");
+    assert!(meta.starts_with("script=listen\n"), "{meta}");
+
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let mut host = Host {
+        home: home.path().to_str().unwrap(),
+        connect: &connect,
+        stdout: &mut stdout,
+        stderr: &mut stderr,
+    };
+    let code = stop(&mut host);
+    assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
+    let stderr = String::from_utf8(stderr).unwrap();
+    assert!(
+        stderr.contains("could not connect the L2CAP channel"),
+        "{stderr}"
+    );
+    assert_no_address(&String::from_utf8(stdout).unwrap(), &stderr, None);
 }
