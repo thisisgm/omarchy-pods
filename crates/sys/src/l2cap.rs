@@ -453,22 +453,23 @@ mod tests {
         assert_eq!(AttPdu::parse(recv_sdu(&host, &mut buf)), Ok(end_of_table));
     }
 
-    /// Polls until the thread at `task` under `/proc` sleeps, which for a reader means blocked in `recv`.
-    fn sleeps_within(task: &Path, wait: Duration) -> bool {
+    /// Polls until the thread at `task` under `/proc` sleeps, which for a reader means blocked in `recv`; a failed read is returned with its path.
+    fn sleeps_within(task: &Path, wait: Duration) -> Result<bool, String> {
         let stat = Path::new("/proc").join(task).join("stat");
         let started = Instant::now();
         while started.elapsed() < wait {
             // Sample input: "1317937 (pods_sys-1a2b3c) S 1317935 1317936 ..."; the name may hold ") ", so the state follows the last one.
-            let line = std::fs::read_to_string(&stat).unwrap_or_default();
+            let line = std::fs::read_to_string(&stat)
+                .map_err(|error| format!("cannot read {}: {error}", stat.display()))?;
             if line
                 .rsplit_once(") ")
                 .is_some_and(|(_, rest)| rest.starts_with('S'))
             {
-                return true;
+                return Ok(true);
             }
             std::thread::yield_now();
         }
-        false
+        Ok(false)
     }
 
     #[test]
@@ -483,16 +484,18 @@ mod tests {
                     .unwrap();
                 woke_tx.send(far.recv(&mut [0_u8; BUFFER_LEN])).unwrap();
             });
-            let blocked = task_rx
-                .recv()
-                .is_ok_and(|task| task.is_ok_and(|task| sleeps_within(&task, READY_WAIT)));
+            let blocked = match task_rx.recv() {
+                Ok(Ok(task)) => sleeps_within(&task, READY_WAIT),
+                Ok(Err(error)) => Err(format!("cannot read /proc/thread-self: {error}")),
+                Err(error) => Err(format!("the reader sent no task path: {error}")),
+            };
             let shut = far.shutdown();
             let woke = woke_rx.recv_timeout(READY_WAIT);
             // A reader still blocked would hold the scope open forever, so closing the peer releases it before any assert.
             drop(near);
             (blocked, shut, woke)
         });
-        assert!(blocked, "the reader never blocked in recv");
+        assert_eq!(blocked, Ok(true), "the reader never blocked in recv");
         assert_eq!(shut, Ok(()));
         assert_eq!(woke, Ok(Ok(Received::Closed)));
     }
