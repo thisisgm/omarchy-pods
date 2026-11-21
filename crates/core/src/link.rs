@@ -11,8 +11,8 @@ use pods_proto::packets::REQUEST_NOTIFICATIONS;
 use crate::command::{self, Command, CommandError, Outcome};
 use crate::state::State;
 use ladder::{
-    ABSENT_GRACE_MS, FIRST_RETRY_MS, HANDSHAKE_STEP_TIMEOUT_MS, HELD_DELAYS_MS, KNOWN_MAX,
-    NOTIFY_REREQUEST_MS, PARKED_ATTEMPT, PARKED_RETRY_MS,
+    ABSENT_GRACE_MS, Attempt, FIRST_RETRY_MS, HANDSHAKE_STEP_TIMEOUT_MS, HELD_DELAYS_MS, KNOWN_MAX,
+    NOTIFY_REREQUEST_MS, PARKED_RETRY_MS,
 };
 
 /// Names one client command so its answer finds the client again.
@@ -89,17 +89,17 @@ pub enum Phase {
     #[default]
     Idle,
     /// `OpenChannel` issued, no answer yet.
-    Opening { attempt: u32 },
+    Opening { attempt: Attempt },
     /// The handshake request sent.
-    AwaitHandshakeAck { attempt: u32, until: Duration },
+    AwaitHandshakeAck { attempt: Attempt, until: Duration },
     /// The features request sent.
-    AwaitFeaturesAck { attempt: u32, until: Duration },
+    AwaitFeaturesAck { attempt: Attempt, until: Duration },
     /// The notification request sent; `state.connected` is true exactly here.
     Up { rerequest: Option<Duration> },
     /// `CloseChannel` issued or due, waiting for the end; `attempt` is `None` once the link was up.
-    Closing { attempt: Option<u32> },
+    Closing { attempt: Option<Attempt> },
     /// Held by BlueZ, waiting for the next attempt.
-    Backoff { attempt: u32, until: Duration },
+    Backoff { attempt: Attempt, until: Duration },
     /// The held ladder spent, still held by BlueZ.
     Parked { until: Duration },
     /// The channel gone and BlueZ says disconnected; the device state is kept until `until`.
@@ -182,7 +182,7 @@ impl Machine {
             (P::Idle, E::DeviceUp(device)) => {
                 self.remember(device);
                 self.active = Some(device);
-                self.open(state, device, 1)
+                self.open(state, device, Attempt::Held(1))
             }
             (
                 P::Opening { .. }
@@ -202,7 +202,7 @@ impl Machine {
             (P::Backoff { .. } | P::Parked { .. } | P::Grace { .. }, E::DeviceUp(device)) => {
                 match (self.is_active(device), self.held) {
                     (true, true) => Vec::new(),
-                    (true, false) => self.open(state, device, 1),
+                    (true, false) => self.open(state, device, Attempt::Held(1)),
                     (false, _) => {
                         self.remember(device);
                         Vec::new()
@@ -356,7 +356,7 @@ impl Machine {
                 Some(_) | None => Vec::new(),
             },
             (P::Backoff { attempt, until }, E::Tick) => self.retry(state, attempt, until, now),
-            (P::Parked { until }, E::Tick) => self.retry(state, PARKED_ATTEMPT, until, now),
+            (P::Parked { until }, E::Tick) => self.retry(state, Attempt::Parked, until, now),
             (P::Grace { until }, E::Tick) => {
                 if now < until {
                     return Vec::new();
@@ -442,7 +442,7 @@ impl Machine {
         state.connected = matches!(phase, Phase::Up { .. });
     }
 
-    fn open(&mut self, state: &mut State, device: BdAddr, attempt: u32) -> Vec<Action> {
+    fn open(&mut self, state: &mut State, device: BdAddr, attempt: Attempt) -> Vec<Action> {
         self.held = true;
         self.enter(state, Phase::Opening { attempt });
         vec![Action::OpenChannel(device)]
@@ -452,7 +452,7 @@ impl Machine {
     fn retry(
         &mut self,
         state: &mut State,
-        attempt: u32,
+        attempt: Attempt,
         until: Duration,
         now: Duration,
     ) -> Vec<Action> {
@@ -472,7 +472,7 @@ impl Machine {
         &mut self,
         state: &mut State,
         device: BdAddr,
-        attempt: Option<u32>,
+        attempt: Option<Attempt>,
     ) -> Vec<Action> {
         if !self.is_active(device) {
             self.remember(device);
@@ -502,7 +502,7 @@ impl Machine {
     }
 
     /// The channel ended; `failed` is the attempt that never reached `Up`, `None` after a link that was up.
-    fn ended(&mut self, state: &mut State, failed: Option<u32>, now: Duration) -> Vec<Action> {
+    fn ended(&mut self, state: &mut State, failed: Option<Attempt>, now: Duration) -> Vec<Action> {
         if self.active.is_none() {
             return self.idle(state);
         }
@@ -511,22 +511,17 @@ impl Machine {
         }
         let next = match failed {
             None => Phase::Backoff {
-                attempt: 1,
+                attempt: Attempt::Held(1),
                 until: after(now, FIRST_RETRY_MS),
             },
-            Some(attempt) => {
-                if let Some(delay) = held_delay(attempt) {
-                    Phase::Backoff {
-                        attempt: attempt.saturating_add(1),
-                        until: after(now, delay),
-                    }
-                } else {
-                    raise(&mut state.counters.reconnect_failures);
-                    Phase::Parked {
-                        until: after(now, PARKED_RETRY_MS),
-                    }
-                }
-            }
+            Some(Attempt::Held(attempt)) => match held_delay(attempt) {
+                Some(delay) => Phase::Backoff {
+                    attempt: Attempt::Held(attempt.saturating_add(1)),
+                    until: after(now, delay),
+                },
+                None => parked(state, now),
+            },
+            Some(Attempt::Parked) => parked(state, now),
         };
         self.enter(state, next);
         Vec::new()
@@ -589,6 +584,14 @@ impl Machine {
 fn held_delay(attempt: u32) -> Option<u64> {
     let index = usize::try_from(attempt).ok()?.checked_sub(1)?;
     HELD_DELAYS_MS.get(index).copied()
+}
+
+/// The held ladder is spent or a parked attempt failed: count the failure and park.
+fn parked(state: &mut State, now: Duration) -> Phase {
+    raise(&mut state.counters.reconnect_failures);
+    Phase::Parked {
+        until: after(now, PARKED_RETRY_MS),
+    }
 }
 
 fn after(now: Duration, millis: u64) -> Duration {

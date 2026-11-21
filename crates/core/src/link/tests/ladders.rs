@@ -6,7 +6,7 @@ use pods_proto::noise::NoiseMode;
 
 use super::sim::{Answer, Input, Sim, ms};
 use crate::link::Phase;
-use crate::link::ladder::{HELD_DELAYS_MS, PARKED_ATTEMPT};
+use crate::link::ladder::{Attempt, HELD_DELAYS_MS};
 
 /// When each held attempt opens if every one fails at once.
 const HELD_OPENS_MS: [u64; 11] = [
@@ -22,6 +22,8 @@ pub(super) const PARKED_WAIT_MS: u64 = 300_000;
 const GRACE_MS: u64 = 7750;
 /// How long an opened channel waits for each acknowledgement.
 const ACK_WAIT_MS: u64 = 2000;
+/// Most deadlines a refused device may pass before it parks, a loose bound so the test never reads the held table.
+const DEADLINES_TO_PARK_MAX: usize = 64;
 
 fn refused_until(until_ms: u64) -> Sim {
     let mut sim = Sim::answering(Answer::Refuse);
@@ -91,12 +93,42 @@ fn a_channel_that_opens_and_never_acknowledges_counts_as_refused() {
 }
 
 #[test]
-fn a_parked_attempt_carries_the_parked_number() {
+fn a_parked_attempt_opens_on_the_parked_ladder() {
     let mut sim = refused_until(PARKED_AT_MS);
     sim.feed(Input::NextOpen(Answer::Hold));
     sim.run_until(ms(PARKED_AT_MS + PARKED_WAIT_MS));
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 12 });
-    assert_eq!(PARKED_ATTEMPT, 12);
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Parked
+        }
+    );
+}
+
+#[test]
+fn a_parked_attempt_that_fails_parks_again() {
+    let mut sim = Sim::answering(Answer::Refuse);
+    sim.feed(Input::Up(0));
+    for _ in 0..DEADLINES_TO_PARK_MAX {
+        if matches!(sim.machine.phase(), Phase::Parked { .. }) {
+            break;
+        }
+        sim.run_until(sim.machine.deadline().unwrap());
+    }
+    assert!(matches!(sim.machine.phase(), Phase::Parked { .. }));
+    let until = sim.machine.deadline().unwrap();
+    let opens = sim.times_of("Open(0)").len();
+    let failures = sim.state.counters.reconnect_failures;
+    sim.run_until(until);
+    assert_eq!(sim.times_of("Open(0)").len(), opens + 1);
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Parked {
+            until: until.saturating_add(ms(PARKED_WAIT_MS))
+        }
+    );
+    assert_eq!(sim.state.counters.reconnect_failures, failures + 1);
+    sim.check();
 }
 
 #[test]
@@ -107,7 +139,12 @@ fn a_parked_device_re_arms_on_a_connected_edge() {
     sim.feed(Input::NextOpen(Answer::Hold));
     sim.feed(Input::Up(0));
     assert_eq!(sim.last(), ["Open(0)"]);
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 1 });
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Held(1)
+        }
+    );
     sim.check();
 }
 
@@ -131,7 +168,12 @@ fn a_populated_device_parked_re_arms_through_the_grace() {
     sim.feed(Input::NextOpen(Answer::Hold));
     sim.feed(Input::Up(0));
     assert_eq!(sim.last(), ["Open(0)"]);
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 1 });
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Held(1)
+        }
+    );
     sim.check();
 }
 
@@ -145,7 +187,7 @@ fn loss_of_an_up_channel_retries_after_750_ms() {
     assert_eq!(
         sim.machine.phase(),
         Phase::Backoff {
-            attempt: 1,
+            attempt: Attempt::Held(1),
             until: ms(10_750)
         }
     );
@@ -154,7 +196,12 @@ fn loss_of_an_up_channel_retries_after_750_ms() {
     assert_eq!(sim.times_of("Open(0)"), [0]);
     sim.run_until(ms(10_750));
     assert_eq!(sim.times_of("Open(0)"), [0, 10_750]);
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 1 });
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Held(1)
+        }
+    );
     assert_eq!(sim.state.counters.reconnect_attempts, 1);
     sim.feed(Input::Release(true));
     sim.feed(Input::Packet(pods_samples::handshake_ack()));
@@ -173,7 +220,12 @@ fn a_failed_retry_after_a_loss_climbs_the_held_ladder() {
     sim.feed(Input::PeerCloses);
     sim.run_until(ms(2000));
     assert_eq!(sim.times_of("Open(0)"), [0, 750, 1750]);
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 2 });
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Held(2)
+        }
+    );
 }
 
 fn populated_sim() -> Sim {
@@ -226,7 +278,12 @@ fn device_back_within_the_grace_keeps_its_state() {
     sim.feed(Input::NextOpen(Answer::Hold));
     sim.feed(Input::Up(0));
     assert_eq!(sim.last(), ["Open(0)"]);
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 1 });
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Held(1)
+        }
+    );
     assert_eq!(sim.state, kept);
     sim.run_until(ms(20_000));
     assert_eq!(sim.state, kept);
@@ -258,7 +315,10 @@ fn a_tick_before_a_deadline_does_nothing() {
     sim.run_until(sim.machine.deadline().unwrap());
     assert!(matches!(
         sim.machine.phase(),
-        Phase::Backoff { attempt: 2, .. }
+        Phase::Backoff {
+            attempt: Attempt::Held(2),
+            ..
+        }
     ));
     early_tick_does_nothing(&mut sim);
     sim.feed(Input::Down(0));

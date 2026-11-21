@@ -14,8 +14,12 @@ pub const HELD_DELAYS_MS: [u64; 10] = [
     1000, 2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000, 16000,
 ];
 
-/// The attempt a parked device makes, one past the last held attempt, so a failure parks it again.
-pub const PARKED_ATTEMPT: u32 = 12;
+/// Which ladder an attempt is on: a held attempt carries its number from 1, a parked attempt carries none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempt {
+    Held(u32),
+    Parked,
+}
 
 /// Twelve short attempts an hour on a device that never offers the channel, and pods released elsewhere return within five minutes.
 pub const PARKED_RETRY_MS: u64 = 300_000;

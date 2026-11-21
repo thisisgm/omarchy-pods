@@ -10,7 +10,7 @@ use pods_proto::noise::NoiseMode;
 use super::ladders::{PARKED_AT_MS, PARKED_WAIT_MS};
 use super::sim::{Answer, Input, Sim, addr, ms};
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
-use crate::link::ladder::KNOWN_MAX;
+use crate::link::ladder::{Attempt, KNOWN_MAX};
 use crate::link::{Event, Machine, Phase};
 use crate::state::{EarDetectionBehavior, LidState, State};
 
@@ -25,7 +25,7 @@ fn handshake_sends_the_three_requests_in_order_and_goes_up() {
     assert_eq!(
         sim.machine.phase(),
         Phase::AwaitHandshakeAck {
-            attempt: 1,
+            attempt: Attempt::Held(1),
             until: ms(2000)
         }
     );
@@ -37,7 +37,7 @@ fn handshake_sends_the_three_requests_in_order_and_goes_up() {
     assert_eq!(
         sim.machine.phase(),
         Phase::AwaitFeaturesAck {
-            attempt: 1,
+            attempt: Attempt::Held(1),
             until: ms(2300)
         }
     );
@@ -107,7 +107,7 @@ fn a_features_ack_that_never_comes_closes_the_attempt() {
     assert_eq!(
         sim.machine.phase(),
         Phase::Backoff {
-            attempt: 2,
+            attempt: Attempt::Held(2),
             until: ms(3500)
         }
     );
@@ -120,7 +120,7 @@ fn a_duplicate_device_up_does_not_reset_the_ladder() {
     sim.feed(Input::Up(0));
     sim.run_until(ms(3500));
     let backoff = Phase::Backoff {
-        attempt: 4,
+        attempt: Attempt::Held(4),
         until: ms(7000),
     };
     assert_eq!(sim.machine.phase(), backoff);
@@ -171,7 +171,10 @@ fn a_second_device_waits_for_the_first() {
     assert!(!sim.machine.known.contains(&addr(0)));
     assert!(matches!(
         sim.machine.phase(),
-        Phase::AwaitHandshakeAck { attempt: 1, .. }
+        Phase::AwaitHandshakeAck {
+            attempt: Attempt::Held(1),
+            ..
+        }
     ));
     sim.check();
 }
@@ -212,13 +215,18 @@ fn device_down_while_opening_waits_for_the_end() {
     assert_eq!(sim.last(), NO_ACTIONS);
     sim.feed(Input::Up(0));
     assert_eq!(sim.last(), NO_ACTIONS);
-    assert_eq!(sim.machine.phase(), Phase::Opening { attempt: 1 });
+    assert_eq!(
+        sim.machine.phase(),
+        Phase::Opening {
+            attempt: Attempt::Held(1)
+        }
+    );
     sim.feed(Input::Release(false));
     assert_eq!(sim.times_of("Open(0)"), [0]);
     assert_eq!(
         sim.machine.phase(),
         Phase::Backoff {
-            attempt: 2,
+            attempt: Attempt::Held(2),
             until: ms(1000)
         }
     );
@@ -309,13 +317,15 @@ fn phase_scripts() -> [(Answer, Vec<Input>, Phase); 9] {
         (
             Answer::Hold,
             vec![Input::Up(0)],
-            Phase::Opening { attempt: 1 },
+            Phase::Opening {
+                attempt: Attempt::Held(1),
+            },
         ),
         (
             Answer::Hold,
             vec![Input::Up(0), Input::Release(true)],
             Phase::AwaitHandshakeAck {
-                attempt: 1,
+                attempt: Attempt::Held(1),
                 until: ms(2000),
             },
         ),
@@ -323,7 +333,7 @@ fn phase_scripts() -> [(Answer, Vec<Input>, Phase); 9] {
             Answer::Open,
             vec![Input::Up(0), handshake_ack()],
             Phase::AwaitFeaturesAck {
-                attempt: 1,
+                attempt: Attempt::Held(1),
                 until: ms(2000),
             },
         ),
@@ -353,7 +363,7 @@ fn phase_scripts() -> [(Answer, Vec<Input>, Phase); 9] {
             Answer::Refuse,
             vec![Input::Up(0)],
             Phase::Backoff {
-                attempt: 2,
+                attempt: Attempt::Held(2),
                 until: ms(1000),
             },
         ),
