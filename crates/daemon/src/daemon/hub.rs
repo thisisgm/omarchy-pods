@@ -1,15 +1,21 @@
 //! The one owner of the daemon state: the socket and the state file read it here and ask it to change here.
 
 use std::future;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use pods_core::command::{Command, Outcome, apply};
 use pods_core::state::State;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+
+/// Changes a subscriber may leave untaken before the hub drops it, so a stalled subscriber cannot grow memory.
+const SUBSCRIBER_BACKLOG: usize = 16;
 
 /// A handle on the state; every clone shares it, and only `submit` changes it.
 #[derive(Debug, Clone)]
 pub(crate) struct Hub {
     state: watch::Sender<State>,
+    /// One sender per subscriber, each getting every change in order; only taken inside the state's lock.
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<State>>>>,
 }
 
 impl Hub {
@@ -17,6 +23,7 @@ impl Hub {
     pub(crate) fn new() -> Self {
         Self {
             state: watch::Sender::new(State::default()),
+            subscribers: Arc::default(),
         }
     }
 
@@ -25,9 +32,18 @@ impl Hub {
         self.state.borrow().clone()
     }
 
-    /// A receiver that wakes on every change after this call.
+    /// A receiver that wakes on every change after this call, coalescing changes it has not seen yet.
     pub(crate) fn subscribe(&self) -> watch::Receiver<State> {
         self.state.subscribe()
+    }
+
+    /// The current state and a receiver of every change after it, none skipped or repeated; it closes if it falls `SUBSCRIBER_BACKLOG` behind.
+    pub(crate) fn follow(&self) -> (State, mpsc::Receiver<State>) {
+        // The read lock on the state is held until the sender is listed, so no change lands between the copy and the listing.
+        let current = self.state.borrow();
+        let (sender, receiver) = mpsc::channel(SUBSCRIBER_BACKLOG);
+        self.subscribers().push(sender);
+        (current.clone(), receiver)
     }
 
     /// Applies `command` and tells subscribers when the state changed; with no link the outcome is ready at once.
@@ -38,21 +54,73 @@ impl Hub {
             if *state == next {
                 return false;
             }
+            // Inside the write lock, so each subscriber gets the changes in the order they land.
+            let mut subscribers = self.subscribers();
+            // A subscriber that is full or gone is dropped, and its connection closes rather than skip a change.
+            subscribers.retain(|subscriber| subscriber.try_send(next.clone()).is_ok());
             *state = next;
             true
         });
         future::ready(outcome)
     }
+
+    /// The subscriber list; a panic while it was held left it whole, since every change to it is one call.
+    fn subscribers(&self) -> MutexGuard<'_, Vec<mpsc::Sender<State>>> {
+        self.subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     use pods_core::command::CommandError;
     use pods_core::legacy::{LegacyRequest, parse_verb};
     use pods_core::state::EarDetectionBehavior;
     use tokio::runtime::Builder;
+    use tokio::sync::mpsc::error::TryRecvError;
 
     use super::*;
+
+    /// Subscriptions the ordering test takes while another thread changes the state.
+    const FOLLOWS: usize = 2000;
+
+    /// The ear detection command that is a change from the one before it, alternating by `turn`.
+    fn ear_change(turn: usize) -> Command {
+        if turn.is_multiple_of(2) {
+            Command::SetEarDetection(EarDetectionBehavior::PauseWhenBothRemoved)
+        } else {
+            Command::SetEarDetection(EarDetectionBehavior::PauseWhenOneRemoved)
+        }
+    }
+
+    /// A change that has not arrived after this long never will, and the test fails instead of hanging.
+    const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+    /// The next change, failing the test once `HANG_LIMIT` passes without one.
+    fn next_change(changes: &mut mpsc::Receiver<State>) -> State {
+        let started = Instant::now();
+        loop {
+            match changes.try_recv() {
+                Ok(change) => return change,
+                Err(TryRecvError::Empty) if started.elapsed() < HANG_LIMIT => thread::yield_now(),
+                Err(error) => panic!("no change after {:?}: {error}", started.elapsed()),
+            }
+        }
+    }
+
+    /// Raises the flag when dropped, so the changing thread stops even when the test panics.
+    struct StopOnDrop<'flag>(&'flag AtomicBool);
+
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
 
     fn block_on<F: Future>(future: F) -> F::Output {
         Builder::new_current_thread()
@@ -84,5 +152,47 @@ mod tests {
         assert_eq!(outcome, Outcome::Refused(CommandError::NotConnected));
         assert!(!updates.has_changed().unwrap());
         assert_eq!(hub.state(), State::default());
+    }
+
+    #[test]
+    fn follow_gets_every_change_after_its_copy_exactly_once() {
+        let hub = Hub::new();
+        let done = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let mut turn = 0;
+                while !done.load(Ordering::Relaxed) {
+                    assert_eq!(block_on(hub.submit(ear_change(turn))), Outcome::Confirmed);
+                    turn += 1;
+                }
+            });
+            let _stop = StopOnDrop(&done);
+            for _ in 0..FOLLOWS {
+                let (copy, mut changes) = hub.follow();
+                let first = next_change(&mut changes);
+                let copied = copy.counters.ear_detection_changes;
+                assert_eq!(first.counters.ear_detection_changes, copied + 1);
+            }
+        });
+    }
+
+    #[test]
+    fn a_subscriber_that_falls_behind_is_closed_after_its_backlog() {
+        let hub = Hub::new();
+        let (copy, mut changes) = hub.follow();
+        let (_, kept) = hub.follow();
+        for turn in 0..=SUBSCRIBER_BACKLOG {
+            block_on(hub.submit(ear_change(turn)));
+        }
+        let mut expected = copy.counters.ear_detection_changes;
+        for _ in 0..SUBSCRIBER_BACKLOG {
+            expected += 1;
+            let change = changes.try_recv().unwrap();
+            assert_eq!(change.counters.ear_detection_changes, expected);
+        }
+        assert_eq!(changes.try_recv(), Err(TryRecvError::Disconnected));
+        drop(kept);
+        block_on(hub.submit(ear_change(SUBSCRIBER_BACKLOG + 1)));
+        assert!(hub.subscribers().is_empty());
     }
 }

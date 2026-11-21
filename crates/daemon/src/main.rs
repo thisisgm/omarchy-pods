@@ -7,7 +7,8 @@ mod ipc_path;
 
 use std::env;
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use cli::Invocation;
@@ -26,20 +27,30 @@ fn main() -> ExitCode {
     let argv0 = command_line.next().unwrap_or_default();
     let args: Vec<OsString> = command_line.collect();
     match cli::parse(&argv0, &args) {
-        Ok(Invocation::LegacyClient { verb }) => run_client(&verb),
+        Ok(Invocation::LegacyClient { verb }) => {
+            run_client(|socket, out, err| client::run_legacy(&verb, socket, out, err))
+        }
         Ok(Invocation::LegacyUsage { program }) => client::usage(program, &mut io::stderr().lock()),
         Ok(Invocation::Daemon) => run_daemon(),
+        Ok(Invocation::Status) => run_client(client::proto1::status),
+        Ok(Invocation::Watch) => run_client(client::proto1::watch),
+        Ok(Invocation::Set { key, value }) => {
+            run_client(|socket, _out, err| client::proto1::set(&key, &value, socket, err))
+        }
+        Ok(Invocation::Do { action }) => {
+            run_client(|socket, _out, err| client::proto1::act(&action, socket, err))
+        }
         Err(error) => report_parse_error(&error),
     }
 }
 
-/// Runs the client against the socket under the session's runtime directory.
-fn run_client(verb: &str) -> ExitCode {
+/// Runs a client command against the socket under the session's runtime directory.
+fn run_client(command: impl FnOnce(&Path, &mut dyn Write, &mut dyn Write) -> ExitCode) -> ExitCode {
     let mut err = io::stderr().lock();
     let Some(socket) = ipc_path::socket_path(env::var_os(RUNTIME_DIR_VAR).as_deref()) else {
         return client::no_runtime_dir(&mut err);
     };
-    client::run_legacy(verb, &socket, &mut io::stdout().lock(), &mut err)
+    command(&socket, &mut io::stdout().lock(), &mut err)
 }
 
 /// Runs the daemon with the socket and the state file the session's environment places.

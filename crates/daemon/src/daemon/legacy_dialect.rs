@@ -17,7 +17,7 @@ use super::log;
 const MAX_REQUEST_BYTES: usize = 4096;
 
 /// How long after accept the request may take to arrive.
-const REQUEST_DEADLINE: Duration = Duration::from_millis(1000);
+pub(super) const REQUEST_DEADLINE: Duration = Duration::from_millis(1000);
 
 /// How long the client may take to accept the reply.
 const REPLY_DEADLINE: Duration = Duration::from_millis(500);
@@ -28,11 +28,15 @@ const HEADLESS_REFUSAL: &str = "error: this daemon runs headless and has no wind
 /// The most of an unknown request the log quotes.
 const LOGGED_REQUEST_BYTES: usize = 64;
 
-/// Reads one request, answers it if it gets an answer, and closes.
-pub(super) async fn serve_connection(mut stream: UnixStream, hub: Hub) {
-    let mut request = Vec::new();
+/// Reads the rest of one request after the bytes already in `request`, within what is `left` of the request deadline, answers it if it gets an answer, and closes.
+pub(super) async fn serve_connection(
+    mut stream: UnixStream,
+    hub: Hub,
+    mut request: Vec<u8>,
+    left: Duration,
+) {
     // The deadline only ends the wait: whatever arrived by then is parsed as one verb.
-    drop(timeout(REQUEST_DEADLINE, read_request(&mut stream, &mut request)).await);
+    drop(timeout(left, read_request(&mut stream, &mut request)).await);
     let Some(reply) = respond(&hub, &request).await else {
         return;
     };

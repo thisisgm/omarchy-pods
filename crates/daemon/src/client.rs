@@ -1,5 +1,7 @@
 //! The command line client of the C++ daemon: the messages, timeouts and exit codes of `daemon/librepods-ctl.cpp`.
 
+pub(crate) mod proto1;
+
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
@@ -91,11 +93,7 @@ pub(crate) fn run_legacy(
     err: &mut dyn Write,
 ) -> ExitCode {
     let Some(mut stream) = connect(socket) else {
-        let mut message = b"Could not connect to OpenPods daemon at ".to_vec();
-        message.extend_from_slice(socket.as_os_str().as_bytes());
-        message.extend_from_slice(b" (is it running?)\n");
-        emit(err, &message);
-        return ExitCode::FAILURE;
+        return no_daemon(socket, err);
     };
     let sent = stream
         .set_write_timeout(Some(WRITE_TIMEOUT))
@@ -115,14 +113,26 @@ pub(crate) fn run_legacy(
             ExitCode::SUCCESS
         }
         Reply::Closed if verb == REOPEN_VERB => ExitCode::SUCCESS,
-        Reply::Closed | Reply::TimedOut => {
-            emit(
-                err,
-                format!("Timed out waiting for a reply to {verb}\n").as_bytes(),
-            );
-            ExitCode::FAILURE
-        }
+        Reply::Closed | Reply::TimedOut => timed_out(verb, err),
     }
+}
+
+/// Reports that no daemon accepted on `socket`, in the C++ client's words.
+fn no_daemon(socket: &Path, err: &mut dyn Write) -> ExitCode {
+    let mut message = b"Could not connect to OpenPods daemon at ".to_vec();
+    message.extend_from_slice(socket.as_os_str().as_bytes());
+    message.extend_from_slice(b" (is it running?)\n");
+    emit(err, &message);
+    ExitCode::FAILURE
+}
+
+/// Reports that no reply to `request` came in time, in the C++ client's words.
+fn timed_out(request: &str, err: &mut dyn Write) -> ExitCode {
+    emit(
+        err,
+        format!("Timed out waiting for a reply to {request}\n").as_bytes(),
+    );
+    ExitCode::FAILURE
 }
 
 /// Connects within `CONNECT_TIMEOUT`, or gives up.
