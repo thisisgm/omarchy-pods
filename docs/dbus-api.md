@@ -93,7 +93,8 @@ the message.
 
 No method of this interface names a setting, opens a window or waits for the
 pods, so none returns `UnknownKey` or `Headless`. Any method returns `Timeout`
-when the daemon already holds 64 commands waiting to be carried out. A `Set`
+when the daemon's input queue, which the AirPods' packets share, is full, or
+when too many commands already wait for the AirPods to confirm them. A `Set`
 method given a word its key does not take returns `BadRequest`.
 
 A call the bus layer refuses before it reaches the daemon, such as one with the
