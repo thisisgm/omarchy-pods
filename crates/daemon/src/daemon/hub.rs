@@ -76,6 +76,12 @@ impl Hub {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Replaces the state as a link would, which no command can do while there is none.
+    #[cfg(test)]
+    pub(crate) fn replace(&self, state: State) {
+        self.state.send_replace(state);
+    }
 }
 
 #[cfg(test)]

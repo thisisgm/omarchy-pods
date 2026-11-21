@@ -5,7 +5,7 @@ use pods_proto::noise::NoiseMode;
 use crate::state::{EarDetectionBehavior, State};
 
 /// The highest adaptive noise level, the upper bound of the C++ `parseIntVerb` and `qBound`.
-pub(crate) const ADAPTIVE_LEVEL_MAX: u8 = 100;
+pub const ADAPTIVE_LEVEL_MAX: u8 = 100;
 
 /// One request to change the pods or the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

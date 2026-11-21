@@ -64,6 +64,10 @@ mod tests {
     /// SIGTERM is signal 15, so bit 14 of a signal mask in `/proc/<pid>/status`.
     const SIGTERM_BIT: u64 = 1 << 14;
 
+    /// How the daemon's line about a missing session bus starts, from `serve` in `src/daemon/dbus.rs`.
+    const NO_BUS_LOG_PREFIX: &str =
+        "D-Bus interface off: cannot own io.github.thisisgm.Omapods on the session bus:";
+
     /// The level the adaptive verb sends.
     const ADAPTIVE_VERB: &str = "adaptive:37";
 
@@ -99,6 +103,13 @@ mod tests {
                 .unwrap();
             u64::from_str_radix(mask.trim(), 16).unwrap() & SIGTERM_BIT != 0
         }
+    }
+
+    /// The log without the one line a daemon writes when it has no session bus, which these tests never give it.
+    fn log_without_the_bus_line(log: &str) -> Vec<&str> {
+        log.lines()
+            .filter(|line| !line.starts_with(NO_BUS_LOG_PREFIX))
+            .collect()
     }
 
     /// The reply a headless daemon gives to `reopen`, read from `daemon/main.cpp`.
@@ -258,7 +269,7 @@ mod tests {
         assert_eq!(status, to_status_line(&expected));
         assert_eq!(total(&status, "reopen_calls_total"), 1);
         assert_eq!(total(&status, "ear_detection_changes_total"), 3);
-        assert_eq!(daemon.log(), "");
+        assert_eq!(log_without_the_bus_line(&daemon.log()), Vec::<&str>::new());
     }
 
     #[test]
@@ -293,8 +304,8 @@ mod tests {
             (total(&session.status(), "reopen_calls_total") == 1).then_some(())
         });
         assert_eq!(
-            first.log(),
-            "",
+            log_without_the_bus_line(&first.log()),
+            Vec::<&str>::new(),
             "a normal second launch logged on the first daemon"
         );
     }

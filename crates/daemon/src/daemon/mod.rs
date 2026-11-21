@@ -1,5 +1,6 @@
-//! The daemon: it owns the state, serves the control socket in protocol 1 and the C++ daemon's dialect, and publishes the state file.
+//! The daemon: it owns the state, serves the control socket in protocol 1 and the C++ daemon's dialect, publishes the state file and serves D-Bus.
 
+mod dbus;
 mod hub;
 mod legacy_dialect;
 mod proto1;
@@ -91,10 +92,15 @@ async fn serve(paths: Paths) -> ExitCode {
 
     let accept = tokio::spawn(socket::accept_loop(listener, hub.clone()));
     let follow = tokio::spawn(state_file::follow(updates, file.clone(), failures));
+    // After the bind, so a missing or slow session bus never delays the socket or the state file.
+    let bus = tokio::spawn(dbus::serve(hub.clone()));
     let signal = stop.first().await;
     log(&format!("{signal} received, stopping"));
     accept.abort();
     follow.abort();
+    bus.abort();
+    // Awaited so the connection closes and the name is released first; the result is only the cancellation.
+    drop(bus.await);
     if let Err(error) = socket::remove(&paths.socket).await {
         log(&error);
     }

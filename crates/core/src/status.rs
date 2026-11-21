@@ -146,7 +146,8 @@ fn pod_object(charge: Option<Charge>, in_ear: bool) -> Value {
 }
 
 /// The ear report names primary and secondary; a side that is not the primary reads the secondary, as the C++ does.
-fn in_ear(state: &State, side: Component) -> bool {
+#[must_use]
+pub fn in_ear(state: &State, side: Component) -> bool {
     if state.primary == Some(side) {
         state.ear.primary_in_ear()
     } else {

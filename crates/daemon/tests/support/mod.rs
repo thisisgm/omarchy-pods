@@ -80,7 +80,9 @@ impl Session {
             .args(args)
             .env("XDG_RUNTIME_DIR", self.runtime_dir())
             .env("XDG_STATE_HOME", self.state_home())
-            .env("HOME", self.dir.path().join("home"));
+            .env("HOME", self.dir.path().join("home"))
+            // With no address the daemon tries the bus under the temp runtime directory, which never exists.
+            .env_remove("DBUS_SESSION_BUS_ADDRESS");
         command
     }
 
