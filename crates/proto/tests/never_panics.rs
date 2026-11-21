@@ -613,7 +613,7 @@ proptest! {
         } else if value.starts_with(&DICTATION_AUDIO_MARKER) {
             prop_assert!(matches!(outcome, Ok(Some(DictationPacket::Audio(_)))), "{:?}", outcome);
         } else {
-            let unknown = DictationPacket::Unknown { handle: dictation::AUDIO_HANDLE, value: &value };
+            let unknown = DictationPacket::Unknown { value: &value };
             prop_assert_eq!(outcome, Ok(Some(unknown)));
         }
     }
