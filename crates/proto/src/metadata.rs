@@ -7,7 +7,7 @@ const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
 /// Bytes between the header and the name, which no known code reads.
 const SKIPPED_LEN: usize = 5;
 /// Header plus the skipped bytes, where parseMetadata in daemon/main.cpp starts reading strings.
-const MIN_LEN: usize = 11;
+const MIN_LEN: usize = HEADER_LEN + SKIPPED_LEN;
 /// Ends every string field.
 const TERMINATOR: u8 = 0x00;
 
@@ -27,13 +27,8 @@ impl Metadata {
     // 04 00 04 00 1d 00 01 02 03 04 05 4e 00 41 33 30 36 33 00 41 00 ..: header, five skipped bytes, then name, model number, manufacturer, each ended by 00.
     pub fn parse(sdu: &[u8]) -> Result<Self, ParseError> {
         let body = strip_header(Parser::Metadata, sdu, HEADER, MIN_LEN)?;
-        let Some((_skipped, strings)) = body.split_first_chunk::<SKIPPED_LEN>() else {
-            return Err(ParseError::TooShort {
-                parser: Parser::Metadata,
-                need: MIN_LEN,
-                got: sdu.len(),
-            });
-        };
+        // strip_header refused anything under MIN_LEN, so the skipped bytes are always there.
+        let strings = body.get(SKIPPED_LEN..).unwrap_or_default();
         // Memory bound: the lossy conversion can allocate three times a field's bytes before the cut, so the bound is the SDU length, which the caller caps.
         let mut fields = strings.split(|&byte| byte == TERMINATOR);
         let name = text(fields.next());
