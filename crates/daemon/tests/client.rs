@@ -26,29 +26,30 @@ mod tests {
     /// How often `run` checks whether the client has exited.
     const EXIT_POLL: Duration = Duration::from_millis(10);
 
-    /// The C++ client, read at build time so the text expected here cannot drift from it.
+    /// The C++ client, read at build time so each message expected here is built from its statement.
     const CPP_CLIENT: &str = include_str!("../../../daemon/librepods-ctl.cpp");
 
     /// The C++ daemon, read at build time for the one reply the tests quote from it.
     const CPP_DAEMON: &str = include_str!("../../../daemon/main.cpp");
 
-    /// The usage line of the C++ client, up to the program name.
-    const USAGE_BEFORE_PROGRAM: &str = "Usage: ";
+    /// The C++ socket path, read at build time for the name it appends to the runtime directory.
+    const CPP_IPC_PATH: &str = include_str!("../../../daemon/ipcpath.hpp");
 
-    /// The usage line of the C++ client, after the program name.
-    const USAGE_AFTER_PROGRAM: &str = " <command>\n";
+    /// The first literal of the C++ client's usage statement.
+    const USAGE_START: &str = "Usage: ";
 
-    /// What the C++ client says when no runtime directory is set.
-    const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot locate the daemon socket\n";
+    /// The first literal of what the C++ client says when no runtime directory is set.
+    const NO_RUNTIME_DIR_START: &str =
+        "XDG_RUNTIME_DIR is unset; cannot locate the daemon socket\n";
 
-    /// What the C++ client says when it cannot connect, up to the socket path.
-    const CONNECT_FAILED_BEFORE_PATH: &str = "Could not connect to OpenPods daemon at ";
+    /// The first literal of what the C++ client says when it cannot connect.
+    const CONNECT_FAILED_START: &str = "Could not connect to OpenPods daemon at ";
 
-    /// What the C++ client says when it cannot connect, after the socket path.
-    const CONNECT_FAILED_AFTER_PATH: &str = " (is it running?)\n";
+    /// The first literal of what the C++ client says when no reply came.
+    const TIMED_OUT_START: &str = "Timed out waiting for a reply to ";
 
-    /// What the C++ client says when no reply came, up to the verb.
-    const TIMED_OUT_BEFORE_VERB: &str = "Timed out waiting for a reply to ";
+    /// What `daemon/ipcpath.hpp` appends to the runtime directory.
+    const SOCKET_SUFFIX: &str = "/librepods.sock";
 
     /// Exactly what `daemon/main.cpp` writes when it has no window.
     const HEADLESS_REFUSAL: &[u8] = b"error: this daemon runs headless and has no window\n";
@@ -158,46 +159,48 @@ mod tests {
         format!("\"{}\"", text.replace('\n', "\\n"))
     }
 
-    // Sample: `<< "  status              Print one-line JSON status snapshot to stdout\n"`
-    /// The usage block of the C++ client after its first line, joined from the literals of that statement.
-    fn cpp_usage_commands() -> String {
-        let heading = "Commands:\n";
-        let (_, after_heading) = CPP_CLIENT
-            .split_once(&cpp_literal(heading))
-            .expect("librepods-ctl.cpp has no \"Commands:\\n\" literal");
-        let (statement, _) = after_heading
-            .split_once(';')
-            .expect("the usage statement in librepods-ctl.cpp never ends");
-        // Splitting on the quote leaves the literals at the odd positions.
-        let lines: String = statement
-            .split('"')
-            .skip(1)
-            .step_by(2)
-            .map(|literal| literal.replace("\\n", "\n"))
-            .collect();
-        format!("{heading}{lines}")
+    // Sample: `QTextStream(stderr) << "Timed out waiting for a reply to " << cmd << "\n";`
+    /// The literals of the C++ statement whose first literal is `first`, in order.
+    fn cpp_statement_literals(source: &str, first: &str) -> Vec<String> {
+        let (before, after) = source
+            .split_once(&cpp_literal(first))
+            .unwrap_or_else(|| panic!("the C++ source has no literal {first:?}"));
+        let lead_in = before
+            .rsplit_once([';', '{', '}'])
+            .map_or(before, |(_, tail)| tail);
+        assert!(
+            !lead_in.contains('"'),
+            "{first:?} is not the first literal of its C++ statement"
+        );
+        let mut literals = vec![first.to_owned()];
+        // Splitting on the quote alternates code and literal, so only a `;` in code ends the statement.
+        for (index, piece) in after.split('"').enumerate() {
+            if index % 2 == 1 {
+                literals.push(piece.replace("\\n", "\n"));
+            } else if piece.contains(';') {
+                return literals;
+            }
+        }
+        panic!("the C++ statement starting with {first:?} never ends");
+    }
+
+    /// The C++ message whose first literal is `first`, with `values` written after its leading literals in turn.
+    fn cpp_message(source: &str, first: &str, values: &[&str]) -> String {
+        let mut message = String::new();
+        for (index, literal) in cpp_statement_literals(source, first).iter().enumerate() {
+            message.push_str(literal);
+            if let Some(value) = values.get(index) {
+                message.push_str(value);
+            }
+        }
+        message
     }
 
     #[test]
     fn expected_messages_are_the_cpp_literals() {
-        for message in [
-            USAGE_BEFORE_PROGRAM,
-            USAGE_AFTER_PROGRAM,
-            NO_RUNTIME_DIR,
-            CONNECT_FAILED_BEFORE_PATH,
-            CONNECT_FAILED_AFTER_PATH,
-            TIMED_OUT_BEFORE_VERB,
-        ] {
-            assert!(
-                CPP_CLIENT.contains(&cpp_literal(message)),
-                "daemon/librepods-ctl.cpp has no literal {message:?}"
-            );
-        }
         let refusal = text(HEADLESS_REFUSAL);
-        assert!(
-            CPP_DAEMON.contains(&cpp_literal(refusal)),
-            "daemon/main.cpp has no literal {refusal:?}"
-        );
+        assert_eq!(cpp_message(CPP_DAEMON, refusal, &[]), refusal);
+        assert_eq!(cpp_message(CPP_IPC_PATH, SOCKET_SUFFIX, &[]), SOCKET_SUFFIX);
     }
 
     #[test]
@@ -208,10 +211,7 @@ mod tests {
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            format!(
-                "{USAGE_BEFORE_PROGRAM}librepods ctl{USAGE_AFTER_PROGRAM}{}",
-                cpp_usage_commands()
-            )
+            cpp_message(CPP_CLIENT, USAGE_START, &["librepods ctl"])
         );
     }
 
@@ -223,10 +223,7 @@ mod tests {
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            format!(
-                "{USAGE_BEFORE_PROGRAM}librepods-ctl{USAGE_AFTER_PROGRAM}{}",
-                cpp_usage_commands()
-            )
+            cpp_message(CPP_CLIENT, USAGE_START, &["librepods-ctl"])
         );
     }
 
@@ -235,7 +232,10 @@ mod tests {
         let out = run(Path::new(BINARY), &["ctl", "status"], None);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
-        assert_eq!(text(&out.stderr), NO_RUNTIME_DIR);
+        assert_eq!(
+            text(&out.stderr),
+            cpp_message(CPP_CLIENT, NO_RUNTIME_DIR_START, &[])
+        );
     }
 
     #[test]
@@ -243,7 +243,10 @@ mod tests {
         let out = run(Path::new(BINARY), &["ctl", "status"], Some(Path::new("")));
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
-        assert_eq!(text(&out.stderr), NO_RUNTIME_DIR);
+        assert_eq!(
+            text(&out.stderr),
+            cpp_message(CPP_CLIENT, NO_RUNTIME_DIR_START, &[])
+        );
     }
 
     #[test]
@@ -252,12 +255,10 @@ mod tests {
         let out = run_ctl(&dir, "status");
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
+        let path = format!("{}{SOCKET_SUFFIX}", dir.path().display());
         assert_eq!(
             text(&out.stderr),
-            format!(
-                "{CONNECT_FAILED_BEFORE_PATH}{}/librepods.sock{CONNECT_FAILED_AFTER_PATH}",
-                dir.path().display()
-            )
+            cpp_message(CPP_CLIENT, CONNECT_FAILED_START, &[&path])
         );
     }
 
@@ -337,7 +338,7 @@ mod tests {
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            format!("{TIMED_OUT_BEFORE_VERB}reopen\n")
+            cpp_message(CPP_CLIENT, TIMED_OUT_START, &["reopen"])
         );
     }
 
@@ -353,7 +354,7 @@ mod tests {
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            format!("{TIMED_OUT_BEFORE_VERB}status\n")
+            cpp_message(CPP_CLIENT, TIMED_OUT_START, &["status"])
         );
         // The close is seen at once, so the reply timeout never runs.
         assert!(elapsed < REPLY_TIMEOUT_FLOOR, "{elapsed:?}");
@@ -371,7 +372,7 @@ mod tests {
         assert_eq!(text(&out.stdout), "");
         assert_eq!(
             text(&out.stderr),
-            format!("{TIMED_OUT_BEFORE_VERB}status\n")
+            cpp_message(CPP_CLIENT, TIMED_OUT_START, &["status"])
         );
         // The floor proves the wait; the ceiling catches a wait well past the deadline, and `run` catches a hang.
         assert!(elapsed >= REPLY_TIMEOUT_FLOOR, "{elapsed:?}");
