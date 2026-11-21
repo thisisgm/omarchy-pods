@@ -1,7 +1,8 @@
-//! The librepods binary. Today it is the command line client of the C++ daemon, under either of its names.
+//! The librepods binary: the daemon, and the command line client under either of its names.
 
 mod cli;
 mod client;
+mod daemon;
 mod ipc_path;
 
 use std::env;
@@ -14,6 +15,12 @@ use cli::Invocation;
 /// The variable that names the per-user runtime directory holding the daemon socket.
 const RUNTIME_DIR_VAR: &str = "XDG_RUNTIME_DIR";
 
+/// The variable that names the per-user state directory holding the state file.
+const STATE_HOME_VAR: &str = "XDG_STATE_HOME";
+
+/// The variable the state directory falls back to when the state home cannot place it.
+const HOME_VAR: &str = "HOME";
+
 fn main() -> ExitCode {
     let mut command_line = env::args_os();
     let argv0 = command_line.next().unwrap_or_default();
@@ -21,6 +28,7 @@ fn main() -> ExitCode {
     match cli::parse(&argv0, &args) {
         Ok(Invocation::LegacyClient { verb }) => run_client(&verb),
         Ok(Invocation::LegacyUsage { program }) => client::usage(program, &mut io::stderr().lock()),
+        Ok(Invocation::Daemon) => run_daemon(),
         Err(error) => report_parse_error(&error),
     }
 }
@@ -32,6 +40,21 @@ fn run_client(verb: &str) -> ExitCode {
         return client::no_runtime_dir(&mut err);
     };
     client::run_legacy(verb, &socket, &mut io::stdout().lock(), &mut err)
+}
+
+/// Runs the daemon with the socket and the state file the session's environment places.
+fn run_daemon() -> ExitCode {
+    let Some(socket) = ipc_path::socket_path(env::var_os(RUNTIME_DIR_VAR).as_deref()) else {
+        daemon::log(daemon::NO_RUNTIME_DIR);
+        return ExitCode::FAILURE;
+    };
+    let state_home = env::var_os(STATE_HOME_VAR);
+    let home = env::var_os(HOME_VAR);
+    let Some(state_file) = daemon::state_file::path(state_home.as_deref(), home.as_deref()) else {
+        daemon::log(daemon::NO_STATE_HOME);
+        return ExitCode::FAILURE;
+    };
+    daemon::run(daemon::Paths { socket, state_file })
 }
 
 /// Prints a clap error, help or version where clap chooses, and exits with clap's code.
