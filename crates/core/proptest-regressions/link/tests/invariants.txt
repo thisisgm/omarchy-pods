@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 19a7eef93618af7856479a552449e5fec8b8a8a8c7b42d1b786757fb03df4954 # shrinks to script = [Up(0), PeerCloses]
+cc 1202f7deb591270d473e84d5c2836e7ee250cd3c7ddcf6a14f56556797b71936 # shrinks to script = [Up(0), NextOpen(Open), Up(0), BluezLost, Wait(3s)]
+cc e17d28a3863e4f78e5f5f36570fcbd2a301a54475819ab98e6d033259cf2b4f7 # shrinks to script = [Up(0), PeerCloses, BluezLost, Wait(1s)]
+cc 91560cbd2732d5a63bf7eba7f0468ed110be8a84c6834ac3f781bc9b026e7614 # shrinks to script = [Up(0), Packet([1, 0, 4, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Packet([4, 0, 4, 0, 43, 0, 0, 0, 0, 0]), Down(0)]
+cc 76579a23fca1744cb9e1e7867aa6258ee8b5bb2b7e8e91a348ddf7b2560f7af2 # shrinks to script = [Up(0), BluezLost, Up(1), Wait(3s)]
+cc 9b0ae7d23d5a5ca97102a4d3132bd2b5c0b0ea2326b3d4b7c15b96192a87ef3f # shrinks to script = [NextOpen(Hold), Up(1), Down(1), Release(false), Wait(1s)]

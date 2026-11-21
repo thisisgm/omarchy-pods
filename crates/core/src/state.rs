@@ -49,6 +49,19 @@ impl Default for State {
     }
 }
 
+impl State {
+    /// Forgets what the pods reported, as the C++ `DeviceInfo::reset` does; preferences, the model number and counters stay.
+    pub fn reset_device(&mut self) {
+        self.connected = false;
+        self.device_name.clear();
+        self.model = Model::Unknown;
+        self.noise_mode = NoiseMode::Off;
+        self.batteries = Batteries::default();
+        self.ear = EarReport::default();
+        self.primary = None;
+    }
+}
+
 /// When taking a bud out pauses playback, numbered as `MediaController::EarDetectionBehavior`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EarDetectionBehavior {

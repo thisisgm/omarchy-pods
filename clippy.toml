@@ -10,3 +10,4 @@ disallowed-methods = [
 disallowed-types = [
     { path = "std::time::SystemTime", reason = "use the injected clock" },
 ]
+doc-valid-idents = ["AirPods", "BlueZ", ".."]

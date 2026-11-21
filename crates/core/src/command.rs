@@ -141,4 +141,4 @@ fn raise(counter: &mut u64) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

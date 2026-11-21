@@ -3,6 +3,7 @@
 
 pub mod command;
 pub mod legacy;
+pub mod link;
 pub mod settings;
 pub mod state;
 pub mod status;
