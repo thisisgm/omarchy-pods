@@ -47,7 +47,7 @@ const MEMBER_PRESENT: f64 = 0.9;
 /// Runs of the properties over generated objects; they touch no socket, and the rare shapes need many runs.
 const OBJECT_CASES: u32 = 1024;
 
-/// Longest line in the properties over arbitrary bytes, long enough for a small reply object.
+/// Lines in the properties over arbitrary bytes are shorter than this, long enough for a small reply object.
 const ANY_LINE_BYTES: usize = 256;
 
 /// Any string or object key up to 12 characters, long enough for every word the protocol uses.
@@ -56,13 +56,13 @@ const ANY_STRING: &str = ".{0,12}";
 /// How deep a generated JSON value nests; the parsers read only the top two levels.
 const VALUE_DEPTH: u32 = 3;
 
-/// Most nodes in one generated JSON value.
+/// Nodes proptest aims for in one generated JSON value, a target rather than a cap.
 const VALUE_NODES: u32 = 24;
 
-/// Most items in one generated array or object, as `prop_recursive` takes it.
+/// Items proptest expects in one generated array or object when sizing a value, a hint rather than a cap.
 const VALUE_BRANCH: u32 = 4;
 
-/// Most items in one generated array or object, as a collection size.
+/// Generated arrays and objects hold fewer items than this.
 const VALUE_ITEMS: usize = 4;
 
 /// Weight of the documented shapes among a generated member's values, so they come up most.
