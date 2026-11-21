@@ -18,7 +18,7 @@ pub(crate) const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
 pub(crate) const HANG_LIMIT: Duration = Duration::from_secs(10);
 
 /// How often a wait checks its condition again.
-pub(crate) const POLL: Duration = Duration::from_millis(10);
+const POLL: Duration = Duration::from_millis(10);
 
 #[expect(
     clippy::disallowed_methods,
