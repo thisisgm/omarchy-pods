@@ -128,6 +128,8 @@ pub struct Machine {
     pending: Vec<commands::Pending>,
     /// A battery report came on this channel, so the notification request needs no repeat.
     battery_seen: bool,
+    /// The settings this channel reported, the only ones a command may answer without a write.
+    known_settings: commands::KnownSettings,
 }
 
 impl Machine {
@@ -295,6 +297,7 @@ impl Machine {
                 if self.held {
                     self.handshake = Handshake::default();
                     self.battery_seen = false;
+                    self.known_settings = commands::KnownSettings::default();
                     let until = after(now, HANDSHAKE_STEP_TIMEOUT_MS);
                     self.enter(state, P::AwaitHandshakeAck { attempt, until });
                     vec![Action::Send(Handshake::first().to_vec())]
@@ -622,6 +625,7 @@ mod tests {
     mod commands;
     mod cpp_ladder;
     mod invariants;
+    mod known;
     mod ladders;
     mod lifecycle;
     mod reports;

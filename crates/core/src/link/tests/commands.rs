@@ -93,6 +93,7 @@ fn noise_anc_writes_the_frame_and_is_confirmed_by_the_report() {
 #[test]
 fn a_mode_already_set_is_confirmed_without_bytes() {
     let mut sim = up_unknown();
+    sim.feed(Input::Packet(NoiseMode::Off.command().encode()));
     let counters = sim.state.counters;
     sim.feed(Input::Command(noise(NoiseMode::Off)));
     assert_eq!(sim.last(), ["Resolve(0)"]);
@@ -280,6 +281,7 @@ fn conversational_awareness_and_one_bud_follow_the_same_rule() {
     sim.feed(Input::Command(Command::SetConversationalAwareness(true)));
     assert_eq!(sim.last(), ["Resolve(1)"]);
 
+    sim.feed(Input::Packet(report(ControlId::ONE_BUD_ANC, 0x02)));
     sim.feed(Input::Command(Command::SetOneBudAnc(false)));
     assert_eq!(sim.last(), ["Resolve(2)"]);
     sim.feed(Input::Command(Command::SetOneBudAnc(true)));
@@ -615,6 +617,11 @@ fn commands_that_are_not_pod_settings_answer_in_up_as_without_a_link() {
 #[test]
 fn counters_rise_when_bytes_are_written() {
     let mut sim = up_pro3(NoiseMode::Anc);
+    sim.feed(Input::Packet(report(
+        ControlId::CONVERSATIONAL_AWARENESS,
+        0x02,
+    )));
+    sim.feed(Input::Packet(report(ControlId::ONE_BUD_ANC, 0x02)));
     let before = sim.state.counters;
     for answered_at_once in [
         noise(NoiseMode::Off),
