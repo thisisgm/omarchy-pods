@@ -1,6 +1,6 @@
 //! The music stream inside a trace: the codecs AVDTP negotiated and, second by second, the media packets the host sent.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pods_proto::sdulog::Direction;
 
@@ -159,8 +159,8 @@ struct Tables {
     configuration: Option<Codec>,
     seconds: BTreeMap<u64, Second>,
     packets: Vec<MediaPacket>,
-    /// The handle and the stamp of every start command, after which a source may begin a new RTP sequence.
-    starts: Vec<(u16, u64)>,
+    /// The handle and the stamp of every start command, after which a source may begin a new RTP sequence; ordered, so no lookup walks them all.
+    starts: BTreeSet<(u16, u64)>,
     unread: Unread,
 }
 
@@ -349,7 +349,7 @@ impl Tables {
                     }
                 }
                 (START, COMMAND) => {
-                    self.starts.push((channel.handle, sdu.at_ns));
+                    self.starts.insert((channel.handle, sdu.at_ns));
                     bump(&mut self.second(sdu.at_ns).starts);
                 }
                 (SUSPEND, COMMAND) => bump(&mut self.second(sdu.at_ns).suspends),
@@ -360,9 +360,12 @@ impl Tables {
 
     /// Whether a start command on `handle` came after the packet stamped `before` and no later than the one stamped `now`.
     fn restarted(&self, handle: u16, before: u64, now: u64) -> bool {
-        self.starts
-            .iter()
-            .any(|(on, at)| *on == handle && before < *at && *at <= now)
+        // A span that is empty or runs backwards holds no start, and a range may not end before it begins.
+        let Some(after) = before.checked_add(1).filter(|after| *after <= now) else {
+            return false;
+        };
+        let span = (handle, after)..=(handle, now);
+        self.starts.range(span).next().is_some()
     }
 
     fn media(&mut self, channel: &Channel) {
