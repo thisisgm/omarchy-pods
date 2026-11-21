@@ -10,25 +10,16 @@ use clap::{Parser, Subcommand};
 /// Base name of `argv[0]` that makes the binary act as the C++ `librepods-ctl`, with no subcommand.
 const LEGACY_CLIENT_NAME: &str = "librepods-ctl";
 
-/// Program name the client usage shows when it is reached as `librepods ctl`.
 const CTL_SUBCOMMAND_PROGRAM: &str = "librepods ctl";
 
-/// What one run of the binary does.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Invocation {
-    /// Send one verb to the daemon, as `librepods-ctl <verb>` does.
     LegacyClient { verb: String },
-    /// Print the client usage under this program name and fail, as `librepods-ctl` with no verb does.
     LegacyUsage { program: &'static str },
-    /// Run the daemon.
     Daemon,
-    /// Print the status line, over protocol 1.
     Status,
-    /// Print the status line now and again on every change, over protocol 1.
     Watch,
-    /// Change one setting, over protocol 1.
     Set { key: String, value: String },
-    /// Ask for one action, over protocol 1.
     Do { action: String },
 }
 
@@ -70,8 +61,7 @@ enum Command {
     },
 }
 
-/// Parses `argv[0]` and the arguments after it.
-// Sample input: `~/.local/bin/librepods-ctl` with `["noise:anc"]`, `librepods` with `["ctl", "status"]`, or `librepods` with `["--headless"]`
+// Sample input: `/bin/librepods-ctl` with `["noise:anc"]`, or `librepods` with `["ctl", "status"]`
 pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap::Error> {
     if Path::new(argv0).file_name() == Some(OsStr::new(LEGACY_CLIENT_NAME)) {
         return legacy(LEGACY_CLIENT_NAME, args);
@@ -87,7 +77,6 @@ pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap
     }
 }
 
-/// The client invocation for these words: the first is the verb, the rest are ignored.
 fn legacy(program: &'static str, words: &[OsString]) -> Result<Invocation, clap::Error> {
     let Some(verb) = words.first() else {
         return Ok(Invocation::LegacyUsage { program });

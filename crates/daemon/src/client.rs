@@ -1,4 +1,4 @@
-//! The command line client of the C++ daemon: the messages, timeouts and exit codes of `daemon/librepods-ctl.cpp`.
+//! The client of `daemon/librepods-ctl.cpp`: its messages, timeouts and exit codes.
 
 pub(crate) mod proto1;
 
@@ -23,16 +23,13 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// Upper bound on a reply, so a peer that never sends a newline cannot grow memory.
 const MAX_REPLY_BYTES: usize = 65536;
 
-/// Size of one read from the socket.
 const READ_CHUNK_BYTES: usize = 4096;
 
-/// The verb whose reply is a status line.
 const STATUS_VERB: &str = "status";
 
 /// The only other verb the daemon answers, and a silent close is its yes.
 const REOPEN_VERB: &str = "reopen";
 
-/// A reply starting with this is a refusal and goes to stderr.
 const ERROR_PREFIX: &[u8] = b"error:";
 
 /// The usage block of `librepods-ctl.cpp`, after its first line.
@@ -56,18 +53,13 @@ const USAGE_COMMANDS: &str = "Commands:
   onebud:off          Disable One-Bud ANC
 ";
 
-/// How the wait for a reply ended.
 #[derive(Debug)]
 enum Reply {
-    /// Some bytes arrived: up to the first newline, the end of stream, the size bound or the deadline.
     Received(Vec<u8>),
-    /// The peer closed or reset the connection before sending anything.
     Closed,
-    /// Nothing arrived before the deadline.
     TimedOut,
 }
 
-/// Prints the client usage under `program` and fails.
 pub(crate) fn usage(program: &str, err: &mut dyn Write) -> ExitCode {
     emit(
         err,
@@ -76,7 +68,6 @@ pub(crate) fn usage(program: &str, err: &mut dyn Write) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Reports a session with no runtime directory, where no socket can be located.
 pub(crate) fn no_runtime_dir(err: &mut dyn Write) -> ExitCode {
     emit(
         err,
@@ -85,7 +76,6 @@ pub(crate) fn no_runtime_dir(err: &mut dyn Write) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Sends `verb` to the daemon at `socket` and, for `status` and `reopen`, relays the reply.
 pub(crate) fn run_legacy(
     verb: &str,
     socket: &Path,
@@ -135,7 +125,6 @@ fn timed_out(request: &str, err: &mut dyn Write) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Connects within `CONNECT_TIMEOUT`, or gives up.
 fn connect(socket: &Path) -> Option<UnixStream> {
     // std has no Unix connect timeout, and a stuck daemon's full backlog blocks connect forever.
     let (sender, receiver) = mpsc::channel();
@@ -146,8 +135,8 @@ fn connect(socket: &Path) -> Option<UnixStream> {
     receiver.recv_timeout(CONNECT_TIMEOUT).ok()?.ok()
 }
 
-/// Reads one reply, bounded in size by `MAX_REPLY_BYTES` and in time by `REPLY_TIMEOUT` overall.
-// Sample input: `{"connected":false,"schema_version":1}\n`, or `error: this daemon runs headless and has no window\n`
+/// `REPLY_TIMEOUT` bounds the whole reply, not each read.
+// Sample input: `{"connected":false,"schema_version":1}\n`
 fn read_reply(stream: &mut UnixStream) -> Reply {
     let started = Instant::now();
     let mut reply = Vec::new();
@@ -183,7 +172,6 @@ fn read_reply(stream: &mut UnixStream) -> Reply {
     }
 }
 
-/// Bytes already received are the reply; with none, the wait ended in `silence`.
 fn settle(reply: Vec<u8>, silence: Reply) -> Reply {
     if reply.is_empty() {
         silence
@@ -192,7 +180,7 @@ fn settle(reply: Vec<u8>, silence: Reply) -> Reply {
     }
 }
 
-/// Writes to a terminal stream; a failure there has nowhere left to be reported, as in the C++ client.
+/// A failed write to the terminal has nowhere left to be reported, as in the C++ client.
 fn emit(stream: &mut dyn Write, bytes: &[u8]) {
     drop(stream.write_all(bytes).and_then(|()| stream.flush()));
 }
@@ -209,7 +197,6 @@ mod tests {
 
     use super::{ERROR_PREFIX, MAX_REPLY_BYTES, run_legacy};
 
-    /// Longest reply in the property that mixes newlines and error prefixes into short replies.
     const SHORT_REPLY_BYTES: usize = 300;
 
     /// How far either side of `MAX_REPLY_BYTES` the long replies reach.
@@ -218,10 +205,8 @@ mod tests {
     /// Runs of the long reply property; each one moves `MAX_REPLY_BYTES` through a socket.
     const LONG_REPLY_CASES: u32 = 16;
 
-    /// The byte that ends a reply.
     const NEWLINE: u8 = b'\n';
 
-    /// Runs `status` against a stub that writes `reply` and closes, and returns the exit code, stdout and stderr.
     fn status_with_reply(reply: Vec<u8>) -> (ExitCode, Vec<u8>, Vec<u8>) {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("librepods.sock");
@@ -239,7 +224,6 @@ mod tests {
         (code, out, err)
     }
 
-    /// Checks one `status` run against the contract: cut at the first newline or the size bound, routed by the error prefix.
     fn assert_reply_contract(reply: &[u8]) -> Result<(), TestCaseError> {
         let (code, out, err) = status_with_reply(reply.to_vec());
         let newline = reply.iter().position(|&byte| byte == NEWLINE);

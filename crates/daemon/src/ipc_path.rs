@@ -6,7 +6,6 @@ use std::path::PathBuf;
 /// Appended to the runtime directory as text, separator included, exactly as the C++ does.
 const SOCKET_SUFFIX: &str = "/librepods.sock";
 
-/// The socket path under `XDG_RUNTIME_DIR`, or `None` when the variable is unset or empty.
 pub(crate) fn socket_path(xdg_runtime_dir: Option<&OsStr>) -> Option<PathBuf> {
     // Callers fail rather than fall back, or the socket lands in a world-visible directory.
     let dir = xdg_runtime_dir.filter(|dir| !dir.is_empty())?;

@@ -14,13 +14,10 @@ use std::process::ExitCode;
 
 use cli::Invocation;
 
-/// The variable that names the per-user runtime directory holding the daemon socket.
 const RUNTIME_DIR_VAR: &str = "XDG_RUNTIME_DIR";
 
-/// The variable that names the per-user state directory holding the state file.
 const STATE_HOME_VAR: &str = "XDG_STATE_HOME";
 
-/// The variable the state directory falls back to when the state home cannot place it.
 const HOME_VAR: &str = "HOME";
 
 fn main() -> ExitCode {
@@ -45,7 +42,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Runs a client command against the socket under the session's runtime directory.
 fn run_client(command: impl FnOnce(&Path, &mut dyn Write, &mut dyn Write) -> ExitCode) -> ExitCode {
     let mut err = io::stderr().lock();
     let Some(socket) = ipc_path::socket_path(env::var_os(RUNTIME_DIR_VAR).as_deref()) else {
@@ -54,7 +50,6 @@ fn run_client(command: impl FnOnce(&Path, &mut dyn Write, &mut dyn Write) -> Exi
     command(&socket, &mut io::stdout().lock(), &mut err)
 }
 
-/// Runs the daemon with the socket and the state file the session's environment places.
 fn run_daemon() -> ExitCode {
     let Some(socket) = ipc_path::socket_path(env::var_os(RUNTIME_DIR_VAR).as_deref()) else {
         daemon::log(daemon::NO_RUNTIME_DIR);
