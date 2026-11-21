@@ -7,8 +7,10 @@ use pods_core::command::{Command, Outcome, apply};
 use pods_core::state::State;
 use tokio::sync::{mpsc, watch};
 
-/// Changes a subscriber may leave untaken before the hub drops it, so a stalled subscriber cannot grow memory.
-const SUBSCRIBER_BACKLOG: usize = 16;
+use super::socket::MAX_CONNECTIONS;
+
+/// Changes a subscriber may leave untaken before the hub drops it; each client makes at most one change between two turns of a subscriber's task.
+const SUBSCRIBER_BACKLOG: usize = MAX_CONNECTIONS;
 
 /// A handle on the state; every clone shares it, and only `submit` changes it.
 #[derive(Debug, Clone)]

@@ -34,7 +34,7 @@ const LOCK_EXTENSION: &str = "lock";
 const LOCK_MODE: u32 = 0o600;
 
 /// Clients served at once; a client past this is closed as soon as it is accepted.
-const MAX_CONNECTIONS: usize = 64;
+pub(super) const MAX_CONNECTIONS: usize = 64;
 
 /// The pause after a failed accept, so a lasting failure such as no free descriptors does not spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
