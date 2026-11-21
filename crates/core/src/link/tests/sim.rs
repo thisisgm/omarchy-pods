@@ -46,6 +46,8 @@ pub(super) enum Input {
     NextOpen(Answer),
     /// Answers a held open: true opens it, false fails it.
     Release(bool),
+    /// Scripts the next `Send` to fail.
+    NextWriteFails,
     PeerCloses,
     Shutdown,
 }
@@ -81,6 +83,7 @@ enum Queued {
     Packet(Vec<u8>),
     Command(Command),
     CallFailed,
+    SendFailed,
     Tick,
     Shutdown,
 }
@@ -104,6 +107,7 @@ pub(super) struct Sim {
     channel: Channel,
     seen: [Seen; DEVICES.len()],
     queue: VecDeque<Queued>,
+    write_fails: bool,
     next_ticket: u64,
     resolves: BTreeMap<u64, Vec<Outcome>>,
     violations: Vec<String>,
@@ -126,6 +130,7 @@ impl Sim {
             channel: Channel::Free,
             seen: [Seen::Nothing; DEVICES.len()],
             queue: VecDeque::new(),
+            write_fails: false,
             next_ticket: 0,
             resolves: BTreeMap::new(),
             violations: Vec::new(),
@@ -145,12 +150,16 @@ impl Sim {
             Input::Shutdown => Queued::Shutdown,
             Input::Wait(span) => return self.run_until(self.now.saturating_add(span)),
             Input::NextOpen(answer) => return self.answers.push_back(answer),
+            Input::NextWriteFails => {
+                self.write_fails = true;
+                return;
+            }
             Input::Release(opened) => {
                 if self.channel != Channel::Held {
                     return;
                 }
                 self.answer_open(if opened { Answer::Open } else { Answer::Refuse });
-                return self.drain();
+                return self.settle();
             }
             Input::PeerCloses => {
                 if self.channel != Channel::Open {
@@ -161,7 +170,13 @@ impl Sim {
             }
         };
         self.queue.push_back(queued);
+        self.settle();
+    }
+
+    /// Delivers what is queued, then ticks while a deadline has already passed, as the driver does.
+    fn settle(&mut self) {
         self.drain();
+        self.run_until(self.now);
     }
 
     /// Jumps the clock to each deadline up to `until` in turn and ticks there, then to `until`.
@@ -195,6 +210,16 @@ impl Sim {
                 rerequest: self.machine.deadline()
             }
         );
+    }
+
+    /// The actions of the last `count` steps, in order.
+    pub(super) fn since(&self, count: usize) -> Vec<String> {
+        let first = self.steps.len().saturating_sub(count);
+        self.steps
+            .iter()
+            .skip(first)
+            .flat_map(|step| step.actions.clone())
+            .collect()
     }
 
     /// The actions of the last step.
@@ -292,6 +317,7 @@ impl Sim {
                 Event::Command { ticket, command }
             }
             Queued::CallFailed => Event::CallFailed(crate::link::DeviceAction::Connect),
+            Queued::SendFailed => Event::SendFailed,
             Queued::Tick => Event::Tick,
             Queued::Shutdown => Event::Shutdown,
         };
@@ -348,12 +374,14 @@ impl Sim {
                 }
                 "Close".into()
             }
-            Action::Send(bytes) => match bytes.as_slice() {
-                b if b == HANDSHAKE => "Send(handshake)".into(),
-                b if b == SET_SPECIFIC_FEATURES => "Send(features)".into(),
-                b if b == REQUEST_NOTIFICATIONS => "Send(notifications)".into(),
-                other => format!("Send({other:02x?})"),
-            },
+            Action::Send(bytes) => {
+                if self.write_fails {
+                    self.write_fails = false;
+                    // The driver hands a failed write in before anything already waiting.
+                    self.queue.push_front(Queued::SendFailed);
+                }
+                send_label(&bytes)
+            }
             Action::Sweep => {
                 for (device, seen) in self.seen.iter().enumerate() {
                     if *seen == Seen::Up {
@@ -443,4 +471,14 @@ pub(super) fn millis(at: Duration) -> u64 {
 
 pub(super) fn ms(millis: u64) -> Duration {
     Duration::from_millis(millis)
+}
+
+/// A sent frame as the log names it.
+fn send_label(bytes: &[u8]) -> String {
+    match bytes {
+        b if b == HANDSHAKE => "Send(handshake)".into(),
+        b if b == SET_SPECIFIC_FEATURES => "Send(features)".into(),
+        b if b == REQUEST_NOTIFICATIONS => "Send(notifications)".into(),
+        other => format!("Send({other:02x?})"),
+    }
 }

@@ -59,6 +59,8 @@ pub enum Event<'a> {
         command: Command,
     },
     CallFailed(DeviceAction),
+    /// A `Send` could not be written; the driver hands this in before any other event.
+    SendFailed,
     /// The clock reached `deadline()`, or any time a driver wakes.
     Tick,
     Shutdown,
@@ -130,6 +132,8 @@ pub struct Machine {
     battery_seen: bool,
     /// The settings this channel reported, or stored for the adaptive level, the only ones a command may answer without a write.
     known_settings: commands::KnownSettings,
+    /// An adaptive level written in the last step, answered by the next event: refused on `SendFailed`, else sent.
+    stored: Option<commands::Stored>,
 }
 
 impl Machine {
@@ -140,11 +144,17 @@ impl Machine {
 
     /// Takes one event at `now` and changes `state` in one go; the driver carries out the actions in order.
     #[must_use]
+    pub fn step(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
+        let mut actions = self.written(state, event);
+        actions.extend(self.react(state, event, now));
+        actions
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one exhaustive match over every phase and event, so no pair is left undecided"
     )]
-    pub fn step(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
+    fn react(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
         use Event as E;
         use Phase as P;
         let mut actions = match (self.phase, event) {
@@ -347,6 +357,22 @@ impl Machine {
             }
             (P::Up { .. }, E::Packet(sdu)) => self.report(state, sdu),
             (
+                P::AwaitHandshakeAck { attempt, .. } | P::AwaitFeaturesAck { attempt, .. },
+                E::SendFailed,
+            ) => {
+                self.enter(
+                    state,
+                    P::Closing {
+                        attempt: Some(attempt),
+                    },
+                );
+                vec![Action::CloseChannel]
+            }
+            (P::Up { .. }, E::SendFailed) => {
+                self.enter(state, P::Closing { attempt: None });
+                vec![Action::CloseChannel]
+            }
+            (
                 P::AwaitHandshakeAck { attempt, until } | P::AwaitFeaturesAck { attempt, until },
                 E::Tick,
             ) => {
@@ -387,6 +413,7 @@ impl Machine {
                 | E::ChannelEnded(_)
                 | E::Packet(_)
                 | E::CallFailed(_)
+                | E::SendFailed
                 | E::Tick
                 | E::Shutdown,
             )
@@ -425,6 +452,15 @@ impl Machine {
                 | P::Grace { .. },
                 E::Packet(_),
             )
+            | (
+                P::Idle
+                | P::Opening { .. }
+                | P::Closing { .. }
+                | P::Backoff { .. }
+                | P::Parked { .. }
+                | P::Grace { .. },
+                E::SendFailed,
+            )
             | (P::Idle | P::Opening { .. } | P::Closing { .. }, E::Tick) => Vec::new(),
         };
         self.settle(state, now, &mut actions);
@@ -440,7 +476,11 @@ impl Machine {
             | Phase::Backoff { until, .. }
             | Phase::Parked { until }
             | Phase::Grace { until } => Some(until),
-            Phase::Up { rerequest } => rerequest.into_iter().chain(self.confirm_deadline()).min(),
+            Phase::Up { rerequest } => rerequest
+                .into_iter()
+                .chain(self.confirm_deadline())
+                .chain(self.stored_deadline())
+                .min(),
             Phase::Idle | Phase::Opening { .. } | Phase::Closing { .. } | Phase::Stopped => None,
         }
     }

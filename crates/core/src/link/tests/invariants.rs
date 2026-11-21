@@ -57,6 +57,7 @@ fn input() -> impl Strategy<Value = Input> {
         2 => answer().prop_map(Input::NextOpen),
         2 => any::<bool>().prop_map(Input::Release),
         1 => Just(Input::PeerCloses),
+        1 => Just(Input::NextWriteFails),
     ]
 }
 

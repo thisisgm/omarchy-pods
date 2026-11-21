@@ -328,16 +328,17 @@ fn conversational_awareness_and_one_bud_follow_the_same_rule() {
 }
 
 #[test]
-fn adaptive_level_is_sent_and_stored_at_once() {
+fn adaptive_level_is_stored_and_sent_in_the_step_after_its_write() {
     let mut sim = up_pro3(NoiseMode::Adaptive);
     sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     assert_eq!(
-        sim.last(),
+        sim.since(2),
         [
             "Send([04, 00, 04, 00, 09, 00, 2e, 1e, 00, 00, 00])",
             "Resolve(0)"
         ]
     );
+    assert_eq!(sim.steps.last().unwrap().event, "Tick");
     assert_eq!(sim.outcomes(), [Outcome::Sent]);
     assert_eq!(sim.state.adaptive_noise_level, level(30));
     assert_eq!(sim.state.counters.adaptive_level_changes, 1);
@@ -349,6 +350,49 @@ fn adaptive_level_is_sent_and_stored_at_once() {
     assert_eq!(sim.state.counters.adaptive_level_changes, 1);
 
     sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_level_whose_write_fails_is_refused_and_never_stored() {
+    let mut sim = up_pro3(NoiseMode::Adaptive);
+    let before = sim.state.adaptive_noise_level;
+    sim.feed(Input::NextWriteFails);
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
+    let failed = sim.step_of("SendFailed");
+    assert_eq!(failed.actions, ["Resolve(0)", "Close"]);
+    assert_eq!(sim.outcome(0), [NOT_CONNECTED]);
+    assert_eq!(sim.state.adaptive_noise_level, before);
+    assert_eq!(sim.state.counters.adaptive_level_changes, 0);
+    assert!(!sim.machine.known_settings.adaptive_level);
+
+    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
+    assert_eq!(sim.outcome(1), [NOT_CONNECTED]);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_setting_whose_write_fails_is_refused_and_its_report_ignored() {
+    let mut sim = up_pro3(NoiseMode::Anc);
+    sim.feed(Input::NextWriteFails);
+    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
+    assert_eq!(sim.step_of("SendFailed").actions, ["Close", "Resolve(0)"]);
+    assert_eq!(sim.outcome(0), [NOT_CONNECTED]);
+    sim.feed(Input::Packet(NoiseMode::Transparency.command().encode()));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
+
+    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
+    assert_eq!(sim.outcome(1), [NOT_CONNECTED]);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_handshake_write_that_fails_closes_and_climbs_the_ladder() {
+    let mut sim = Sim::new();
+    sim.feed(Input::NextWriteFails);
+    sim.feed(Input::Up(0));
+    assert_eq!(sim.step_of("SendFailed").actions, ["Close"]);
+    assert!(matches!(sim.machine.phase(), Phase::Backoff { .. }));
+    sim.check();
 }
 
 #[test]

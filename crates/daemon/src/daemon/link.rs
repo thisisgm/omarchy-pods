@@ -52,6 +52,8 @@ pub(super) enum Input {
     Opened(Arc<Channel>),
     Sdu(Box<[u8]>),
     Ended(End),
+    /// Made by the driver itself when a write fails.
+    SendFailed,
     Command {
         command: Command,
         reply: oneshot::Sender<Outcome>,
@@ -197,6 +199,7 @@ impl Driver {
                 self.channel = None;
                 self.step(Event::ChannelEnded(end));
             }
+            Input::SendFailed => self.step(Event::SendFailed),
             Input::Command { command, reply } => {
                 let ticket = Ticket(self.next_ticket);
                 self.next_ticket = self.next_ticket.wrapping_add(1);
@@ -277,8 +280,9 @@ impl Driver {
             return;
         };
         if let Err(error) = channel.try_send(sdu) {
-            log(&format!("link: {error}; closing the channel"));
-            self.close();
+            log(&format!("link: {error}"));
+            // First, so the machine learns of it before any input that came after the write.
+            self.fed_back.push_front(Input::SendFailed);
         }
     }
 
