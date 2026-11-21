@@ -150,7 +150,7 @@ impl Model {
         self.primary == Placed::InEar || self.secondary == Placed::InEar
     }
 
-    // Order measured on a real device; layouts of daemon/airpods_packets.h and parseMetadata in daemon/main.cpp.
+    // Opcode counts and the first two packets match a real device; the later order is made up, as in `pods_samples::first_burst`.
     fn burst(&self, fault: Fault) -> Vec<Vec<u8>> {
         let mut burst = Vec::new();
         if fault != Fault::WithholdBattery {
