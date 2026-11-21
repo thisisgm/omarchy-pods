@@ -7,7 +7,8 @@ use proptest::prelude::*;
 use super::export::render;
 use super::fixture::{
     CONFIGURATION_REQUEST, EVENT_CONNECTION_COMPLETE, EVENT_DISCONNECTION_COMPLETE, EVENT_LINK_KEY,
-    EVENT_REMOTE_NAME, KEYBOARD_HANDLE, START_UNIX_MICROS, Trace, receiver_cid, session,
+    EVENT_REMOTE_NAME, EVENT_SYNCHRONOUS_CONNECTION, KEYBOARD_HANDLE, START_UNIX_MICROS, Trace,
+    receiver_cid, session,
 };
 use super::*;
 use crate::probe::a2dp;
@@ -26,14 +27,18 @@ const INCLUDED_LEN_AT: usize = 4;
 const STAMP_AT: usize = 16;
 /// The most data bytes one record may claim, written out so the test pins the number.
 const LONGEST_RECORD: usize = 65_535;
-/// The event code of a completed synchronous connection.
-const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
+/// The stamp of 1970 in microseconds since year 0, written out so the test pins the number (`BlueZ` src/shared/btsnoop.c).
+const STAMP_OF_1970: u64 = 62_168_256_000_000_000;
 /// A monitor opcode this reader has no use for: a system note.
 const OPCODE_SYSTEM_NOTE: u16 = 12;
-/// Monitor opcode of ACL data the host sent.
+/// Monitor opcodes of ACL data the host sent and received, written out so no test takes them from the fixture (`BlueZ` src/shared/btsnoop.h).
 const OPCODE_ACL_TX: u16 = 4;
-/// The files every run holds besides its logs: `psm.tsv`, `a2dp.tsv`, `avdtp.txt` and `links.txt`.
-const TABLES: usize = 4;
+const OPCODE_ACL_RX: u16 = 5;
+/// The host's identifiers of the channels the generated steps open, and how far above each the pods' identifier sits.
+const HOST_CIDS: std::ops::Range<u16> = 0x0040..0x0044;
+const PODS_CID_OFFSET: u16 = 0x0010;
+/// The files every run holds besides its logs.
+const TABLES: [&str; 4] = ["psm.tsv", "a2dp.tsv", "avdtp.txt", "links.txt"];
 
 /// The stamp of a record written `ms` milliseconds into a synthetic trace.
 fn at_ns(ms: u64) -> u64 {
@@ -80,6 +85,21 @@ fn reads_the_monitor_datalink_and_refuses_an_unknown_one() {
     }
     let little_endian = with_bytes(bytes.clone(), DATALINK_AT, &2001_u32.to_le_bytes());
     assert_eq!(records(&little_endian), Err(TraceError::UnknownDatalink));
+}
+
+#[test]
+fn opcode_4_is_what_the_host_sent_and_opcode_5_what_it_received() {
+    let mut trace = Trace::new();
+    trace.record(OPCODE_ACL_TX, &[1]);
+    trace.record(OPCODE_ACL_RX, &[2]);
+    let kept = records(&trace.bytes()).unwrap().kept;
+    let read: Vec<_> = kept
+        .iter()
+        .map(|record| (record.kind, sender(record.kind), record.data.clone()))
+        .collect();
+    let sent = (Kind::AclSent, Some(Direction::ToPods), vec![1]);
+    let received = (Kind::AclReceived, Some(Direction::FromPods), vec![2]);
+    assert_eq!(read, [sent, received]);
 }
 
 #[test]
@@ -192,7 +212,7 @@ fn a_stamp_outside_the_nanosecond_range_ends_the_trace_and_is_named() {
         offset: second,
         damage: Damage::StampOutOfRange,
     };
-    for stamp in [0_u64, 62_168_255_999_999_999, u64::MAX] {
+    for stamp in [0_u64, STAMP_OF_1970 - 1, u64::MAX] {
         let other = with_bytes(bytes.clone(), second + STAMP_AT, &stamp.to_be_bytes());
         let up_to_it = Records {
             kept: first.clone(),
@@ -211,7 +231,7 @@ fn a_stamp_outside_the_nanosecond_range_ends_the_trace_and_is_named() {
     let epoch = with_bytes(
         bytes.clone(),
         third + STAMP_AT,
-        &62_168_256_000_000_000_u64.to_be_bytes(),
+        &STAMP_OF_1970.to_be_bytes(),
     );
     assert_eq!(records(&epoch).unwrap().kept[1].at_ns, 0);
 }
@@ -312,12 +332,13 @@ fn side(from_pods: bool) -> Direction {
 
 fn step() -> impl Strategy<Value = Step> {
     let body = || proptest::collection::vec(signalling_byte(), 0..12);
-    let cid = prop_oneof![Just(0x0002_u16), 0x0040_u16..0x0044];
+    let pods_cids = (HOST_CIDS.start + PODS_CID_OFFSET)..(HOST_CIDS.end + PODS_CID_OFFSET);
+    let cid = prop_oneof![Just(0x0002_u16), HOST_CIDS, pods_cids];
     let payload = proptest::collection::vec(any::<u8>(), 8..40);
     let cuts = proptest::collection::vec(1_usize..4, 0..3);
     let event = prop_oneof![Just(0x05_u8), Just(0x2c), Just(0x18)];
     let psm = prop_oneof![Just(CONTROL_PSM), Just(ATT_PSM), Just(0x0019_u16)];
-    let host_cid = || 0x0040_u16..0x0044;
+    let host_cid = || HOST_CIDS;
     prop_oneof![
         2 => (any::<bool>(), psm, host_cid()).prop_map(|(from, psm, cid)| Step::Open(from, psm, cid)),
         2 => (any::<bool>(), host_cid(), options()).prop_map(|(from, cid, options)| Step::Configure(from, cid, options)),
@@ -346,7 +367,7 @@ fn options() -> impl Strategy<Value = Vec<u8>> {
 
 /// The pods' identifier of the channel whose host identifier is `host_cid`, as the steps pair them.
 fn cids(host_cid: u16) -> (u16, u16) {
-    (host_cid, host_cid.saturating_add(0x0010))
+    (host_cid, host_cid.saturating_add(PODS_CID_OFFSET))
 }
 
 fn play(steps: &[Step]) -> Vec<u8> {
@@ -392,7 +413,7 @@ fn read_everything(trace: &[u8]) -> usize {
 fn loose_record() -> impl Strategy<Value = Vec<u8>> {
     let claimed = prop_oneof![0_u32..64, any::<u32>()];
     let opcode = prop_oneof![3_u16..6, any::<u16>()];
-    let stamp = prop_oneof![Just(62_168_256_000_000_001_u64), any::<u64>()];
+    let stamp = prop_oneof![Just(STAMP_OF_1970 + 1), any::<u64>()];
     let data = proptest::collection::vec(any::<u8>(), 0..64);
     (claimed, opcode, stamp, data).prop_map(|(claimed, opcode, stamp, data)| {
         let mut record = claimed.to_be_bytes().to_vec();
@@ -435,12 +456,16 @@ proptest! {
         let trace = play(&steps);
         let read = records(&trace).unwrap();
         prop_assert_eq!(read.cut, None);
-        prop_assert!(read_everything(&trace) >= 4, "the four tables are always rendered");
+        read_everything(&trace);
         let found = channels(&read.kept);
         let logged = |channel: &&Channel| [CONTROL_PSM, ATT_PSM].contains(&channel.psm) && channel.is_basic();
-        let files = render(read).unwrap().len();
-        let logs = files.saturating_sub(TABLES);
-        prop_assert_eq!(logs, found.list.iter().filter(logged).count(), "one log for each basic channel on the two PSMs");
+        let outputs = render(read).unwrap();
+        for table in TABLES {
+            let named = outputs.iter().filter(|output| output.name == table).count();
+            prop_assert_eq!(named, 1, "{} is always rendered, once", table);
+        }
+        let logs = outputs.len().checked_sub(TABLES.len());
+        prop_assert_eq!(logs, Some(found.list.iter().filter(logged).count()), "one log for each basic channel on the two PSMs");
     }
 
     #[test]
