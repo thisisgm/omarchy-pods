@@ -227,14 +227,13 @@ fn noise(
     Handling::Wait(Setting::Noise, mode.command())
 }
 
-/// The mode after `current` in the order of `NoiseMode::next`, skipping Off and Adaptive where the model lacks them.
 fn next_offered(current: NoiseMode, features: Capabilities) -> NoiseMode {
-    match current {
-        NoiseMode::Anc => NoiseMode::Transparency,
-        NoiseMode::Transparency if features.adaptive => NoiseMode::Adaptive,
-        NoiseMode::Transparency | NoiseMode::Adaptive if features.noise_off => NoiseMode::Off,
-        NoiseMode::Off | NoiseMode::Transparency | NoiseMode::Adaptive => NoiseMode::Anc,
+    let mut mode = current.next();
+    // Ends within three steps: every model offers Anc and Transparency.
+    while !offers(features, mode) {
+        mode = mode.next();
     }
+    mode
 }
 
 fn offers(features: Capabilities, mode: NoiseMode) -> bool {
