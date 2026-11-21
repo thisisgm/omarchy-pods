@@ -423,6 +423,24 @@ mod tests {
     }
 
     #[test]
+    fn an_experiment_the_oracle_refuses_says_why_in_its_own_row() {
+        if !installed("ffmpeg") {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let run = analysed_run(&home, "experiment", RATE_HZ, &SILENT_UNIT);
+        let table = table_of(&probe(&home, "decode", &run).output().unwrap(), &run);
+
+        assert_eq!(row(&table, "oracle_refused").0, "0");
+        let (refused, note) = row(&table, "config_64k_oracle_refused");
+        assert_eq!(refused, "1");
+        // The kept file holds what the whole decode said, which is nothing here, so the row must not send the reader to it.
+        let said = note.split_once("lines said, first: ").map(|(_, said)| said);
+        assert!(said.is_some_and(|said| !said.trim().is_empty()), "{note}");
+        assert!(!note.contains("ffmpeg.stderr"), "{note}");
+    }
+
+    #[test]
     fn a_refusal_by_the_oracle_is_reported_and_its_messages_are_kept() {
         if !installed("ffmpeg") {
             return;
