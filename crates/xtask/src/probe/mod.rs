@@ -47,9 +47,9 @@ fn init(stamp: &str) -> ExitCode {
     };
     // Every path printed below is built from HOME, and a lossy print would name a directory that does not exist.
     if home.to_str().is_none() {
-        report(
-            "xtask probe: HOME is not valid UTF-8, so the session path could not be printed as it is on disk",
-        );
+        report(&format!(
+            "xtask probe: HOME {home:?} is not valid UTF-8, so the session path could not be printed as it is on disk"
+        ));
         return ExitCode::FAILURE;
     }
     match Session::open(&store::root(&home), stamp) {
