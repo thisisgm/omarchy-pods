@@ -25,7 +25,9 @@ const OUT_OF_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x01, 0x01];
 /// Both buds in the case.
 const IN_CASE: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x02, 0x02];
 /// The primary bud in an ear, the secondary out.
-const ONE_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x01];
+const PRIMARY_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x01];
+/// The secondary bud in an ear, the primary out.
+const SECONDARY_IN_EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x01, 0x00];
 
 /// Every command a client can send, with levels on both sides of the bound.
 const EVERY_COMMAND: [Command; 18] = [
@@ -177,12 +179,18 @@ fn noise_set_without_a_report_is_not_worn_when_no_bud_is_in_an_ear() {
     }
 
     // One bud in an ear is worn, so the command times out.
-    let mut sim = up_unknown();
-    sim.feed(Input::Packet(ONE_IN_EAR.to_vec()));
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    sim.run_until(ms(700));
-    assert_eq!(sim.outcomes(), [TIMEOUT]);
-    sim.check_all_tickets_resolved_once();
+    for placement in [PRIMARY_IN_EAR, SECONDARY_IN_EAR] {
+        let mut sim = up_unknown();
+        sim.feed(Input::Packet(placement.to_vec()));
+        assert_ne!(
+            sim.state.ear.primary_in_ear(),
+            sim.state.ear.secondary_in_ear()
+        );
+        sim.feed(Input::Command(noise(NoiseMode::Anc)));
+        sim.run_until(ms(700));
+        assert_eq!(sim.outcomes(), [TIMEOUT]);
+        sim.check_all_tickets_resolved_once();
+    }
 
     // A headset has no ear placement to ask about, so it times out.
     let mut sim = up_unknown();
@@ -446,6 +454,7 @@ fn a_seventeenth_pending_command_is_refused_with_timeout() {
     }
     let written = sim.state.counters;
     let refused = u64::try_from(PENDING_MAX).unwrap();
+    assert_eq!(written.noise_control_changes, refused);
     sim.feed(Input::Command(noise(NoiseMode::Transparency)));
     assert_eq!(sim.last(), [format!("Resolve({PENDING_MAX})")]);
     assert_eq!(sim.outcome(refused), [TIMEOUT]);
