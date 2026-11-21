@@ -157,14 +157,20 @@ pub(crate) fn log(message: &str) {
 #[cfg(test)]
 mod tests {
     use std::future;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
+    use tokio::task;
     use tokio::time::timeout;
 
     use super::*;
 
     /// A wait still running after this long missed the end it was waiting for.
     const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+    /// How long a wait with nothing ended must still be waiting; nothing in it takes time, so any wait shows a wrong return.
+    const STILL_WAITING_AFTER: Duration = Duration::from_millis(100);
 
     /// Runs `until_stopped` with `stop` and the two tasks the futures make, failing if it never returns.
     fn exit_code(
@@ -177,6 +183,56 @@ mod tests {
             let waiting = until_stopped(stop, tokio::spawn(accept), tokio::spawn(follow));
             timeout(HANG_LIMIT, waiting).await.unwrap()
         })
+    }
+
+    /// Sets its flag when dropped, which an aborted task does to its future.
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn nothing_ended_keeps_it_waiting() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let waited = runtime.block_on(async {
+            let accept = tokio::spawn(future::pending());
+            let follow = tokio::spawn(future::pending());
+            let waiting = until_stopped(future::pending(), accept, follow);
+            timeout(STILL_WAITING_AFTER, waiting).await
+        });
+        assert!(waited.is_err(), "it returned {waited:?} with nothing ended");
+    }
+
+    #[test]
+    fn the_tasks_still_running_are_ended() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let flags = [
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        ];
+        let [accept_dropped, follow_dropped] = flags.clone();
+        runtime.block_on(async {
+            let accept = tokio::spawn(async move {
+                let _flag = DropFlag(accept_dropped);
+                future::pending::<()>().await;
+            });
+            let follow = tokio::spawn(async move {
+                let _flag = DropFlag(follow_dropped);
+                future::pending::<()>().await;
+            });
+            // One turn so each task holds its flag before the stop.
+            task::yield_now().await;
+            assert_eq!(
+                until_stopped(future::ready("SIGTERM"), accept, follow).await,
+                ExitCode::SUCCESS
+            );
+            task::yield_now().await;
+            let dropped = flags.each_ref().map(|flag| flag.load(Ordering::Relaxed));
+            assert_eq!(dropped, [true, true], "accept, follow");
+        });
     }
 
     #[test]
