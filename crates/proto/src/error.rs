@@ -35,7 +35,7 @@ impl fmt::Display for Parser {
     }
 }
 
-/// The first bytes of a packet, shown in hex; headers are fixed protocol bytes and never carry an address.
+/// The first six bytes of a control channel packet in hex; the protocol puts the packet type there, never an address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header(pub [u8; HEADER_LEN]);
 
