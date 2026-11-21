@@ -75,7 +75,7 @@ struct CaptureArgs {
 
 /// What a command takes from the machine, so a test can stand in for each part.
 struct Host<'a> {
-    home: Option<OsString>,
+    home: &'a str,
     connect: &'a dyn Fn(BdAddr) -> Result<Channel, ChannelError>,
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,
@@ -94,6 +94,8 @@ impl Host<'_> {
 enum ProbeError {
     #[error("HOME is not set, and the store lives under it")]
     NoHome,
+    #[error("HOME {0:?} is not valid UTF-8, so no path under it could be printed as it is on disk")]
+    HomeNotText(OsString),
     #[error(transparent)]
     Script(#[from] ScriptError),
     #[error(transparent)]
@@ -115,18 +117,25 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Ok(probe) => probe.command,
         Err(error) => return usage(&error),
     };
+    let home = match checked_home(env::var_os("HOME")) {
+        Ok(home) => home,
+        Err(error) => {
+            report(&format!("xtask probe: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
     let connect = |peer| {
         let timeout = Duration::from_millis(CONNECT_TIMEOUT_MS);
         l2cap::connect(peer, CONTROL_PSM, timeout)
     };
     let mut host = Host {
-        home: env::var_os("HOME"),
+        home: &home,
         connect: &connect,
         stdout: &mut io::stdout(),
         stderr: &mut io::stderr(),
     };
     match command {
-        ProbeCommand::Init { stamp } => init(&stamp),
+        ProbeCommand::Init { stamp } => init(&stamp, &home),
         ProbeCommand::Capture(args) => match watch_signals() {
             Ok(interrupted) => capture(&args, &mut host, &interrupted),
             Err(error) => {
@@ -138,25 +147,16 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
+/// The home every command builds its paths from; a lossy print of one would name a directory that does not exist, so only text passes.
+fn checked_home(home: Option<OsString>) -> Result<String, ProbeError> {
+    home.ok_or(ProbeError::NoHome)?
+        .into_string()
+        .map_err(ProbeError::HomeNotText)
+}
+
 /// Opens the session for `stamp` and prints its path, which is all init writes on stdout.
-fn init(stamp: &str) -> ExitCode {
-    let Some(home) = env::var_os("HOME") else {
-        report("xtask probe: HOME is not set, and the store lives under it");
-        return ExitCode::FAILURE;
-    };
-    // Every path printed below is built from HOME, and a lossy print would name a directory that does not exist.
-    if home.to_str().is_none() {
-        #[expect(
-            clippy::unnecessary_debug_formatting,
-            reason = "Debug escapes the bytes that are not UTF-8, where Display would replace them"
-        )]
-        let message = format!(
-            "xtask probe: HOME {home:?} is not valid UTF-8, so the session path could not be printed as it is on disk"
-        );
-        report(&message);
-        return ExitCode::FAILURE;
-    }
-    match Session::open(&store::root(&home), stamp) {
+fn init(stamp: &str, home: &str) -> ExitCode {
+    match Session::open(&store::root(home.as_ref()), stamp) {
         Ok(session) => {
             print_line(&session.path().display().to_string());
             ExitCode::SUCCESS
@@ -188,7 +188,7 @@ fn record(
     interrupted: &AtomicBool,
 ) -> Result<Outcome, ProbeError> {
     let script = script::build(args.script, args.minutes)?;
-    let root = store::root(host.home.as_deref().ok_or(ProbeError::NoHome)?);
+    let root = store::root(host.home.as_ref());
     let session = Session::open(&root, &args.stamp)?;
     // The device is read before the run is created, so a missing device file does not use up a run name.
     let peer = store::read_device(&root)?;
@@ -250,7 +250,7 @@ fn stop(host: &mut Host<'_>) -> ExitCode {
 }
 
 fn rescue(host: &mut Host<'_>) -> Result<Outcome, ProbeError> {
-    let root = store::root(host.home.as_deref().ok_or(ProbeError::NoHome)?);
+    let root = store::root(host.home.as_ref());
     let peer = store::read_device(&root)?;
     let channel = (host.connect)(peer).map_err(ProbeError::Connect)?;
     // Nothing of a rescue is kept, and no signal is watched: one that kills it has only cost a STOP that can be sent again.
