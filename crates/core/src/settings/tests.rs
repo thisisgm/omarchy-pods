@@ -53,6 +53,9 @@ fn every_documented_value_sets_its_command() {
         ("adaptive_level", "0", Command::SetAdaptiveLevel(0)),
         ("adaptive_level", "37", Command::SetAdaptiveLevel(37)),
         ("adaptive_level", "100", Command::SetAdaptiveLevel(100)),
+        ("adaptive_level", "+37", Command::SetAdaptiveLevel(37)),
+        ("adaptive_level", "-0", Command::SetAdaptiveLevel(0)),
+        ("adaptive_level", "37 \t\n", Command::SetAdaptiveLevel(37)),
     ] {
         assert_eq!(setting(key, value), Ok(command), "{key} {value}");
     }
@@ -87,7 +90,10 @@ fn a_word_the_key_does_not_take_is_bad_request() {
         ("adaptive_level", ""),
         ("adaptive_level", "high"),
         ("adaptive_level", " 50"),
-        ("adaptive_level", "2147483648"),
+        ("adaptive_level", "37x"),
+        ("adaptive_level", "++37"),
+        ("adaptive_level", "37.0"),
+        ("adaptive_level", "1e1"),
     ] {
         assert_eq!(
             setting(key, value),
@@ -99,7 +105,17 @@ fn a_word_the_key_does_not_take_is_bad_request() {
 
 #[test]
 fn an_adaptive_level_outside_0_to_100_is_out_of_range() {
-    for value in ["101", "-1", "255", "256", "2147483647", "-2147483648"] {
+    for value in [
+        "101",
+        "-1",
+        "255",
+        "256",
+        "2147483647",
+        "-2147483648",
+        "2147483648",
+        "-2147483649",
+        "99999999999999999999999",
+    ] {
         assert_eq!(
             setting("adaptive_level", value),
             Err(CommandError::OutOfRange),
@@ -128,28 +144,39 @@ fn actions_are_connect_disconnect_and_forget_only() {
 
 #[test]
 fn the_protocol_document_names_every_key_value_and_action() {
-    let mut words: Vec<String> = KEYS.iter().map(|(key, _)| format!("`{key}`")).collect();
-    for (_, family) in KEYS {
-        if let Family::Words(prefix) = family {
-            for (verb, _) in VERBS {
-                if let Some((_, word)) = verb.split_once(':').filter(|(at, _)| *at == prefix) {
-                    words.push(format!("`{word}`"));
-                }
-            }
+    for (key, family) in KEYS {
+        let row_start = format!("| `{key}` | ");
+        let row = PROTOCOL_DOCUMENT
+            .lines()
+            .find(|line| line.starts_with(&row_start))
+            .unwrap_or_else(|| panic!("docs/protocol-1.md has no row for `{key}`"));
+        let phrases: Vec<String> = match family {
+            Family::Words(prefix) => VERBS
+                .iter()
+                .filter_map(|(verb, _)| verb.split_once(':'))
+                .filter(|(at, _)| *at == prefix)
+                .map(|(_, word)| format!("`{word}`"))
+                .collect(),
+            Family::Switch(_) => SWITCH_WORDS
+                .iter()
+                .map(|(word, _)| format!("`{word}`"))
+                .collect(),
+            Family::Level => vec!["from 0 to 100".to_owned()],
+        };
+        for phrase in phrases {
+            assert!(
+                row.contains(&phrase),
+                "the `{key}` row does not name {phrase}: {row}"
+            );
         }
     }
-    for (word, _) in SWITCH_WORDS {
-        words.push(format!("`{word}`"));
-    }
+    let actions = PROTOCOL_DOCUMENT
+        .lines()
+        .find(|line| line.starts_with("Asks for one action"))
+        .expect("docs/protocol-1.md has no line naming the actions");
     for name in ["connect", "disconnect", "forget"] {
         assert!(action(name).is_ok(), "{name}");
-        words.push(format!("`{name}`"));
-    }
-    for word in words {
-        assert!(
-            PROTOCOL_DOCUMENT.contains(&word),
-            "{word} is not in docs/protocol-1.md"
-        );
+        assert!(actions.contains(&format!("`{name}`")), "{name}: {actions}");
     }
 }
 

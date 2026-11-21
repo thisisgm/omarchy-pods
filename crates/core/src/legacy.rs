@@ -1,5 +1,7 @@
 //! The verbs the C++ daemon accepts on its control socket, one verb per connection.
 
+use std::num::IntErrorKind;
+
 use pods_proto::noise::NoiseMode;
 
 use crate::command::{ADAPTIVE_LEVEL_MAX, Command, CommandError, NoiseTarget};
@@ -85,11 +87,20 @@ pub fn parse_verb(bytes: &[u8]) -> Option<LegacyRequest> {
         .map(|&(_, request)| request)
 }
 
-/// The level in an `adaptive:` payload, by the rule of `parseIntVerb` over Qt's `toInt`: not an `i32` is a bad request, outside 0 to 100 is out of range.
-// Sample input: `37`, `+37`, `-0` or `37\n`; ` 37` and `37x` are bad, `101` is out of range.
+/// The level in an `adaptive:` payload, by the rule of `parseIntVerb` over Qt's `toInt`: not a whole number is a bad request, outside 0 to 100 is out of range.
+// Sample input: `37`, `+37`, `-0` or `37\n`; ` 37` and `37x` are bad, `101` and `3000000000` are out of range.
 pub(crate) fn adaptive_level(payload: &str) -> Result<u8, CommandError> {
-    let Ok(value) = payload.trim_end_matches(QT_TRAILING_SPACE).parse::<i32>() else {
-        return Err(CommandError::BadRequest);
+    let value = match payload.trim_end_matches(QT_TRAILING_SPACE).parse::<i32>() {
+        Ok(value) => value,
+        Err(error)
+            if matches!(
+                error.kind(),
+                IntErrorKind::PosOverflow | IntErrorKind::NegOverflow
+            ) =>
+        {
+            return Err(CommandError::OutOfRange);
+        }
+        Err(_) => return Err(CommandError::BadRequest),
     };
     u8::try_from(value)
         .ok()
