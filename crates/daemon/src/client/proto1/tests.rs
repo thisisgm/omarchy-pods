@@ -1,6 +1,6 @@
 //! The protocol 1 commands against a stub daemon: line reading, reply checks and how `watch` ends.
 
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread;
@@ -191,42 +191,36 @@ fn written(value: &Value) -> (Vec<u8>, Value) {
     (line, read)
 }
 
-/// Feeds the `chunks` of one line to `take` in order, as `read_line` does, until the line ends or is refused.
-fn take_chunks(chunks: &[&[u8]]) -> Result<Vec<u8>, Failure> {
-    let mut line = Vec::new();
-    for chunk in chunks {
-        if let Step::Ended(_) = take(&mut line, chunk)? {
-            return Ok(line);
-        }
+/// The length of the first line `next_line` takes from `line` with a buffer of `capacity` bytes, or `None` when not understood.
+fn length_taken(line: &[u8], capacity: usize) -> Option<usize> {
+    let (ours, mut daemon) = UnixStream::pair().unwrap();
+    let mut reader = BufReader::with_capacity(capacity, ours);
+    let stream = line.to_vec();
+    let writer = thread::spawn(move || {
+        // The reader stops after one line and drops its end, so a refused write is expected here.
+        drop(daemon.write_all(&stream));
+    });
+    let read = next_line(&mut reader, None);
+    drop(reader);
+    writer.join().unwrap();
+    match read {
+        Ok(taken) => Some(taken.len()),
+        Err(Failure::NotUnderstood) => None,
+        Err(failure) => panic!("the line ended in {failure:?}"),
     }
-    Err(Failure::WentAway)
 }
 
-/// `bytes` cut at each of the ascending offsets `cuts`.
-fn split_at<'bytes>(bytes: &'bytes [u8], cuts: &[usize]) -> Vec<&'bytes [u8]> {
-    let mut chunks = Vec::new();
-    let mut from = 0;
-    for &cut in cuts {
-        chunks.push(&bytes[from..cut]);
-        from = cut;
-    }
-    chunks.push(&bytes[from..]);
-    chunks
-}
-
-/// The ways one line of `length` bytes and its newline is cut: whole, around the bound, and one byte at a time.
-fn cut_sets(length: usize) -> Vec<Vec<usize>> {
-    let bound = MAX_REPLY_BYTES;
-    vec![
-        vec![],
-        vec![1],
-        vec![bound - 1],
-        vec![bound],
-        vec![length],
-        vec![1, bound],
-        vec![bound - 2, bound - 1, bound, length],
-        (1..=length).collect(),
+/// `length_taken` with buffers that cut `line` around the bound, and with one that holds it whole.
+fn lengths_taken(line: &[u8]) -> Vec<Option<usize>> {
+    [
+        MAX_REPLY_BYTES - 1,
+        MAX_REPLY_BYTES,
+        MAX_REPLY_BYTES + 1,
+        line.len(),
     ]
+    .into_iter()
+    .map(|capacity| length_taken(line, capacity))
+    .collect()
 }
 
 /// The lines `stream` holds by the rule, and whether reading it ends in a refusal rather than at its end.
@@ -243,7 +237,7 @@ fn expected_lines(stream: &[u8]) -> (Vec<&[u8]>, bool) {
     (lines, unfinished.len() > MAX_REPLY_BYTES)
 }
 
-/// Reads `stream` through `read_line` with a buffer of `capacity` bytes and checks it against the rule.
+/// Reads `stream` through `next_line` with a buffer of `capacity` bytes and checks it against the rule.
 fn check_read(stream: Vec<u8>, capacity: usize) {
     let (ours, mut daemon) = UnixStream::pair().unwrap();
     let mut reader = BufReader::with_capacity(capacity, ours);
@@ -255,7 +249,7 @@ fn check_read(stream: Vec<u8>, capacity: usize) {
     let (expected_lines, refused) = expected_lines(&expected);
     let mut lines = Vec::new();
     let ending = loop {
-        match read_line(&mut reader, None) {
+        match next_line(&mut reader, None) {
             Ok(line) if lines.len() < expected_lines.len() => lines.push(line),
             // A reader that finds more lines than the rule gives stops here rather than loop.
             Ok(line) => panic!("a line the rule does not give: {line:?}"),
@@ -400,12 +394,12 @@ fn requests_carry_the_version_the_id_and_string_members() {
 fn lines_are_read_one_at_a_time_and_the_end_is_the_daemon_going_away() {
     let (mut reader, mut daemon) = pair();
     daemon.write_all(b"first\nsec").unwrap();
-    assert_eq!(read_line(&mut reader, None).unwrap(), b"first");
+    assert_eq!(next_line(&mut reader, None).unwrap(), b"first");
     daemon.write_all(b"ond\n").unwrap();
-    assert_eq!(read_line(&mut reader, None).unwrap(), b"second");
+    assert_eq!(next_line(&mut reader, None).unwrap(), b"second");
     drop(daemon);
     assert!(matches!(
-        read_line(&mut reader, None),
+        next_line(&mut reader, None),
         Err(Failure::WentAway)
     ));
 }
@@ -418,7 +412,7 @@ fn a_line_past_the_bound_with_no_newline_is_not_understood() {
         drop(daemon.write_all(&vec![b'x'; MAX_REPLY_BYTES + READ_PAST_BOUND]));
     });
     assert!(matches!(
-        read_line(&mut reader, None),
+        next_line(&mut reader, None),
         Err(Failure::NotUnderstood)
     ));
     drop(reader);
@@ -429,38 +423,27 @@ fn a_line_past_the_bound_with_no_newline_is_not_understood() {
 fn a_line_one_byte_over_the_bound_is_refused_however_it_is_split() {
     let mut line = vec![b'x'; MAX_REPLY_BYTES + 1];
     line.push(b'\n');
-    for cuts in cut_sets(MAX_REPLY_BYTES + 1) {
-        let taken = take_chunks(&split_at(&line, &cuts));
-        assert!(
-            matches!(taken, Err(Failure::NotUnderstood)),
-            "cuts {:?}",
-            cuts.get(..4)
-        );
-    }
+    assert_eq!(lengths_taken(&line), [None; 4]);
 }
 
 #[test]
 fn a_line_of_exactly_the_bound_is_taken_however_it_is_split() {
     let mut line = vec![b'x'; MAX_REPLY_BYTES];
     line.push(b'\n');
-    for cuts in cut_sets(MAX_REPLY_BYTES) {
-        let taken = take_chunks(&split_at(&line, &cuts)).unwrap();
-        assert_eq!(taken.len(), MAX_REPLY_BYTES, "cuts {:?}", cuts.get(..4));
-    }
+    assert_eq!(lengths_taken(&line), [Some(MAX_REPLY_BYTES); 4]);
 }
 
 #[test]
-fn two_lines_in_one_chunk_are_taken_one_after_the_other() {
-    let chunk = b"one\ntwo\nth";
-    let mut first = Vec::new();
-    assert_eq!(take(&mut first, chunk).unwrap(), Step::Ended(4));
-    assert_eq!(first, b"one");
-    let mut second = Vec::new();
-    assert_eq!(take(&mut second, &chunk[4..]).unwrap(), Step::Ended(4));
-    assert_eq!(second, b"two");
-    let mut third = Vec::new();
-    assert_eq!(take(&mut third, &chunk[8..]).unwrap(), Step::Continues);
-    assert_eq!(third, b"th");
+fn two_lines_in_one_read_are_taken_one_after_the_other() {
+    let (mut reader, mut daemon) = pair();
+    daemon.write_all(b"one\ntwo\nth").unwrap();
+    drop(daemon);
+    assert_eq!(next_line(&mut reader, None).unwrap(), b"one");
+    assert_eq!(next_line(&mut reader, None).unwrap(), b"two");
+    assert!(matches!(
+        next_line(&mut reader, None),
+        Err(Failure::WentAway)
+    ));
 }
 
 #[test]
@@ -472,10 +455,10 @@ fn the_bound_holds_on_a_socket_read_one_byte_at_a_time() {
             // The reader stops at a refused line and drops its end, so a refused write is expected here.
             drop(daemon.write_all(&[vec![b'x'; length], b"\n{}\n".to_vec()].concat()));
         });
-        let read = read_line(&mut reader, None);
+        let read = next_line(&mut reader, None);
         if taken {
             assert_eq!(read.unwrap().len(), length);
-            assert_eq!(read_line(&mut reader, None).unwrap(), b"{}");
+            assert_eq!(next_line(&mut reader, None).unwrap(), b"{}");
         } else {
             assert!(matches!(read, Err(Failure::NotUnderstood)), "{length}");
         }
@@ -508,7 +491,7 @@ fn a_reply_that_does_not_come_by_the_deadline_times_out() {
     let started = Instant::now();
     let deadline = started.checked_add(SHORT_WAIT);
     assert!(matches!(
-        read_line(&mut reader, deadline),
+        next_line(&mut reader, deadline),
         Err(Failure::TimedOut)
     ));
     assert!(started.elapsed() >= SHORT_WAIT);

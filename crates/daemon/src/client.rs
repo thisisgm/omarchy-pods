@@ -2,7 +2,7 @@
 
 pub(crate) mod proto1;
 
-use std::io::{ErrorKind, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -22,8 +22,6 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Upper bound on a reply, so a peer that never sends a newline cannot grow memory.
 const MAX_REPLY_BYTES: usize = 65536;
-
-const READ_CHUNK_BYTES: usize = 4096;
 
 const STATUS_VERB: &str = "status";
 
@@ -53,9 +51,12 @@ const USAGE_COMMANDS: &str = "Commands:
   onebud:off          Disable One-Bud ANC
 ";
 
-#[derive(Debug)]
-enum Reply {
-    Received(Vec<u8>),
+/// How `read_line` stopped.
+#[derive(Debug, PartialEq, Eq)]
+enum End {
+    Newline,
+    /// The limit came first, with no newline among the bytes.
+    Full,
     Closed,
     TimedOut,
 }
@@ -82,28 +83,30 @@ pub(crate) fn run_legacy(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> ExitCode {
-    let Some(mut stream) = connect(socket) else {
+    let Some(stream) = connect(socket) else {
         return no_daemon(socket, err);
     };
     let sent = stream
         .set_write_timeout(Some(WRITE_TIMEOUT))
-        .and_then(|()| stream.write_all(verb.as_bytes()));
+        .and_then(|()| (&stream).write_all(verb.as_bytes()));
     // The C++ client ignores a failed write too; a verb that wants a reply then times out.
     drop(sent);
     if verb != STATUS_VERB && verb != REOPEN_VERB {
         return ExitCode::SUCCESS;
     }
-    match read_reply(&mut stream) {
-        Reply::Received(reply) if reply.starts_with(ERROR_PREFIX) => {
-            emit(err, &reply);
-            ExitCode::FAILURE
-        }
-        Reply::Received(reply) => {
-            emit(out, &reply);
-            ExitCode::SUCCESS
-        }
-        Reply::Closed if verb == REOPEN_VERB => ExitCode::SUCCESS,
-        Reply::Closed | Reply::TimedOut => timed_out(verb, err),
+    let deadline = Instant::now().checked_add(REPLY_TIMEOUT);
+    let (reply, end) = read_line(&mut BufReader::new(stream), deadline, MAX_REPLY_BYTES);
+    if reply.starts_with(ERROR_PREFIX) {
+        emit(err, &reply);
+        return ExitCode::FAILURE;
+    }
+    if !reply.is_empty() {
+        emit(out, &reply);
+        return ExitCode::SUCCESS;
+    }
+    match end {
+        End::Closed if verb == REOPEN_VERB => ExitCode::SUCCESS,
+        End::Newline | End::Full | End::Closed | End::TimedOut => timed_out(verb, err),
     }
 }
 
@@ -135,48 +138,44 @@ fn connect(socket: &Path) -> Option<UnixStream> {
     receiver.recv_timeout(CONNECT_TIMEOUT).ok()?.ok()
 }
 
-/// `REPLY_TIMEOUT` bounds the whole reply, not each read.
-// Sample input: `{"connected":false,"schema_version":1}\n`
-fn read_reply(stream: &mut UnixStream) -> Reply {
-    let started = Instant::now();
-    let mut reply = Vec::new();
-    let mut chunk = [0_u8; READ_CHUNK_BYTES];
+/// At most `limit` bytes up to and including a newline, with `deadline` bounding the whole line; later bytes stay in `reader`.
+// Sample input: `{"id":1,"ok":true,"result":"sent"}\n{"event"` gives the reply line and leaves `{"event"`.
+fn read_line(
+    reader: &mut BufReader<UnixStream>,
+    deadline: Option<Instant>,
+    limit: usize,
+) -> (Vec<u8>, End) {
+    let mut line = Vec::new();
     loop {
-        let remaining = REPLY_TIMEOUT.saturating_sub(started.elapsed());
-        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
-            return settle(reply, Reply::TimedOut);
+        let wait = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        // A zero wait is refused by the socket, and it means the deadline has passed.
+        if wait.is_some_and(|wait| wait.is_zero())
+            || reader.get_ref().set_read_timeout(wait).is_err()
+        {
+            return (line, End::TimedOut);
         }
-        let room = MAX_REPLY_BYTES
-            .saturating_sub(reply.len())
-            .min(READ_CHUNK_BYTES);
-        let window = chunk.get_mut(..room).unwrap_or_default();
-        match stream.read(window) {
-            Ok(0) => return settle(reply, Reply::Closed),
-            Ok(read) => {
-                let fresh = window.get(..read).unwrap_or_default();
-                if let Some(newline) = fresh.iter().position(|&byte| byte == b'\n') {
-                    reply.extend_from_slice(fresh.get(..=newline).unwrap_or_default());
-                    return Reply::Received(reply);
-                }
-                reply.extend_from_slice(fresh);
-                if reply.len() >= MAX_REPLY_BYTES {
-                    return Reply::Received(reply);
-                }
-            }
-            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+        let available = match reader.fill_buf() {
+            Ok([]) => return (line, End::Closed),
+            Ok(available) => available,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                return settle(reply, Reply::TimedOut);
+                return (line, End::TimedOut);
             }
-            Err(_) => return settle(reply, Reply::Closed),
+            // A reset is the daemon going away as much as an end of stream is.
+            Err(_) => return (line, End::Closed),
+        };
+        let room = limit.saturating_sub(line.len());
+        let window = available.get(..room).unwrap_or(available);
+        let (used, end) = match window.iter().position(|&byte| byte == b'\n') {
+            Some(newline) => (newline.saturating_add(1), Some(End::Newline)),
+            None if window.len() == room => (room, Some(End::Full)),
+            None => (window.len(), None),
+        };
+        line.extend_from_slice(window.get(..used).unwrap_or_default());
+        reader.consume(used);
+        if let Some(end) = end {
+            return (line, end);
         }
-    }
-}
-
-fn settle(reply: Vec<u8>, silence: Reply) -> Reply {
-    if reply.is_empty() {
-        silence
-    } else {
-        Reply::Received(reply)
     }
 }
 
