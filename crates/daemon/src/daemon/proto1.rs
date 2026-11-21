@@ -90,7 +90,7 @@ impl Connection {
     async fn run(&mut self, hub: &Hub) -> Result<(), String> {
         loop {
             self.answer(hub).await?;
-            if self.ended && self.queue.is_empty() {
+            if self.owes_nothing_after_its_end() {
                 return Ok(());
             }
             self.watch_for_stall();
@@ -182,6 +182,13 @@ impl Connection {
             self.stall = None;
         }
         Ok(())
+    }
+
+    /// Whether the client ended its side and was sent everything owed; `answer` leaves complete lines only while a change waits or the queue is full.
+    fn owes_nothing_after_its_end(&self) -> bool {
+        self.ended
+            && self.queue.is_empty()
+            && self.changes.as_ref().is_none_or(mpsc::Receiver::is_empty)
     }
 
     /// Starts the stall deadline when the connection waits on its client, and stops it while it waits only for changes.
