@@ -35,55 +35,29 @@ const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 /// The public description of this interface, which must list every error name.
 const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
 
-/// Every refusal a command can end in, with the error name a client sees for it; `spelled` makes a new variant fail to build until it is listed here.
-const ERROR_NAMES: [(CommandError, &str); 8] = [
-    (
-        CommandError::NotConnected,
-        "io.github.thisisgm.Omapods1.Error.NotConnected",
-    ),
-    (
-        CommandError::NotSupported,
-        "io.github.thisisgm.Omapods1.Error.NotSupported",
-    ),
-    (
-        CommandError::NotWorn,
-        "io.github.thisisgm.Omapods1.Error.NotWorn",
-    ),
-    (
-        CommandError::OutOfRange,
-        "io.github.thisisgm.Omapods1.Error.OutOfRange",
-    ),
-    (
-        CommandError::UnknownKey,
-        "io.github.thisisgm.Omapods1.Error.UnknownKey",
-    ),
-    (
-        CommandError::BadRequest,
-        "io.github.thisisgm.Omapods1.Error.BadRequest",
-    ),
-    (
-        CommandError::Timeout,
-        "io.github.thisisgm.Omapods1.Error.Timeout",
-    ),
-    (
-        CommandError::Headless,
-        "io.github.thisisgm.Omapods1.Error.Headless",
-    ),
+/// Every refusal a command can end in; Rust cannot list an enum's variants, so a new one is added here by hand beside its arm in `spelled`.
+const COMMAND_ERRORS: [CommandError; 8] = [
+    CommandError::NotConnected,
+    CommandError::NotSupported,
+    CommandError::NotWorn,
+    CommandError::OutOfRange,
+    CommandError::UnknownKey,
+    CommandError::BadRequest,
+    CommandError::Timeout,
+    CommandError::Headless,
 ];
 
-/// The name `ERROR_NAMES` gives `error`, found through a match with no catch-all so the compiler names any variant the table misses.
-fn spelled(error: CommandError) -> Option<&'static str> {
+/// The error name a client sees for `error`, written out; a match with no catch-all, so a new variant fails to build until its name is spelled here.
+fn spelled(error: CommandError) -> &'static str {
     match error {
-        CommandError::NotConnected
-        | CommandError::NotSupported
-        | CommandError::NotWorn
-        | CommandError::OutOfRange
-        | CommandError::UnknownKey
-        | CommandError::BadRequest
-        | CommandError::Timeout
-        | CommandError::Headless => ERROR_NAMES
-            .iter()
-            .find_map(|&(listed, name)| (listed == error).then_some(name)),
+        CommandError::NotConnected => "io.github.thisisgm.Omapods1.Error.NotConnected",
+        CommandError::NotSupported => "io.github.thisisgm.Omapods1.Error.NotSupported",
+        CommandError::NotWorn => "io.github.thisisgm.Omapods1.Error.NotWorn",
+        CommandError::OutOfRange => "io.github.thisisgm.Omapods1.Error.OutOfRange",
+        CommandError::UnknownKey => "io.github.thisisgm.Omapods1.Error.UnknownKey",
+        CommandError::BadRequest => "io.github.thisisgm.Omapods1.Error.BadRequest",
+        CommandError::Timeout => "io.github.thisisgm.Omapods1.Error.Timeout",
+        CommandError::Headless => "io.github.thisisgm.Omapods1.Error.Headless",
     }
 }
 
@@ -593,8 +567,8 @@ fn each_outcome_has_the_reply_the_document_names() {
 
 #[test]
 fn every_command_error_has_its_camel_case_name() {
-    for (error, name) in ERROR_NAMES {
-        assert_eq!(spelled(error), Some(name), "{error:?} is listed once");
+    for error in COMMAND_ERRORS {
+        let name = spelled(error);
         let reply = CallError::from(error);
         assert_eq!(reply.name().as_str(), name);
         assert!(ErrorName::try_from(name).is_ok(), "{name}");
@@ -604,8 +578,8 @@ fn every_command_error_has_its_camel_case_name() {
 
 #[test]
 fn the_interface_document_lists_every_error_name_with_its_code() {
-    for (error, name) in ERROR_NAMES {
-        let row = format!("| `{name}` | `{}` |", error.code());
+    for error in COMMAND_ERRORS {
+        let row = format!("| `{}` | `{}` |", spelled(error), error.code());
         assert!(API_DOCUMENT.contains(&row), "{row}");
     }
 }
