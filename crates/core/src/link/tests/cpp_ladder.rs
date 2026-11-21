@@ -52,13 +52,14 @@ fn first_retry_is_the_cpp_first_delay() {
     assert_eq!(FIRST_RETRY_MS, reconnect_constant("firstDelayMs"));
 }
 
+/// Reads the C++ default absent probe count; sample input: `int m_retryAttempts = 3;`.
 #[test]
 fn absent_grace_is_the_first_delay_then_the_absent_probes() {
     // corner: the C++ default of `m_retryAttempts`; `setRetryAttempts` can change it at run time and the Rust grace does not follow.
-    let probes: u64 = MAIN
-        .find(None, "int m_retryAttempts = ", ';')
-        .parse()
-        .unwrap();
+    let text = MAIN.find(None, "int m_retryAttempts = ", ';');
+    let probes: u64 = text.parse().unwrap_or_else(|_| {
+        panic!("daemon/main.cpp: m_retryAttempts is not a whole number: {text}")
+    });
     let probe_delays: u64 = (1..=probes).map(cpp_delay_ms).sum();
     assert_eq!(
         ABSENT_GRACE_MS,
@@ -66,12 +67,21 @@ fn absent_grace_is_the_first_delay_then_the_absent_probes() {
     );
 }
 
-/// Reads the delay of the timer after `FEATURES_ACK` in `parseData`; sample input: `FEATURES_ACK)) { writePacketToSocket(...); QTimer::singleShot(2000, this, [this]() {`.
+/// Reads the timer inside the `FEATURES_ACK` branch of `parseData`; sample input: `FEATURES_ACK)) { writePacketToSocket(...); QTimer::singleShot(2000, this, [this]() { ... }); } else if`.
 #[test]
 fn notification_rerequest_is_the_timer_in_parse_data() {
     let parse = MAIN.body("void parseData(");
-    let (_, features) = parse.split_once("FEATURES_ACK").unwrap();
-    let (_, timer) = features.split_once("QTimer::singleShot(").unwrap();
-    let (delay, _) = timer.split_once(',').unwrap();
+    let (_, after) = parse
+        .split_once("FEATURES_ACK")
+        .expect("daemon/main.cpp: parseData has no FEATURES_ACK branch");
+    let (branch, _) = after
+        .split_once("else if")
+        .expect("daemon/main.cpp: no branch follows FEATURES_ACK in parseData");
+    let (_, timer) = branch.split_once("QTimer::singleShot(").unwrap_or_else(|| {
+        panic!("daemon/main.cpp: no timer in the FEATURES_ACK branch: {branch}")
+    });
+    let (delay, _) = timer
+        .split_once(',')
+        .unwrap_or_else(|| panic!("daemon/main.cpp: the FEATURES_ACK timer has no delay: {timer}"));
     assert_eq!(delay.trim(), NOTIFY_REREQUEST_MS.to_string());
 }
