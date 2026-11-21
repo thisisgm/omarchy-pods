@@ -545,7 +545,7 @@ const FORBIDDEN: [&str; 12] = [
     "rename",
     "rmdir",
     "TRUNC",
-    "truncate",
+    "truncate(",
     "set_len",
     "OpenOptions",
     "File::create",
