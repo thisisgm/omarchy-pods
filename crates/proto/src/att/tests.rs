@@ -1,4 +1,4 @@
-//! Requests, replies and unasked values, every byte built here from the layouts the specification gives.
+//! Requests, replies and unasked values, every byte built from the specification's layouts.
 
 use super::*;
 
@@ -13,16 +13,14 @@ const FAKE_LONG_UUID: [u8; LONG_UUID_LEN] = [
 const OTHER_FAKE_LONG_UUID: [u8; LONG_UUID_LEN] = [
     0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
 ];
-/// One declaration entry: handle 0x0002, notify and write without response, value handle 0x0003, identifier 0x2b2a.
+/// Handle 0x0002, notify and write without response, value handle 0x0003, identifier 0x2b2a.
 const SHORT_DECLARATION: [u8; 7] = [0x02, 0x00, 0x14, 0x03, 0x00, 0x2a, 0x2b];
-/// One handle and 16 bit identifier pair: handle 0x0001, identifier 0x2800.
+/// Handle 0x0001, identifier 0x2800.
 const SHORT_PAIR: [u8; 4] = [0x01, 0x00, 0x00, 0x28];
-/// How many whole entries the cut lists carry before their cut one.
 const WHOLE_ENTRIES: usize = 2;
-/// How many of the 31 rows of the opcode summary are requests.
 const REQUEST_COUNT: usize = 12;
 
-/// Vol 3, Part F, section 3.4.8, Table 3.43: every PDU name and its opcode; a name ending in REQ is a request.
+/// Vol 3, Part F, 3.4.8, Table 3.43: every PDU and its opcode; a name ending in REQ is a request.
 const OPCODE_SUMMARY: [(&str, u8); 31] = [
     ("ATT_ERROR_RSP", 0x01),
     ("ATT_EXCHANGE_MTU_REQ", 0x02),
@@ -71,14 +69,12 @@ fn by_type(pdu: &[u8]) -> ByType<'_> {
     }
 }
 
-/// A handle and 128 bit identifier pair as it sits in a format 2 reply.
 fn long_pair(handle: u16, uuid: &[u8; LONG_UUID_LEN]) -> Vec<u8> {
     let mut pair = handle.to_le_bytes().to_vec();
     pair.extend(uuid);
     pair
 }
 
-/// A list reply: its two byte prefix, `WHOLE_ENTRIES` copies of `entry`, then the first `kept` bytes of one more.
 fn cut_list(prefix: [u8; 2], entry: &[u8], kept: usize) -> Vec<u8> {
     let mut pdu = prefix.to_vec();
     for _ in 0..WHOLE_ENTRIES {
