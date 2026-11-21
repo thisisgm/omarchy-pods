@@ -3,7 +3,7 @@
 use crate::control::{ControlCommand, ControlId};
 use crate::error::{HEADER_LEN, ParseError, Parser};
 
-// The C++ daemon has no uplink code to compare with: START and STOP are protocol fact P4, the audio layout fact P9, the control length fact P5.
+// The C++ daemon has no uplink code to compare with: START, STOP and the audio layout are those of librepods-org/librepods pull request 655, files aacp.rs and aacp_audio.rs.
 
 /// Every uplink packet, audio or control, starts with these bytes.
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00];
@@ -60,7 +60,7 @@ impl<'a> UplinkPacket<'a> {
         };
         let Some((subtype, body)) = after_header.split_first_chunk::<SUBTYPE_LEN>() else {
             return Err(ParseError::TooShort {
-                parser: Parser::UplinkControl,
+                parser: Parser::Uplink,
                 need: MIN_LEN,
                 got: sdu.len(),
             });
@@ -380,8 +380,8 @@ mod tests {
         let too_short = |parser, need, got| Err(ParseError::TooShort { parser, need, got });
         let audio = hex(ONE_UNIT_SDU);
         for (sdu, expected) in [
-            (&HEADER[..], too_short(Parser::UplinkControl, 8, 6)),
-            (&audio[..7], too_short(Parser::UplinkControl, 8, 7)),
+            (&HEADER[..], too_short(Parser::Uplink, 8, 6)),
+            (&audio[..7], too_short(Parser::Uplink, 8, 7)),
             (&audio[..8], too_short(Parser::UplinkAudio, 22, 8)),
             (&audio[..21], too_short(Parser::UplinkAudio, 22, 21)),
             (&START[..8], too_short(Parser::UplinkControl, 10, 8)),
