@@ -297,8 +297,7 @@ mod tests {
         ];
         for (session, mut daemon, address) in cases {
             let status = session.status();
-            let state_file = session.state_home().join("librepods").join("status.json");
-            assert_eq!(status, fs::read_to_string(state_file).unwrap());
+            assert_eq!(status, fs::read_to_string(session.state_file()).unwrap());
             wait_for("the bus line", || {
                 daemon.log().contains(NO_BUS_LOG).then_some(())
             });

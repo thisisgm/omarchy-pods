@@ -73,6 +73,11 @@ impl Session {
         self.runtime_dir().join("librepods.sock")
     }
 
+    /// The status document the plugin reads.
+    pub(crate) fn state_file(&self) -> PathBuf {
+        self.state_home().join("librepods").join("status.json")
+    }
+
     /// The binary with this session's environment and nothing of the real one's XDG or home.
     pub(crate) fn command(&self, program: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(program);

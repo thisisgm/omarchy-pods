@@ -2,6 +2,10 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "these tests talk only to the socket, so the state file helper the other suites share goes unused"
+)]
 mod support;
 
 #[cfg(test)]
