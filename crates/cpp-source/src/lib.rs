@@ -121,7 +121,7 @@ impl CppHeader {
         found
     }
 
-    /// The braced body of the first definition that starts with `signature`, braces matched, outer braces excluded.
+    /// The braced body after the first occurrence of `signature`, braces matched, outer braces excluded.
     // Sample input: `void forgetDevice() {\n if (x) { return; }\n ++m_total;\n }` read with signature `void forgetDevice(`.
     #[must_use]
     pub fn body(&self, signature: &str) -> &'static str {
