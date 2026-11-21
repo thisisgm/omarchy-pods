@@ -25,7 +25,7 @@ mod tests {
     /// Clients the daemon serves at once, from `MAX_CONNECTIONS` in `src/daemon/socket.rs`.
     const MAX_CONNECTIONS: usize = 64;
 
-    /// The changes the slow subscriber and burst tests make, past what one socket buffer and either queue of 64 holds.
+    /// The changes the slow subscriber and burst tests make, past what one socket buffer and the daemon's queues hold.
     const CHANGES: usize = 200;
 
     /// The bound on a `get` answered while a slow subscriber holds a full queue.
@@ -543,6 +543,10 @@ mod tests {
                 }
             });
             assert!(unfinished.closed(), "the unfinished line");
+            assert!(
+                started.elapsed() >= STALL_DEADLINE,
+                "closed before its deadline"
+            );
             assert!(idle.closed(), "the idle connection");
             pause(STALL_DEADLINE);
             assert!(
@@ -550,7 +554,6 @@ mod tests {
                 "the unread replies"
             );
         });
-        assert!(started.elapsed() >= STALL_DEADLINE);
         assert_eq!(
             daemon.log().matches("made no progress").count(),
             3,
