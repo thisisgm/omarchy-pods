@@ -39,6 +39,11 @@ fn at_ns(ms: u64) -> u64 {
         .saturating_mul(1_000)
 }
 
+/// A trace read to its end, with no record cut.
+fn whole(kept: Vec<HciRecord>) -> Records {
+    Records { kept, cut: None }
+}
+
 fn with_bytes(mut trace: Vec<u8>, at: usize, bytes: &[u8]) -> Vec<u8> {
     trace[at..][..bytes.len()].copy_from_slice(bytes);
     trace
@@ -63,8 +68,8 @@ fn reads_the_monitor_datalink_and_refuses_an_unknown_one() {
             data: vec![0x0b, 0x20, 0x01, 0x00, 4],
         },
     ];
-    assert_eq!(records(&bytes), Ok(expected.to_vec()));
-    assert_eq!(records(&Trace::new().bytes()), Ok(Vec::new()));
+    assert_eq!(records(&bytes), Ok(whole(expected.to_vec())));
+    assert_eq!(records(&Trace::new().bytes()), Ok(whole(Vec::new())));
 
     for datalink in [0, 1001, 1002, 2000, 2002, u32::MAX] {
         let other = with_bytes(bytes.clone(), DATALINK_AT, &datalink.to_be_bytes());
@@ -103,47 +108,45 @@ fn a_file_that_is_no_btsnoop_trace_is_refused() {
 }
 
 #[test]
-fn a_truncated_record_is_an_error_with_its_offset() {
+fn a_truncated_record_ends_the_trace_and_is_named_with_its_offset() {
     let mut trace = Trace::new();
     trace.acl(Direction::ToPods, 0b00, &[1, 2, 3]);
     trace.acl(Direction::FromPods, 0b10, &[4]);
     let bytes = trace.bytes();
     let second = FILE_HEADER + RECORD_HEADER + 7;
     assert_eq!(bytes.len(), second + RECORD_HEADER + 5);
+    let both = records(&bytes).unwrap();
+    assert_eq!((both.kept.len(), both.cut), (2, None));
+    let first = whole(both.kept[..1].to_vec());
+    assert_eq!(records(&bytes[..second]), Ok(first.clone()));
 
-    assert_eq!(records(&bytes[..second]).unwrap().len(), 1);
-    for left in 1..RECORD_HEADER {
-        let cut = TraceError::CutRecordHeader {
-            record: 1,
-            offset: second,
-            left,
-        };
-        assert_eq!(records(&bytes[..second + left]), Err(cut));
-    }
-    for left in 0..5 {
-        let cut = TraceError::CutRecord {
-            record: 1,
-            offset: second,
-            len: 5,
-            left,
-        };
-        assert_eq!(records(&bytes[..second + RECORD_HEADER + left]), Err(cut));
-    }
-    let error = TraceError::CutRecord {
+    let cut = Cut {
         record: 1,
         offset: second,
-        len: 5,
-        left: 4,
+    };
+    let up_to_the_cut = Records {
+        cut: Some(cut),
+        ..first
+    };
+    for len in second + 1..bytes.len() {
+        assert_eq!(records(&bytes[..len]), Ok(up_to_the_cut.clone()), "{len}");
     }
-    .to_string();
+    for len in FILE_HEADER + 1..second {
+        let read = records(&bytes[..len]).unwrap();
+        let at_the_first = Cut {
+            record: 0,
+            offset: FILE_HEADER,
+        };
+        assert_eq!((read.kept.len(), read.cut), (0, Some(at_the_first)));
+    }
     assert_eq!(
-        error,
-        "btsnoop record 1 at byte offset 47 is cut short: it claims 5 bytes of data and 4 are left"
+        cut.to_string(),
+        "btsnoop record 1 at byte offset 47 is cut short, so the trace is read only up to the whole records before it"
     );
 }
 
 #[test]
-fn a_record_length_past_the_file_or_past_65535_is_refused() {
+fn a_record_length_past_65535_is_refused_and_one_past_the_file_is_a_cut() {
     let mut trace = Trace::new();
     trace.acl(Direction::ToPods, 0b00, &[1, 2, 3]);
     let bytes = trace.bytes();
@@ -154,13 +157,14 @@ fn a_record_length_past_the_file_or_past_65535_is_refused() {
             &len.to_be_bytes(),
         )
     };
-    let past_the_file = TraceError::CutRecord {
-        record: 0,
-        offset: FILE_HEADER,
-        len: LONGEST_RECORD,
-        left: 7,
+    let past_the_file = Records {
+        kept: Vec::new(),
+        cut: Some(Cut {
+            record: 0,
+            offset: FILE_HEADER,
+        }),
     };
-    assert_eq!(records(&claims(65_535)), Err(past_the_file));
+    assert_eq!(records(&claims(65_535)), Ok(past_the_file));
     for len in [65_536, u32::MAX] {
         let too_long = TraceError::RecordTooLong {
             record: 0,
@@ -172,7 +176,7 @@ fn a_record_length_past_the_file_or_past_65535_is_refused() {
 
     let mut longest = Trace::new();
     longest.record(OPCODE_ACL_TX, &vec![0x5a; LONGEST_RECORD]);
-    let kept = records(&longest.bytes()).unwrap();
+    let kept = records(&longest.bytes()).unwrap().kept;
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].data.len(), LONGEST_RECORD);
 }
@@ -197,7 +201,7 @@ fn a_stamp_outside_the_nanosecond_range_is_refused() {
         second + STAMP_AT,
         &62_168_256_000_000_000_u64.to_be_bytes(),
     );
-    assert_eq!(records(&epoch).unwrap()[0].at_ns, 0);
+    assert_eq!(records(&epoch).unwrap().kept[0].at_ns, 0);
 }
 
 #[test]
@@ -213,7 +217,7 @@ fn only_the_records_the_tables_need_are_kept() {
     trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x00, 0x0c, 0xf0, 0x13]);
     trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x04, 0x0c, 0x00, 0x13]);
     trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x00, 0x0c]);
-    let kept = records(&trace.bytes()).unwrap();
+    let kept = records(&trace.bytes()).unwrap().kept;
     let kinds: Vec<Kind> = kept.iter().map(|record| record.kind).collect();
     assert_eq!(
         kinds,
@@ -247,14 +251,6 @@ fn every_error_names_the_record_and_the_rule() {
         (
             TraceError::UnknownDatalink { datalink: 1002 },
             "btsnoop trace has datalink type 1002; only the monitor datalink 2001, which btmon -w writes, is read",
-        ),
-        (
-            TraceError::CutRecordHeader {
-                record: 3,
-                offset: 90,
-                left: 23,
-            },
-            "btsnoop record 3 at byte offset 90 is cut short: 23 bytes are left and a record header is 24",
         ),
         (
             TraceError::RecordTooLong {
@@ -339,16 +335,16 @@ fn play(steps: &[Step]) -> Vec<u8> {
 
 /// Runs every layer over a trace; the return value only keeps the calls from being optimised away.
 fn read_everything(trace: &[u8]) -> usize {
-    let Ok(records) = records(trace) else {
+    let Ok(read) = records(trace) else {
         return 0;
     };
-    let found = channels(&records);
+    let found = channels(&read.kept);
     let read = [
         a2dp::capabilities(&found).len(),
         a2dp::media(&found).len(),
         usize::from(a2dp::configuration(&found).is_some()),
         usize::try_from(a2dp::unread(&found).not_rtp).unwrap(),
-        render(records).map_or(0, |outputs| outputs.len()),
+        render(read).map_or(0, |outputs| outputs.len()),
     ];
     read.into_iter().sum()
 }
@@ -391,14 +387,14 @@ proptest! {
         for (opcode, data) in &packets {
             trace.record(*opcode, data);
         }
-        prop_assert!(records(&trace.bytes()).is_ok());
+        prop_assert!(records(&trace.bytes()).is_ok_and(|read| read.cut.is_none()));
         read_everything(&trace.bytes());
     }
 
     #[test]
     fn never_panics_on_signalling_and_fragments(steps in proptest::collection::vec(step(), 0..96)) {
         let trace = play(&steps);
-        prop_assert!(records(&trace).is_ok());
+        prop_assert!(records(&trace).is_ok_and(|read| read.cut.is_none()));
         prop_assert!(read_everything(&trace) >= 4, "the four tables are always rendered");
     }
 

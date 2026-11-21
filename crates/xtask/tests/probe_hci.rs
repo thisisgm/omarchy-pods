@@ -38,6 +38,12 @@ mod hci {
     const LONGEST_RECORD: usize = 65_535;
     /// Enough longest records to pass `CAPTURE_BOUND`: each takes 65 559 bytes with its header.
     const NOTES_PAST_CAPTURE_BOUND: usize = 1024;
+    /// The identification pattern, the version and the datalink type.
+    const FILE_HEADER: usize = 16;
+    /// Two lengths, flags, drops and the timestamp.
+    const RECORD_HEADER: usize = 24;
+    /// Where the first record's included length sits: after the file header and the original length.
+    const FIRST_INCLUDED_LEN: std::ops::Range<usize> = 20..24;
     /// Every file a run of the session trace holds.
     const SESSION_FILES: [&str; 6] = [
         "a2dp.tsv",
@@ -168,6 +174,18 @@ mod hci {
 
         let cut = &trace[..trace.len() - 1];
         let (home, path) = home_with_trace(cut);
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        assert!(holds(&ran.stderr, b"is cut short"), "{ran:?}");
+        assert_holds_no_secret("stdout of a cut trace", &ran.stdout);
+        assert_holds_no_secret("stderr of a cut trace", &ran.stderr);
+        for (name, contents) in &files(&run_dir(&home, RUN)) {
+            assert_holds_no_secret(name, contents);
+        }
+
+        let mut long_record = trace.clone();
+        long_record[FIRST_INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
+        let (home, path) = home_with_trace(&long_record);
         let refused = hci(&home, &path, RUN);
         assert!(!refused.status.success(), "{refused:?}");
         assert_holds_no_secret("stdout of a refusal", &refused.stdout);
@@ -211,13 +229,15 @@ mod hci {
         let mut wrong_datalink = trace.clone();
         wrong_datalink[12..16].copy_from_slice(&1001_u32.to_be_bytes());
         let mut long_record = trace.clone();
-        long_record[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
+        long_record[FIRST_INCLUDED_LEN].copy_from_slice(&u32::MAX.to_be_bytes());
         for (bytes, rule) in [
             (&[][..], "shorter than its 16 byte file header"),
+            (
+                &trace[..FILE_HEADER - 1],
+                "shorter than its 16 byte file header",
+            ),
             (&wrong_magic[..], "identification pattern"),
             (&wrong_datalink[..], "datalink type 1001"),
-            (&trace[..trace.len() - 3], "is cut short"),
-            (&trace[..40], "is cut short"),
             (&long_record[..], "a record holds at most 65535"),
         ] {
             let (home, path) = home_with_trace(bytes);
@@ -229,6 +249,64 @@ mod hci {
             assert!(error.contains(&path.display().to_string()), "{error}");
             assert!(!home.path().join("omapods-captures").exists(), "{rule}");
         }
+    }
+
+    /// The byte offset every record of a well formed trace starts at.
+    fn record_offsets(trace: &[u8]) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        let mut rest = &trace[FILE_HEADER..];
+        while !rest.is_empty() {
+            offsets.push(trace.len().checked_sub(rest.len()).unwrap());
+            let included = u32::from_be_bytes(rest[4..8].try_into().unwrap());
+            let record_len = RECORD_HEADER.checked_add(usize::try_from(included).unwrap());
+            rest = &rest[record_len.unwrap()..];
+        }
+        offsets
+    }
+
+    #[test]
+    fn a_cut_trace_is_read_up_to_its_last_whole_record_and_says_so() {
+        let trace = session().bytes();
+        let offsets = record_offsets(&trace);
+        let last = offsets.len() - 1;
+        let (home, path) = home_with_trace(&trace[..trace.len() - 3]);
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        let said = format!(
+            "xtask probe: {}: btsnoop record {last} at byte offset {} is cut short, so the trace is read only up to the whole records before it\n",
+            path.display(),
+            offsets[last]
+        );
+        assert_eq!(String::from_utf8(ran.stderr).unwrap(), said);
+        let dir = run_dir(&home, RUN);
+        let links = fs::read_to_string(dir.join("links.txt")).unwrap();
+        let first_line = format!("trace_cut_short record={last} offset={}\n", offsets[last]);
+        assert!(links.starts_with(&first_line), "{links}");
+        assert_eq!(String::from_utf8(ran.stdout).unwrap(), links);
+        assert_eq!(log(&dir, "sdu.log"), control_packets());
+        assert_eq!(log(&dir, "att.log"), att_packets());
+
+        let (home, path) = home_with_trace(&trace[..offsets[0] + RECORD_HEADER]);
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        assert!(holds(
+            &ran.stderr,
+            b"btsnoop record 0 at byte offset 16 is cut short"
+        ));
+        let written = files(&run_dir(&home, RUN));
+        let names: Vec<&str> = written.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv"]);
+        let links = String::from_utf8(written[2].1.clone()).unwrap();
+        assert!(
+            links.starts_with("trace_cut_short record=0 offset=16\n"),
+            "{links}"
+        );
+
+        let (home, path) = home_with_trace(&trace);
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        assert_eq!(ran.stderr, b"");
+        assert!(!holds(&ran.stdout, b"trace_cut_short"));
     }
 
     #[test]

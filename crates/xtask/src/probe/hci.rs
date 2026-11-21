@@ -18,8 +18,6 @@ const FILE_HEADER_LEN: usize = 16;
 const VERSION: u32 = 1;
 /// The datalink type of a trace `btmon -w` writes (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_FORMAT_MONITOR`).
 const MONITOR_DATALINK: u32 = 2001;
-/// Record header: two lengths, flags, drops and the timestamp (`BlueZ` src/shared/btsnoop.c, struct `btsnoop_pkt`).
-const RECORD_HEADER_LEN: usize = 24;
 /// The most data one record holds: `btsnoop_write` in `BlueZ` takes the size as a 16 bit number.
 const MAX_RECORD_LEN: u32 = 65_535;
 /// Microseconds from the btsnoop epoch, midnight of year 0, to 1970 (`BlueZ` src/shared/btsnoop.c: 0x00E03AB44A676000 less 946684800 seconds).
@@ -78,23 +76,6 @@ pub(crate) enum TraceError {
     )]
     UnknownDatalink { datalink: u32 },
     #[error(
-        "btsnoop record {record} at byte offset {offset} is cut short: {left} bytes are left and a record header is {RECORD_HEADER_LEN}"
-    )]
-    CutRecordHeader {
-        record: usize,
-        offset: usize,
-        left: usize,
-    },
-    #[error(
-        "btsnoop record {record} at byte offset {offset} is cut short: it claims {len} bytes of data and {left} are left"
-    )]
-    CutRecord {
-        record: usize,
-        offset: usize,
-        len: usize,
-        left: usize,
-    },
-    #[error(
         "btsnoop record {record} at byte offset {offset} claims {len} bytes of data, and a record holds at most {MAX_RECORD_LEN}"
     )]
     RecordTooLong {
@@ -106,6 +87,27 @@ pub(crate) enum TraceError {
         "btsnoop record {record} at byte offset {offset} has a timestamp outside the years 1970 to 2554, which is all a nanosecond stamp holds"
     )]
     BadStamp { record: usize, offset: usize },
+}
+
+/// Where a trace ends inside a record, as one whose recorder was stopped does; every record before it is whole and is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "btsnoop record {record} at byte offset {offset} is cut short, so the trace is read only up to the whole records before it"
+)]
+pub(crate) struct Cut {
+    /// The index of the cut record, which is also how many whole records come before it.
+    pub record: usize,
+    /// The byte offset the cut record starts at.
+    pub offset: usize,
+}
+
+/// What `records` read from a trace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Records {
+    /// The records the tables need, in trace order.
+    pub kept: Vec<HciRecord>,
+    /// Set when the trace ends inside a record.
+    pub cut: Option<Cut>,
 }
 
 /// Takes the next `N` bytes off the front of `rest`; `None`, with nothing taken, when fewer are left.
@@ -125,7 +127,7 @@ struct RecordHeader {
     micros: u64,
 }
 
-// Sample input: 00 00 00 07, 00 00 00 07, 00 00 00 04, 00 00 00 00, 00 e3 3e 67 0a f9 90 00, all big endian: 7 data bytes, adapter 0, ACL sent.
+// Sample input: 00 00 00 07, 00 00 00 07, 00 00 00 04, 00 00 00 00, 00 e3 3e 67 0a f9 90 00, the 24 bytes of struct `btsnoop_pkt` in `BlueZ` src/shared/btsnoop.c, all big endian: 7 data bytes, adapter 0, ACL sent.
 fn record_header(rest: &mut &[u8]) -> Option<RecordHeader> {
     let _original_len: [u8; 4] = take(rest)?;
     let included = u32::from_be_bytes(take(rest)?);
@@ -168,7 +170,7 @@ pub(crate) fn sender(kind: Kind) -> Option<Direction> {
 }
 
 // Sample input: 62 74 73 6e 6f 6f 70 00, 00 00 00 01, 00 00 07 d1, then records: a 24 byte header and as many data bytes as it claims.
-pub(crate) fn records(trace: &[u8]) -> Result<Vec<HciRecord>, TraceError> {
+pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
     let mut rest = trace;
     let header = (
         take::<8>(&mut rest),
@@ -190,16 +192,13 @@ pub(crate) fn records(trace: &[u8]) -> Result<Vec<HciRecord>, TraceError> {
         return Err(TraceError::UnknownDatalink { datalink });
     }
     let mut kept = Vec::new();
+    let mut cut = None;
     let mut record = 0_usize;
     while !rest.is_empty() {
         let offset = trace.len().saturating_sub(rest.len());
-        let left = rest.len();
         let Some(header) = record_header(&mut rest) else {
-            return Err(TraceError::CutRecordHeader {
-                record,
-                offset,
-                left,
-            });
+            cut = Some(Cut { record, offset });
+            break;
         };
         let too_long = TraceError::RecordTooLong {
             record,
@@ -213,12 +212,8 @@ pub(crate) fn records(trace: &[u8]) -> Result<Vec<HciRecord>, TraceError> {
             return Err(too_long);
         };
         let Some((data, after)) = rest.split_at_checked(len) else {
-            return Err(TraceError::CutRecord {
-                record,
-                offset,
-                len,
-                left: rest.len(),
-            });
+            cut = Some(Cut { record, offset });
+            break;
         };
         rest = after;
         let at_ns = header
@@ -239,7 +234,7 @@ pub(crate) fn records(trace: &[u8]) -> Result<Vec<HciRecord>, TraceError> {
         }
         record = record.saturating_add(1);
     }
-    Ok(kept)
+    Ok(Records { kept, cut })
 }
 
 #[cfg(test)]
