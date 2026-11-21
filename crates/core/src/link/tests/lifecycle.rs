@@ -362,6 +362,15 @@ fn shutdown_closes_and_ignores_everything_after() {
     assert_eq!(sim.machine.phase(), Phase::Stopped);
     sim.run_until(ms(600_000));
     assert_eq!(sim.times_of("Open(0)"), [0]);
+
+    let mut sim = Sim::answering(Answer::Hold);
+    sim.feed(Input::Up(0));
+    sim.feed(Input::Shutdown);
+    assert_eq!(sim.last(), NO_ACTIONS);
+    sim.feed(Input::Release(true));
+    assert_eq!(sim.step_of("Opened").actions, ["Close"]);
+    assert_eq!(sim.step_of("Ended(Closed)").actions, NO_ACTIONS);
+    assert_eq!(sim.machine.phase(), Phase::Stopped);
     sim.check();
 }
 

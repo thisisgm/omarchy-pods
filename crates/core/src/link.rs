@@ -104,7 +104,7 @@ pub enum Phase {
     Parked { until: Duration },
     /// The channel gone and BlueZ says disconnected; the device state is kept until `until`.
     Grace { until: Duration },
-    /// After `Shutdown`.
+    /// After `Shutdown`; every event is ignored except two: a `Command` is refused and a `ChannelOpened` is closed.
     Stopped,
 }
 
@@ -303,6 +303,10 @@ impl Machine {
                 // Only a device gone while opening reaches this: its channel opened after all.
                 vec![Action::CloseChannel]
             }
+            (P::Stopped, E::ChannelOpened) => {
+                // A connect in flight at shutdown opened after all; no channel stays open once stopped.
+                vec![Action::CloseChannel]
+            }
             (
                 P::Opening { attempt }
                 | P::AwaitHandshakeAck { attempt, .. }
@@ -368,7 +372,6 @@ impl Machine {
                 | E::DeviceDown(_)
                 | E::DeviceGone(_)
                 | E::BluezLost
-                | E::ChannelOpened
                 | E::ChannelEnded(_)
                 | E::Packet(_)
                 | E::CallFailed(_)
