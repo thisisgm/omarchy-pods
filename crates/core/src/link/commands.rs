@@ -60,7 +60,7 @@ impl Machine {
         command: Command,
         now: Duration,
     ) -> Vec<Action> {
-        match handling(state, command) {
+        match handling(state, &self.pending, command) {
             Handling::Answer(outcome) => vec![resolve(ticket, outcome)],
             Handling::AsWithoutLink => vec![resolve(ticket, command::apply(state, &command))],
             Handling::Wait(setting, expect) => {
@@ -139,17 +139,18 @@ fn unanswered(state: &State, expect: ControlCommand) -> CommandError {
     }
 }
 
-/// What `command` takes in `Up`, read from the state and the model's features.
-fn handling(state: &State, command: Command) -> Handling {
+/// What `command` takes in `Up`, read from the state, the commands still waiting and the model's features.
+fn handling(state: &State, pending: &[Pending], command: Command) -> Handling {
     let features = state.model.capabilities();
     match command {
-        Command::SetNoise(target) => noise(state, features, target),
+        Command::SetNoise(target) => noise(state, pending, features, target),
         Command::SetConversationalAwareness(enabled) => switch(
             features.conversational_awareness,
             state.conversational_awareness,
             enabled,
             Setting::ConversationalAwareness,
             ControlId::CONVERSATIONAL_AWARENESS,
+            pending,
         ),
         Command::SetOneBudAnc(enabled) => switch(
             features.one_bud_anc,
@@ -157,6 +158,7 @@ fn handling(state: &State, command: Command) -> Handling {
             enabled,
             Setting::OneBudAnc,
             ControlId::ONE_BUD_ANC,
+            pending,
         ),
         Command::SetAdaptiveLevel(level) => adaptive_level(state, features, level),
         // corner: connect, disconnect and forget keep their answer without a link until device actions exist.
@@ -168,18 +170,37 @@ fn handling(state: &State, command: Command) -> Handling {
     }
 }
 
-fn noise(state: &State, features: Capabilities, target: NoiseTarget) -> Handling {
+/// The newest write still waiting for a report under `id`: the value the pods are on their way to.
+fn on_its_way(pending: &[Pending], id: ControlId) -> Option<ControlCommand> {
+    pending
+        .iter()
+        .rev()
+        .map(|entry| entry.expect)
+        .find(|expect| expect.id == id)
+}
+
+fn noise(
+    state: &State,
+    pending: &[Pending],
+    features: Capabilities,
+    target: NoiseTarget,
+) -> Handling {
     if !features.noise_control {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
+    let on_its_way = on_its_way(pending, ControlId::NOISE_CONTROL);
     let mode = match target {
         NoiseTarget::Mode(mode) => mode,
-        NoiseTarget::Cycle => next_offered(state.noise_mode, features),
+        NoiseTarget::Cycle => {
+            let from = on_its_way.and_then(|expect| NoiseMode::from_command(&expect).ok());
+            next_offered(from.unwrap_or(state.noise_mode), features)
+        }
     };
     if !offers(features, mode) {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
-    if mode == state.noise_mode {
+    // A value the state shows counts as set only while no write to that setting is on its way.
+    if on_its_way.is_none() && mode == state.noise_mode {
         return Handling::Answer(Outcome::Confirmed);
     }
     Handling::Wait(Setting::Noise, mode.command())
@@ -209,11 +230,12 @@ fn switch(
     enabled: bool,
     setting: Setting,
     id: ControlId,
+    pending: &[Pending],
 ) -> Handling {
     if !supported {
         return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
     }
-    if enabled == current {
+    if on_its_way(pending, id).is_none() && enabled == current {
         return Handling::Answer(Outcome::Confirmed);
     }
     Handling::Wait(setting, ControlCommand::switch(id, enabled))
