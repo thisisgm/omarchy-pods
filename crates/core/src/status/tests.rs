@@ -152,24 +152,23 @@ fn headset_battery_and_capabilities_land_on_their_keys() {
 }
 
 #[test]
-fn every_noise_mode_ear_detection_behavior_and_lid_state_has_its_cpp_number() {
-    for (mode, number) in [
-        (NoiseMode::Off, 0),
-        (NoiseMode::Anc, 1),
-        (NoiseMode::Transparency, 2),
-        (NoiseMode::Adaptive, 3),
+fn every_noise_mode_ear_detection_behavior_and_lid_state_lands_on_its_key() {
+    for mode in [
+        NoiseMode::Off,
+        NoiseMode::Anc,
+        NoiseMode::Transparency,
+        NoiseMode::Adaptive,
     ] {
         let line = status(&State {
             noise_mode: mode,
             ..State::default()
         });
-        assert_eq!(line["noise_mode"], Value::from(number), "{mode:?}");
+        assert_eq!(line["noise_mode"], Value::from(u8::from(mode)), "{mode:?}");
     }
-    // daemon/media/mediacontroller.h declares these three in this order from 0.
-    for (behavior, number) in [
-        (EarDetectionBehavior::PauseWhenOneRemoved, 0),
-        (EarDetectionBehavior::PauseWhenBothRemoved, 1),
-        (EarDetectionBehavior::Disabled, 2),
+    for behavior in [
+        EarDetectionBehavior::PauseWhenOneRemoved,
+        EarDetectionBehavior::PauseWhenBothRemoved,
+        EarDetectionBehavior::Disabled,
     ] {
         let line = status(&State {
             ear_detection_behavior: behavior,
@@ -177,20 +176,15 @@ fn every_noise_mode_ear_detection_behavior_and_lid_state_has_its_cpp_number() {
         });
         assert_eq!(
             line["ear_detection_behavior"],
-            Value::from(number),
+            Value::from(behavior.number()),
             "{behavior:?}"
         );
     }
-    // daemon/ble/blemanager.h declares OPEN = 0x0, CLOSED = 0x1, then UNKNOWN.
-    for (lid, number) in [
-        (LidState::Open, 0),
-        (LidState::Closed, 1),
-        (LidState::Unknown, 2),
-    ] {
+    for lid in [LidState::Open, LidState::Closed, LidState::Unknown] {
         let line = status(&State {
             lid_state: lid,
             ..State::default()
         });
-        assert_eq!(line["lid_state"], Value::from(number), "{lid:?}");
+        assert_eq!(line["lid_state"], Value::from(lid.number()), "{lid:?}");
     }
 }

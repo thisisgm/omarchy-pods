@@ -97,8 +97,8 @@ impl ControlCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpp_header::{CONTROL, PACKETS};
     use crate::error::Header;
+    use cpp_source::{CONTROL, PACKETS};
 
     const TEST_ID: ControlId = ControlId(0x42);
 

@@ -95,8 +95,8 @@ impl EarReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpp_header::PACKETS;
     use crate::error::Header;
+    use cpp_source::PACKETS;
 
     fn packet(primary: u8, secondary: u8) -> Vec<u8> {
         let mut buf = HEADER.to_vec();

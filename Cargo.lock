@@ -134,6 +134,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
+name = "cpp-source"
+version = "0.0.0"
+
+[[package]]
 name = "cpufeatures"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -240,6 +244,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 name = "pods-core"
 version = "0.0.0"
 dependencies = [
+ "cpp-source",
  "pods-proto",
  "serde_json",
 ]
@@ -248,6 +253,7 @@ dependencies = [
 name = "pods-proto"
 version = "0.0.0"
 dependencies = [
+ "cpp-source",
  "proptest",
  "thiserror",
 ]

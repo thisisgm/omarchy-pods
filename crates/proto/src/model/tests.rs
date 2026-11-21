@@ -1,7 +1,7 @@
 //! The `tst_enums` cases, translated, plus the model rows compared with the C++ source.
 
 use super::*;
-use crate::cpp_header::{DEVICE_INFO, ENUMS};
+use cpp_source::{DEVICE_INFO, ENUMS};
 
 /// Every model, in `model_int` order.
 const ALL: [Model; 13] = [

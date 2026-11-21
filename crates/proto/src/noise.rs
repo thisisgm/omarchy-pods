@@ -98,7 +98,7 @@ impl TryFrom<u8> for NoiseMode {
 mod tests {
     use super::*;
     use crate::control::ControlCommand;
-    use crate::cpp_header::{ENUMS, PACKETS};
+    use cpp_source::{ENUMS, PACKETS};
 
     #[test]
     fn next_follows_the_noise_cycle_order() {
