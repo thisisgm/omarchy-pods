@@ -1,6 +1,6 @@
 //! The protocol 1 commands of the command line: `status`, `watch`, `set` and `do`, one request per connection.
 
-use std::io::{self, BufRead, BufReader, ErrorKind, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
@@ -42,13 +42,12 @@ enum Step {
     Ended(usize),
 }
 
-/// Prints the state line, as the legacy `status` verb does, and unlike it fails when the line cannot be written.
+/// Prints the state line, as the legacy `status` verb does, and unlike it fails, as `watch` does, when the line cannot be written.
 pub(crate) fn status(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> ExitCode {
     match open(socket, &request("get", &[])).and_then(|(_, reply)| state_reply(&reply)) {
-        Ok(line) => match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => unwritten(&error, err),
-        },
+        Ok(line) => print_state(&line, out, err)
+            .err()
+            .unwrap_or(ExitCode::SUCCESS),
         Err(failure) => report(failure, "status", socket, err),
     }
 }
@@ -62,11 +61,8 @@ pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> 
             Err(failure) => return report(failure, "watch", socket, err),
         };
     loop {
-        match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
-            Ok(()) => {}
-            // Nothing reads the output any more, as under `librepods watch | head -1`, which ends the watch normally.
-            Err(error) if error.kind() == ErrorKind::BrokenPipe => return ExitCode::SUCCESS,
-            Err(error) => return unwritten(&error, err),
+        if let Err(code) = print_state(&line, out, err) {
+            return code;
         }
         line = match read_line(&mut reader, None).and_then(|event| event_state_line(&event)) {
             Ok(line) => line,
@@ -75,13 +71,20 @@ pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> 
     }
 }
 
-/// Says on stderr that the state line could not be written to standard output, and fails.
-fn unwritten(error: &io::Error, err: &mut dyn Write) -> ExitCode {
-    emit(
-        err,
-        format!("Cannot write the state to standard output: {error}\n").as_bytes(),
-    );
-    ExitCode::FAILURE
+/// Writes one state line to standard output, or gives the exit code the command ends with when it cannot.
+fn print_state(line: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), ExitCode> {
+    match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        // Nothing reads the output any more, as under `librepods watch | head -1`, which ends the command normally.
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Err(ExitCode::SUCCESS),
+        Err(error) => {
+            emit(
+                err,
+                format!("Cannot write the state to standard output: {error}\n").as_bytes(),
+            );
+            Err(ExitCode::FAILURE)
+        }
+    }
 }
 
 /// Changes one setting, printing nothing unless the daemon refuses.
