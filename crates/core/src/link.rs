@@ -112,6 +112,34 @@ pub enum Phase {
     Stopped,
 }
 
+impl Phase {
+    /// The phase as fixed text for the log, without the data it carries.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Opening { .. } => "opening",
+            Self::AwaitHandshakeAck { .. } => "handshake",
+            Self::AwaitFeaturesAck { .. } => "features",
+            Self::Up { .. } => "up",
+            Self::Closing { .. } => "closing",
+            Self::Backoff { .. } => "backoff",
+            Self::Parked { .. } => "parked",
+            Self::Grace { .. } => "grace",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+/// The log line for a change of phase, read by the hardware tests: `link: idle to opening`.
+#[must_use]
+pub fn phase_change_line(from: Phase, to: Phase) -> String {
+    format!("link: {} to {}", from.name(), to.name())
+}
+
+/// The log line once the link is up with a name, a model and a battery, read by the hardware tests.
+pub const STATE_POPULATED_LINE: &str = "link: state populated";
+
 /// The link session: which device has it, what BlueZ last said, and the phase.
 #[derive(Debug, Default)]
 pub struct Machine {
@@ -668,6 +696,7 @@ mod tests {
     mod known;
     mod ladders;
     mod lifecycle;
+    mod log_lines;
     mod reports;
     mod sim;
 }

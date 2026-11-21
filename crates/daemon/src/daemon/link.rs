@@ -10,7 +10,10 @@ use std::thread;
 use std::time::Duration;
 
 use pods_core::command::{Command, Outcome};
-use pods_core::link::{Action, DeviceAction, End, Event, Machine, Phase, Ticket};
+use pods_core::link::{
+    Action, DeviceAction, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket,
+    phase_change_line,
+};
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pods_proto::model::Model;
@@ -161,7 +164,7 @@ struct Driver {
     next_ticket: u64,
     /// Inputs the driver makes itself, at most one per action of a step, taken before the queue.
     fed_back: VecDeque<Input>,
-    /// `link: state populated` was logged since the link last came up.
+    /// `STATE_POPULATED_LINE` was logged since the link last came up.
     announced: bool,
 }
 
@@ -288,14 +291,13 @@ impl Driver {
 
     fn log_progress(&mut self, before: Phase, state: &State) {
         let after = self.machine.phase();
-        let (from, to) = (phase_name(before), phase_name(after));
         // The stop already has its own line, the signal's.
-        if from != to && after != Phase::Stopped {
-            log(&format!("link: {from} to {to}"));
+        if before.name() != after.name() && after != Phase::Stopped {
+            log(&phase_change_line(before, after));
             self.announced = false;
         }
         if matches!(after, Phase::Up { .. }) && !self.announced && populated(state) {
-            log("link: state populated");
+            log(STATE_POPULATED_LINE);
             self.announced = true;
         }
     }
@@ -325,22 +327,6 @@ fn populated(state: &State) -> bool {
     .iter()
     .any(Option::is_some);
     !state.device_name.is_empty() && state.model != Model::Unknown && any_battery
-}
-
-/// The phase as fixed text for the log, without the data it carries.
-fn phase_name(phase: Phase) -> &'static str {
-    match phase {
-        Phase::Idle => "idle",
-        Phase::Opening { .. } => "opening",
-        Phase::AwaitHandshakeAck { .. } => "handshake",
-        Phase::AwaitFeaturesAck { .. } => "features",
-        Phase::Up { .. } => "up",
-        Phase::Closing { .. } => "closing",
-        Phase::Backoff { .. } => "backoff",
-        Phase::Parked { .. } => "parked",
-        Phase::Grace { .. } => "grace",
-        Phase::Stopped => "stopped",
-    }
 }
 
 #[cfg(test)]
