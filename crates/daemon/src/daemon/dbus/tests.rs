@@ -38,18 +38,6 @@ const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 /// The public description of this interface, which must list every error name.
 const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
 
-/// Every refusal a command can end in; Rust cannot list an enum's variants, so a new one is added here by hand beside its arm in `spelled`.
-const COMMAND_ERRORS: [CommandError; 8] = [
-    CommandError::NotConnected,
-    CommandError::NotSupported,
-    CommandError::NotWorn,
-    CommandError::OutOfRange,
-    CommandError::UnknownKey,
-    CommandError::BadRequest,
-    CommandError::Timeout,
-    CommandError::Headless,
-];
-
 /// The error name a client sees for `error`, written out; a match with no catch-all, so a new variant fails to build until its name is spelled here.
 fn spelled(error: CommandError) -> &'static str {
     match error {
@@ -570,7 +558,7 @@ fn each_outcome_has_the_reply_the_document_names() {
 
 #[test]
 fn every_command_error_has_its_camel_case_name() {
-    for error in COMMAND_ERRORS {
+    for error in CommandError::ALL {
         let name = spelled(error);
         let reply = CallError::from(error);
         assert_eq!(reply.name().as_str(), name);
@@ -581,7 +569,7 @@ fn every_command_error_has_its_camel_case_name() {
 
 #[test]
 fn the_interface_document_lists_every_error_name_with_its_code() {
-    for error in COMMAND_ERRORS {
+    for error in CommandError::ALL {
         let row = format!("| `{}` | `{}` |", spelled(error), error.code());
         assert!(API_DOCUMENT.contains(&row), "{row}");
     }

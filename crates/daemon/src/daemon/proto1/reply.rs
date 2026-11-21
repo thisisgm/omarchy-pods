@@ -95,28 +95,12 @@ mod tests {
         );
     }
 
-    /// The refusal after `error` in the error table; a new variant stops this building until it joins the chain.
-    fn next_in_table(error: CommandError) -> Option<CommandError> {
-        match error {
-            CommandError::NotConnected => Some(CommandError::NotSupported),
-            CommandError::NotSupported => Some(CommandError::NotWorn),
-            CommandError::NotWorn => Some(CommandError::OutOfRange),
-            CommandError::OutOfRange => Some(CommandError::UnknownKey),
-            CommandError::UnknownKey => Some(CommandError::BadRequest),
-            CommandError::BadRequest => Some(CommandError::Timeout),
-            CommandError::Timeout => Some(CommandError::Headless),
-            CommandError::Headless => None,
-        }
-    }
-
     #[test]
     fn the_protocol_document_lists_every_code_with_its_message() {
         let document = include_str!("../../../../../docs/protocol-1.md");
-        let mut next = Some(CommandError::NotConnected);
-        while let Some(error) = next {
+        for error in CommandError::ALL {
             let row = format!("| `{}` | {} |", error.code(), error.message());
             assert!(document.contains(&row), "no row {row}");
-            next = next_in_table(error);
         }
         let row = format!("| `{UNSUPPORTED_VERSION}` | {UNSUPPORTED_VERSION_MESSAGE} |");
         assert!(document.contains(&row), "no row {row}");

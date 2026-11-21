@@ -71,6 +71,17 @@ pub enum CommandError {
 }
 
 impl CommandError {
+    pub const ALL: [Self; 8] = [
+        Self::NotConnected,
+        Self::NotSupported,
+        Self::NotWorn,
+        Self::OutOfRange,
+        Self::UnknownKey,
+        Self::BadRequest,
+        Self::Timeout,
+        Self::Headless,
+    ];
+
     /// The snake case name a client sees.
     #[must_use]
     pub fn code(&self) -> &'static str {
