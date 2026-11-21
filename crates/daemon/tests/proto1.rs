@@ -238,6 +238,11 @@ mod tests {
         let before = legacy_state(&session);
         let anc = r#"{"v":1,"id":9,"op":"set","key":"noise","value":"anc"}"#;
         assert_eq!(client.ask(anc), error_reply("9", NOT_CONNECTED));
+        assert_ne!(
+            legacy_state(&session),
+            before,
+            "the refused noise change still counts"
+        );
         for (id, key, value) in [
             (10, "conversational_awareness", "true"),
             (11, "one_bud_anc", "true"),
@@ -250,11 +255,6 @@ mod tests {
                 error_reply(&id.to_string(), NOT_CONNECTED)
             );
         }
-        assert_ne!(
-            legacy_state(&session),
-            before,
-            "the refused noise change still counts"
-        );
     }
 
     #[test]
