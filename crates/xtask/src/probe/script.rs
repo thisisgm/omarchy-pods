@@ -59,7 +59,7 @@ const VOICE: [Event; 11] = [
 ];
 
 /// `side`: one uplink run under each microphone side, then with each bud out of the ear.
-const SIDE: [Event; 12] = [
+const SIDE: [Event; 13] = [
     at(0, Action::Start),
     at(3_000, Action::SetSide(MicSide::Left)),
     at(
@@ -71,7 +71,7 @@ const SIDE: [Event; 12] = [
         18_000,
         Action::Cue("Say right right right. Tap the left bud twice, then the right bud twice"),
     ),
-    at(33_000, Action::RestoreSide),
+    at(33_000, Action::SetSide(MicSide::Automatic)),
     at(
         33_000,
         Action::Cue("Say automatic. Tap the left bud twice, then the right bud twice"),
@@ -86,6 +86,7 @@ const SIDE: [Event; 12] = [
     ),
     at(68_000, Action::Cue("Put it back")),
     at(75_000, Action::Stop),
+    at(77_000, Action::RestoreSide),
     at(80_000, Action::End),
 ];
 

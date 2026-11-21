@@ -136,7 +136,8 @@ fn only_side_changes_the_microphone_side_and_it_puts_it_back() {
             let expected = [
                 &at(3_000, Action::SetSide(MicSide::Left)),
                 &at(18_000, Action::SetSide(MicSide::Right)),
-                &at(33_000, Action::RestoreSide),
+                &at(33_000, Action::SetSide(MicSide::Automatic)),
+                &at(77_000, Action::RestoreSide),
             ];
             assert_eq!(changes, expected);
         } else {
@@ -181,7 +182,7 @@ fn voice_and_side_do_what_their_scripts_say_and_when() {
             18_000,
             Action::Cue("Say right right right. Tap the left bud twice, then the right bud twice"),
         ),
-        at(33_000, Action::RestoreSide),
+        at(33_000, Action::SetSide(MicSide::Automatic)),
         at(
             33_000,
             Action::Cue("Say automatic. Tap the left bud twice, then the right bud twice"),
@@ -196,6 +197,7 @@ fn voice_and_side_do_what_their_scripts_say_and_when() {
         ),
         at(68_000, Action::Cue("Put it back")),
         at(75_000, Action::Stop),
+        at(77_000, Action::RestoreSide),
         at(80_000, Action::End),
     ];
     assert_eq!(built(ScriptName::Side).events, side);
