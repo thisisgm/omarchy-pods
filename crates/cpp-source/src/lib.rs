@@ -59,7 +59,23 @@ pub const IPC_VERB: CppHeader = CppHeader {
     text: include_str!("../../../daemon/ipcverb.hpp"),
 };
 
+pub const IPC_PATH: CppHeader = CppHeader {
+    path: "daemon/ipcpath.hpp",
+    text: include_str!("../../../daemon/ipcpath.hpp"),
+};
+
+pub const CTL: CppHeader = CppHeader {
+    path: "daemon/librepods-ctl.cpp",
+    text: include_str!("../../../daemon/librepods-ctl.cpp"),
+};
+
 impl CppHeader {
+    /// The whole file, for a reader that parses whole statements itself.
+    #[must_use]
+    pub fn text(&self) -> &'static str {
+        self.text
+    }
+
     /// The text from `scope` (such as `namespace Parse`) to its first closing brace, where every constant read here sits.
     #[must_use]
     pub fn scope(&self, scope: &str) -> &'static str {
