@@ -7,7 +7,7 @@ use pods_proto::sdulog::Direction;
 use super::hci::{Channel, Channels, take};
 
 /// The PSM of AVDTP (Bluetooth Assigned Numbers, Protocol and Service Multiplexers).
-const AVDTP_PSM: u16 = 0x0019;
+pub(crate) const AVDTP_PSM: u16 = 0x0019;
 /// The transaction label is the top four bits of a signal's first byte (AVDTP 1.3 section 8.4, Table 8.1).
 const LABEL_SHIFT: u32 = 4;
 /// The packet type is the two bits below the label (AVDTP 1.3 section 8.4, Table 8.1).
@@ -81,6 +81,18 @@ pub(crate) struct Second {
     pub starts: u64,
 }
 
+/// Everything read from the AVDTP channels of one link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Music {
+    /// Every Media Codec capability the pods returned to Get Capabilities and Get All Capabilities, in trace order.
+    pub capabilities: Vec<Codec>,
+    /// The codec of the last Set Configuration command that the other side accepted.
+    pub configuration: Option<Codec>,
+    /// One row for each second that holds a media packet from the host or a start or suspend command.
+    pub seconds: Vec<Second>,
+    pub unread: Unread,
+}
+
 /// What the music tables could not read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Unread {
@@ -152,15 +164,15 @@ struct MediaPacket {
     gap: bool,
 }
 
-/// Everything one pass over the AVDTP channels finds.
+/// What one pass over the AVDTP channels of a link has found so far.
 #[derive(Debug, Default)]
 struct Tables {
     capabilities: Vec<Codec>,
     configuration: Option<Codec>,
     seconds: BTreeMap<u64, Second>,
     packets: Vec<MediaPacket>,
-    /// The handle and the stamp of every start command, after which a source may begin a new RTP sequence; ordered, so no lookup walks them all.
-    starts: BTreeSet<(u16, u64)>,
+    /// The stamp of every start command, after which a source may begin a new RTP sequence; ordered, so no lookup walks them all.
+    starts: BTreeSet<u64>,
     unread: Unread,
 }
 
@@ -218,18 +230,16 @@ fn rtp_sequence(packet: &[u8]) -> Option<u16> {
     (first >> RTP_VERSION_SHIFT == RTP_VERSION).then_some(sequence)
 }
 
-/// The AVDTP channels with their roles: on a link the first to open is signalling and the next is media.
-fn roles(channels: &Channels) -> Vec<(Role, &Channel)> {
+/// The AVDTP channels of one link with their roles: the first to open is signalling and the next is media.
+fn roles(channels: &Channels, link: usize) -> Vec<(Role, &Channel)> {
     let mut roles: Vec<(Role, &Channel)> = Vec::new();
     for channel in &channels.list {
-        if channel.psm != AVDTP_PSM {
+        if channel.psm != AVDTP_PSM || channel.link != link {
             continue;
         }
         let open = |role: Role| {
             roles.iter().any(|(earlier_role, earlier)| {
-                *earlier_role == role
-                    && earlier.handle == channel.handle
-                    && earlier.closed.is_none_or(|closed| closed > channel.opened)
+                *earlier_role == role && earlier.closed.is_none_or(|closed| closed > channel.opened)
             })
         };
         let role = if !open(Role::Signalling) {
@@ -245,9 +255,9 @@ fn roles(channels: &Channels) -> Vec<(Role, &Channel)> {
 }
 
 impl Tables {
-    fn read(channels: &Channels) -> Self {
+    fn read(channels: &Channels, link: usize) -> Self {
         let mut tables = Self::default();
-        let roles = roles(channels);
+        let roles = roles(channels, link);
         // Every start command is known before the media is read, since a start decides whether a jump in sequence is a gap.
         for (role, channel) in &roles {
             if *role == Role::Signalling {
@@ -349,7 +359,7 @@ impl Tables {
                     }
                 }
                 (START, COMMAND) => {
-                    self.starts.insert((channel.handle, sdu.at_ns));
+                    self.starts.insert(sdu.at_ns);
                     bump(&mut self.second(sdu.at_ns).starts);
                 }
                 (SUSPEND, COMMAND) => bump(&mut self.second(sdu.at_ns).suspends),
@@ -358,14 +368,13 @@ impl Tables {
         }
     }
 
-    /// Whether a start command on `handle` came after the packet stamped `before` and no later than the one stamped `now`.
-    fn restarted(&self, handle: u16, before: u64, now: u64) -> bool {
+    /// Whether a start command came after the packet stamped `before` and no later than the one stamped `now`.
+    fn restarted(&self, before: u64, now: u64) -> bool {
         // A span that is empty or runs backwards holds no start, and a range may not end before it begins.
         let Some(after) = before.checked_add(1).filter(|after| *after <= now) else {
             return false;
         };
-        let span = (handle, after)..=(handle, now);
-        self.starts.range(span).next().is_some()
+        self.starts.range(after..=now).next().is_some()
     }
 
     fn media(&mut self, channel: &Channel) {
@@ -379,8 +388,7 @@ impl Tables {
                 continue;
             };
             let gap = previous.is_some_and(|(before, before_ns)| {
-                sequence != before.wrapping_add(1)
-                    && !self.restarted(channel.handle, before_ns, sdu.at_ns)
+                sequence != before.wrapping_add(1) && !self.restarted(before_ns, sdu.at_ns)
             });
             previous = Some((sequence, sdu.at_ns));
             self.packets.push(MediaPacket {
@@ -408,24 +416,15 @@ impl Tables {
     }
 }
 
-/// Every Media Codec capability the pods returned to Get Capabilities and Get All Capabilities, in trace order.
-pub(crate) fn capabilities(channels: &Channels) -> Vec<Codec> {
-    Tables::read(channels).capabilities
-}
-
-/// The codec of the last Set Configuration command that the other side accepted.
-pub(crate) fn configuration(channels: &Channels) -> Option<Codec> {
-    Tables::read(channels).configuration
-}
-
-/// One row for each second that holds a media packet from the host or a start or suspend command.
-pub(crate) fn media(channels: &Channels) -> Vec<Second> {
-    Tables::read(channels).seconds.into_values().collect()
-}
-
-/// What the three tables above left out, counted.
-pub(crate) fn unread(channels: &Channels) -> Unread {
-    Tables::read(channels).unread
+/// Reads the AVDTP channels of the link numbered `link` in `Channel::link`, in one pass; no other link's stream is mixed in.
+pub(crate) fn music(channels: &Channels, link: usize) -> Music {
+    let tables = Tables::read(channels, link);
+    Music {
+        capabilities: tables.capabilities,
+        configuration: tables.configuration,
+        seconds: tables.seconds.into_values().collect(),
+        unread: tables.unread,
+    }
 }
 
 #[cfg(test)]

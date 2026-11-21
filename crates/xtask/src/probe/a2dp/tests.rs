@@ -44,8 +44,19 @@ const THIRD_CIDS: (u16, u16) = (0x0044, 0x0054);
 /// The whole second every synthetic trace starts in.
 const START_SECOND: u64 = START_UNIX_MICROS / MICROS_PER_SECOND;
 
-fn read(trace: &Trace) -> Channels {
-    channels(&records(&trace.bytes()).unwrap().kept)
+/// The music of every link `handle` named, in the order the links came up.
+fn on(trace: &Trace, handle: u16) -> Vec<Music> {
+    let found = channels(&records(&trace.bytes()).unwrap().kept);
+    let on_handle = found.list.iter().filter(|channel| channel.handle == handle);
+    let mut links: Vec<usize> = on_handle.map(|channel| channel.link).collect();
+    links.dedup();
+    links.iter().map(|link| music(&found, *link)).collect()
+}
+
+/// The music of the one link on the pods' handle.
+fn read(trace: &Trace) -> Music {
+    let [only] = <[Music; 1]>::try_from(on(trace, PODS_HANDLE)).unwrap();
+    only
 }
 
 /// A trace with the signalling channel and the media channel open.
@@ -85,15 +96,15 @@ fn avdtp_capabilities_and_configuration_are_listed() {
         bytes: VENDOR_BYTES.to_vec(),
     };
     assert_eq!(
-        capabilities(&found),
+        found.capabilities,
         [
             standard(CODEC_SBC, &SBC_BYTES),
             standard(CODEC_AAC, &AAC_BYTES),
             vendor
         ]
     );
-    assert_eq!(configuration(&found), Some(standard(CODEC_AAC, &AAC_BYTES)));
-    assert_eq!(unread(&found), Unread::default());
+    assert_eq!(found.configuration, Some(standard(CODEC_AAC, &AAC_BYTES)));
+    assert_eq!(found.unread, Unread::default());
 }
 
 #[test]
@@ -105,18 +116,18 @@ fn only_what_the_pods_accepted_is_a_capability() {
     signal(&mut trace, PODS, 1, REJECT, GET_CAPABILITIES, &sbc);
     signal(&mut trace, PODS, 1, ACCEPT, SET_CONFIGURATION, &sbc);
     trace.send(PODS, MEDIA_CIDS, &avdtp(1, ACCEPT, GET_CAPABILITIES, &sbc));
-    assert_eq!(capabilities(&read(&trace)), []);
+    assert_eq!(read(&trace).capabilities, []);
     signal(&mut trace, PODS, 1, ACCEPT, GET_CAPABILITIES, &sbc);
     signal(&mut trace, PODS, 2, ACCEPT, GET_ALL_CAPABILITIES, &sbc);
     let found = read(&trace);
     assert_eq!(
-        capabilities(&found),
+        found.capabilities,
         [
             standard(CODEC_SBC, &SBC_BYTES),
             standard(CODEC_SBC, &SBC_BYTES)
         ]
     );
-    assert_eq!(configuration(&found), None);
+    assert_eq!(found.configuration, None);
 }
 
 #[test]
@@ -126,15 +137,15 @@ fn a_configuration_is_set_only_when_its_command_is_accepted() {
     let sbc_set = Some(standard(CODEC_SBC, &SBC_BYTES));
     let mut trace = streaming();
     signal(&mut trace, HOST, 3, COMMAND, SET_CONFIGURATION, &sbc);
-    assert_eq!(configuration(&read(&trace)), None);
+    assert_eq!(read(&trace).configuration, None);
     signal(&mut trace, PODS, 4, ACCEPT, SET_CONFIGURATION, &[]);
     signal(&mut trace, HOST, 3, ACCEPT, SET_CONFIGURATION, &[]);
-    assert_eq!(configuration(&read(&trace)), None);
+    assert_eq!(read(&trace).configuration, None);
     signal(&mut trace, PODS, 3, ACCEPT, SET_CONFIGURATION, &[]);
-    assert_eq!(configuration(&read(&trace)), sbc_set);
+    assert_eq!(read(&trace).configuration, sbc_set);
 
     signal(&mut trace, PODS, 5, COMMAND, SET_CONFIGURATION, &aac);
-    assert_eq!(configuration(&read(&trace)), sbc_set);
+    assert_eq!(read(&trace).configuration, sbc_set);
     signal(
         &mut trace,
         HOST,
@@ -144,12 +155,12 @@ fn a_configuration_is_set_only_when_its_command_is_accepted() {
         &REFUSED_CONFIGURATION,
     );
     signal(&mut trace, HOST, 5, ACCEPT, SET_CONFIGURATION, &[]);
-    assert_eq!(configuration(&read(&trace)), sbc_set);
+    assert_eq!(read(&trace).configuration, sbc_set);
     signal(&mut trace, PODS, 6, COMMAND, SET_CONFIGURATION, &aac);
     signal(&mut trace, HOST, 6, ACCEPT, SET_CONFIGURATION, &[]);
     signal(&mut trace, PODS, 6, ACCEPT, SET_CONFIGURATION, &[]);
     assert_eq!(
-        configuration(&read(&trace)),
+        read(&trace).configuration,
         Some(standard(CODEC_AAC, &AAC_BYTES))
     );
     signal(
@@ -162,7 +173,7 @@ fn a_configuration_is_set_only_when_its_command_is_accepted() {
     );
     signal(&mut trace, HOST, 7, ACCEPT, SET_CONFIGURATION, &[]);
     assert_eq!(
-        configuration(&read(&trace)),
+        read(&trace).configuration,
         Some(standard(CODEC_AAC, &AAC_BYTES))
     );
 }
@@ -182,8 +193,8 @@ fn a_set_configuration_command_cut_short_replaces_the_one_before_it() {
     );
     signal(&mut trace, PODS, 3, ACCEPT, SET_CONFIGURATION, &[]);
     let found = read(&trace);
-    assert_eq!(configuration(&found), None);
-    assert_eq!(unread(&found).malformed_signals, 1);
+    assert_eq!(found.configuration, None);
+    assert_eq!(found.unread.malformed_signals, 1);
 }
 
 #[test]
@@ -200,8 +211,8 @@ fn a_vendor_codec_reports_vendor_and_codec_identifier() {
         },
         bytes: VENDOR_BYTES.to_vec(),
     };
-    assert_eq!(capabilities(&found), [vendor]);
-    assert_eq!(unread(&found).malformed_signals, 0);
+    assert_eq!(found.capabilities, [vendor]);
+    assert_eq!(found.unread.malformed_signals, 0);
 
     let identifiers_only = media_codec(
         CODEC_VENDOR,
@@ -215,13 +226,13 @@ fn a_vendor_codec_reports_vendor_and_codec_identifier() {
         GET_CAPABILITIES,
         &identifiers_only,
     );
-    assert_eq!(capabilities(&read(&trace)).len(), 2);
+    assert_eq!(read(&trace).capabilities.len(), 2);
     let short = usize::from(VENDOR_IDENTIFIERS_LEN) - 1;
     let cut = media_codec(CODEC_VENDOR, &VENDOR_BYTES[..short]);
     signal(&mut trace, PODS, 3, ACCEPT, GET_CAPABILITIES, &cut);
     let found = read(&trace);
-    assert_eq!(capabilities(&found).len(), 2);
-    assert_eq!(unread(&found).malformed_signals, 1);
+    assert_eq!(found.capabilities.len(), 2);
+    assert_eq!(found.unread.malformed_signals, 1);
 }
 
 #[test]
@@ -245,8 +256,8 @@ fn a_capability_list_cut_short_is_counted() {
     );
     trace.send(PODS, SIGNALLING_CIDS, &[]);
     let found = read(&trace);
-    assert_eq!(capabilities(&found), [standard(CODEC_SBC, &SBC_BYTES)]);
-    assert_eq!(unread(&found).malformed_signals, 4);
+    assert_eq!(found.capabilities, [standard(CODEC_SBC, &SBC_BYTES)]);
+    assert_eq!(found.unread.malformed_signals, 4);
 }
 
 #[test]
@@ -263,12 +274,12 @@ fn a_fragmented_signal_is_counted_and_not_read() {
         &[CONTINUE_PACKET_ACCEPT, GET_CAPABILITIES],
     );
     let found = read(&trace);
-    assert_eq!(capabilities(&found), []);
+    assert_eq!(found.capabilities, []);
     let counted = Unread {
         fragmented_signals: 3,
         ..Unread::default()
     };
-    assert_eq!(unread(&found), counted);
+    assert_eq!(found.unread, counted);
 }
 
 #[test]
@@ -291,12 +302,13 @@ fn avdtp_suspend_and_start_are_counted() {
         MEDIA_CIDS,
         &avdtp(7, COMMAND, AVDTP_START, &[FIRST_SEID]),
     );
-    let rows: Vec<_> = media(&read(&trace))
+    let rows: Vec<_> = read(&trace)
+        .seconds
         .iter()
         .map(|second| (second.at_s - START_SECOND, second.suspends, second.starts))
         .collect();
     assert_eq!(rows, [(0, 0, 1), (1, 3, 1), (5, 0, 1)]);
-    assert!(media(&read(&trace)).iter().all(|row| row.packets == 0));
+    assert!(read(&trace).seconds.iter().all(|row| row.packets == 0));
 }
 
 #[test]
@@ -306,7 +318,7 @@ fn rtp_gaps_are_counted_across_the_16_bit_wrap() {
         for sequence in sequences {
             trace.send(HOST, MEDIA_CIDS, &rtp(*sequence));
         }
-        let rows = media(&read(&trace));
+        let rows = read(&trace).seconds;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].packets, u64::try_from(sequences.len()).unwrap());
         rows[0].gaps
@@ -347,7 +359,7 @@ fn both_sides_may_wait_for_an_answer_with_one_label() {
             SET_CONFIGURATION,
             &REFUSED_CONFIGURATION,
         );
-        configuration(&read(&trace))
+        read(&trace).configuration
     };
     assert_eq!(crossed(PODS), Some(standard(CODEC_AAC, &AAC_BYTES)));
     assert_eq!(crossed(HOST), Some(standard(CODEC_SBC, &SBC_BYTES)));
@@ -355,7 +367,7 @@ fn both_sides_may_wait_for_an_answer_with_one_label() {
 
 #[test]
 fn a_start_command_lets_the_source_begin_a_new_sequence() {
-    let gaps = |trace: &Trace| -> u64 { media(&read(trace)).iter().map(|row| row.gaps).sum() };
+    let gaps = |trace: &Trace| -> u64 { read(trace).seconds.iter().map(|row| row.gaps).sum() };
     let mut trace = streaming();
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
     trace.send(HOST, MEDIA_CIDS, &rtp(101));
@@ -376,9 +388,13 @@ fn a_start_command_lets_the_source_begin_a_new_sequence() {
     elsewhere.on(PODS_HANDLE);
     elsewhere.send(HOST, MEDIA_CIDS, &rtp(0));
     assert_eq!(gaps(&elsewhere), 1);
-    let found = read(&elsewhere);
-    let starts: u64 = media(&found).iter().map(|row| row.starts).sum();
-    assert_eq!((starts, unread(&found).other_channels), (1, 0));
+    let starts = |handle: u16| -> Vec<u64> {
+        let links = on(&elsewhere, handle);
+        let of_link = |music: &Music| music.seconds.iter().map(|row| row.starts).sum();
+        links.iter().map(of_link).collect()
+    };
+    assert_eq!(starts(PODS_HANDLE), [0]);
+    assert_eq!(starts(KEYBOARD_HANDLE), [1]);
 }
 
 #[test]
@@ -391,7 +407,7 @@ fn a_start_counts_from_just_after_one_packet_up_to_the_next() {
         signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
         trace.at_ms(5_020);
         trace.send(HOST, MEDIA_CIDS, &rtp(0));
-        media(&read(&trace)).iter().map(|row| row.gaps).sum()
+        read(&trace).seconds.iter().map(|row| row.gaps).sum()
     };
     assert_eq!(gaps(4_999), 1, "a start before the first packet");
     assert_eq!(gaps(5_000), 1, "a start stamped with the first packet");
@@ -409,7 +425,8 @@ fn a_clock_that_steps_back_between_two_packets_hides_no_gap() {
     signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
     trace.at_ms(3_000);
     trace.send(HOST, MEDIA_CIDS, &rtp(0));
-    let rows: Vec<_> = media(&read(&trace))
+    let rows: Vec<_> = read(&trace)
+        .seconds
         .iter()
         .map(|row| {
             (
@@ -431,7 +448,8 @@ fn a_gap_is_counted_in_the_second_of_the_packet_that_shows_it() {
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
     trace.at_ms(6_010);
     trace.send(HOST, MEDIA_CIDS, &rtp(102));
-    let rows: Vec<_> = media(&read(&trace))
+    let rows: Vec<_> = read(&trace)
+        .seconds
         .iter()
         .map(|row| (row.at_s - START_SECOND, row.gaps))
         .collect();
@@ -449,14 +467,14 @@ fn a_new_media_channel_starts_a_new_sequence() {
     trace.send(HOST, THIRD_CIDS, &rtp(0));
     trace.send(HOST, THIRD_CIDS, &rtp(1));
     let found = read(&trace);
-    let rows = media(&found);
+    let rows = found.seconds;
     assert_eq!((rows[0].packets, rows[0].gaps), (3, 0));
-    assert_eq!(unread(&found).other_channels, 0);
+    assert_eq!(found.unread.other_channels, 0);
 }
 
 #[test]
 fn media_is_counted_per_second_with_its_largest_interval() {
-    let rows = media(&read(&session()));
+    let rows = read(&session()).seconds;
     let packet = u64::try_from(RTP_HEADER_LEN + MEDIA_PAYLOAD_LEN).unwrap();
     let expected = [
         Second {
@@ -499,12 +517,12 @@ fn only_rtp_packets_the_host_sent_are_media() {
     }
     trace.send(HOST, MEDIA_CIDS, &rtp(2)[..RTP_HEADER_LEN]);
     let found = read(&trace);
-    let rows = media(&found);
+    let rows = found.seconds;
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].packets, rows[0].gaps), (2, 0));
     let bytes = u64::try_from(2 * RTP_HEADER_LEN + MEDIA_PAYLOAD_LEN).unwrap();
     assert_eq!(rows[0].bytes, bytes);
-    assert_eq!(unread(&found).not_rtp, 3);
+    assert_eq!(found.unread.not_rtp, 3);
 }
 
 #[test]
@@ -515,19 +533,20 @@ fn channels_are_told_apart_by_the_order_they_open_in() {
     trace.send(HOST, THIRD_CIDS, &rtp(1));
     trace.send(PODS, THIRD_CIDS, &avdtp(1, ACCEPT, GET_CAPABILITIES, &sbc));
     let found = read(&trace);
-    assert_eq!(media(&found), []);
-    assert_eq!(capabilities(&found), []);
-    assert_eq!(unread(&found).other_channels, 1);
+    assert_eq!(found.seconds, []);
+    assert_eq!(found.capabilities, []);
+    assert_eq!(found.unread.other_channels, 1);
 
     trace.end_link(PODS_HANDLE);
     trace.open(HOST, AVDTP_PSM, THIRD_CIDS);
     trace.send(PODS, THIRD_CIDS, &avdtp(1, ACCEPT, GET_CAPABILITIES, &sbc));
     trace.open(HOST, AVDTP_PSM, MEDIA_CIDS);
     trace.send(HOST, MEDIA_CIDS, &rtp(1));
-    let found = read(&trace);
-    assert_eq!(capabilities(&found), [standard(CODEC_SBC, &SBC_BYTES)]);
-    assert_eq!(media(&found).len(), 1);
-    assert_eq!(unread(&found).other_channels, 1);
+    let [ended, after] = <[Music; 2]>::try_from(on(&trace, PODS_HANDLE)).unwrap();
+    assert_eq!(ended, found, "the link that ended keeps what it held");
+    assert_eq!(after.capabilities, [standard(CODEC_SBC, &SBC_BYTES)]);
+    assert_eq!(after.seconds.len(), 1);
+    assert_eq!(after.unread.other_channels, 0);
 }
 
 #[test]
@@ -547,10 +566,10 @@ fn a_trace_with_no_avdtp_channel_has_no_rows() {
     );
     trace.send(HOST, MEDIA_CIDS, &rtp(1));
     let found = read(&trace);
-    assert_eq!(capabilities(&found), []);
-    assert_eq!(configuration(&found), None);
-    assert_eq!(media(&found), []);
-    assert_eq!(unread(&found), Unread::default());
+    assert_eq!(found.capabilities, []);
+    assert_eq!(found.configuration, None);
+    assert_eq!(found.seconds, []);
+    assert_eq!(found.unread, Unread::default());
 }
 
 proptest! {
@@ -568,8 +587,8 @@ proptest! {
             trace.send(sender, cids, packet);
         }
         let found = read(&trace);
-        let unread = unread(&found);
-        let read = [capabilities(&found).len(), media(&found).len(), usize::from(configuration(&found).is_some())];
+        let unread = found.unread;
+        let read = [found.capabilities.len(), found.seconds.len(), usize::from(found.configuration.is_some())];
         prop_assert!(read.into_iter().sum::<usize>() <= packets.len().saturating_mul(20));
         prop_assert!(unread.other_channels == 0);
     }
@@ -584,7 +603,7 @@ proptest! {
         signal(&mut trace, PODS, 1, message, id, &body);
         signal(&mut trace, HOST, 1, ACCEPT, id, &[]);
         let found = read(&trace);
-        let listed = [capabilities(&found).len(), usize::from(configuration(&found).is_some())];
+        let listed = [found.capabilities.len(), usize::from(found.configuration.is_some())];
         prop_assert!(listed.into_iter().sum::<usize>() <= body.len());
     }
 }

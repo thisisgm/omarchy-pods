@@ -1,5 +1,7 @@
 //! The btsnoop reader, driven with traces the fixture builds, and the whole pipeline fed arbitrary bytes.
 
+use std::collections::BTreeSet;
+
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::Direction;
 use proptest::prelude::*;
@@ -40,8 +42,9 @@ const OPCODE_ACL_RX: u16 = 5;
 /// The host's identifiers of the channels the generated steps open, and how far above each the pods' identifier sits.
 const HOST_CIDS: std::ops::Range<u16> = 0x0040..0x0044;
 const PODS_CID_OFFSET: u16 = 0x0010;
-/// The files every run holds besides its logs.
-const TABLES: [&str; 4] = ["psm.tsv", "a2dp.tsv", "avdtp.txt", "links.txt"];
+/// The files every run holds, and how many more each pods' link adds: its two music tables.
+const TABLES: [&str; 2] = ["psm.tsv", "links.txt"];
+const MUSIC_TABLES_OF_A_LINK: usize = 2;
 
 /// The stamp of a record written `ms` milliseconds into a synthetic trace.
 fn at_ns(ms: u64) -> u64 {
@@ -405,14 +408,18 @@ fn read_everything(trace: &[u8]) -> usize {
         return 0;
     };
     let found = channels(&read.kept);
-    let read = [
-        a2dp::capabilities(&found).len(),
-        a2dp::media(&found).len(),
-        usize::from(a2dp::configuration(&found).is_some()),
-        usize::try_from(a2dp::unread(&found).not_rtp).unwrap(),
-        render(read).map_or(0, |outputs| outputs.len()),
-    ];
-    read.into_iter().sum()
+    let of_link = |channel: &Channel| {
+        let music = a2dp::music(&found, channel.link);
+        let read = [
+            music.capabilities.len(),
+            music.seconds.len(),
+            usize::from(music.configuration.is_some()),
+            usize::try_from(music.unread.not_rtp).unwrap(),
+        ];
+        read.into_iter().sum::<usize>()
+    };
+    let music: usize = found.list.iter().map(of_link).sum();
+    music.saturating_add(render(read).map_or(0, |outputs| outputs.len()))
 }
 
 /// One record whose claimed length need not match the data behind it, so the walker meets cut and shifted records.
@@ -465,12 +472,16 @@ proptest! {
         read_everything(&trace);
         let found = channels(&read.kept);
         let logged = |channel: &&Channel| [CONTROL_PSM, ATT_PSM].contains(&channel.psm) && channel.is_basic();
+        let on_control = found.list.iter().filter(|channel| channel.psm == CONTROL_PSM);
+        let pods_links: BTreeSet<usize> = on_control.map(|channel| channel.link).collect();
         let outputs = render(read).unwrap();
         for table in TABLES {
             let named = outputs.iter().filter(|output| output.name == table).count();
             prop_assert_eq!(named, 1, "{} is always rendered, once", table);
         }
-        let logs = outputs.len().checked_sub(TABLES.len());
+        let music = outputs.iter().filter(|output| output.name.starts_with("a2dp") || output.name.starts_with("avdtp")).count();
+        prop_assert_eq!(music, pods_links.len().saturating_mul(MUSIC_TABLES_OF_A_LINK), "two music tables for each link with a control channel");
+        let logs = outputs.len().checked_sub(TABLES.len()).and_then(|rest| rest.checked_sub(music));
         prop_assert_eq!(logs, Some(found.list.iter().filter(logged).count()), "one log for each basic channel on the two PSMs");
     }
 

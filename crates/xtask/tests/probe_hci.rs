@@ -17,8 +17,10 @@ mod hci {
     use tempfile::TempDir;
 
     use super::fixture::{
-        ATT_CIDS, CONTROL_CIDS, DEVICE_NAME, HOST_ADDRESS, KEYSTROKES, LINK_KEY, PODS_ADDRESS,
-        Trace, att_packets, control_packets, session,
+        ACCEPT, ATT_CIDS, AVDTP_PSM, AVDTP_START, CODEC_SBC, COMMAND, CONTROL_CIDS, DEVICE_NAME,
+        FIRST_SEID, GET_CAPABILITIES, HOST_ADDRESS, KEYBOARD_HANDLE, KEYSTROKES, LINK_KEY,
+        MEDIA_CIDS, PODS_ADDRESS, PODS_HANDLE, SET_CONFIGURATION, SIGNALLING_CIDS, Trace,
+        att_packets, avdtp, control_packets, media_codec, rtp, session,
     };
 
     /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
@@ -68,6 +70,35 @@ mod hci {
         "psm.tsv",
         "sdu.log",
     ];
+
+    /// A made up connection handle for a second link.
+    const SECOND_HANDLE: u16 = 0x000d;
+    /// SBC codec bytes, made up, that the session trace never carries.
+    const OTHER_SBC: [u8; 4] = [0x21, 0x15, 0x02, 0x20];
+    /// A moment after the session's link ended that lies in the second of its last media packets.
+    const SAME_SECOND_MS: u64 = 3_300;
+    /// A moment in a second the session trace has no row for.
+    const LATER_MS: u64 = 10_100;
+    /// The music tables of the session trace.
+    const SESSION_SECONDS: &str = "second\tmedia_packets\tmedia_bytes\trtp_gaps\tlargest_interval_ns\tavdtp_suspend\tavdtp_start\n\
+        1\t1\t112\t0\t0\t0\t1\n\
+        2\t5\t560\t1\t20000000\t1\t0\n\
+        3\t2\t224\t0\t1100000000\t0\t1\n";
+    const SESSION_CODECS: &str = "capability type=0x00 bytes=ffff0235\n\
+        capability type=0x02 bytes=80018c84e200\n\
+        capability type=0xff vendor=0x0000004c codec=0x8001 bytes=4c0000000180aabb\n\
+        configuration type=0x02 bytes=80018c84e200\n";
+    /// The music tables of one `stream` that starts at `LATER_MS`.
+    const STREAM_SECONDS: &str = "second\tmedia_packets\tmedia_bytes\trtp_gaps\tlargest_interval_ns\tavdtp_suspend\tavdtp_start\n\
+        10\t4\t448\t0\t1000000\t0\t1\n";
+    const STREAM_CODECS: &str = "capability type=0x00 bytes=21150220\n\
+        configuration type=0x00 bytes=21150220\n";
+    /// The identifiers of three more channels, which no fixture trace opens.
+    const SPARE_CIDS: [(u16, u16); 3] = [(0x0044, 0x0054), (0x0045, 0x0055), (0x0046, 0x0056)];
+    /// The first byte of an AVDTP start packet, the first fragment of a longer signal (AVDTP 1.3 section 8.4.2, Table 8.4).
+    const START_PACKET: u8 = 0x04;
+    /// What `links.txt` says of a link's music tables when nothing on its AVDTP channels was left unread.
+    const ALL_READ: &str = "avdtp_fragmented_signals=0 avdtp_malformed_signals=0 avdtp_other_channels=0 media_packets_not_rtp=0";
 
     /// A temporary home with a trace file beside the store, owner only as the bounded read demands.
     fn home_with_trace(trace: &[u8]) -> (TempDir, PathBuf) {
@@ -367,8 +398,8 @@ mod hci {
         ));
         let written = files(&run_dir(&home, RUN));
         let names: Vec<&str> = written.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv"]);
-        let links = String::from_utf8(written[2].1.clone()).unwrap();
+        assert_eq!(names, ["links.txt", "psm.tsv"]);
+        let links = String::from_utf8(written[0].1.clone()).unwrap();
         assert!(
             links.starts_with("trace_cut_short record=0 offset=16\n"),
             "{links}"
@@ -463,6 +494,154 @@ mod hci {
             .unwrap();
         assert!(!bad_stamp.status.success(), "{bad_stamp:?}");
         assert!(!home.path().join("omapods-captures").exists());
+    }
+
+    /// A music stream on `handle` from `at_ms` on: SBC offered and set, a start, then four media packets a millisecond apart.
+    fn stream(trace: &mut Trace, handle: u16, at_ms: u64) {
+        let (host, far) = (Direction::ToPods, Direction::FromPods);
+        let offered = media_codec(CODEC_SBC, &OTHER_SBC);
+        let mut chosen = vec![FIRST_SEID, FIRST_SEID];
+        chosen.extend(&offered);
+        trace.on(handle);
+        trace.at_ms(at_ms);
+        trace.open(host, AVDTP_PSM, SIGNALLING_CIDS);
+        for (sender, packet) in [
+            (far, avdtp(1, ACCEPT, GET_CAPABILITIES, &offered)),
+            (host, avdtp(2, COMMAND, SET_CONFIGURATION, &chosen)),
+            (far, avdtp(2, ACCEPT, SET_CONFIGURATION, &[])),
+            (host, avdtp(3, COMMAND, AVDTP_START, &[FIRST_SEID])),
+        ] {
+            trace.send(sender, SIGNALLING_CIDS, &packet);
+        }
+        trace.open(host, AVDTP_PSM, MEDIA_CIDS);
+        for sequence in 0..4 {
+            trace.send(host, MEDIA_CIDS, &rtp(sequence));
+        }
+    }
+
+    #[test]
+    fn a_headset_that_is_not_the_pods_changes_no_music_table() {
+        // The second handle is the one the pods' link had before it ended, so only the link tells the two devices apart.
+        for handle in [SECOND_HANDLE, PODS_HANDLE] {
+            let mut trace = session();
+            stream(&mut trace, handle, SAME_SECOND_MS);
+            let (home, path) = home_with_trace(&trace.bytes());
+            let ran = hci(&home, &path, RUN);
+            assert!(ran.status.success(), "{ran:?}");
+            let dir = run_dir(&home, RUN);
+            assert_eq!(names_in(&dir), SESSION_FILES);
+            let seconds = fs::read_to_string(dir.join("a2dp.tsv")).unwrap();
+            assert_eq!(seconds, SESSION_SECONDS, "handle {handle:#06x}");
+            let codecs = fs::read_to_string(dir.join("avdtp.txt")).unwrap();
+            assert_eq!(codecs, SESSION_CODECS, "handle {handle:#06x}");
+            let links = String::from_utf8(ran.stdout).unwrap();
+            let read = format!("music a2dp.tsv avdtp.txt handle=0x000b {ALL_READ}\n");
+            assert!(links.contains(&read), "{links}");
+            let left_out = "avdtp_channels_on_other_links 2\n";
+            assert!(links.contains(left_out), "{links}");
+            let requests = fs::read_to_string(dir.join("psm.tsv")).unwrap();
+            let asked = format!("\thost\t0x0019\t0x0000\t{handle:#06x}\t");
+            assert_eq!(
+                requests.matches(&asked).count(),
+                if handle == PODS_HANDLE { 4 } else { 2 }
+            );
+        }
+    }
+
+    #[test]
+    fn a_trace_that_shows_no_pods_link_gets_no_music_table_and_says_so() {
+        let mut trace = Trace::new();
+        stream(&mut trace, PODS_HANDLE, LATER_MS);
+        let (home, path) = home_with_trace(&trace.bytes());
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        assert_eq!(ran.stderr, b"");
+        assert_eq!(names_in(&run_dir(&home, RUN)), ["links.txt", "psm.tsv"]);
+        let links = String::from_utf8(ran.stdout).unwrap();
+        let said = "avdtp_channels_on_other_links 2\n\
+            music_tables_not_written reason=no_link_opened_psm_0x1001\n";
+        assert!(links.ends_with(said), "{links}");
+        assert!(!links.contains("music a2dp"), "{links}");
+    }
+
+    #[test]
+    fn each_pods_link_gets_music_tables_of_its_own() {
+        // The second link is a reconnection on the handle of the link that ended, then a link older than the pods' that opens its control channel later.
+        for handle in [PODS_HANDLE, KEYBOARD_HANDLE] {
+            let mut trace = session();
+            trace.on(handle);
+            trace.open(Direction::ToPods, CONTROL_PSM, SPARE_CIDS[0]);
+            stream(&mut trace, handle, LATER_MS);
+            let (home, path) = home_with_trace(&trace.bytes());
+            let ran = hci(&home, &path, RUN);
+            assert!(ran.status.success(), "{ran:?}");
+            let dir = run_dir(&home, RUN);
+            assert_eq!(
+                names_in(&dir),
+                [
+                    "a2dp-2.tsv",
+                    "a2dp.tsv",
+                    "att.log",
+                    "avdtp-2.txt",
+                    "avdtp.txt",
+                    "links.txt",
+                    "psm.tsv",
+                    "sdu-2.log",
+                    "sdu.log"
+                ]
+            );
+            for (name, expected) in [
+                ("a2dp.tsv", SESSION_SECONDS),
+                ("avdtp.txt", SESSION_CODECS),
+                ("a2dp-2.tsv", STREAM_SECONDS),
+                ("avdtp-2.txt", STREAM_CODECS),
+            ] {
+                let written = fs::read_to_string(dir.join(name)).unwrap();
+                assert_eq!(written, expected, "{name} with handle {handle:#06x}");
+            }
+            let links = String::from_utf8(ran.stdout).unwrap();
+            let said = format!(
+                "music a2dp.tsv avdtp.txt handle=0x000b {ALL_READ}\n\
+                 music a2dp-2.tsv avdtp-2.txt handle={handle:#06x} {ALL_READ}\n"
+            );
+            assert!(links.ends_with(&said), "{links}");
+            assert!(
+                links.contains("avdtp_channels_on_other_links 0\n"),
+                "{links}"
+            );
+            assert!(!links.contains("music_tables_not_written"), "{links}");
+        }
+    }
+
+    #[test]
+    fn what_a_link_left_unread_is_counted_on_its_own_line() {
+        let (host, pods) = (Direction::ToPods, Direction::FromPods);
+        let mut trace = session();
+        trace.on(SECOND_HANDLE);
+        // The link opens two control channels and is still one link with one pair of tables.
+        trace.open(host, CONTROL_PSM, CONTROL_CIDS);
+        trace.open(host, CONTROL_PSM, ATT_CIDS);
+        trace.open(host, AVDTP_PSM, SIGNALLING_CIDS);
+        trace.open(host, AVDTP_PSM, MEDIA_CIDS);
+        trace.send(pods, SIGNALLING_CIDS, &[START_PACKET]);
+        for _ in 0..2 {
+            trace.send(pods, SIGNALLING_CIDS, &[]);
+        }
+        for cids in SPARE_CIDS {
+            trace.open(host, AVDTP_PSM, cids);
+        }
+        for _ in 0..4 {
+            trace.send(host, MEDIA_CIDS, &[0x00]);
+        }
+        let (home, path) = home_with_trace(&trace.bytes());
+        let ran = hci(&home, &path, RUN);
+        assert!(ran.status.success(), "{ran:?}");
+        let links = String::from_utf8(ran.stdout).unwrap();
+        let said = format!(
+            "music a2dp.tsv avdtp.txt handle=0x000b {ALL_READ}\n\
+             music a2dp-2.tsv avdtp-2.txt handle=0x000d avdtp_fragmented_signals=1 avdtp_malformed_signals=2 avdtp_other_channels=3 media_packets_not_rtp=4\n"
+        );
+        assert!(links.ends_with(&said), "{links}");
     }
 
     #[test]
