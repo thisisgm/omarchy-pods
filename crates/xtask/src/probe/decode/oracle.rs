@@ -32,11 +32,16 @@ pub(crate) const STDERR_FILE: &str = "ffmpeg.stderr";
 pub(crate) const MAX_STDERR_BYTES: u64 = 1024 * 1024;
 const SAMPLE_BYTES: usize = size_of::<f32>();
 
+/// The most of the oracle's first line a refusal carries.
+const FIRST_LINE_CHARS: usize = 200;
+
 /// How the oracle refused a stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Refusal {
     pub(crate) status: ExitStatus,
     pub(crate) stderr_lines: usize,
+    /// The first line it said: only the whole decode's messages are kept as a file, so an experiment's reason lives here.
+    pub(crate) first_line: String,
 }
 
 impl fmt::Display for Refusal {
@@ -44,8 +49,13 @@ impl fmt::Display for Refusal {
         let Self {
             status,
             stderr_lines,
+            first_line,
         } = self;
-        write!(f, "{status}; {stderr_lines} lines in {STDERR_FILE}")
+        write!(f, "{status}; {stderr_lines} lines said")?;
+        if first_line.is_empty() {
+            return Ok(());
+        }
+        write!(f, ", first: {first_line}")
     }
 }
 
@@ -77,10 +87,20 @@ fn judge(status: ExitStatus, said: &[u8]) -> Result<(), Refusal> {
     if status.success() && said.is_empty() {
         return Ok(());
     }
-    let stderr_lines = String::from_utf8_lossy(said).lines().count();
+    let said = String::from_utf8_lossy(said);
+    // Control characters go, a tab among them, so the line stays one cell of the table.
+    let first_line = said
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(FIRST_LINE_CHARS)
+        .collect();
     Err(Refusal {
         status,
-        stderr_lines,
+        stderr_lines: said.lines().count(),
+        first_line,
     })
 }
 
