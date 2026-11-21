@@ -26,5 +26,5 @@ pub const ABSENT_GRACE_MS: u64 = 7750;
 /// Commands waiting for a report at once; the next one is refused.
 pub const PENDING_MAX: usize = 16;
 
-/// Paired AirPods the machine remembers; the oldest is dropped for a new one.
+/// Paired AirPods the machine remembers; once full, a new address is not kept.
 pub const KNOWN_MAX: usize = 16;
