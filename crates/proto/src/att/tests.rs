@@ -88,27 +88,20 @@ fn cut_list(prefix: [u8; 2], entry: &[u8], kept: usize) -> Vec<u8> {
     pdu
 }
 
-fn unknown(field: &'static str, value: u8) -> ParseError {
+fn unknown(parser: Parser, field: &'static str, value: u8) -> ParseError {
     ParseError::UnknownValue {
-        parser: Parser::Att,
+        parser,
         field,
         value,
     }
 }
 
-fn empty_list(list_len: usize) -> ParseError {
-    ParseError::EmptyList {
-        parser: Parser::Att,
-        list_len,
-    }
+fn empty_list(parser: Parser, list_len: usize) -> ParseError {
+    ParseError::EmptyList { parser, list_len }
 }
 
-fn too_short(need: usize, got: usize) -> ParseError {
-    ParseError::TooShort {
-        parser: Parser::Att,
-        need,
-        got,
-    }
+fn too_short(parser: Parser, need: usize, got: usize) -> ParseError {
+    ParseError::TooShort { parser, need, got }
 }
 
 #[test]
@@ -201,12 +194,12 @@ fn an_unknown_information_format_is_an_error() {
         let pdu = [0x05, format, 0x01, 0x00, 0x00, 0x28];
         assert_eq!(
             AttPdu::parse(&pdu),
-            Err(unknown("information format", format))
+            Err(unknown(Parser::AttFindInformation, "format", format))
         );
     }
     assert_eq!(
-        unknown("information format", 0x03).to_string(),
-        "attribute protocol packet has an unknown information format value 0x03"
+        unknown(Parser::AttFindInformation, "format", 0x03).to_string(),
+        "attribute protocol find information response has an unknown format value 0x03"
     );
 }
 
@@ -231,11 +224,12 @@ fn by_type_entries_are_cut_at_the_declared_length() {
 fn a_zero_entry_length_is_an_error_not_a_loop() {
     for entry_len in [0x00, 0x01] {
         let pdu = [0x09, entry_len, 0xaa, 0xbb, 0xcc, 0xdd];
-        assert_eq!(AttPdu::parse(&pdu), Err(unknown("entry length", entry_len)));
+        let refused = unknown(Parser::AttReadByType, "entry length", entry_len);
+        assert_eq!(AttPdu::parse(&pdu), Err(refused));
     }
     assert_eq!(
-        unknown("entry length", 0x00).to_string(),
-        "attribute protocol packet has an unknown entry length value 0x00"
+        unknown(Parser::AttReadByType, "entry length", 0x00).to_string(),
+        "attribute protocol read by type response has an unknown entry length value 0x00"
     );
     let shortest = [0x09, 0x02, 0xaa, 0xbb, 0xcc, 0xdd];
     let seen: Vec<_> = by_type(&shortest).collect();
@@ -302,12 +296,17 @@ fn an_error_response_of_another_length_is_refused() {
     let one_too_many = [0x01, 0x04, 0x02, 0x01, 0x0a, 0x00];
     for got in [1, 4, 6] {
         let refused = ParseError::WrongLength {
-            parser: Parser::Att,
+            parser: Parser::AttError,
             expected: 5,
             got,
         };
         assert_eq!(AttPdu::parse(&one_too_many[..got]), Err(refused));
     }
+    let refused = AttPdu::parse(&one_too_many).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "attribute protocol error response is 6 bytes, expected 5"
+    );
 }
 
 #[test]
@@ -336,16 +335,27 @@ fn notification_and_indication_carry_handle_and_value() {
 
 #[test]
 fn a_pdu_cut_before_its_fixed_part_is_too_short() {
-    assert_eq!(AttPdu::parse(&[]), Err(too_short(1, 0)));
-    assert_eq!(AttPdu::parse(&[0x05]), Err(too_short(2, 1)));
-    assert_eq!(AttPdu::parse(&[0x09]), Err(too_short(2, 1)));
-    for opcode in [0x1b, 0x1d] {
-        assert_eq!(AttPdu::parse(&[opcode]), Err(too_short(3, 1)));
-        assert_eq!(AttPdu::parse(&[opcode, 0x21]), Err(too_short(3, 2)));
+    assert_eq!(AttPdu::parse(&[]), Err(too_short(Parser::Att, 1, 0)));
+    for (opcode, parser) in [
+        (0x05, Parser::AttFindInformation),
+        (0x09, Parser::AttReadByType),
+    ] {
+        assert_eq!(AttPdu::parse(&[opcode]), Err(too_short(parser, 2, 1)));
+    }
+    for (opcode, parser) in [
+        (0x1b, Parser::AttNotification),
+        (0x1d, Parser::AttIndication),
+    ] {
+        assert_eq!(AttPdu::parse(&[opcode]), Err(too_short(parser, 3, 1)));
+        assert_eq!(AttPdu::parse(&[opcode, 0x21]), Err(too_short(parser, 3, 2)));
     }
     assert_eq!(
-        too_short(2, 1).to_string(),
-        "attribute protocol packet too short: need 2 bytes, got 1"
+        too_short(Parser::Att, 1, 0).to_string(),
+        "attribute protocol packet too short: need 1 bytes, got 0"
+    );
+    assert_eq!(
+        too_short(Parser::AttNotification, 3, 2).to_string(),
+        "attribute protocol notification too short: need 3 bytes, got 2"
     );
 }
 
@@ -406,14 +416,15 @@ fn a_find_information_reply_with_no_whole_pair_is_refused() {
     for (prefix, pair) in [([0x05, 0x01], &SHORT_PAIR[..]), ([0x05, 0x02], &long[..])] {
         for kept in 0..pair.len() {
             let pdu = [&prefix[..], &pair[..kept]].concat();
-            assert_eq!(AttPdu::parse(&pdu), Err(empty_list(kept)), "{pdu:02x?}");
+            let refused = empty_list(Parser::AttFindInformation, kept);
+            assert_eq!(AttPdu::parse(&pdu), Err(refused), "{pdu:02x?}");
         }
         let shortest = [&prefix[..], pair].concat();
         assert_eq!(information(&shortest).count(), 1);
     }
     assert_eq!(
-        empty_list(3).to_string(),
-        "attribute protocol packet has an empty list: its 3 bytes hold no whole entry"
+        empty_list(Parser::AttFindInformation, 3).to_string(),
+        "attribute protocol find information response has an empty list: its 3 bytes hold no whole entry"
     );
 }
 
@@ -422,7 +433,8 @@ fn a_read_by_type_reply_with_no_whole_entry_is_refused() {
     let prefix = [0x09, 0x07];
     for kept in 0..SHORT_DECLARATION.len() {
         let pdu = [&prefix[..], &SHORT_DECLARATION[..kept]].concat();
-        assert_eq!(AttPdu::parse(&pdu), Err(empty_list(kept)), "{pdu:02x?}");
+        let refused = empty_list(Parser::AttReadByType, kept);
+        assert_eq!(AttPdu::parse(&pdu), Err(refused), "{pdu:02x?}");
     }
     let shortest = [&prefix[..], &SHORT_DECLARATION[..]].concat();
     assert_eq!(by_type(&shortest).count(), 1);

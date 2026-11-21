@@ -103,19 +103,26 @@ fn att_pair_bytes(pair: HandleInfo<'_>) -> Vec<u8> {
     bytes
 }
 
-// Sample output: ([05, 01], 4), the two bytes that open a list reply and the length of one of its entries.
-fn att_list_prefix() -> impl Strategy<Value = ([u8; 2], usize)> {
+// Sample output: (AttFindInformation, [05, 01], 4), the reader of a list reply, the two bytes that open it and the length of one of its entries.
+fn att_list_prefix() -> impl Strategy<Value = (Parser, [u8; 2], usize)> {
     prop_oneof![
         Just((
+            Parser::AttFindInformation,
             [ATT_FIND_INFORMATION_REPLY, ATT_SHORT_FORMAT.0],
             ATT_SHORT_FORMAT.1
         )),
         Just((
+            Parser::AttFindInformation,
             [ATT_FIND_INFORMATION_REPLY, ATT_LONG_FORMAT.0],
             ATT_LONG_FORMAT.1
         )),
-        (ATT_ENTRY_MIN_LEN..=u8::MAX)
-            .prop_map(|len| ([ATT_READ_BY_TYPE_REPLY, len], usize::from(len))),
+        (ATT_ENTRY_MIN_LEN..=u8::MAX).prop_map(|len| {
+            (
+                Parser::AttReadByType,
+                [ATT_READ_BY_TYPE_REPLY, len],
+                usize::from(len),
+            )
+        }),
     ]
 }
 
@@ -280,7 +287,7 @@ proptest! {
     // A reply behind a valid two byte prefix yields every whole entry in order and counts a tail shorter than one; with no whole entry it is refused.
     #[test]
     fn att_list_replies_account_for_every_byte(
-        (prefix, entry_len) in att_list_prefix(),
+        (parser, prefix, entry_len) in att_list_prefix(),
         body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
     ) {
         let mut pdu = prefix.to_vec();
@@ -305,7 +312,7 @@ proptest! {
             }
             other => {
                 prop_assert!(whole.is_empty(), "a list reply did not parse as one: {:?}", other);
-                let empty = ParseError::EmptyList { parser: Parser::Att, list_len: body.len() };
+                let empty = ParseError::EmptyList { parser, list_len: body.len() };
                 prop_assert_eq!(other, Err(empty));
             }
         }
@@ -314,14 +321,14 @@ proptest! {
     // A reply whose list holds no whole entry is refused, so nothing can walk it and learn no handle.
     #[test]
     fn att_list_reply_with_no_whole_entry_is_refused(
-        ((prefix, entry_len), body) in att_list_prefix().prop_flat_map(|(prefix, entry_len)| {
-            (Just((prefix, entry_len)), proptest::collection::vec(any::<u8>(), 0..entry_len))
+        ((parser, prefix, entry_len), body) in att_list_prefix().prop_flat_map(|list| {
+            (Just(list), proptest::collection::vec(any::<u8>(), 0..list.2))
         }),
     ) {
         prop_assert!(body.len() < entry_len);
         let mut pdu = prefix.to_vec();
         pdu.extend(&body);
-        let empty = ParseError::EmptyList { parser: Parser::Att, list_len: body.len() };
+        let empty = ParseError::EmptyList { parser, list_len: body.len() };
         prop_assert_eq!(AttPdu::parse(&pdu), Err(empty));
     }
 
@@ -333,7 +340,7 @@ proptest! {
     ) {
         let mut pdu = vec![ATT_FIND_INFORMATION_REPLY, format];
         pdu.extend(&body);
-        let refused = ParseError::UnknownValue { parser: Parser::Att, field: "information format", value: format };
+        let refused = ParseError::UnknownValue { parser: Parser::AttFindInformation, field: "format", value: format };
         prop_assert_eq!(AttPdu::parse(&pdu), Err(refused));
     }
 
@@ -345,14 +352,20 @@ proptest! {
     ) {
         let mut pdu = vec![ATT_READ_BY_TYPE_REPLY, entry_len];
         pdu.extend(&body);
-        let refused = ParseError::UnknownValue { parser: Parser::Att, field: "entry length", value: entry_len };
+        let refused = ParseError::UnknownValue { parser: Parser::AttReadByType, field: "entry length", value: entry_len };
         prop_assert_eq!(AttPdu::parse(&pdu), Err(refused));
     }
 
     #[test]
     fn att_handle_values_keep_every_byte_behind_the_handle(
-        opcode in prop_oneof![Just(ATT_NOTIFICATION), Just(ATT_INDICATION)],
-        body in proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+        (opcode, parser) in prop_oneof![
+            Just((ATT_NOTIFICATION, Parser::AttNotification)),
+            Just((ATT_INDICATION, Parser::AttIndication)),
+        ],
+        body in prop_oneof![
+            proptest::collection::vec(any::<u8>(), 0..ATT_HANDLE_VALUE_MIN_LEN),
+            proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
+        ],
     ) {
         let mut pdu = vec![opcode];
         pdu.extend(&body);
@@ -369,7 +382,7 @@ proptest! {
             }
             other => {
                 prop_assert!(body.len() < ATT_HANDLE_LEN, "{:?}", other);
-                let too_short = ParseError::TooShort { parser: Parser::Att, need: ATT_HANDLE_VALUE_MIN_LEN, got: pdu.len() };
+                let too_short = ParseError::TooShort { parser, need: ATT_HANDLE_VALUE_MIN_LEN, got: pdu.len() };
                 prop_assert_eq!(other, Err(too_short));
             }
         }
@@ -385,7 +398,7 @@ proptest! {
     fn att_error_response_is_read_at_one_length_only(body in proptest::collection::vec(any::<u8>(), 0..ATT_ERROR_BOUND)) {
         let mut pdu = vec![ATT_ERROR.0];
         pdu.extend(&body);
-        let wrong_length = ParseError::WrongLength { parser: Parser::Att, expected: ATT_ERROR.1, got: pdu.len() };
+        let wrong_length = ParseError::WrongLength { parser: Parser::AttError, expected: ATT_ERROR.1, got: pdu.len() };
         match AttPdu::parse(&pdu) {
             Ok(AttPdu::Error { .. }) => prop_assert_eq!(pdu.len(), ATT_ERROR.1),
             other => prop_assert_eq!(other, Err(wrong_length)),
