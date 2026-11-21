@@ -64,6 +64,9 @@ mod tests {
     /// The lock file's extension beside the socket, from `LOCK_EXTENSION` in `src/daemon/socket.rs`.
     const LOCK_EXTENSION: &str = "lock";
 
+    /// The lock file's mode, from `LOCK_MODE` in `src/daemon/socket.rs`.
+    const LOCK_MODE: u32 = 0o600;
+
     /// SIGTERM is signal 15, so bit 14 of a signal mask in `/proc/<pid>/status`.
     const SIGTERM_BIT: u64 = 1 << 14;
 
@@ -511,7 +514,7 @@ mod tests {
         let session = Session::new();
         let lock = session.socket().with_extension(LOCK_EXTENSION);
         // Opening a FIFO to write waits for a reader, so the daemon cannot pass its lock until the test opens one.
-        mkfifoat(CWD, &lock, Mode::from_raw_mode(0o600)).unwrap();
+        mkfifoat(CWD, &lock, Mode::from_raw_mode(LOCK_MODE)).unwrap();
         let mut daemon = session.spawn(&["daemon"], "daemon.log");
         wait_for("the daemon's SIGTERM handler", || {
             daemon.catches_sigterm().then_some(())
