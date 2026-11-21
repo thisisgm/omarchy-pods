@@ -60,6 +60,9 @@ mod tests {
     /// A word of each made up string, which no output but the device file may show.
     const PRIVATE: [&str; 2] = ["Probe", "SERIAL0XYZ"];
 
+    /// Two packets from the pods too short for an opcode, and one sent to the pods, which no count from the pods reads.
+    const NO_OPCODE_LOG: &str = "1 < 01\n2 < 010004\n3 > 040004000600\n";
+
     /// With the signal ignored a write past the cap fails as it does on a full disk; `$0` is the command, `$1` the run, `$2` the cap.
     const NO_ROOM: &str = r#"trap '' XFSZ; ulimit -f "$2"; exec "$0" probe analyse "$1""#;
     /// The block `ulimit -f` counts in, in bytes.
@@ -248,6 +251,25 @@ mod tests {
         let error = String::from_utf8(refused.stderr).unwrap();
         assert!(error.contains("sdu.log holds no packet"), "{error}");
         assert_eq!(names_in(&empty), ["marks.tsv", "meta.txt", "sdu.log"]);
+    }
+
+    #[test]
+    fn the_largest_packet_row_names_an_opcode_or_says_none() {
+        let home = tempfile::tempdir().unwrap();
+        let records = short_run();
+        let longest = records.iter().map(|record| record.sdu.len()).max().unwrap();
+        let run = make_run(&home, "with-opcodes", &log_text(&records));
+        let table = String::from_utf8(analyse(&home, &run).stdout).unwrap();
+        let largest = format!("\nlargest_packet\t{longest}\tbytes\topcode 0x0058\n");
+        assert!(table.contains(&largest), "{table}");
+
+        let run = make_run(&home, "no-opcode", NO_OPCODE_LOG);
+        let done = analyse(&home, &run);
+        assert!(done.status.success(), "{done:?}");
+        let table = String::from_utf8(done.stdout).unwrap();
+        let none = "\nlargest_packet\tnone\tbytes\tno packet from the pods carries an opcode\n";
+        assert!(table.contains(none), "{table}");
+        assert_eq!(row(&table, "packets_without_opcode").0, "2");
     }
 
     #[test]

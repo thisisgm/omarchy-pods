@@ -66,13 +66,13 @@ fn largest_packet_names_its_opcode() {
         from_pods(4, &packet(0x0031, 1013)),
         from_pods(5, &EAR),
     ];
-    assert_eq!(largest_packet(&load(&records)), (0x0027, 1013));
+    assert_eq!(largest_packet(&load(&records)), Some((0x0027, 1013)));
     let audio_only = [audio(1, &OPAQUE, &[(0, &SILENT_UNIT)]), from_pods(2, &EAR)];
-    assert_eq!(largest_packet(&load(&audio_only)), (0x0058, 29));
-    assert_eq!(largest_packet(&load(&[])), (0, 0));
-    assert_eq!(largest_packet(&load(&[to_pods(1, &EAR)])), (0, 0));
+    assert_eq!(largest_packet(&load(&audio_only)), Some((0x0058, 29)));
+    assert_eq!(largest_packet(&load(&[])), None);
+    assert_eq!(largest_packet(&load(&[to_pods(1, &EAR)])), None);
     let short_only = [from_pods(1, &[0x01, 0x00, 0x04]), from_pods(2, &[0x01])];
-    assert_eq!(largest_packet(&load(&short_only)), (0, 0));
+    assert_eq!(largest_packet(&load(&short_only)), None);
 }
 
 #[test]
