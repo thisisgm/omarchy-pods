@@ -3,7 +3,7 @@
     test,
     expect(
         dead_code_pub_in_binary,
-        reason = "this crate has no tests of its own; its callers are the crates that depend on it"
+        reason = "the test build calls only `enumerators`; the crates that depend on this one call the rest"
     )
 )]
 
@@ -137,16 +137,21 @@ impl CppHeader {
     }
 
     /// Every enumerator of `scope` in order with its number, counting on from the last explicit value as C++ does.
-    // Sample input: `enum class LidState\n{\n OPEN = 0x0,\n CLOSED = 0x1,\n UNKNOWN,\n}`, one enumerator per line.
+    // Sample input: `enum class LidState : uint8_t\n{\n OPEN = 0x0,\n CLOSED = 0x1, // note\n UNKNOWN,\n}`, one enumerator per line.
     #[must_use]
     pub fn enumerators(&self, scope: &str) -> Vec<(&'static str, u8)> {
+        let (_, body) = self
+            .scope(scope)
+            .split_once('{')
+            .unwrap_or_else(|| missing(&format!("{}: {scope} has no opening brace", self.path)));
         let mut next = Some(0_u8);
         let mut found = Vec::new();
-        for line in self.scope(scope).lines().map(str::trim) {
-            if line.is_empty() || line == "{" || line.starts_with("//") {
+        for line in body.lines() {
+            let code = line.split_once("//").map_or(line, |(code, _)| code);
+            let entry = code.trim().trim_end_matches(',');
+            if entry.is_empty() {
                 continue;
             }
-            let entry = line.trim_end_matches(',');
             let (name, number) = match entry.split_once('=') {
                 Some((name, value)) => (name.trim(), parse_byte(value)),
                 None => (
@@ -183,4 +188,25 @@ fn parse_byte(text: &str) -> u8 {
 )]
 fn missing(what: &str) -> ! {
     panic!("{what}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enumerators_skip_the_underlying_type_and_trailing_comments() {
+        assert_eq!(
+            BLE_MANAGER.enumerators("enum class ConnectionState"),
+            [
+                ("DISCONNECTED", 0x00),
+                ("IDLE", 0x04),
+                ("MUSIC", 0x05),
+                ("CALL", 0x06),
+                ("RINGING", 0x07),
+                ("HANGING_UP", 0x09),
+                ("UNKNOWN", 0xFF),
+            ]
+        );
+    }
 }
