@@ -419,6 +419,7 @@ mod tests {
         );
     }
 
+    // Shows a simultaneous start leaves one serving daemon; the loser may stop at the probe or the lock, so the lock's own proof is the unit test `lock_is_refused_while_another_holds_it`.
     #[test]
     fn two_daemons_started_together_leave_exactly_one() {
         let session = Session::new();
