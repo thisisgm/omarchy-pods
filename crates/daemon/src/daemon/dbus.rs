@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::future::{Future, poll_fn};
+use std::num::NonZeroUsize;
 use std::pin::{Pin, pin};
 use std::task::Poll;
 
@@ -18,8 +19,8 @@ use serde_json::Value;
 use tokio::sync::watch;
 use zbus::connection::Builder;
 use zbus::message::Header;
-use zbus::names::{ErrorName, InterfaceName};
-use zbus::object_server::SignalEmitter;
+use zbus::names::ErrorName;
+use zbus::object_server::{Interface, SignalEmitter};
 use zbus::{Connection, DBusError, Message, Variant, fdo, interface};
 
 use super::hub::Hub;
@@ -31,11 +32,14 @@ const BUS_NAME: &str = "io.github.thisisgm.Omapods";
 /// The one object the daemon serves.
 const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
 
-/// The interface name; its trailing number is the interface version.
-const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+/// The name segment between the interface name and an error's own name.
+const ERROR_SEGMENT: &str = "Error";
 
-/// What every error name starts with: the interface name and `Error.`.
-const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
+/// Messages the connection queues for the object server before it stops reading the bus, zbus's own default named here.
+const MAX_QUEUED_MESSAGES: NonZeroUsize = match NonZeroUsize::new(64) {
+    Some(bound) => bound,
+    None => NonZeroUsize::MIN,
+};
 
 /// The value of `ApiVersion`, the number in the interface name.
 const API_VERSION: u32 = 1;
@@ -63,6 +67,7 @@ pub(super) async fn serve(hub: Hub) {
         .name(BUS_NAME)
         .replace_existing_names(false)
         .allow_name_replacements(false)
+        .max_queued(MAX_QUEUED_MESSAGES)
         .serve_at(OBJECT_PATH, Omapods { hub: hub.clone() })
         .build()
         .await;
@@ -80,13 +85,11 @@ async fn announce(
     mut updates: watch::Receiver<State>,
     mut shown: Properties,
 ) {
-    let (emitter, interface) = match SignalEmitter::new(&connection, OBJECT_PATH)
-        .and_then(|emitter| Ok((emitter, InterfaceName::from_static_str(INTERFACE)?)))
-    {
-        Ok(names) => names,
+    let emitter = match SignalEmitter::new(&connection, OBJECT_PATH) {
+        Ok(emitter) => emitter,
         Err(error) => {
             log(&format!(
-                "{LOG_PREFIX}: {OBJECT_PATH} or {INTERFACE} is not a valid D-Bus name: {error}"
+                "{LOG_PREFIX}: {OBJECT_PATH} is not a valid object path: {error}"
             ));
             return;
         }
@@ -109,7 +112,7 @@ async fn announce(
         if !changed.is_empty() {
             let sent = fdo::Properties::properties_changed(
                 &emitter,
-                interface.clone(),
+                Omapods::name(),
                 changed,
                 Cow::Borrowed(&[]),
             )
@@ -268,6 +271,7 @@ impl Omapods {
     }
 }
 
+// The interface name is written only here, and its trailing number is the interface version.
 #[interface(name = "io.github.thisisgm.Omapods1", introspection_docs = false)]
 impl Omapods {
     #[zbus(property(emits_changed_signal = "const"))]
@@ -399,10 +403,10 @@ impl DBusError for CallError {
     }
 }
 
-/// The error name of a refusal: the prefix and the code in CamelCase.
+/// The error name of a refusal: the interface name, `Error` and the code in CamelCase.
 // Sample input: `not_connected`, which names `io.github.thisisgm.Omapods1.Error.NotConnected`.
 fn error_name(code: &str) -> String {
-    let mut name = String::from(ERROR_PREFIX);
+    let mut name = format!("{}.{ERROR_SEGMENT}.", Omapods::name());
     for word in code.split('_') {
         let mut letters = word.chars();
         if let Some(first) = letters.next() {
