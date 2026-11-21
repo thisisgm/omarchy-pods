@@ -175,25 +175,31 @@ fn a_second_device_waits_for_the_first() {
 }
 
 #[test]
-fn known_keeps_the_newest_devices_up_to_its_bound() {
+fn a_full_known_list_does_not_take_a_seventeenth_device() {
     let mut machine = Machine::new();
     let mut state = State::default();
-    let _actions = machine.step(&mut state, Event::DeviceUp(addr(0)), ms(0));
-    let others: Vec<BdAddr> = (0..20)
+    for event in [
+        Event::DeviceUp(addr(0)),
+        Event::ChannelOpened,
+        Event::Packet(&pods_samples::handshake_ack()),
+        Event::Packet(&pods_samples::features_ack()),
+    ] {
+        let _actions = machine.step(&mut state, event, ms(0));
+    }
+    assert_eq!(machine.last_linked, Some(addr(0)));
+    let others: Vec<BdAddr> = (0..KNOWN_MAX)
         .map(|n| format!("02:00:00:00:01:{n:02x}").parse().unwrap())
         .collect();
     for other in &others {
         let _actions = machine.step(&mut state, Event::DeviceUp(*other), ms(0));
         let _actions = machine.step(&mut state, Event::DeviceDown(*other), ms(0));
     }
-    assert_eq!(machine.known.len(), 16);
     assert_eq!(KNOWN_MAX, 16);
-    let newest: Vec<_> = others[others.len() - KNOWN_MAX..]
-        .iter()
-        .map(|a| a.octets())
-        .collect();
-    let known: Vec<_> = machine.known.iter().map(|a| a.octets()).collect();
-    assert_eq!(known, newest);
+    let mut first = vec![addr(0)];
+    first.extend_from_slice(&others[..KNOWN_MAX - 1]);
+    assert_eq!(machine.known, first);
+    assert_eq!(machine.active, Some(addr(0)));
+    assert_eq!(machine.last_linked, Some(addr(0)));
 }
 
 #[test]
