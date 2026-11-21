@@ -207,21 +207,31 @@ fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
     assert_eq!(state.adaptive_noise_level, level(0));
 }
 
-/// Every refusal, for the tests that cover them all.
-const EVERY_ERROR: [CommandError; 8] = [
-    CommandError::NotConnected,
-    CommandError::NotSupported,
-    CommandError::NotWorn,
-    CommandError::OutOfRange,
-    CommandError::UnknownKey,
-    CommandError::BadRequest,
-    CommandError::Timeout,
-    CommandError::Headless,
-];
+/// The error's own entry in `ALL`; a variant left out of `ALL` has no index to name here, so it does not build.
+fn entry_in_all(error: CommandError) -> CommandError {
+    match error {
+        CommandError::NotConnected => CommandError::ALL[0],
+        CommandError::NotSupported => CommandError::ALL[1],
+        CommandError::NotWorn => CommandError::ALL[2],
+        CommandError::OutOfRange => CommandError::ALL[3],
+        CommandError::UnknownKey => CommandError::ALL[4],
+        CommandError::BadRequest => CommandError::ALL[5],
+        CommandError::Timeout => CommandError::ALL[6],
+        CommandError::Headless => CommandError::ALL[7],
+    }
+}
+
+#[test]
+fn all_lists_every_error_once() {
+    for (index, error) in CommandError::ALL.into_iter().enumerate() {
+        assert_eq!(entry_in_all(error), error);
+        assert!(!CommandError::ALL[..index].contains(&error), "{error:?}");
+    }
+}
 
 #[test]
 fn codes_are_the_snake_case_variant_names() {
-    for error in EVERY_ERROR {
+    for error in CommandError::ALL {
         let mut snake = String::new();
         for character in format!("{error:?}").chars() {
             if character.is_ascii_uppercase() && !snake.is_empty() {
@@ -236,7 +246,7 @@ fn codes_are_the_snake_case_variant_names() {
 #[test]
 fn every_error_has_its_own_sentence() {
     let mut seen = Vec::new();
-    for error in EVERY_ERROR {
+    for error in CommandError::ALL {
         let message = error.message();
         assert!(message.len() > 1, "{error:?}");
         assert!(message.ends_with('.'), "{error:?}: {message}");
