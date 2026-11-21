@@ -5,7 +5,11 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::command::NoiseTarget;
+use crate::legacy::VERBS;
 use crate::state::EarDetectionBehavior;
+
+/// The public description of protocol 1, which must name every key, value and action.
+const PROTOCOL_DOCUMENT: &str = include_str!("../../../../docs/protocol-1.md");
 
 fn noise(mode: NoiseMode) -> Command {
     Command::SetNoise(NoiseTarget::Mode(mode))
@@ -119,6 +123,33 @@ fn actions_are_connect_disconnect_and_forget_only() {
         "connect ",
     ] {
         assert_eq!(action(name), Err(CommandError::BadRequest), "{name:?}");
+    }
+}
+
+#[test]
+fn the_protocol_document_names_every_key_value_and_action() {
+    let mut words: Vec<String> = KEYS.iter().map(|(key, _)| format!("`{key}`")).collect();
+    for (_, family) in KEYS {
+        if let Family::Words(prefix) = family {
+            for (verb, _) in VERBS {
+                if let Some((_, word)) = verb.split_once(':').filter(|(at, _)| *at == prefix) {
+                    words.push(format!("`{word}`"));
+                }
+            }
+        }
+    }
+    for (word, _) in SWITCH_WORDS {
+        words.push(format!("`{word}`"));
+    }
+    for name in ["connect", "disconnect", "forget"] {
+        assert!(action(name).is_ok(), "{name}");
+        words.push(format!("`{name}`"));
+    }
+    for word in words {
+        assert!(
+            PROTOCOL_DOCUMENT.contains(&word),
+            "{word} is not in docs/protocol-1.md"
+        );
     }
 }
 
