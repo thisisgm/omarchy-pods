@@ -1,0 +1,196 @@
+//! Every state field lands on its own key with the C++ value.
+
+use pods_proto::battery::{Batteries, Charge, Component};
+use pods_proto::ear::{EarPlacement, EarReport};
+use pods_proto::model::Model;
+use pods_proto::noise::NoiseMode;
+use serde_json::{Value, json};
+
+use super::*;
+use crate::state::{Counters, EarDetectionBehavior, LidState};
+
+fn status(state: &State) -> Value {
+    serde_json::from_str(&to_status_line(state)).unwrap()
+}
+
+fn charge(level: u8, charging: bool) -> Charge {
+    Charge { level, charging }
+}
+
+#[test]
+fn populated_state_lands_every_field_on_its_key() {
+    let state = State {
+        connected: true,
+        device_name: "Desk pods".to_owned(),
+        model: Model::AirPodsPro2USBC,
+        model_number: "A3048".to_owned(),
+        noise_mode: NoiseMode::Adaptive,
+        adaptive_noise_level: 37,
+        conversational_awareness: true,
+        one_bud_anc_mode: true,
+        batteries: Batteries {
+            left: Some(charge(80, true)),
+            right: Some(charge(75, false)),
+            case: Some(charge(40, true)),
+            headset: None,
+        },
+        ear: EarReport {
+            primary: EarPlacement::InEar,
+            secondary: EarPlacement::NotInEar,
+        },
+        primary: Some(Component::Right),
+        ear_detection_behavior: EarDetectionBehavior::Disabled,
+        lid_state: LidState::Closed,
+        counters: Counters {
+            reconnect_attempts: 1,
+            reconnect_failures: 2,
+            noise_control_changes: 3,
+            forget_calls: 4,
+            ear_detection_changes: 5,
+            conversational_awareness_changes: 6,
+            disconnect_calls: 7,
+            connect_calls: 8,
+            disconnect_failures: 9,
+            connect_failures: 10,
+            adaptive_level_changes: 11,
+            one_bud_anc_changes: 12,
+            reopen_calls: 13,
+        },
+    };
+    let expected = json!({
+        "adaptive_level_changes_total": 11,
+        "adaptive_noise_level": 37,
+        "ca_changes_total": 6,
+        "case": {"available": true, "charging": true, "level": 40},
+        "connect_calls_total": 8,
+        "connect_failures_total": 10,
+        "connected": true,
+        "conversational_awareness": true,
+        "device_name": "Desk pods",
+        "disconnect_calls_total": 7,
+        "disconnect_failures_total": 9,
+        "ear_detection_behavior": 2,
+        "ear_detection_changes_total": 5,
+        "forget_calls_total": 4,
+        "headset": {"available": false, "charging": false, "level": 0},
+        "is_headset": false,
+        "is_pro_series": true,
+        "left": {"available": true, "charging": true, "in_ear": false, "level": 80},
+        "lid_state": 1,
+        "model_int": 6,
+        "model_name": "AirPods Pro 2 (USB-C)",
+        "model_number": "A3048",
+        "noise_control_changes_total": 3,
+        "noise_mode": 3,
+        "one_bud_anc_changes_total": 12,
+        "one_bud_anc_mode": true,
+        "reconnect_attempts_total": 1,
+        "reconnect_failures_total": 2,
+        "reopen_calls_total": 13,
+        "right": {"available": true, "charging": false, "in_ear": true, "level": 75},
+        "schema_version": 1,
+        "supports_adaptive": true,
+        "supports_conversational_awareness": true,
+        "supports_noise_control": true,
+        "supports_noise_off": true,
+        "supports_one_bud_anc": true,
+    });
+    assert_eq!(status(&state), expected);
+}
+
+#[test]
+fn a_side_that_is_not_primary_reads_the_secondary_placement() {
+    let ear = EarReport {
+        primary: EarPlacement::InEar,
+        secondary: EarPlacement::NotInEar,
+    };
+    for (primary, left, right) in [
+        (Some(Component::Left), true, false),
+        (Some(Component::Right), false, true),
+        (None, false, false),
+    ] {
+        let line = status(&State {
+            ear,
+            primary,
+            ..State::default()
+        });
+        assert_eq!(line["left"]["in_ear"], Value::Bool(left), "{primary:?}");
+        assert_eq!(line["right"]["in_ear"], Value::Bool(right), "{primary:?}");
+    }
+}
+
+#[test]
+fn headset_battery_and_capabilities_land_on_their_keys() {
+    let line = status(&State {
+        model: Model::AirPodsMaxLightning,
+        batteries: Batteries {
+            headset: Some(charge(64, true)),
+            ..Batteries::default()
+        },
+        ..State::default()
+    });
+    assert_eq!(
+        line["headset"],
+        json!({"available": true, "charging": true, "level": 64})
+    );
+    assert_eq!(line["is_headset"], Value::Bool(true));
+    assert_eq!(line["is_pro_series"], Value::Bool(false));
+    assert_eq!(line["supports_one_bud_anc"], Value::Bool(false));
+    assert_eq!(line["supports_adaptive"], Value::Bool(false));
+    assert_eq!(line["model_name"], Value::from("AirPods Max"));
+    assert_eq!(line["model_int"], Value::from(7));
+    let pro3 = status(&State {
+        model: Model::AirPodsPro3,
+        ..State::default()
+    });
+    assert_eq!(pro3["supports_noise_off"], Value::Bool(false));
+    let plain = status(&State {
+        model: Model::AirPods4,
+        ..State::default()
+    });
+    assert_eq!(plain["supports_noise_control"], Value::Bool(false));
+}
+
+#[test]
+fn every_noise_mode_ear_detection_behavior_and_lid_state_has_its_cpp_number() {
+    for (mode, number) in [
+        (NoiseMode::Off, 0),
+        (NoiseMode::Anc, 1),
+        (NoiseMode::Transparency, 2),
+        (NoiseMode::Adaptive, 3),
+    ] {
+        let line = status(&State {
+            noise_mode: mode,
+            ..State::default()
+        });
+        assert_eq!(line["noise_mode"], Value::from(number), "{mode:?}");
+    }
+    // daemon/media/mediacontroller.h declares these three in this order from 0.
+    for (behavior, number) in [
+        (EarDetectionBehavior::PauseWhenOneRemoved, 0),
+        (EarDetectionBehavior::PauseWhenBothRemoved, 1),
+        (EarDetectionBehavior::Disabled, 2),
+    ] {
+        let line = status(&State {
+            ear_detection_behavior: behavior,
+            ..State::default()
+        });
+        assert_eq!(
+            line["ear_detection_behavior"],
+            Value::from(number),
+            "{behavior:?}"
+        );
+    }
+    // daemon/ble/blemanager.h declares OPEN = 0x0, CLOSED = 0x1, then UNKNOWN.
+    for (lid, number) in [
+        (LidState::Open, 0),
+        (LidState::Closed, 1),
+        (LidState::Unknown, 2),
+    ] {
+        let line = status(&State {
+            lid_state: lid,
+            ..State::default()
+        });
+        assert_eq!(line["lid_state"], Value::from(number), "{lid:?}");
+    }
+}

@@ -13,6 +13,7 @@ publish = false
 [workspace.dependencies]
 clap = { version = "4.6", features = ["derive"] }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
+serde_json = "1.0"
 tempfile = "3"
 thiserror = "2.0"
 

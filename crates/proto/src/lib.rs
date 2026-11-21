@@ -7,5 +7,6 @@ pub mod control;
 mod cpp_header;
 pub mod ear;
 pub mod error;
+pub mod model;
 pub mod noise;
 pub mod packets;

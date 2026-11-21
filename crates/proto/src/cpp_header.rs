@@ -26,9 +26,14 @@ pub(crate) const ENUMS: CppHeader = CppHeader {
     text: include_str!("../../../daemon/enums.h"),
 };
 
+pub(crate) const DEVICE_INFO: CppHeader = CppHeader {
+    path: "daemon/deviceinfo.hpp",
+    text: include_str!("../../../daemon/deviceinfo.hpp"),
+};
+
 impl CppHeader {
     /// The text from `scope` (such as `namespace Parse`) to its first closing brace, where every constant read here sits.
-    fn scope(&self, scope: &str) -> &'static str {
+    pub(crate) fn scope(&self, scope: &str) -> &'static str {
         let (_, rest) = [" ", "\n", "{"]
             .iter()
             .find_map(|after| self.text.split_once(&format!("{scope}{after}")))
@@ -52,6 +57,18 @@ impl CppHeader {
             .split_once(end)
             .unwrap_or_else(|| panic!("{}: `{start}` in {place} has no `{end}`", self.path));
         found.trim()
+    }
+
+    /// The text after `start` up to the next `end`, for a block whose entries hold the characters `find` stops at.
+    pub(crate) fn between(&self, start: &str, end: &str) -> &'static str {
+        let (_, rest) = self
+            .text
+            .split_once(start)
+            .unwrap_or_else(|| panic!("{} has no `{start}`", self.path));
+        let (found, _) = rest
+            .split_once(end)
+            .unwrap_or_else(|| panic!("{}: `{start}` has no `{end}`", self.path));
+        found
     }
 
     /// A byte written as `0x1B` or `3`, found between `start` and `end`.

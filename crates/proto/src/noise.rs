@@ -64,6 +64,17 @@ impl NoiseMode {
     }
 }
 
+impl From<NoiseMode> for u8 {
+    fn from(mode: NoiseMode) -> Self {
+        match mode {
+            NoiseMode::Off => 0,
+            NoiseMode::Anc => 1,
+            NoiseMode::Transparency => 2,
+            NoiseMode::Adaptive => 3,
+        }
+    }
+}
+
 impl TryFrom<u8> for NoiseMode {
     type Error = ParseError;
 
@@ -144,6 +155,7 @@ mod tests {
                 ',',
             );
             assert_eq!(mode as u8, cpp, "{name}");
+            assert_eq!(u8::from(mode), cpp, "{name}");
             assert_eq!(NoiseMode::try_from(cpp), Ok(mode), "{name}");
         }
     }
