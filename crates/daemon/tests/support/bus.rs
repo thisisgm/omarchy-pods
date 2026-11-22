@@ -5,7 +5,10 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use super::{Daemon, Session, wait_for};
+use tokio::runtime::Runtime;
+use tokio::time::timeout;
+
+use super::{Daemon, HANG_LIMIT, Session, wait_for};
 
 /// The names the daemon serves on the session bus, from `src/daemon/dbus.rs`.
 pub(crate) const BUS_NAME: &str = "io.github.thisisgm.Omapods";
@@ -60,4 +63,10 @@ pub(crate) fn start_bus(session: &Session, name: &str) -> Bus {
         address: bus_address(session, name),
         _daemon: daemon,
     }
+}
+
+/// Runs one bus exchange on `runtime`, failing the test once `HANG_LIMIT` passes.
+pub(crate) fn in_time<T>(runtime: &Runtime, work: impl Future<Output = T>) -> T {
+    let finished = runtime.block_on(async { timeout(HANG_LIMIT, work).await });
+    finished.unwrap_or_else(|_| panic!("the bus client still waiting after {HANG_LIMIT:?}"))
 }
