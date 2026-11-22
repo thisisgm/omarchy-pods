@@ -67,6 +67,10 @@ mod tests {
     const POLL: Duration = Duration::from_millis(5);
     /// The cue every soak prints when its stream starts.
     const SOAK_CUE: &str = "cue Stay as you are. Nothing to do.\n";
+    /// How long the scripts let the active marker lead the dictation start write.
+    const MARKER_LEAD: Duration = Duration::from_millis(480);
+    /// How long the trap holds a dial of the attribute channel in the redial test: longer than that lead.
+    const SLOW_DIAL: Duration = Duration::from_millis(600);
     /// The three packets of the handshake, in the order the command sends them.
     const HANDSHAKE_SENT: [&[u8]; 3] = [&HANDSHAKE, &SET_SPECIFIC_FEATURES, &REQUEST_NOTIFICATIONS];
     /// The first handle of the range the request for the declarations covers.
@@ -138,13 +142,18 @@ mod tests {
 
     /// Answers a dial by handing its far end to the receiver it returns.
     fn hand_over() -> (Answer, mpsc::Receiver<Channel>) {
+        hand_over_after(Duration::ZERO)
+    }
+
+    /// The same answer, given only once the dial has waited `after`.
+    fn hand_over_after(after: Duration) -> (Answer, mpsc::Receiver<Channel>) {
         let (handed, far) = mpsc::channel();
         let serve = move |channel| {
             // The receiver is gone only when the test already failed.
             drop(handed.send(channel));
         };
         let answer = Answer::Accept {
-            after: Duration::ZERO,
+            after,
             serve: Arc::new(serve),
         };
         (answer, far)
@@ -279,6 +288,14 @@ mod tests {
             .lines()
             .map(|line| line.split('\t').nth(1).unwrap())
             .collect()
+    }
+
+    /// The stamp of the only mark of one kind: the first field of `1203456789\tgate\tear`, in nanoseconds.
+    fn stamp_of(marks: &str, kind: &str) -> u64 {
+        let of_kind = |line: &&str| line.split('\t').nth(1) == Some(kind);
+        let found: Vec<&str> = marks.lines().filter(of_kind).collect();
+        assert_eq!(found.len(), 1, "{kind} marks in\n{marks}");
+        found[0].split('\t').next().unwrap().parse().unwrap()
     }
 
     /// Asserts the walk of the attribute table and then `writes` reached the fake pods, and that the attribute log holds both directions as they went.
@@ -416,6 +433,46 @@ mod tests {
             meta.ends_with("\nroute=dictation\nno_marker=false\nunchecked=false\n"),
             "{meta}"
         );
+    }
+
+    #[test]
+    fn a_slow_redial_of_the_attribute_channel_leaves_the_marker_its_lead() {
+        let home = home_with_device();
+        let (control, control_far) = hand_over();
+        let (att, att_far) = hand_over_after(SLOW_DIAL);
+        let script = ["--route", "dictation", "--script", "soak", "--minutes", "1"];
+        let command = capture(&home, "redial", &[&script[..], &["--unchecked"]].concat());
+        let routes = vec![route(CONTROL_PSM, control), route(ATT_PSM, att)];
+        let running = Running::start(command, routes);
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut part = Pods::default();
+        // The pods answer no request of the walk, so the command closes the channel and dials a fresh one for the start write.
+        part.att.answers = Some(0);
+        part.att.interrupt_after = Some(3);
+        let played = pods::spawn_dialled(
+            Some(far_end(&control_far)),
+            att_far,
+            part,
+            Arc::clone(&flag),
+        );
+        running.interrupt_when(&flag);
+        let ran = running.finish();
+        let pods = transcript(&played);
+
+        assert_eq!(ran.code, FAILED, "{}", ran.stderr);
+        let dialled_twice = [
+            (CONTROL_PSM, Outcome::Accepted),
+            (ATT_PSM, Outcome::Accepted),
+            (ATT_PSM, Outcome::Accepted),
+        ];
+        assert_eq!(ran.dials, dialled_twice);
+        assert!(pods.att_got.contains(&dictation::START.to_vec()));
+        let marks = read(&run_path(&home, "redial"), "marks.tsv");
+        assert!(marks.contains("\thandles\tunchecked\n"), "{marks}");
+        let redialled_ns = stamp_of(&marks, "handles");
+        assert!(stamp_of(&marks, "gate") >= redialled_ns, "{marks}");
+        let lead = stamp_of(&marks, "dictation-start").saturating_sub(redialled_ns);
+        assert!(u128::from(lead) >= MARKER_LEAD.as_nanos(), "{marks}");
     }
 
     #[test]

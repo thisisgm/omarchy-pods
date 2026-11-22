@@ -1,5 +1,6 @@
 //! Fake pods on the far end of a channel, played on a thread of their own; the capture loop's unit tests and the tests of the built command both run against them.
 
+use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
@@ -132,24 +133,20 @@ enum End {
 struct Far {
     accessory: Option<Channel>,
     att: Option<Channel>,
-    /// Where their end of the attribute channel arrives when the loop dials it; `None` once it has.
+    /// Where their end of the attribute channel arrives each time the loop dials it; `None` once no dial can come.
     att_dial: Option<mpsc::Receiver<Channel>>,
-    /// Their end of the attribute channel the loop may open once it has closed the first.
-    fresh_att: Option<Channel>,
+    /// Whether a dial was taken already, which makes the next one the fresh channel.
+    att_taken: bool,
     transcript: Transcript,
 }
 
 impl Far {
-    fn new(
-        accessory: Option<Channel>,
-        att_dial: mpsc::Receiver<Channel>,
-        fresh_att: Option<Channel>,
-    ) -> Self {
+    fn new(accessory: Option<Channel>, att_dial: mpsc::Receiver<Channel>) -> Self {
         Self {
             accessory,
             att: None,
             att_dial: Some(att_dial),
-            fresh_att,
+            att_taken: false,
             transcript: Transcript::default(),
         }
     }
@@ -159,8 +156,11 @@ impl Far {
         self.accessory.is_some() || self.att.is_some() || self.att_dial.is_some()
     }
 
-    /// Takes their end of the attribute channel once the loop has dialled it, and sends the greeting their part has for it.
+    /// Takes their end of the attribute channel once the loop has dialled it: the first gets the greeting their part has for it, a later one is the fresh channel.
     fn pick_up_att(&mut self, part: &AttPods) {
+        if self.att.is_some() {
+            return;
+        }
         let channel = match self.att_dial.as_ref().map(mpsc::Receiver::try_recv) {
             Some(Ok(channel)) => channel,
             // A dialler gone without dialling never will.
@@ -170,9 +170,12 @@ impl Far {
             }
             Some(Err(mpsc::TryRecvError::Empty)) | None => return,
         };
-        self.att_dial = None;
         channel.set_recv_timeout(PODS_POLL).unwrap();
         self.att = Some(channel);
+        if mem::replace(&mut self.att_taken, true) {
+            self.transcript.att_fresh_from = Some(self.transcript.att_got.len());
+            return;
+        }
         for pdu in &part.greeting {
             self.say_att(pdu);
         }
@@ -248,10 +251,7 @@ impl Far {
                     End::Att => {
                         // A fresh channel has seen no start write, so nothing of the stream moves to it.
                         stream.cut();
-                        self.att = self.fresh_att.take();
-                        if self.att.is_some() {
-                            self.transcript.att_fresh_from = Some(self.transcript.att_got.len());
-                        }
+                        self.att = None;
                     }
                 }
                 None
@@ -297,7 +297,7 @@ pub(super) fn ack(prefix: &[u8]) -> Vec<u8> {
 
 /// Plays the pods until the loop closes every channel, their part says to hang up, or the deadline passes.
 fn play(mut far: Far, part: &Pods, interrupted: &AtomicBool) -> Transcript {
-    for channel in [&far.accessory, &far.fresh_att].into_iter().flatten() {
+    if let Some(channel) = &far.accessory {
         channel.set_recv_timeout(PODS_POLL).unwrap();
     }
     let began = Instant::now();
@@ -394,7 +394,7 @@ pub(super) fn spawn_on(
     part: Pods,
     interrupted: Arc<AtomicBool>,
 ) -> mpsc::Receiver<Transcript> {
-    spawn_dialled(accessory, dialled(att), part, interrupted)
+    spawn_dialled(accessory, dialled([att]), part, interrupted)
 }
 
 /// Plays the pods on the control channel given, and on the attribute channel once its far end arrives on `att_dial`.
@@ -404,7 +404,7 @@ pub(super) fn spawn_dialled(
     part: Pods,
     interrupted: Arc<AtomicBool>,
 ) -> mpsc::Receiver<Transcript> {
-    play_apart(Far::new(accessory, att_dial, None), part, interrupted)
+    play_apart(Far::new(accessory, att_dial), part, interrupted)
 }
 
 /// Plays the pods on the channels given; `att` is their end of the attribute channel and of the fresh one that may follow it.
@@ -414,18 +414,13 @@ pub(super) fn spawn_with_fresh(
     part: Pods,
     interrupted: Arc<AtomicBool>,
 ) -> mpsc::Receiver<Transcript> {
-    let [att, fresh_att] = att;
-    play_apart(
-        Far::new(accessory, dialled(att), fresh_att),
-        part,
-        interrupted,
-    )
+    spawn_dialled(accessory, dialled(att), part, interrupted)
 }
 
-/// An attribute channel the loop has already dialled, or none.
-fn dialled(att: Option<Channel>) -> mpsc::Receiver<Channel> {
+/// The attribute channels the loop has already dialled, in the order it opens them.
+fn dialled<const N: usize>(att: [Option<Channel>; N]) -> mpsc::Receiver<Channel> {
     let (dial, att_dial) = mpsc::channel();
-    if let Some(att) = att {
+    for att in att.into_iter().flatten() {
         dial.send(att).unwrap();
     }
     att_dial
