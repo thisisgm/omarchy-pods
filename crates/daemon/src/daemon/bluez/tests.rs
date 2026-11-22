@@ -5,7 +5,7 @@ use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::time::Duration;
 
-use pods_core::link::DeviceAction;
+use pods_core::link::{Call, DeviceAction, Session};
 use pods_proto::addr::BdAddr;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::mpsc;
@@ -70,20 +70,14 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
             retry: None,
             calls: &mut calls,
         };
-        assert!(
-            watcher
-                .call(device, DeviceAction::Connect)
-                .await
-                .is_continue()
-        );
+        let call = Call {
+            action: DeviceAction::Connect,
+            session: Session::default(),
+        };
+        assert!(watcher.call(device, call).await.is_continue());
         let event = events.try_recv();
         assert!(
-            matches!(
-                event,
-                Ok(Input::Device(DeviceEvent::CallFailed(
-                    DeviceAction::Connect
-                )))
-            ),
+            matches!(event, Ok(Input::Device(DeviceEvent::CallFailed(failed))) if failed == call),
             "{event:?}"
         );
         let reached = poll_fn(|context| Pin::new(&mut reaching_peer).poll_next(context));

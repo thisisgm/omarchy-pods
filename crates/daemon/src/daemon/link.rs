@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use pods_core::command::{Command, Outcome};
 use pods_core::link::{
-    Action, DeviceAction, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket,
-    phase_change_line,
+    Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket, phase_change_line,
 };
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -45,7 +44,7 @@ pub(super) enum DeviceEvent {
     Down(BdAddr),
     Gone(BdAddr),
     Lost,
-    CallFailed(DeviceAction),
+    CallFailed(Call),
 }
 
 #[derive(Debug)]
@@ -66,10 +65,7 @@ pub(super) enum Input {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Request {
     Sweep,
-    Call {
-        device: BdAddr,
-        action: DeviceAction,
-    },
+    Call { device: BdAddr, call: Call },
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -237,13 +233,13 @@ impl Driver {
                 // Dropped when the queue is full: nothing waits on a sweep's answer.
                 self.requests.try_send(Request::Sweep).ok();
             }
-            Action::Call { device, action } => {
+            Action::Call { device, call } => {
                 if self
                     .requests
-                    .try_send(Request::Call { device, action })
+                    .try_send(Request::Call { device, call })
                     .is_err()
                 {
-                    let failed = DeviceEvent::CallFailed(action);
+                    let failed = DeviceEvent::CallFailed(call);
                     self.fed_back.push_back(Input::Device(failed));
                 }
             }
@@ -308,7 +304,7 @@ impl DeviceEvent {
             Self::Down(device) => Event::DeviceDown(device),
             Self::Gone(device) => Event::DeviceGone(device),
             Self::Lost => Event::BluezLost,
-            Self::CallFailed(action) => Event::CallFailed(action),
+            Self::CallFailed(call) => Event::CallFailed(call),
         }
     }
 }

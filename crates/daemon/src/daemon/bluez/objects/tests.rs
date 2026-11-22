@@ -37,7 +37,7 @@ fn named(events: &[DeviceEvent]) -> Vec<String> {
             DeviceEvent::Down(device) => format!("down {:?}", device.octets()[5]),
             DeviceEvent::Gone(device) => format!("gone {:?}", device.octets()[5]),
             DeviceEvent::Lost => "lost".to_owned(),
-            DeviceEvent::CallFailed(action) => format!("call failed {action:?}"),
+            DeviceEvent::CallFailed(call) => format!("call failed {:?}", call.action),
         })
         .collect()
 }

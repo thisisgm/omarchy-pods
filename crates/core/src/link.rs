@@ -39,6 +39,18 @@ pub enum DeviceAction {
     Forget,
 }
 
+/// One BlueZ method call the machine asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Call {
+    pub action: DeviceAction,
+    /// When the machine asked, so a failure that comes after the device left releases nothing.
+    pub session: Session,
+}
+
+/// The stretch between two device resets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Session(u32);
+
 /// Something that happened, handed to `step` by the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event<'a> {
@@ -59,7 +71,7 @@ pub enum Event<'a> {
         ticket: Ticket,
         command: Command,
     },
-    CallFailed(DeviceAction),
+    CallFailed(Call),
     /// A `Send` could not be written; the driver hands this in before any other event.
     SendFailed,
     /// The clock reached `deadline()`, or any time a driver wakes.
@@ -79,7 +91,7 @@ pub enum Action {
     Sweep,
     Call {
         device: BdAddr,
-        action: DeviceAction,
+        call: Call,
     },
     Resolve {
         ticket: Ticket,
@@ -151,7 +163,8 @@ pub struct Machine {
     held: bool,
     /// The link reached `Up` since the last device reset.
     populated: bool,
-    /// User disconnects called and not failed since the last reset; while any, the device leaving skips the grace and no dial goes out.
+    session: Session,
+    /// User disconnects called in this session and not failed; while any, the device leaving skips the grace and no dial goes out.
     user_disconnects: u32,
     /// Paired AirPods seen, first seen first, at most `KNOWN_MAX`; once full, a new address is not kept.
     known: Vec<BdAddr>,
@@ -465,8 +478,8 @@ impl Machine {
                 | P::Backoff { .. }
                 | P::Parked { .. }
                 | P::Grace { .. },
-                E::CallFailed(action),
-            ) => self.call_failed(state, action),
+                E::CallFailed(call),
+            ) => self.call_failed(state, call),
             // Nothing to do: stopped, packets outside the handshake and `Up`, events the shell rules out, ticks with no deadline.
             (
                 P::Stopped,
@@ -666,6 +679,7 @@ impl Machine {
         self.active = None;
         self.held = false;
         self.populated = false;
+        self.session = Session(self.session.0.wrapping_add(1));
         self.user_disconnects = 0;
     }
 
