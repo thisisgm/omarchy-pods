@@ -162,6 +162,7 @@ therefore sees every change in order, or its connection closes.
 | `not_supported` | These AirPods do not support that. | The model has no such feature or listening mode, or `adaptive_level` was set while the listening mode is not adaptive. |
 | `not_worn` | The AirPods are not in an ear. | A listening mode change was not reported back within 700 ms and no bud is in an ear. Over ear AirPods get `timeout` instead. |
 | `out_of_range` | The value is outside the range the setting takes. | `adaptive_level` outside 0 to 100. |
+| `bad_value` | That setting does not take this value. | `set` with a `value` its `key` does not take, as `loud` for `noise` or `high` for `adaptive_level`. |
 | `unknown_key` | There is no setting by that name. | `set` with a `key` the table above does not list. |
 | `bad_request` | The daemon could not read the request. | See below. |
 | `timeout` | The AirPods did not answer in time. | The AirPods did not report the change within 700 ms, the daemon's input queue, which the AirPods' packets share, was full, or too many commands already waited for the AirPods to confirm them. |
@@ -174,9 +175,9 @@ therefore sees every change in order, or its connection closes.
 - a line that is not valid JSON, is not a JSON object, or has no usable `id`,
   which gets `"id":null`;
 - a line with a usable `id` but no `v`, an `op` that is missing or not one of
-  the four, a `set` without a string `key` and a string `value`, a `value` the
-  key does not take, a `do` without a string `action` or with an action not
-  listed, each of which echoes the `id`.
+  the four, a `set` without a string `key` and a string `value`, a `do`
+  without a string `action` or with an action not listed, each of which echoes
+  the `id`.
 
 Every reply to a line with a usable `id` echoes that `id`, refusals included.
 The daemon checks a line in this order and replies to the first rule it breaks:
@@ -197,7 +198,10 @@ The connection stays open after any error reply.
   that line cannot be written, and exits 0, so `librepods watch | head -1`
   succeeds but returns only after the next change of the state.
 - `librepods set <key> <value>` and `librepods do <action>` print nothing and
-  exit 0 on success, or print the error message on stderr and exit 1.
+  exit 0 on success, or print the error message on stderr and exit 1. After
+  `bad_value`, `set` also prints `Values:` and the words the key takes, as
+  `Values: off, one, both` for `ear_detection`; `adaptive_level` takes a
+  number and gets no such line.
 - When no daemon answers, each prints `Could not connect to OpenPods daemon at
   <socket> (is it running?)` on stderr and exits 1.
 - Each reads lines from the daemon of at most 65536 bytes, newline excluded,

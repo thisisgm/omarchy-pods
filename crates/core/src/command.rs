@@ -75,6 +75,7 @@ pub enum CommandError {
     NotSupported,
     NotWorn,
     OutOfRange,
+    BadValue,
     UnknownKey,
     BadRequest,
     Timeout,
@@ -83,11 +84,12 @@ pub enum CommandError {
 }
 
 impl CommandError {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::NotConnected,
         Self::NotSupported,
         Self::NotWorn,
         Self::OutOfRange,
+        Self::BadValue,
         Self::UnknownKey,
         Self::BadRequest,
         Self::Timeout,
@@ -102,6 +104,7 @@ impl CommandError {
             Self::NotSupported => "not_supported",
             Self::NotWorn => "not_worn",
             Self::OutOfRange => "out_of_range",
+            Self::BadValue => "bad_value",
             Self::UnknownKey => "unknown_key",
             Self::BadRequest => "bad_request",
             Self::Timeout => "timeout",
@@ -117,6 +120,7 @@ impl CommandError {
             Self::NotSupported => "These AirPods do not support that.",
             Self::NotWorn => "The AirPods are not in an ear.",
             Self::OutOfRange => "The value is outside the range the setting takes.",
+            Self::BadValue => "That setting does not take this value.",
             Self::UnknownKey => "There is no setting by that name.",
             Self::BadRequest => "The daemon could not read the request.",
             Self::Timeout => "The AirPods did not answer in time.",

@@ -125,7 +125,7 @@ enum Outcome {
 fn outcome(parsed: Result<String, Failure>) -> Outcome {
     match parsed {
         Ok(line) => Outcome::Taken(line),
-        Err(Failure::Refused(message)) => Outcome::Refused(message),
+        Err(Failure::Refused { message, .. }) => Outcome::Refused(message),
         Err(Failure::NotUnderstood) => Outcome::NotUnderstood,
         Err(failure) => panic!("a parser returned {failure:?}"),
     }

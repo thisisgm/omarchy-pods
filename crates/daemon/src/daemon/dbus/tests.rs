@@ -46,6 +46,7 @@ fn spelled(error: CommandError) -> &'static str {
         CommandError::NotSupported => "io.github.thisisgm.Omapods1.Error.NotSupported",
         CommandError::NotWorn => "io.github.thisisgm.Omapods1.Error.NotWorn",
         CommandError::OutOfRange => "io.github.thisisgm.Omapods1.Error.OutOfRange",
+        CommandError::BadValue => "io.github.thisisgm.Omapods1.Error.BadValue",
         CommandError::UnknownKey => "io.github.thisisgm.Omapods1.Error.UnknownKey",
         CommandError::BadRequest => "io.github.thisisgm.Omapods1.Error.BadRequest",
         CommandError::Timeout => "io.github.thisisgm.Omapods1.Error.Timeout",
@@ -463,21 +464,18 @@ fn set_adaptive_level_accepts_0_and_100() {
 }
 
 #[test]
-fn a_word_the_setting_does_not_take_is_bad_request_as_on_the_socket() {
+fn a_word_the_setting_does_not_take_is_bad_value_as_on_the_socket() {
     run(async {
         let peer = peer(Running::new()).await;
-        let bad_request = Err(format!("{ERROR_PREFIX}BadRequest"));
+        let bad_value = Err(format!("{ERROR_PREFIX}BadValue"));
         for mode in ["ANC", "", "noise:anc", "anc ", "one", "true"] {
             let reply = call(&peer.client, "SetNoiseMode", &(mode,)).await;
-            assert_eq!(reply, bad_request, "{mode:?}");
-            assert_eq!(
-                settings::setting(NOISE, mode),
-                Err(CommandError::BadRequest)
-            );
+            assert_eq!(reply, bad_value, "{mode:?}");
+            assert_eq!(settings::setting(NOISE, mode), Err(CommandError::BadValue));
         }
         for behavior in ["both ", "anc", "", "ear:off", "cycle"] {
             let reply = call(&peer.client, "SetEarDetection", &(behavior,)).await;
-            assert_eq!(reply, bad_request, "{behavior:?}");
+            assert_eq!(reply, bad_value, "{behavior:?}");
         }
         assert_eq!(peer.hub.state(), State::default());
         // The socket's `set noise cycle` is a noise command too, so the method takes it.

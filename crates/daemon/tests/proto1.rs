@@ -337,10 +337,6 @@ mod tests {
                 r#"{"v":1,"id":4,"op":"set","key":"adaptive_level","value":50}"#,
                 "4",
             ),
-            (
-                r#"{"v":1,"id":4,"op":"set","key":"noise","value":"loud"}"#,
-                "4",
-            ),
             (r#"{"v":1,"id":4,"op":"do"}"#, "4"),
         ] {
             assert_eq!(

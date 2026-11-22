@@ -15,22 +15,17 @@ mod tests {
     use std::future::poll_fn;
     use std::path::Path;
     use std::pin::Pin;
-    use std::time::{Duration, Instant};
 
     use pods_core::command::CommandError;
     use tokio::runtime::Builder as RuntimeBuilder;
-    use zbus::connection::Builder;
     use zbus::export::futures_core::Stream;
     use zbus::{Connection, MessageStream, OwnedVariant};
 
-    use super::support::bus::{BUS_NAME, INTERFACE, OBJECT_PATH, bus_address, start_bus};
-    use super::support::{BINARY, Daemon, HANG_LIMIT, Session, log_lines, wait_for};
-
-    /// The whole bus conversation of one test, longer than any one wait inside it so that wait reports first.
-    const CONVERSATION_LIMIT: Duration = Duration::from_secs(30);
-
-    /// How often the async wait for the bus name asks again; the harness wait is blocking and cannot run here.
-    const BUS_POLL: Duration = Duration::from_millis(10);
+    use super::support::bus::{
+        BUS_NAME, CONVERSATION_LIMIT, INTERFACE, OBJECT_PATH, bus_address, owned_connection,
+        start_bus, start_daemon,
+    };
+    use super::support::{BINARY, HANG_LIMIT, Session, log_lines, wait_for};
 
     /// How the daemon's line about a missing bus or a taken name starts, from `serve` in `src/daemon/dbus.rs`.
     const NO_BUS_LOG: &str =
@@ -42,42 +37,15 @@ mod tests {
     /// How zbus 6 starts an address it cannot reach, after `NO_BUS_LOG`; the address follows in backquotes.
     const CONNECT_FAILED: &str = "failed to connect to";
 
-    const BUS_ADDRESS_VAR: &str = "DBUS_SESSION_BUS_ADDRESS";
-    const DRIVER_NAME: &str = "org.freedesktop.DBus";
-    const DRIVER_PATH: &str = "/org/freedesktop/DBus";
     const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
     const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
     const CHANGES_RULE: &str = "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/io/github/thisisgm/Omapods'";
-
-    /// Starts a daemon whose session bus is `bus_address`, and waits until its socket accepts.
-    fn start_daemon(session: &Session, bus_address: &str, log_name: &str) -> Daemon {
-        let mut command = session.command(Path::new(BINARY), &["daemon"]);
-        let daemon = session.spawn_command(command.env(BUS_ADDRESS_VAR, bus_address), log_name);
-        session.wait_accepting();
-        daemon
-    }
 
     /// What `librepods <args>` prints, after checking that it exited 0.
     fn client(session: &Session, args: &[&str]) -> String {
         let output = session.run_client(Path::new(BINARY), args);
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
-    }
-
-    async fn name_has_owner(client: &Connection) -> bool {
-        client
-            .call_method(
-                Some(DRIVER_NAME),
-                DRIVER_PATH,
-                Some(DRIVER_NAME),
-                "NameHasOwner",
-                &(BUS_NAME,),
-            )
-            .await
-            .unwrap()
-            .body()
-            .deserialize()
-            .unwrap()
     }
 
     async fn get(client: &Connection, property: &str) -> OwnedVariant {
@@ -147,21 +115,8 @@ mod tests {
             .build()
             .unwrap();
         let wait = async {
-            let client_connection = Builder::address(address.as_str())
-                .method_timeout(HANG_LIMIT)
-                .build()
-                .await
-                .unwrap();
+            let client_connection = owned_connection(&address, &daemon).await;
             let bus = &client_connection;
-            let started = Instant::now();
-            while !name_has_owner(bus).await {
-                assert!(
-                    started.elapsed() < HANG_LIMIT,
-                    "{BUS_NAME} never owned: {}",
-                    daemon.log()
-                );
-                tokio::time::sleep(BUS_POLL).await;
-            }
             let connected = bool::try_from(get(bus, "Connected").await).unwrap();
             assert!(!connected);
             let version = u32::try_from(get(bus, "ApiVersion").await).unwrap();

@@ -89,7 +89,7 @@ fn a_key_that_is_not_a_setting_is_unknown_key() {
 }
 
 #[test]
-fn a_word_the_key_does_not_take_is_bad_request() {
+fn a_word_the_key_does_not_take_is_bad_value() {
     for (key, value) in [
         ("noise", "loud"),
         ("noise", "ANC"),
@@ -111,9 +111,49 @@ fn a_word_the_key_does_not_take_is_bad_request() {
     ] {
         assert_eq!(
             setting(key, value),
-            Err(CommandError::BadRequest),
+            Err(CommandError::BadValue),
             "{key} {value:?}"
         );
+    }
+}
+
+#[test]
+fn values_lists_every_word_each_key_takes() {
+    let table: [(&str, Option<&[&str]>); 6] = [
+        (
+            NOISE,
+            Some(&["off", "anc", "transparency", "adaptive", "cycle"]),
+        ),
+        (EAR_DETECTION, Some(&["off", "one", "both"])),
+        (CONVERSATIONAL_AWARENESS, Some(&["true", "false"])),
+        (ONE_BUD_ANC, Some(&["true", "false"])),
+        (ADAPTIVE_LEVEL, None),
+        ("volume", None),
+    ];
+    for (key, _) in KEYS {
+        assert!(table.iter().any(|&(row, _)| row == key), "{key}");
+    }
+    for (key, words) in table {
+        assert_eq!(values(key), words, "{key}");
+        for word in words.unwrap_or_default() {
+            assert!(setting(key, word).is_ok(), "{key} {word}");
+        }
+    }
+}
+
+#[test]
+fn every_legacy_word_of_a_family_is_a_value_of_its_key() {
+    for (key, family) in KEYS {
+        let Family::Words(prefix, words) = family else {
+            continue;
+        };
+        for &(verb, _) in &VERBS {
+            if let Verb::Family(at, word) = verb
+                && at == prefix
+            {
+                assert!(words.contains(&word), "{key} {word}");
+            }
+        }
     }
 }
 
@@ -158,25 +198,15 @@ fn actions_are_connect_disconnect_and_forget_only() {
 
 #[test]
 fn the_protocol_document_names_every_key_value_and_action() {
-    for (key, family) in KEYS {
+    for (key, _) in KEYS {
         let row_start = format!("| `{key}` | ");
         let row = PROTOCOL_DOCUMENT
             .lines()
             .find(|line| line.starts_with(&row_start))
             .unwrap_or_else(|| panic!("docs/protocol-1.md has no row for `{key}`"));
-        let phrases: Vec<String> = match family {
-            Family::Words(prefix) => VERBS
-                .iter()
-                .filter_map(|&(verb, _)| match verb {
-                    Verb::Family(at, word) if at == prefix => Some(format!("`{word}`")),
-                    Verb::Family(..) | Verb::Whole(_) => None,
-                })
-                .collect(),
-            Family::Switch(_) => SWITCH_WORDS
-                .iter()
-                .map(|(word, _)| format!("`{word}`"))
-                .collect(),
-            Family::Level => vec!["from 0 to 100".to_owned()],
+        let phrases: Vec<String> = match values(key) {
+            Some(words) => words.iter().map(|word| format!("`{word}`")).collect(),
+            None => vec!["from 0 to 100".to_owned()],
         };
         for phrase in phrases {
             assert!(
@@ -215,7 +245,7 @@ proptest! {
     #[test]
     fn any_key_and_value_give_a_command_or_a_refusal(key in ".{0,32}", value in ".{0,32}") {
         match setting(&key, &value) {
-            Ok(_) | Err(CommandError::BadRequest | CommandError::OutOfRange) => {
+            Ok(_) | Err(CommandError::BadValue | CommandError::OutOfRange) => {
                 prop_assert!(KEYS.iter().any(|(name, _)| *name == key));
             }
             Err(CommandError::UnknownKey) => {
@@ -232,7 +262,7 @@ proptest! {
     ) {
         let result = setting(key, &value);
         prop_assert!(
-            matches!(result, Ok(_) | Err(CommandError::BadRequest | CommandError::OutOfRange)),
+            matches!(result, Ok(_) | Err(CommandError::BadValue | CommandError::OutOfRange)),
             "{key} {value:?} gave {result:?}"
         );
     }

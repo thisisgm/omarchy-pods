@@ -195,7 +195,7 @@ fn set_exit_codes_and_messages() {
         (
             &["set", "noise", "loud"],
             1,
-            "The daemon could not read the request.\n",
+            "That setting does not take this value.\nValues: off, anc, transparency, adaptive, cycle\n",
         ),
         (
             &["do", "disconnect"],

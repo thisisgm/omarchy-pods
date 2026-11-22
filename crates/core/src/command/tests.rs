@@ -213,11 +213,12 @@ fn entry_in_all(error: CommandError) -> CommandError {
         CommandError::NotSupported => CommandError::ALL[1],
         CommandError::NotWorn => CommandError::ALL[2],
         CommandError::OutOfRange => CommandError::ALL[3],
-        CommandError::UnknownKey => CommandError::ALL[4],
-        CommandError::BadRequest => CommandError::ALL[5],
-        CommandError::Timeout => CommandError::ALL[6],
-        CommandError::Headless => CommandError::ALL[7],
-        CommandError::NoDevice => CommandError::ALL[8],
+        CommandError::BadValue => CommandError::ALL[4],
+        CommandError::UnknownKey => CommandError::ALL[5],
+        CommandError::BadRequest => CommandError::ALL[6],
+        CommandError::Timeout => CommandError::ALL[7],
+        CommandError::Headless => CommandError::ALL[8],
+        CommandError::NoDevice => CommandError::ALL[9],
     }
 }
 
