@@ -20,6 +20,7 @@ use serde_json::Value;
 
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, start_bus};
+use super::omarchy::{Mood, Omarchy};
 use super::{
     BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, do_request, outcome, wait_for,
     wait_within,
@@ -101,6 +102,7 @@ pub(crate) struct Rig {
     /// Shared with the fake BlueZ's reaction to calls.
     devices: Arc<Mutex<Vec<Device>>>,
     prepare: Vec<Prepare>,
+    omarchy: Omarchy,
     session: Session,
 }
 
@@ -129,6 +131,7 @@ impl Rig {
     pub(crate) fn before_system_bus() -> Self {
         let session = Session::new();
         let session_bus = start_bus(&session, SESSION_BUS);
+        let omarchy = Omarchy::install(&session, Mood::Works);
         Self {
             daemon: None,
             stopped: false,
@@ -139,6 +142,7 @@ impl Rig {
             session_bus,
             devices: Arc::default(),
             prepare: Vec::new(),
+            omarchy,
             session,
         }
     }
@@ -163,6 +167,11 @@ impl Rig {
 
     pub(crate) fn session(&self) -> &Session {
         &self.session
+    }
+
+    /// The stand-in `omarchy` on the daemon's path, working until a test makes it `become_` otherwise.
+    pub(crate) fn omarchy(&self) -> &Omarchy {
+        &self.omarchy
     }
 
     pub(crate) fn bluez(&self) -> &FakeBluez {
