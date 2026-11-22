@@ -7,6 +7,8 @@ use super::xorshift::next_random;
 
 /// The sines `band_noise` sums lie this far apart, each moved by a seeded part of a quarter of it.
 const SINE_SPACING_HZ: f32 = 100.0;
+/// Under this every sine of `tilted_noise` keeps its full amplitude.
+pub(crate) const TILT_FROM_HZ: f32 = 500.0;
 /// One slot of a burst train.
 const SLOT_MS: u32 = 20;
 /// The quietest and the loudest burst of a train.
@@ -69,12 +71,26 @@ pub(crate) fn band_noise(
     amplitude: f32,
     len: usize,
 ) -> Vec<f32> {
+    tilted_noise(seed, top_hz, rate, amplitude, 0.0, len)
+}
+
+/// The noise of `band_noise` with the long term spectrum of a voice: each sine over 500 Hz lies `tilt_db` an octave under `amplitude`.
+pub(crate) fn tilted_noise(
+    seed: &mut u64,
+    top_hz: f32,
+    rate: u32,
+    amplitude: f32,
+    tilt_db: f32,
+    len: usize,
+) -> Vec<f32> {
     let mut sum = vec![0.0_f32; len];
     let mut centre_hz = SINE_SPACING_HZ;
     while centre_hz + SINE_SPACING_HZ / 4.0 < top_hz {
         let hz = centre_hz + unit(seed) * SINE_SPACING_HZ / 4.0;
         let phase = (unit(seed) + 1.0) * TAU / 2.0;
-        add(&mut sum, 0, &sine(hz, rate, amplitude, phase, len));
+        let octaves = (centre_hz / TILT_FROM_HZ).max(1.0).log2();
+        let gain = 10.0_f32.powf(-tilt_db * octaves / 20.0);
+        add(&mut sum, 0, &sine(hz, rate, amplitude * gain, phase, len));
         centre_hz += SINE_SPACING_HZ;
     }
     sum

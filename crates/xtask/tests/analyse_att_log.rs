@@ -41,14 +41,12 @@ mod tests {
     use pods_proto::dictation::{Frame, encode_audio};
     use pods_proto::sdulog::{Direction, format_line};
 
-    use super::att_run::{CONTROL_LOG, FRAMES_HEADER, analyse, marks_of};
-    use super::att_synth::{NS_PER_SECOND, Plan, synth};
+    use super::att_run::{CONTROL_LOG, FRAMES_HEADER, START_NS, analyse, marks_of};
+    use super::att_synth::{Plan, synth};
     use super::support::{log_text, make_run_of, names_in, probe, row};
 
     /// The status the command exits with when it refuses; a panic would exit with 101.
     const REFUSED: i32 = 1;
-    /// Where the session of a run here starts.
-    const START_NS: u64 = 2 * NS_PER_SECOND;
 
     /// One line of a log: `7 < 1b0d00`, a stamp, the direction and the packet.
     fn line(at_ns: u64, direction: Direction, pdu: &[u8]) -> String {

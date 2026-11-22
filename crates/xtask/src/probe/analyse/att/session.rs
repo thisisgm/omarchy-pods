@@ -1,15 +1,17 @@
 //! The figures of one dictation session: its skips, its timing, its lead and the rates of what follows its burst.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::time::Duration;
 
 use pods_proto::sdulog::Record;
 
 use super::super::lead::{Arrival, Lead, lead};
-use super::super::load::{Window, segment};
+use super::super::load::{Window, span};
 use super::super::rates::{ClockEstimate, Floor, Thin, clock_of};
 use super::super::stats::{NS_PER_MS, per_second, to_f64};
-use super::load::{Answers, LoadedAtt, load};
+use super::load::{Answers, FrameSeen, LoadedAtt, Notification, load};
+use crate::probe::capture::STOP_TAIL_MS;
 
 /// How long one frame lasts: what the table of contents byte of every frame seen so far says.
 pub(crate) const FRAME_MS: u32 = 20;
@@ -23,6 +25,9 @@ pub(crate) const FLOOR: Floor = Floor {
     sdus: 500,
     span_ns: 60_000_000_000,
 };
+
+/// How long after its stop mark a session still takes frames: as long as a capture keeps the channel open after its stop write, so a trace is cut where a capture ends.
+pub(crate) const TAIL_MS: u64 = STOP_TAIL_MS;
 
 /// One audio notification that brought a frame: when it came, the frames delivered by then and the coded bytes it brought.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,36 +57,87 @@ pub(crate) enum AfterStop {
     },
 }
 
-/// The stream of one start mark, cut at the mark that ends it.
+/// The whole frames that came after the stop mark of a session and before the next start mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Tail {
+    /// Those the session takes, which its stream holds.
+    pub(crate) taken: usize,
+    /// Those from the first notification the session does not take.
+    pub(crate) left: usize,
+}
+
+/// The stream of one start mark: what its window holds, then what the pods still sent of it after the stop mark.
 #[derive(Debug)]
 pub(crate) struct Session {
     pub(crate) start_ns: u64,
+    /// The places of its records in the log.
+    pub(crate) records: Range<usize>,
     pub(crate) stream: LoadedAtt,
     pub(crate) after_stop: AfterStop,
+    pub(crate) tail: Tail,
+}
+
+/// How many of the first notifications of `late` the session that ended on frame counter `last` takes: each before `until_ns`, each of its frames one counter on from the frame before.
+fn in_flight(last: u16, late: &[Notification], until_ns: u64) -> usize {
+    let mut next = last.wrapping_add(1);
+    let mut in_step = |frame: &FrameSeen| {
+        let expected = next;
+        next = next.wrapping_add(1);
+        frame.counter == expected
+    };
+    let goes_on = |packet: &&Notification| {
+        let (in_time, frames) = (packet.at_ns < until_ns, &packet.frames);
+        in_time && !frames.is_empty() && frames.iter().all(&mut in_step)
+    };
+    late.iter().take_while(goes_on).count()
+}
+
+fn frames_in(packets: &[Notification]) -> usize {
+    packets.iter().map(|packet| packet.frames.len()).sum()
 }
 
 impl Session {
     pub(crate) fn cut(records: &[Record], window: Window, tail: Option<Window>) -> Self {
-        let after_stop = tail.map_or(AfterStop::Unmarked, |tail| {
-            let late = load(segment(records, tail));
-            let answered = late
-                .replies
-                .iter()
-                .find(|reply| reply.answers == Answers::Stop);
-            answered.map_or(AfterStop::Unanswered, |reply| AfterStop::Answered {
-                reply_after_ns: reply.at_ns.saturating_sub(tail.start_ns),
-                audio_after_reply: late
-                    .audio
-                    .iter()
-                    .filter(|packet| packet.record > reply.record)
-                    .count(),
-            })
-        });
-        Self {
+        let within = span(records, window);
+        let mut session = Self {
             start_ns: window.start_ns,
-            stream: load(segment(records, window)),
-            after_stop,
+            stream: load(records.get(within.clone()).unwrap_or(&[])),
+            records: within,
+            after_stop: AfterStop::Unmarked,
+            tail: Tail::default(),
+        };
+        let Some(tail) = tail else {
+            return session;
+        };
+        let after = span(records, tail);
+        let late = load(records.get(after.clone()).unwrap_or(&[]));
+        let answered = late
+            .replies
+            .iter()
+            .find(|reply| reply.answers == Answers::Stop);
+        session.after_stop = answered.map_or(AfterStop::Unanswered, |reply| AfterStop::Answered {
+            reply_after_ns: reply.at_ns.saturating_sub(tail.start_ns),
+            audio_after_reply: late
+                .audio
+                .iter()
+                .filter(|packet| packet.record > reply.record)
+                .count(),
+        });
+        let tail_ns = u64::try_from(Duration::from_millis(TAIL_MS).as_nanos()).unwrap_or(u64::MAX);
+        let until_ns = tail.start_ns.saturating_add(tail_ns);
+        let last = session.stream.frames().last().map(|frame| frame.counter);
+        let taken = last.map_or(0, |last| in_flight(last, &late.audio, until_ns));
+        let (taken, left) = late.audio.split_at(taken);
+        session.tail = Tail {
+            taken: frames_in(taken),
+            left: frames_in(left),
+        };
+        if let Some(packet) = taken.last() {
+            // The stop mark that opens the tail is the mark that closes the window, so the session stays one run of the log.
+            session.records.end = after.start.saturating_add(packet.record).saturating_add(1);
+            session.stream = load(records.get(session.records.clone()).unwrap_or(&[]));
         }
+        session
     }
 
     /// From the start mark to the reply of the pods.

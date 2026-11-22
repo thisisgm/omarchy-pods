@@ -34,6 +34,7 @@ mod xorshift;
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
 mod audio {
+    mod band_edge;
     mod bounds;
     mod reference;
     mod refusals;
