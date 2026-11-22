@@ -53,7 +53,7 @@ impl Candidate {
 /// What the candidate made of a stream of units.
 #[derive(Debug, Default)]
 pub(crate) struct Tally {
-    /// Units that gave one frame of samples.
+    /// Calls that gave samples: one frame of them wherever the caller names a frame.
     pub(crate) decoded: usize,
     pub(crate) errors: usize,
     pub(crate) panics: usize,
@@ -68,16 +68,21 @@ pub(crate) struct Tally {
 }
 
 impl Tally {
-    /// Feeds every unit to the candidate, in order, each exactly once; samples that are not one frame of `frame` are an error.
+    /// Feeds every unit to the candidate, in order, each exactly once.
     pub(crate) fn of(candidate: &mut Candidate, units: &[&[u8]], frame: usize) -> Self {
         let mut tally = Self::default();
         for unit in units {
-            let started = Instant::now();
-            let result = candidate.unit(unit);
-            tally.took(started.elapsed());
-            tally.count(result, frame);
+            tally.call(Some(frame), || candidate.unit(unit));
         }
         tally
+    }
+
+    /// Times one call of a decoder and counts what it gave; samples that are not one frame of `frame` are an error, and where no frame is named any count passes.
+    pub(crate) fn call(&mut self, frame: Option<usize>, decode: impl FnOnce() -> UnitResult) {
+        let started = Instant::now();
+        let result = decode();
+        self.took(started.elapsed());
+        self.count(result, frame);
     }
 
     fn took(&mut self, call: Duration) {
@@ -88,22 +93,22 @@ impl Tally {
         }
     }
 
-    fn count(&mut self, result: UnitResult, frame: usize) {
-        let error = match result {
-            UnitResult::Samples(samples) if samples.len() == frame => {
-                self.decoded = self.decoded.saturating_add(1);
-                self.samples.extend(samples);
-                return;
-            }
+    fn count(&mut self, result: UnitResult, frame: Option<usize>) {
+        let error = match (result, frame) {
             // Not one frame: an error, so the decode is not whole and nothing lays it frame on frame against another.
-            UnitResult::Samples(samples) => {
+            (UnitResult::Samples(samples), Some(frame)) if samples.len() != frame => {
                 format!(
                     "{} samples from one unit, where a frame is {frame}",
                     samples.len()
                 )
             }
-            UnitResult::Error(error) => error,
-            UnitResult::Panic => {
+            (UnitResult::Samples(samples), _) => {
+                self.decoded = self.decoded.saturating_add(1);
+                self.samples.extend(samples);
+                return;
+            }
+            (UnitResult::Error(error), _) => error,
+            (UnitResult::Panic, _) => {
                 self.panics = self.panics.saturating_add(1);
                 return;
             }

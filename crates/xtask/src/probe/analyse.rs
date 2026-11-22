@@ -1,6 +1,6 @@
 //! Structural analysis of one capture run: the shape of the stream, with no audio decoded.
 
-mod att;
+pub(crate) mod att;
 #[cfg(test)]
 mod backlog;
 mod bands;

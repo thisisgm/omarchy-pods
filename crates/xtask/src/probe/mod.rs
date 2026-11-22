@@ -5,11 +5,13 @@ mod analyse;
 mod audio;
 mod capture;
 mod decode;
+mod decode_opus;
 mod dictate;
 mod eldfile;
 #[cfg(test)]
 mod fixture;
 mod hci;
+mod oggfile;
 mod script;
 mod store;
 mod wav;
@@ -90,6 +92,11 @@ enum ProbeCommand {
     },
     /// Decodes the units of an analysed run with `rusty_aac` and with FFmpeg, compares the two, and writes the decodes and decode.tsv into it.
     Decode {
+        /// The run directory, a session directory of the store then the run name.
+        run_dir: PathBuf,
+    },
+    /// Decodes the dictation frames of an analysed run with `opuscule` and with FFmpeg's two Opus decoders, compares them, and writes the decodes and decode-opus.tsv into it.
+    DecodeOpus {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,
     },
@@ -204,6 +211,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
         ProbeCommand::Analyse { run_dir } => print_table(analyse::analyse_run(&run_dir)),
         ProbeCommand::Decode { run_dir } => print_table(decode::decode_run(&run_dir)),
+        ProbeCommand::DecodeOpus { run_dir } => print_table(decode_opus::decode_run(&run_dir)),
         ProbeCommand::Audio(args) => print_table(audio::audio_run(&args)),
     }
 }

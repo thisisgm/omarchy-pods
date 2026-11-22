@@ -1,10 +1,10 @@
 //! Decodes the units of one analysed run with the decoder candidate and with FFmpeg, compares the two, and runs the fixed experiments.
 
-mod candidate;
-mod compare;
-mod experiments;
+pub(crate) mod candidate;
+pub(crate) mod compare;
+pub(crate) mod experiments;
 mod label;
-mod oracle;
+pub(crate) mod oracle;
 #[cfg(test)]
 mod refused;
 
@@ -25,7 +25,7 @@ use compare::{
     CompareError, Comparison, LSB_PER_FULL_SCALE, SEARCH_UNITS, TOLERANCE_LSB, compare, lsb_apart,
 };
 use label::{Label, LabelError};
-use oracle::{OracleError, OracleRun, STDERR_FILE, oracle};
+use oracle::{OracleError, OracleRun, Refusal, STDERR_FILE, oracle};
 
 /// The configuration the host supplies for the stream: AAC-ELD, mono, 480 sample frames, declared at 48 kHz.
 pub(crate) const EXPECTED_CONFIG: [u8; 4] = [0xf8, 0xe6, 0x30, 0x00];
@@ -37,13 +37,15 @@ const DECODE_FILE: &str = "decode.tsv";
 pub(crate) const WAV_FILE: &str = "pods.f32.wav";
 /// Twenty minutes of units at 133.33 a second: each decode of that many is 300 MiB of samples, and three are held at once.
 const MAX_UNITS: u32 = 160_000;
-const UNITS: &str = "units";
+pub(crate) const UNITS: &str = "units";
 const SAMPLES: &str = "samples";
-const FRAMES: &str = "frames";
+pub(crate) const FRAMES: &str = "frames";
 const LSB: &str = "LSB";
-const VERDICT: &str = "verdict";
+pub(crate) const VERDICT: &str = "verdict";
 /// What a row reads when its figure could not be taken; the note says why.
-const REFUSED: &str = "refused";
+pub(crate) const REFUSED: &str = "refused";
+/// Why a comparison names no offset.
+const NO_OFFSET: &str = "every frame the offsets are judged on meets a sample that is not a number at one of them, so no offset is named; the frames are compared at no offset";
 
 /// Why a run was not decoded.
 #[derive(Debug, thiserror::Error)]
@@ -114,47 +116,61 @@ impl<'run> Both<'run> {
                 &one_line(reason),
             )),
             Ok(tally) => {
-                let first_error = tally.first_error.as_deref();
-                let first =
-                    first_error.map_or_default(|error| format!("first: {}", one_line(error)));
-                rows.extend([
-                    Row::new(&key("candidate_config"), &"accepted", VERDICT, ""),
-                    Row::new(
-                        &key("candidate_decoded"),
-                        &tally.decoded,
-                        UNITS,
-                        "units that gave one frame of samples",
-                    ),
-                    Row::new(&key("candidate_errors"), &tally.errors, UNITS, &first),
-                    Row::new(
-                        &key("candidate_panics"),
-                        &tally.panics,
-                        UNITS,
-                        "calls that panicked and were caught",
-                    ),
-                ]);
+                rows.push(Row::new(&key("candidate_config"), &"accepted", VERDICT, ""));
+                rows.extend(tally_rows(prefix, tally, UNITS));
             }
         }
-        let (refused, how) = match &self.oracle.decoded {
-            Ok(_) => (
-                0_u8,
-                format!("exited with success and wrote nothing to {STDERR_FILE}"),
-            ),
-            Err(refusal) => (1, refusal.to_string()),
-        };
-        rows.push(Row::new(&key("oracle_refused"), &refused, "runs", &how));
+        rows.push(refusal_row(
+            &key("oracle_refused"),
+            &self.oracle.decoded,
+            STDERR_FILE,
+        ));
         rows
     }
 }
 
+/// What the candidate made of a stream, counted in `counted`, under keys that start with `prefix`.
+pub(crate) fn tally_rows(prefix: &str, tally: &Tally, counted: &'static str) -> [Row; 3] {
+    let key = |name: &str| format!("{prefix}{name}");
+    let first_error = tally.first_error.as_deref();
+    let first = first_error.map_or_default(|error| format!("first: {}", one_line(error)));
+    [
+        Row::new(
+            &key("candidate_decoded"),
+            &tally.decoded,
+            counted,
+            &format!("{counted} that gave one frame of samples"),
+        ),
+        Row::new(&key("candidate_errors"), &tally.errors, counted, &first),
+        Row::new(
+            &key("candidate_panics"),
+            &tally.panics,
+            counted,
+            "calls that panicked and were caught",
+        ),
+    ]
+}
+
+/// Whether one run of the oracle refused its stream, and how it ended; `kept` is the file that holds what it said.
+pub(crate) fn refusal_row(key: &str, decoded: &Result<Vec<f32>, Refusal>, kept: &str) -> Row {
+    let (refused, how) = match decoded {
+        Ok(_) => (
+            0_u8,
+            format!("exited with success and wrote nothing to {kept}"),
+        ),
+        Err(refusal) => (1, refusal.to_string()),
+    };
+    Row::new(key, &refused, "runs", &how)
+}
+
 /// A decoder's own words as one line of a table: every control character becomes a space.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.chars()
         .map(|letter| if letter.is_control() { ' ' } else { letter })
         .collect()
 }
 
-fn lsb(value: f64) -> String {
+pub(crate) fn lsb(value: f64) -> String {
     format!("{value:.3}")
 }
 
@@ -165,7 +181,7 @@ fn peak_lsb(samples: &[f32]) -> Option<f64> {
 }
 
 /// A row of a figure, or `refused` with the reason there is none.
-fn figure(
+pub(crate) fn figure(
     key: &str,
     unit: &'static str,
     found: Option<impl Display>,
@@ -193,7 +209,7 @@ fn coded_units(records: &[Record]) -> Vec<&[u8]> {
 }
 
 /// The samples one decoder gave and how loud they are, so agreement on silence is seen for what it is; none is a decoder that gave no decode.
-fn output_rows(decoder: &str, samples: Option<&[f32]>) -> [Row; 2] {
+pub(crate) fn output_rows(decoder: &str, samples: Option<&[f32]>) -> [Row; 2] {
     let peak = samples.and_then(peak_lsb).map(lsb);
     let peak_note = format!("largest sample x {LSB_PER_FULL_SCALE}");
     [
@@ -224,35 +240,57 @@ fn compared(full: &Both<'_>) -> Result<Comparison, String> {
         .map_err(|error: CompareError| error.to_string())
 }
 
-fn comparison_rows(full: &Both<'_>) -> [Row; 4] {
+/// The rows every comparison has, under keys that start with `prefix`, or three refusals with the reason there is none.
+pub(crate) fn comparison_rows(prefix: &str, compared: &Result<Comparison, String>) -> [Row; 3] {
+    let key = |name: &str| format!("{prefix}{name}");
     let offsets = format!(
         "units the candidate is behind the oracle where they agree best; -{SEARCH_UNITS} to {SEARCH_UNITS} tried"
     );
     let largest = format!("largest |candidate - oracle| x {LSB_PER_FULL_SCALE} at that offset");
-    let over = format!("frames with a sample more than {TOLERANCE_LSB} LSB apart");
-    match compared(full) {
+    match compared {
         Ok(found) => [
-            Row::new("frames_compared", &found.frames, FRAMES, ""),
-            Row::new("offset_units", &found.offset_units, UNITS, &offsets),
-            Row::new("max_lsb", &lsb(found.max_lsb), LSB, &largest),
-            Row::new(
-                "frames_over_one_lsb",
-                &found.frames_over_one_lsb,
-                FRAMES,
-                &over,
+            Row::new(&key("frames_compared"), &found.frames, FRAMES, ""),
+            figure(
+                &key("offset_units"),
+                UNITS,
+                found.offset_units,
+                &offsets,
+                NO_OFFSET,
             ),
+            Row::new(&key("max_lsb"), &lsb(found.max_lsb), LSB, &largest),
         ],
         Err(why) => [
-            Row::new("frames_compared", &REFUSED, FRAMES, &why),
-            Row::new("offset_units", &REFUSED, UNITS, &why),
-            Row::new("max_lsb", &REFUSED, LSB, &why),
-            Row::new("frames_over_one_lsb", &REFUSED, FRAMES, &why),
+            Row::new(&key("frames_compared"), &REFUSED, FRAMES, why),
+            Row::new(&key("offset_units"), &REFUSED, UNITS, why),
+            Row::new(&key("max_lsb"), &REFUSED, LSB, why),
         ],
     }
 }
 
+/// The rows of the comparison in the table of this command: those every comparison has, and the frames past 1 LSB whatever their peak.
+fn compared_rows(compared: &Result<Comparison, String>) -> Vec<Row> {
+    let mut rows = comparison_rows("", compared).to_vec();
+    let over_one_lsb = compared
+        .as_ref()
+        .ok()
+        .map(|found| found.frames_over_one_lsb);
+    rows.push(figure(
+        "frames_over_one_lsb",
+        FRAMES,
+        over_one_lsb,
+        &format!("frames with a sample more than {TOLERANCE_LSB} LSB apart"),
+        why_not(compared),
+    ));
+    rows
+}
+
+/// Why a comparison that is not there is not there.
+pub(crate) fn why_not(compared: &Result<Comparison, String>) -> &str {
+    compared.as_ref().err().map_or("", String::as_str)
+}
+
 /// The time the candidate took for each of `calls` units, which is above 0: a magnitude from one run on one machine, never a constant.
-fn timing_rows(tally: &Tally, calls: u32) -> [Row; 2] {
+pub(crate) fn timing_rows(tally: &Tally, calls: u32) -> [Row; 2] {
     const US_PER_SECOND: f64 = 1e6;
     let mean_us = tally.total.as_secs_f64() * US_PER_SECOND / f64::from(calls);
     let max_us = tally.slowest.as_secs_f64() * US_PER_SECOND;
@@ -310,7 +348,7 @@ pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeError> {
         from_candidate.map(|tally| tally.samples.as_slice()),
     ));
     rows.extend(output_rows("oracle", full.whole_oracle()));
-    rows.extend(comparison_rows(&full));
+    rows.extend(compared_rows(&compared(&full)));
     if let Some(tally) = from_candidate {
         rows.extend(timing_rows(tally, calls));
     }

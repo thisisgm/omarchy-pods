@@ -134,7 +134,7 @@ fn candidate_and_oracle_agree_on_silent_units() {
         frame(),
     )
     .unwrap();
-    assert_eq!((found.offset_units, found.frames), (0, UNITS));
+    assert_eq!((found.offset_units, found.frames), (Some(0), UNITS));
     assert_eq!((found.max_lsb, found.frames_over_one_lsb), (0.0, 0));
 }
 
@@ -160,7 +160,7 @@ fn candidate_and_oracle_agree_on_a_unit_that_is_not_silence() {
     );
 
     let found = compare(&candidate_samples(&TONE_UNIT), &from_oracle, frame()).unwrap();
-    assert_eq!((found.offset_units, found.frames), (0, UNITS));
+    assert_eq!((found.offset_units, found.frames), (Some(0), UNITS));
     assert!(found.max_lsb <= TOLERANCE_LSB, "{found:?}");
     assert_eq!(found.frames_over_one_lsb, 0);
 }

@@ -86,7 +86,7 @@ fn told_apart(
 }
 
 /// What the control says of the comparison: `yes` when a decoder told the streams apart, `no` when none that could did, `refused` when none could.
-fn discriminates(told: [Option<bool>; 2]) -> &'static str {
+pub(crate) fn discriminates(told: [Option<bool>; 2]) -> &'static str {
     match told {
         [Some(true), _] | [_, Some(true)] => "yes",
         [None, None] => REFUSED,
@@ -104,29 +104,40 @@ fn without_unit<'unit>(units: &[&'unit [u8]], at: usize) -> Option<Vec<&'unit [u
 }
 
 /// A draw from 0 up to `limit`, which is left out; none when `limit` is 0.
-fn below(random: &mut u64, limit: usize) -> Option<usize> {
+pub(crate) fn below(random: &mut u64, limit: usize) -> Option<usize> {
     let limit = u64::try_from(limit).ok()?;
     usize::try_from(next_random(random).checked_rem(limit)?).ok()
 }
 
-/// One unit damaged: half the time one bit of it flipped, else cut at a length shorter than its own; a unit of no bytes stays as it is.
-fn mutated(unit: &[u8], random: &mut u64) -> Vec<u8> {
-    if below(random, 2) == Some(0) {
-        let mut flipped = unit.to_vec();
-        let bit = below(random, unit.len().saturating_mul(BITS_PER_BYTE));
-        let place = bit.and_then(|bit| {
-            let in_byte = u32::try_from(bit.checked_rem(BITS_PER_BYTE)?).ok()?;
-            Some((bit.checked_div(BITS_PER_BYTE)?, in_byte))
-        });
-        if let Some((byte, in_byte)) = place
-            && let Some(byte) = flipped.get_mut(byte)
-        {
-            *byte ^= 1_u8.rotate_left(in_byte);
-        }
-        return flipped;
+/// One bit of a unit flipped; a unit of no bytes stays as it is.
+pub(crate) fn flipped(unit: &[u8], random: &mut u64) -> Vec<u8> {
+    let mut flipped = unit.to_vec();
+    let bit = below(random, unit.len().saturating_mul(BITS_PER_BYTE));
+    let place = bit.and_then(|bit| {
+        let in_byte = u32::try_from(bit.checked_rem(BITS_PER_BYTE)?).ok()?;
+        Some((bit.checked_div(BITS_PER_BYTE)?, in_byte))
+    });
+    if let Some((byte, in_byte)) = place
+        && let Some(byte) = flipped.get_mut(byte)
+    {
+        *byte ^= 1_u8.rotate_left(in_byte);
     }
+    flipped
+}
+
+/// A unit cut at a length shorter than its own.
+pub(crate) fn cut_short(unit: &[u8], random: &mut u64) -> Vec<u8> {
     let kept = below(random, unit.len()).unwrap_or(0);
     unit.get(..kept).unwrap_or(unit).to_vec()
+}
+
+/// One unit damaged: half the time one bit of it flipped, else cut short.
+fn mutated(unit: &[u8], random: &mut u64) -> Vec<u8> {
+    if below(random, 2) == Some(0) {
+        flipped(unit, random)
+    } else {
+        cut_short(unit, random)
+    }
 }
 
 /// Feeds the candidate `count` seeded mutations of units drawn from `units`.
@@ -242,40 +253,45 @@ fn mutation_rows(units: &[&[u8]]) -> Vec<Row> {
         Err(reason) => return vec![Row::new("mutations", &REFUSED, UNITS, &one_line(&reason))],
     };
     let tally = mutations(&mut candidate, units, MUTATIONS);
+    let how = format!(
+        "units drawn from the stream by a generator seeded {MUTATION_SEED:#x}, each with one bit flipped or cut short; fed to the candidate only"
+    );
+    damage_rows(&tally, &how, UNITS)
+}
+
+/// What the candidate made of damaged input, counted in `counted`; `how` says what was fed.
+pub(crate) fn damage_rows(tally: &Tally, how: &str, counted: &'static str) -> Vec<Row> {
     let fed = tally
         .decoded
         .saturating_add(tally.errors)
         .saturating_add(tally.panics);
     let slow_ms = SLOW_CALL.as_millis();
-    let how = format!(
-        "units drawn from the stream by a generator seeded {MUTATION_SEED:#x}, each with one bit flipped or cut short; fed to the candidate only"
-    );
     vec![
-        Row::new("mutations", &fed, UNITS, &how),
-        Row::new("mutations_decoded", &tally.decoded, UNITS, "gave samples"),
+        Row::new("mutations", &fed, counted, how),
+        Row::new("mutations_decoded", &tally.decoded, counted, "gave samples"),
         Row::new(
             "mutations_errors",
             &tally.errors,
-            UNITS,
+            counted,
             "refused by the decoder",
         ),
         Row::new(
             "mutations_panics",
             &tally.panics,
-            UNITS,
+            counted,
             "calls that panicked and were caught",
         ),
         Row::new(
             &format!("mutations_over_{slow_ms}_ms"),
             &tally.slow,
-            UNITS,
+            counted,
             &format!("calls that took longer than {slow_ms} ms"),
         ),
     ]
 }
 
 /// The rows of every experiment, in their fixed order.
-pub(crate) fn rows(run: &Run, units: &[&[u8]], full: &Both<'_>) -> Result<Vec<Row>, OracleError> {
+pub(super) fn rows(run: &Run, units: &[&[u8]], full: &Both<'_>) -> Result<Vec<Row>, OracleError> {
     let mut rows = Both::of(run, LONG_FRAME_CONFIG, units, LONG_FRAME_SAMPLES)?.rows("config_512_");
     rows.extend(Both::of(run, TRUE_RATE_CONFIG, units, SAMPLES_PER_UNIT)?.rows("config_64k_"));
     rows.extend(control_rows(run, units, full)?);
