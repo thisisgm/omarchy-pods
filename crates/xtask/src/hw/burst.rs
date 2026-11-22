@@ -264,6 +264,10 @@ fn next(
     limit: Duration,
 ) -> Result<Option<usize>, Ended> {
     loop {
+        // Read on every turn: a signal that lands between two reads interrupts neither.
+        if stopped() {
+            return Err(Ended::Interrupted);
+        }
         let left = limit.saturating_sub(since.elapsed());
         if left.is_zero() {
             return Ok(None);
@@ -275,7 +279,6 @@ fn next(
             Ok(Received::Closed) => {
                 return Err(Ended::Failed("the pods closed the channel".to_owned()));
             }
-            Err(ChannelError::Recv(Errno::INTR)) if stopped() => return Err(Ended::Interrupted),
             Ok(Received::TimedOut) | Err(ChannelError::Recv(Errno::INTR)) => {}
             Err(error) => return Err(error.into()),
         }
