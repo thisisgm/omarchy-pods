@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -257,6 +257,18 @@ fn a_subscriber_that_never_reads_is_dropped_and_status_still_answers() {
     rig.wait_filled();
     let mut silent = UnixStream::connect(rig.session().socket()).unwrap();
     silent.write_all(SUBSCRIBE).unwrap();
+    silent.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+    // Read byte by byte up to the newline, so the reply is taken and no event behind it; sample input `{"id":1,"ok":true,"result":{}}`.
+    let mut reply = Vec::new();
+    while reply.last() != Some(&b'\n') {
+        let mut byte = [0_u8; 1];
+        silent.read_exact(&mut byte).unwrap();
+        reply.extend(byte);
+    }
+    let subscribed: Value = serde_json::from_slice(&reply)
+        .unwrap_or_else(|error| panic!("the subscribe reply: {error}: {reply:?}"));
+    // The daemon follows the hub before it replies, so every change from here on finds the subscriber.
+    assert_eq!(subscribed["ok"], true, "{subscribed}");
     for change in 0..CHANGES {
         let mode = if change.is_multiple_of(2) {
             ANC
@@ -283,9 +295,6 @@ fn a_subscriber_that_never_reads_is_dropped_and_status_still_answers() {
     });
     assert_eq!(taken["noise_mode"], TRANSPARENCY.status);
     let read = String::from_utf8(read_to_close(&mut silent)).unwrap();
-    let subscribed: Value = serde_json::from_str(read.lines().next().unwrap_or_default())
-        .unwrap_or_else(|error| panic!("the subscribe reply: {error}: {read}"));
-    assert_eq!(subscribed["ok"], true, "{subscribed}");
     let events = read
         .lines()
         .filter(|line| line.starts_with(r#"{"event""#))
