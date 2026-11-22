@@ -650,8 +650,6 @@ mod tests {
         let (rig, device, _audio) = Rig::with_audio(PERCENT);
         let player = rig.player("one", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
-        // Time for the pause's report to reach the policy before the close drops work still in flight.
-        pause(QUIET);
         rig.close_channel(&device);
         rig.accept(&device);
         rig.wait_filled();
@@ -677,7 +675,7 @@ mod tests {
         let (rig, device, _audio) = Rig::with_audio(PERCENT);
         let first = rig.player("first", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &first, Asked::Pause, HANG_LIMIT);
-        // Time for the pause's report to reach the policy, so the return below asks this player.
+        // Time for the first pause's work to end, as the gap below counts from `out`; nothing reports that end.
         pause(QUIET);
         let slow = rig.player("slow", Playback::Playing);
         slow.hold_replies(true);
