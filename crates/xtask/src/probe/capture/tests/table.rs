@@ -7,7 +7,7 @@ use super::super::super::dictate::{HANDLE_WALK_MAX_REQUESTS, HandleWalk, declara
 use super::super::*;
 use super::at;
 use super::att_pods::{DECLARED, FIND_INFORMATION, READ_BY_TYPE, TABLE_END};
-use super::pods::{ATT_ONLY, Case};
+use super::case::{ATT_ONLY, Case};
 
 /// A wait for an answer on the attribute channel that a test expects to run out.
 pub(super) const SHORT_WALK_MS: u32 = 50;

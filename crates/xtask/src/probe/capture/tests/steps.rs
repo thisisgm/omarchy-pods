@@ -12,7 +12,8 @@ use rustix::io::Errno;
 use super::super::super::script::{Action, Event, Opening, Route, rescue};
 use super::super::wires::wake_of;
 use super::super::*;
-use super::pods::{Case, EAR_PACKET, ack, audio_sdu, pair, queued};
+use super::case::Case;
+use super::pods::{EAR_PACKET, ack, audio_sdu, pair, queued};
 
 /// What a wake on the control channel carries, which every test here written before the routes means.
 const CONTROL: Bearer = Bearer::Accessory;
