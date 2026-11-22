@@ -59,6 +59,7 @@ struct Line {
     fault: Fault,
     outbox: VecDeque<Vec<u8>>,
     hang_up: bool,
+    deaf: bool,
 }
 
 /// A bound the host made the pods pass; the pods hang up and `finish` names it.
@@ -124,6 +125,7 @@ impl Pods {
             fault,
             outbox,
             hang_up: false,
+            deaf: false,
         });
         state.most_open = state.most_open.max(state.lines.len());
         let shared = Arc::clone(&self.shared);
@@ -153,6 +155,13 @@ impl Pods {
     pub fn hang_up(&self) {
         for line in &mut self.shared.lock().lines {
             line.hang_up = true;
+        }
+    }
+
+    /// Stops reading on every open channel, so the host's writes fill the socket until one fails.
+    pub fn stop_reading(&self) {
+        for line in &mut self.shared.lock().lines {
+            line.deaf = true;
         }
     }
 
@@ -349,6 +358,10 @@ impl Shared {
             if model::closes(fault, sent) {
                 return Ok(());
             }
+            if self.deaf(id) {
+                drop(self.wait(self.lock(), POLL));
+                continue;
+            }
             let len = match channel.recv(&mut buffer) {
                 Ok(Received::Sdu(len)) => len,
                 Ok(Received::Truncated { .. }) => RECV_BUFFER_LEN,
@@ -391,6 +404,13 @@ impl Shared {
             }
         }
         Ok(true)
+    }
+
+    fn deaf(&self, id: usize) -> bool {
+        self.lock()
+            .lines
+            .iter()
+            .any(|line| line.id == id && line.deaf)
     }
 
     fn on_host(&self, id: usize, fault: Fault, sdu: &[u8]) {
@@ -479,6 +499,7 @@ mod tests {
             fault: Fault::None,
             outbox: VecDeque::new(),
             hang_up: false,
+            deaf: false,
         };
         pods.shared.lock().lines.push(unread);
         for _ in 0..OUTBOX_LIMIT {

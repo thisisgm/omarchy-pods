@@ -315,6 +315,8 @@ fn set_racing_a_hang_up_always_resolves() {
                 pods.hang_up();
             });
             if hang_up_first {
+                // With the pods' end closed, the failed write or the end of the link refuses the set.
+                pods.wait_closed(round + 1, HANG_LIMIT).unwrap();
                 spin(offset);
             }
             let started = Instant::now();
@@ -323,13 +325,10 @@ fn set_racing_a_hang_up_always_resolves() {
             (outcome, started.elapsed())
         });
         let outcome = outcome.unwrap_or_else(|_| panic!("round {round}: no outcome within 2 s"));
+        let not_connected = Outcome::Refused(CommandError::NotConnected);
         assert!(
-            matches!(
-                outcome,
-                Outcome::Confirmed
-                    | Outcome::Refused(CommandError::NotConnected | CommandError::Timeout)
-            ),
-            "round {round}: {outcome:?}"
+            outcome == not_connected || (!hang_up_first && outcome == Outcome::Sent),
+            "round {round}, hang-up first {hang_up_first}: {outcome:?}"
         );
         waits.push(waited);
         *outcomes.entry(format!("{outcome:?}")).or_insert(0_usize) += 1;
@@ -349,7 +348,7 @@ fn set_racing_a_hang_up_always_resolves() {
         .keys()
         .any(|outcome| outcome.starts_with("Refused"));
     assert!(
-        outcomes.contains_key("Confirmed") && refused,
+        outcomes.contains_key("Sent") && refused,
         "the race never went both ways: {outcomes:?}"
     );
     drop(running);
@@ -372,8 +371,7 @@ fn set_writes_in_the_turn_it_is_read() {
             .wait_heard(&frame, written_before + 1, HANG_LIMIT)
             .unwrap();
         latencies.push(heard[written_before].at - started);
-        // Confirmed only as the fake reports a setting back; assumed until measured on hardware.
-        assert_eq!(block_on(outcome), Outcome::Confirmed, "round {round}");
+        assert_eq!(block_on(outcome), Outcome::Sent, "round {round}");
     }
     let (min, max) = range(&latencies);
     report(&format!(

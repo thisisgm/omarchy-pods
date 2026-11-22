@@ -1,4 +1,4 @@
-//! Commands to bytes while the link is up, and the commands that wait for the pods' own report.
+//! Setting commands while the link is up: each is written, answered and stored at the write, and held against late reports.
 
 use std::time::Duration;
 
@@ -6,75 +6,188 @@ use pods_proto::control::{ControlCommand, ControlId};
 use pods_proto::model::Capabilities;
 use pods_proto::noise::NoiseMode;
 
-use super::ladder::{CONFIRM_TIMEOUT_MS, PENDING_MAX};
-use super::{Action, Event, Machine, Phase, Ticket, after, raise, resolve};
+use super::{Action, Event, Machine, Ticket, after, raise, resolve};
 use crate::command::{self, AdaptiveLevel, Command, CommandError, NoiseTarget, Outcome};
 use crate::state::{Counters, State};
 
-/// A command written to the pods, waiting for the report that shows it carried out.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Pending {
-    ticket: Ticket,
-    /// The report that confirms it: the same identifier and first value byte.
-    expect: ControlCommand,
-    deadline: Duration,
+/// Covers the measured lag of the pods' reports behind queued noise writes, about one to two seconds each.
+pub const REPORT_HOLD_MS: u64 = 3000;
+
+/// A setting value a command writes to the pods, or a valid report of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Setting {
+    Noise(NoiseMode),
+    ConversationalAwareness(bool),
+    OneBudAnc(bool),
+    AdaptiveLevel(AdaptiveLevel),
 }
 
-/// An adaptive level whose write the driver has not yet answered for.
+impl Setting {
+    /// Reads `04 00 04 00 09 00 28 01 00 00 00` as conversational awareness on; `None` for another identifier or a value out of range.
+    pub(super) fn read(report: ControlCommand) -> Option<Self> {
+        match report.id {
+            ControlId::NOISE_CONTROL => NoiseMode::from_command(&report).ok().map(Self::Noise),
+            ControlId::CONVERSATIONAL_AWARENESS => {
+                report.state().map(Self::ConversationalAwareness)
+            }
+            ControlId::ONE_BUD_ANC => report.state().map(Self::OneBudAnc),
+            ControlId::ADAPTIVE_NOISE_LEVEL => {
+                let [percent, ..] = report.value;
+                AdaptiveLevel::new(percent).ok().map(Self::AdaptiveLevel)
+            }
+            _ => None,
+        }
+    }
+
+    fn frame(self) -> ControlCommand {
+        match self {
+            Self::Noise(mode) => mode.command(),
+            Self::ConversationalAwareness(enabled) => {
+                ControlCommand::switch(ControlId::CONVERSATIONAL_AWARENESS, enabled)
+            }
+            Self::OneBudAnc(enabled) => ControlCommand::switch(ControlId::ONE_BUD_ANC, enabled),
+            Self::AdaptiveLevel(level) => ControlCommand {
+                id: ControlId::ADAPTIVE_NOISE_LEVEL,
+                value: [level.percent(), 0, 0, 0],
+            },
+        }
+    }
+
+    fn show(self, state: &mut State) {
+        match self {
+            Self::Noise(mode) => state.noise_mode = mode,
+            Self::ConversationalAwareness(enabled) => state.conversational_awareness = enabled,
+            Self::OneBudAnc(enabled) => state.one_bud_anc_mode = enabled,
+            Self::AdaptiveLevel(level) => state.adaptive_noise_level = level,
+        }
+    }
+
+    fn count_write(self, counters: &mut Counters) {
+        let counter = match self {
+            Self::Noise(_) => &mut counters.noise_control_changes,
+            Self::ConversationalAwareness(_) => &mut counters.conversational_awareness_changes,
+            Self::OneBudAnc(_) => &mut counters.one_bud_anc_changes,
+            Self::AdaptiveLevel(_) => &mut counters.adaptive_level_changes,
+        };
+        raise(counter);
+    }
+
+    fn id(self) -> ControlId {
+        self.frame().id
+    }
+}
+
+/// A setting written in the last step, answered by the next event: refused on `SendFailed`, else stored and sent.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Stored {
+pub(super) struct Written {
     ticket: Ticket,
-    level: AdaptiveLevel,
+    setting: Setting,
     /// When it was written; the deadline that makes the driver step again at once.
     at: Duration,
 }
 
-/// The settings the pods reported on the current channel, and whether the adaptive level was stored on it.
-#[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "one flag per setting, all cleared together when a channel opens"
-)]
-pub(super) struct KnownSettings {
-    pub(super) noise: bool,
-    pub(super) conversational_awareness: bool,
-    pub(super) one_bud_anc: bool,
-    pub(super) adaptive_level: bool,
-}
-
-/// The setting a written command changes, for the counter it raises.
+/// The value last written for one setting; until `until`, a report of another value is an earlier write's and is not taken.
 #[derive(Debug, Clone, Copy)]
-enum Setting {
-    Noise,
-    ConversationalAwareness,
-    OneBudAnc,
+struct Hold {
+    value: Setting,
+    until: Duration,
+    /// The last report of another value, taken when the hold passes since the pods report only on change.
+    withheld: Option<Setting>,
 }
 
-impl Setting {
-    fn changes(self, counters: &mut Counters) -> &mut u64 {
-        match self {
-            Self::Noise => &mut counters.noise_control_changes,
-            Self::ConversationalAwareness => &mut counters.conversational_awareness_changes,
-            Self::OneBudAnc => &mut counters.one_bud_anc_changes,
+/// The settings a write holds against late reports, one hold slot each.
+const HELD: [ControlId; 4] = [
+    ControlId::NOISE_CONTROL,
+    ControlId::CONVERSATIONAL_AWARENESS,
+    ControlId::ONE_BUD_ANC,
+    ControlId::ADAPTIVE_NOISE_LEVEL,
+];
+
+/// What the current channel holds of the settings, cleared when a channel opens.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct ChannelSettings {
+    /// The noise mode was reported or written on this channel, which an adaptive level needs.
+    pub(super) noise_known: bool,
+    /// One per entry of `HELD`, in its order.
+    holds: [Option<Hold>; HELD.len()],
+}
+
+impl ChannelSettings {
+    fn slot(&mut self, id: ControlId) -> Option<&mut Option<Hold>> {
+        let index = HELD.iter().position(|held| *held == id)?;
+        self.holds.get_mut(index)
+    }
+
+    fn start(&mut self, setting: Setting, until: Duration) {
+        if let Some(slot) = self.slot(setting.id()) {
+            // A later write keeps what an earlier hold held back, since the pods report only on change.
+            let withheld = slot.and_then(|hold| hold.withheld);
+            *slot = Some(Hold {
+                value: setting,
+                until,
+                withheld,
+            });
         }
+    }
+
+    /// Whether `report` is taken: its setting has no hold, it carries the written value, or the hold has passed; a taken report ends the hold.
+    pub(super) fn admit(&mut self, report: Setting, now: Duration) -> bool {
+        let Some(slot) = self.slot(report.id()) else {
+            return true;
+        };
+        if let Some(hold) = slot
+            && now < hold.until
+            && report != hold.value
+        {
+            hold.withheld = Some(report);
+            return false;
+        }
+        *slot = None;
+        true
+    }
+
+    /// Ends every hold that has passed, returning the reports it held back.
+    pub(super) fn release(&mut self, now: Duration) -> Vec<Setting> {
+        let mut released = Vec::new();
+        for slot in &mut self.holds {
+            if let Some(hold) = *slot
+                && hold.until <= now
+            {
+                released.extend(hold.withheld);
+                *slot = None;
+            }
+        }
+        released
+    }
+
+    /// When the earliest hold that holds back a report passes.
+    pub(super) fn release_deadline(&self) -> Option<Duration> {
+        self.holds
+            .into_iter()
+            .flatten()
+            .filter(|hold| hold.withheld.is_some())
+            .map(|hold| hold.until)
+            .min()
+    }
+
+    /// Shows a reported or written setting; a noise mode also makes the mode known on this channel.
+    pub(super) fn show(&mut self, state: &mut State, setting: Setting) {
+        setting.show(state);
+        self.noise_known |= matches!(setting, Setting::Noise(_));
     }
 }
 
 /// What a command takes while the link is up.
 #[derive(Debug, Clone, Copy)]
 enum Handling {
-    /// Answered from the state, with no bytes written.
-    Answer(Outcome),
+    Refuse(CommandError),
     /// Not a setting of the pods: answered as it is with no link.
     AsWithoutLink,
-    /// Written, then answered by the pods' report or by the deadline.
-    Wait(Setting, ControlCommand),
-    /// Written and stored at once, since the pods never report it back.
-    Store(AdaptiveLevel),
+    Write(Setting),
 }
 
 impl Machine {
-    /// A command in `Up`: answered at once, or written and left waiting for its report.
+    /// A command in `Up`: refused, answered as without a link, or written and answered in the next step.
     pub(super) fn command(
         &mut self,
         state: &mut State,
@@ -82,136 +195,59 @@ impl Machine {
         command: Command,
         now: Duration,
     ) -> Vec<Action> {
-        match handling(state, self.known_settings, &self.pending, command) {
-            Handling::Answer(outcome) => vec![resolve(ticket, outcome)],
+        match handling(state, self.channel_settings.noise_known, command) {
+            Handling::Refuse(error) => vec![resolve(ticket, Outcome::Refused(error))],
             Handling::AsWithoutLink => vec![resolve(ticket, command::apply(state, &command))],
-            Handling::Wait(setting, expect) => {
-                if self.pending.len() >= PENDING_MAX {
-                    return vec![resolve(ticket, Outcome::Refused(CommandError::Timeout))];
-                }
-                raise(setting.changes(&mut state.counters));
-                self.pending.push(Pending {
+            Handling::Write(setting) => {
+                self.written = Some(Written {
                     ticket,
-                    expect,
-                    deadline: after(now, CONFIRM_TIMEOUT_MS),
-                });
-                vec![Action::Send(expect.encode())]
-            }
-            Handling::Store(level) => {
-                self.stored = Some(Stored {
-                    ticket,
-                    level,
+                    setting,
                     at: now,
                 });
-                let frame = ControlCommand {
-                    id: ControlId::ADAPTIVE_NOISE_LEVEL,
-                    value: [level.percent(), 0, 0, 0],
-                };
-                vec![Action::Send(frame.encode())]
+                vec![Action::Send(setting.frame().encode())]
             }
         }
     }
 
-    /// Answers the level written in the step before `event`: refused when its write failed, else stored and sent.
-    pub(super) fn written(&mut self, state: &mut State, event: Event<'_>) -> Vec<Action> {
-        let Some(stored) = self.stored.take() else {
+    /// Answers the setting written in the step before `event`: refused when its write failed, else stored, held and sent.
+    pub(super) fn answer_written(&mut self, state: &mut State, event: Event<'_>) -> Vec<Action> {
+        let Some(written) = self.written.take() else {
             return Vec::new();
         };
         if event == Event::SendFailed {
             let refused = Outcome::Refused(CommandError::NotConnected);
-            return vec![resolve(stored.ticket, refused)];
+            return vec![resolve(written.ticket, refused)];
         }
-        state.adaptive_noise_level = stored.level;
-        self.known_settings.adaptive_level = true;
-        raise(&mut state.counters.adaptive_level_changes);
-        vec![resolve(stored.ticket, Outcome::Sent)]
+        written.setting.count_write(&mut state.counters);
+        let settings = &mut self.channel_settings;
+        settings.show(state, written.setting);
+        settings.start(written.setting, after(written.at, REPORT_HOLD_MS));
+        vec![resolve(written.ticket, Outcome::Sent)]
     }
 
-    pub(super) fn stored_deadline(&self) -> Option<Duration> {
-        self.stored.map(|stored| stored.at)
-    }
-
-    /// Confirms every waiting command that `report` shows carried out.
-    pub(super) fn confirm(&mut self, report: ControlCommand) -> Vec<Action> {
-        self.pending
-            .extract_if(.., |pending| shows(report, pending.expect))
-            .map(|pending| resolve(pending.ticket, Outcome::Confirmed))
-            .collect()
-    }
-
-    /// The earliest deadline of a waiting command.
-    pub(super) fn confirm_deadline(&self) -> Option<Duration> {
-        self.pending.iter().map(|pending| pending.deadline).min()
-    }
-
-    /// Ends each waiting command whose time has run out, then, outside `Up`, every one that is left.
-    pub(super) fn settle(&mut self, state: &State, now: Duration, actions: &mut Vec<Action>) {
-        let expired = self
-            .pending
-            .extract_if(.., |pending| pending.deadline <= now)
-            .map(|pending| {
-                resolve(
-                    pending.ticket,
-                    Outcome::Refused(unanswered(state, pending.expect)),
-                )
-            });
-        actions.extend(expired);
-        if matches!(self.phase, Phase::Up { .. }) {
-            return;
-        }
-        // Nothing can report back once the link has left `Up`.
-        let refused = self
-            .pending
-            .drain(..)
-            .map(|pending| resolve(pending.ticket, Outcome::Refused(CommandError::NotConnected)));
-        actions.extend(refused);
+    pub(super) fn written_deadline(&self) -> Option<Duration> {
+        self.written.map(|written| written.at)
     }
 }
 
-/// Whether `report` carries the value `expect` asked for.
-fn shows(report: ControlCommand, expect: ControlCommand) -> bool {
-    report.id == expect.id && report.value[0] == expect.value[0]
-}
-
-/// The refusal for a command no report answered in time: a noise change on pods out of every ear is `not_worn`.
-fn unanswered(state: &State, expect: ControlCommand) -> CommandError {
-    let worn = state.ear.any_in_ear() || state.model.capabilities().is_headset;
-    if expect.id == ControlId::NOISE_CONTROL && !worn {
-        CommandError::NotWorn
-    } else {
-        CommandError::Timeout
-    }
-}
-
-/// What `command` takes in `Up`, read from the state, what this channel reported, the commands still waiting and the model's features.
-fn handling(
-    state: &State,
-    known: KnownSettings,
-    pending: &[Pending],
-    command: Command,
-) -> Handling {
+/// What `command` takes in `Up`, read from the state, whether this channel reported or wrote the noise mode, and the model's features.
+fn handling(state: &State, noise_known: bool, command: Command) -> Handling {
     let features = state.capabilities();
     match command {
-        Command::SetNoise(target) => noise(state, known, pending, features, target),
+        Command::SetNoise(target) => noise(state, features, target),
         Command::SetConversationalAwareness(enabled) => switch(
             features.conversational_awareness,
-            known
-                .conversational_awareness
-                .then_some(state.conversational_awareness),
-            enabled,
-            Setting::ConversationalAwareness,
-            ControlId::CONVERSATIONAL_AWARENESS,
-            pending,
+            Setting::ConversationalAwareness(enabled),
         ),
-        Command::SetOneBudAnc(enabled) => switch(
-            features.one_bud_anc,
-            known.one_bud_anc.then_some(state.one_bud_anc_mode),
-            enabled,
-            Setting::OneBudAnc,
-            ControlId::ONE_BUD_ANC,
-            pending,
-        ),
-        Command::SetAdaptiveLevel(level) => adaptive_level(state, known, features, level),
+        Command::SetOneBudAnc(enabled) => switch(features.one_bud_anc, Setting::OneBudAnc(enabled)),
+        Command::SetAdaptiveLevel(level) => {
+            let adaptive = noise_known && state.noise_mode == NoiseMode::Adaptive;
+            if features.adaptive && adaptive {
+                Handling::Write(Setting::AdaptiveLevel(level))
+            } else {
+                Handling::Refuse(CommandError::NotSupported)
+            }
+        }
         // Never reached for connect, disconnect and forget, which `step` answers in every phase.
         Command::SetEarDetection(_)
         | Command::SetNotifications(_)
@@ -222,40 +258,22 @@ fn handling(
     }
 }
 
-/// The newest write still waiting for a report under `id`: the value the pods are on their way to.
-fn on_its_way(pending: &[Pending], id: ControlId) -> Option<ControlCommand> {
-    pending
-        .iter()
-        .rev()
-        .map(|entry| entry.expect)
-        .find(|expect| expect.id == id)
-}
-
-fn noise(
-    state: &State,
-    known: KnownSettings,
-    pending: &[Pending],
-    features: Capabilities,
-    target: NoiseTarget,
-) -> Handling {
+fn noise(state: &State, features: Capabilities, target: NoiseTarget) -> Handling {
     if !features.noise_control {
-        return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
+        return Handling::Refuse(CommandError::NotSupported);
     }
-    let on_its_way = on_its_way(pending, ControlId::NOISE_CONTROL);
     let mode = match target {
         NoiseTarget::Mode(mode) => mode,
-        NoiseTarget::Cycle => {
-            let from = on_its_way.and_then(|expect| NoiseMode::from_command(&expect).ok());
-            next_offered(from.unwrap_or(state.noise_mode), features)
-        }
+        NoiseTarget::Cycle => next_offered(state.noise_mode, features),
     };
     if !offers(features, mode) {
-        return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
+        return Handling::Refuse(CommandError::NotSupported);
     }
-    if on_its_way.is_none() && known.noise.then_some(state.noise_mode) == Some(mode) {
-        return Handling::Answer(Outcome::Confirmed);
+    // The pods answer no noise write while no bud is in an ear, so none is sent.
+    if !state.ear.any_in_ear() && !state.model.capabilities().is_headset {
+        return Handling::Refuse(CommandError::NotWorn);
     }
-    Handling::Wait(Setting::Noise, mode.command())
+    Handling::Write(Setting::Noise(mode))
 }
 
 fn next_offered(current: NoiseMode, features: Capabilities) -> NoiseMode {
@@ -275,35 +293,10 @@ fn offers(features: Capabilities, mode: NoiseMode) -> bool {
     }
 }
 
-/// `current` is the value reported on this channel, if any.
-fn switch(
-    supported: bool,
-    current: Option<bool>,
-    enabled: bool,
-    setting: Setting,
-    id: ControlId,
-    pending: &[Pending],
-) -> Handling {
-    if !supported {
-        return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
+fn switch(supported: bool, setting: Setting) -> Handling {
+    if supported {
+        Handling::Write(setting)
+    } else {
+        Handling::Refuse(CommandError::NotSupported)
     }
-    if on_its_way(pending, id).is_none() && current == Some(enabled) {
-        return Handling::Answer(Outcome::Confirmed);
-    }
-    Handling::Wait(setting, ControlCommand::switch(id, enabled))
-}
-
-fn adaptive_level(
-    state: &State,
-    known: KnownSettings,
-    features: Capabilities,
-    level: AdaptiveLevel,
-) -> Handling {
-    if !features.adaptive || known.noise.then_some(state.noise_mode) != Some(NoiseMode::Adaptive) {
-        return Handling::Answer(Outcome::Refused(CommandError::NotSupported));
-    }
-    if known.adaptive_level.then_some(state.adaptive_noise_level) == Some(level) {
-        return Handling::Answer(Outcome::Confirmed);
-    }
-    Handling::Store(level)
 }

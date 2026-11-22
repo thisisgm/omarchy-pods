@@ -147,15 +147,17 @@ A reply carries the request's `id` and `ok`.
   try; and `paused` otherwise, while the link is up, the AirPods' keys are not
   kept or BlueZ has not accepted the registration yet.
 - `set` and `do` reply with `result`. `confirmed` means the state shows the
-  change: either it already did, or the AirPods reported the change within
-  700 ms of the command. `sent` means the command was handed on and the reply
-  does not wait for its end. After `adaptive_level` the state shows the level
-  asked for at once. After a `do` the state shows what BlueZ did, and a call
-  that fails or is not made shows only in a counter or the log, as described
-  under `do`.
-  A setting command that waits
-  for the AirPods is answered when they report the change or when the 700 ms
-  pass.
+  change and nothing had to be sent: `ear_detection`, and `connect` with the
+  link up. `sent` means the command was handed on and the reply does not wait
+  for its end. A setting of the AirPods that is not refused is written on
+  every ask while the link is up, even when the state already shows the value,
+  and is answered `sent` once the write is on the link; the state shows the
+  value written at once. The AirPods may report a queued write late, so for
+  3 s after the last write of a setting, a report of it with another value is
+  held back until they report the value last written; if the 3 s pass first,
+  the last report held back is taken then. After a `do` the state shows what
+  BlueZ did, and a call that fails
+  or is not made shows only in a counter or the log, as described under `do`.
 - A refused request replies with `error`: `code` for programs and `message`, one
   sentence for people.
 - A refused `set` may still have stored its value and counted the change: the
@@ -179,14 +181,14 @@ therefore sees every change in order, or its connection closes.
 
 | `code` | `message` | When |
 |---|---|---|
-| `not_connected` | The AirPods are not connected. | The command needs the AirPods and they are not connected, or `disconnect` found them not linked, dialled or waiting to be dialled, or not connected in BlueZ, as described under `do`. |
+| `not_connected` | The AirPods are not connected. | The command needs the AirPods and they are not connected, its write to them failed, or `disconnect` found them not linked, dialled or waiting to be dialled, or not connected in BlueZ, as described under `do`. |
 | `not_supported` | These AirPods do not support that. | The model has no such feature or listening mode, or `adaptive_level` was set while the listening mode is not adaptive. |
-| `not_worn` | The AirPods are not in an ear. | A listening mode change was not reported back within 700 ms and no bud is in an ear. Over ear AirPods get `timeout` instead. |
+| `not_worn` | The AirPods are not in an ear. | A listening mode change while no bud is in an ear, which the AirPods do not answer, so nothing is written. Over ear AirPods are always written to. |
 | `out_of_range` | The value is outside the range the setting takes. | `adaptive_level` outside 0 to 100. |
 | `bad_value` | That setting does not take this value. | `set` with a `value` its `key` does not take, as `loud` for `noise` or `high` for `adaptive_level`. |
 | `unknown_key` | There is no setting by that name. | `set` with a `key` the table above does not list. |
 | `bad_request` | The daemon could not read the request. | See below. |
-| `timeout` | The AirPods did not answer in time. | The AirPods did not report the change within 700 ms, the daemon's input queue, which the AirPods' packets share, was full, or too many commands already waited for the AirPods to confirm them. |
+| `timeout` | The AirPods did not answer in time. | The daemon's input queue, which the AirPods' packets share, was full. |
 | `headless` | This daemon runs headless and has no window. | Not sent in protocol 1. |
 | `no_device` | There are no AirPods to act on. | A `do` found no AirPods to act on, as described under `do`. |
 | `unsupported_version` | This daemon speaks protocol version 1 only. | The line has a usable `id`, and `v` is present and is not `1`. The error lists the versions the daemon speaks in `supported`. |

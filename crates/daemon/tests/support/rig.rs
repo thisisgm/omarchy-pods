@@ -41,8 +41,6 @@ pub(crate) const ANSWERED_WITHIN: Duration = Duration::from_millis(200);
 pub(crate) const CALLS_IN_FLIGHT_MAX: usize = 4;
 /// A dial that should come at once.
 pub(crate) const DIAL_WAIT: Duration = Duration::from_secs(1);
-/// How long the daemon waits for the pods to report a setting back.
-pub(crate) const CONFIRM_TIMEOUT: Duration = Duration::from_millis(700);
 /// The wait after each failed dial to pods BlueZ holds connected, the C++ `delayMs(1..=10)` without its jitter.
 pub(crate) const HELD_LADDER: [Duration; 10] = [
     Duration::from_secs(1),
@@ -67,6 +65,7 @@ pub(crate) struct Mode {
     pub(crate) status: u8,
 }
 
+pub(crate) const OFF: Mode = Mode { wire: 1, status: 0 };
 pub(crate) const ANC: Mode = Mode { wire: 2, status: 1 };
 pub(crate) const TRANSPARENCY: Mode = Mode { wire: 3, status: 2 };
 pub(crate) const ADAPTIVE: Mode = Mode { wire: 4, status: 3 };
@@ -506,17 +505,24 @@ impl Rig {
         })
     }
 
-    /// Asks `librepods status` for `duration`, failing at the first answer where `check` does not hold.
+    /// Asks `librepods status` for `duration`, failing at the first answer inside it where `check` does not hold, or when none came inside it.
     pub(crate) fn holds_for(&self, duration: Duration, what: &str, check: impl Fn(&Value) -> bool) {
         let started = Instant::now();
+        let mut checked_any = false;
         while started.elapsed() < duration {
             let status = self.status();
+            // An answer that came after the window may show a state from past it.
+            if started.elapsed() >= duration {
+                break;
+            }
             assert!(
                 check(&status),
                 "{what} ended after {:?}: {status}",
                 started.elapsed()
             );
+            checked_any = true;
         }
+        assert!(checked_any, "{what}: no answer came inside {duration:?}");
     }
 
     /// Waits for the link up and the pods' name in the status, which the burst brings after the batteries and the ears.

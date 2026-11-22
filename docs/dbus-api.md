@@ -54,13 +54,13 @@ nothing, and a command that changes nothing sends none.
 ## Methods
 
 Each method returns `s`, with the meaning protocol 1 gives it: `confirmed`
-when the state shows the change, because it already did or because the pods
-reported it within 700 ms, or `sent` when the command was handed on and the
-reply does not wait for its end. `SetAdaptiveLevel` shows its level in the
-state at once. `Connect`, `Disconnect` and `Forget` reply before BlueZ answers,
-so `sent` does not mean BlueZ accepted the call; protocol 1 describes under
-`do` how a call that fails or is not made shows. A setting method that waits
-for the pods is answered when they report the change or when its 700 ms pass.
+when the state shows the change and nothing had to be sent, or `sent` when the
+command was handed on and the reply does not wait for its end. A setting
+method of the pods returns `sent` once its write is on the link, and the
+properties show the value written at once. `Connect`, `Disconnect` and
+`Forget` reply before BlueZ answers, so `sent` does not mean BlueZ accepted the
+call; protocol 1 describes under `do` how a call that fails or is not made
+shows.
 A refused command is an error reply instead, named after the protocol 1 code
 for the same refusal and sent in the same cases, which
 [protocol-1.md](protocol-1.md#errors) lists.
@@ -109,10 +109,8 @@ the message.
 | `io.github.thisisgm.Omapods1.Error.NoDevice` | `no_device` |
 
 No method of this interface names a setting or opens a window, so none returns
-`UnknownKey` or `Headless`. Any method returns `Timeout` when the AirPods do not
-report the change in time, when the daemon's input queue, which the AirPods'
-packets share, is full, or when too many commands already wait for the AirPods
-to confirm them. A `Set` method given a word its key does not take returns
+`UnknownKey` or `Headless`. Any method returns `Timeout` when the daemon's input
+queue, which the AirPods' packets share, is full. A `Set` method given a word its key does not take returns
 `BadValue`.
 
 A call the bus layer refuses before it reaches the daemon, such as one with the

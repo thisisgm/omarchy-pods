@@ -12,6 +12,7 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
+    use pods_core::link::REPORT_HOLD_MS;
     use pods_fake::{Fault, Profile};
     use pods_samples::{
         ADAPTIVE_LEVEL, CONVERSATION_AWARENESS, NOISE, ONE_BUD_ANC, Placed, setting,
@@ -19,10 +20,12 @@ mod tests {
     use serde_json::Value;
 
     use super::support::rig::{
-        ADAPTIVE, ANC, CONFIRM_TIMEOUT, Device, Rig, TRANSPARENCY, assert_gap, not_before,
+        ADAPTIVE, ANC, Device, Mode, REAL_TIME_SLACK, Rig, TRANSPARENCY, Watch, assert_gap,
     };
     use super::support::{HANG_LIMIT, Proto1, outcome, set_request};
 
+    /// A noise value no mode has, which the daemon must refuse wherever it lands.
+    const NO_MODE: u8 = 0xff;
     /// The adaptive level the test sets, in percent.
     const LEVEL: u8 = 40;
 
@@ -34,6 +37,38 @@ mod tests {
 
     /// How soon a change at the pods shows in `watch`.
     const SHOWN_WITHIN: Duration = Duration::from_secs(1);
+
+    /// Noise writes asked one after another, each timed from request to reply.
+    const NOISE_WRITES: usize = 22;
+
+    /// Far more writes than a socket pair's send buffer takes before it is full.
+    const WRITES_MAX: usize = 100_000;
+
+    /// The two modes the noise tests alternate between, with the word `set noise` takes.
+    const MODES: [(&str, Mode); 2] = [("anc", ANC), ("transparency", TRANSPARENCY)];
+
+    /// The default pods, in transparency.
+    fn in_transparency() -> Profile {
+        Profile {
+            noise: TRANSPARENCY.wire,
+            ..Profile::default()
+        }
+    }
+
+    /// Every line `watch` prints until one shows a bud out of its ear.
+    fn lines_until_a_bud_is_out(watch: &Watch) -> Vec<Value> {
+        let mut lines = Vec::new();
+        while lines
+            .last()
+            .is_none_or(|state| in_ear(state) == [true, true])
+        {
+            let printed = watch
+                .next(HANG_LIMIT)
+                .unwrap_or_else(|| panic!("no bud out; watch printed {lines:#?}"));
+            lines.push(printed.state);
+        }
+        lines
+    }
 
     /// The daemon with pods of `profile` and `fault`, their link up and their name in the status.
     fn up(profile: Profile, fault: Fault) -> (Rig, Device) {
@@ -78,32 +113,15 @@ mod tests {
     }
 
     #[test]
-    fn set_noise_anc_writes_the_frame_and_is_confirmed() {
+    fn set_noise_anc_writes_the_frame_and_shows_the_mode() {
         let (rig, device) = up(Profile::default(), Fault::None);
         let output = rig.client(&["set", "noise", "anc"]);
         assert_eq!(output.status.code(), Some(0), "{output:?}");
-        assert_eq!(noise_frames(&device), [setting(NOISE, ANC.wire)]);
         assert_eq!(rig.status()["noise_mode"], ANC.status);
-        let reply = Proto1::connect(rig.session()).ask(&set_request(1, "noise", "transparency"));
-        assert_eq!(outcome(&reply), "confirmed", "{reply}");
-        rig.finish();
-    }
-
-    #[test]
-    fn a_setting_the_pods_never_report_is_timeout_inside_the_client_wait() {
-        let (rig, device) = up(Profile::default(), Fault::NeverConfirm);
-        let asked = Instant::now();
-        refused(
-            &rig,
-            &["set", "noise", "anc"],
-            "The AirPods did not answer in time.",
-        );
-        assert_gap(
-            "the timeout after the command",
-            asked,
-            Instant::now(),
-            &not_before(CONFIRM_TIMEOUT),
-        );
+        device
+            .pods
+            .wait_heard(&setting(NOISE, ANC.wire), 1, HANG_LIMIT)
+            .unwrap_or_else(|_| panic!("{:?}", noise_frames(&device)));
         assert_eq!(noise_frames(&device), [setting(NOISE, ANC.wire)]);
         rig.finish();
     }
@@ -121,8 +139,14 @@ mod tests {
             &["set", "noise", "anc"],
             "The AirPods are not in an ear.",
         );
-        // Written and never answered: the refusal comes from the confirmation wait.
-        assert_eq!(noise_frames(&device), [setting(NOISE, ANC.wire)]);
+        // A switch written after it is heard after anything written before it.
+        let output = rig.client(&["set", "conversational_awareness", "true"]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        device
+            .pods
+            .wait_heard(&setting(CONVERSATION_AWARENESS, 1), 1, HANG_LIMIT)
+            .unwrap_or_else(|_| panic!("no switch frame heard"));
+        assert_eq!(noise_frames(&device), Vec::<Vec<u8>>::new());
         rig.finish();
     }
 
@@ -150,34 +174,6 @@ mod tests {
         assert_eq!(output.status.code(), Some(0), "{output:?}");
         wait_noise(&rig, ANC.status);
         assert_eq!(noise_frames(&device), [setting(NOISE, ANC.wire)]);
-        rig.finish();
-    }
-
-    #[test]
-    fn conversational_awareness_and_one_bud_are_confirmed_by_their_reports() {
-        let (rig, device) = up(Profile::default(), Fault::None);
-        let mut client = Proto1::connect(rig.session());
-        let switches = [
-            (
-                "conversational_awareness",
-                "conversational_awareness",
-                CONVERSATION_AWARENESS,
-            ),
-            ("one_bud_anc", "one_bud_anc_mode", ONE_BUD_ANC),
-        ];
-        let mut id = 0;
-        for (key, status_key, identifier) in switches {
-            for (value, on, wire) in [("true", true, 1), ("false", false, 2)] {
-                id += 1;
-                let reply = client.ask(&set_request(id, key, value));
-                assert_eq!(outcome(&reply), "confirmed", "{key} {value}: {reply}");
-                device
-                    .pods
-                    .wait_heard(&setting(identifier, wire), 1, Duration::ZERO)
-                    .unwrap_or_else(|_| panic!("{key} {value}: no frame heard"));
-                assert_eq!(rig.status()[status_key], on, "{key} {value}");
-            }
-        }
         rig.finish();
     }
 
@@ -241,6 +237,227 @@ mod tests {
             .filter(|in_ear| !**in_ear)
             .count();
         assert_eq!(out, 1, "{}", printed.state);
+        rig.finish();
+    }
+
+    #[test]
+    #[expect(
+        clippy::print_stderr,
+        reason = "the range of reply times goes into the test's output"
+    )]
+    fn a_noise_mode_is_sent_shown_at_once_and_written_on_every_ask() {
+        // The pods never report a write back, as the measured model often reports one late.
+        let (rig, device) = up(in_transparency(), Fault::NeverConfirm);
+        let mut client = Proto1::connect(rig.session());
+        let mut waits = Vec::new();
+        for request in 0..=NOISE_WRITES {
+            // The last ask repeats the mode just written, which the state already shows.
+            let (word, mode) = MODES[request.min(NOISE_WRITES - 1) % MODES.len()];
+            let asked = Instant::now();
+            let reply = client.ask(&set_request(request, "noise", word));
+            waits.push(asked.elapsed());
+            assert_eq!(outcome(&reply), "sent", "request {request}: {reply}");
+            assert_eq!(rig.status()["noise_mode"], mode.status, "request {request}");
+        }
+        for (count, mode) in [
+            (NOISE_WRITES / 2, ANC),
+            (NOISE_WRITES / 2 + 1, TRANSPARENCY),
+        ] {
+            device
+                .pods
+                .wait_heard(&setting(NOISE, mode.wire), count, HANG_LIMIT)
+                .unwrap_or_else(|_| panic!("{:?}", noise_frames(&device)));
+        }
+        assert_eq!(noise_frames(&device).len(), NOISE_WRITES + 1);
+        let (fastest, slowest) = (waits.iter().min(), waits.iter().max());
+        eprintln!(
+            "{} replies came {fastest:?} to {slowest:?} after their request",
+            waits.len()
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_switch_the_pods_never_report_is_sent_shown_and_written_both_ways() {
+        let (rig, device) = up(Profile::default(), Fault::NeverConfirm);
+        let mut client = Proto1::connect(rig.session());
+        let switches = [
+            (
+                "conversational_awareness",
+                "conversational_awareness",
+                CONVERSATION_AWARENESS,
+            ),
+            ("one_bud_anc", "one_bud_anc_mode", ONE_BUD_ANC),
+        ];
+        let mut id = 0;
+        for (key, status_key, identifier) in switches {
+            for (value, on, wire) in [("true", true, 1), ("false", false, 2)] {
+                id += 1;
+                let reply = client.ask(&set_request(id, key, value));
+                assert_eq!(outcome(&reply), "sent", "{key} {value}: {reply}");
+                assert_eq!(rig.status()[status_key], on, "{key} {value}");
+                device
+                    .pods
+                    .wait_heard(&setting(identifier, wire), 1, HANG_LIMIT)
+                    .unwrap_or_else(|_| panic!("{key} {value}: no frame heard"));
+            }
+        }
+        rig.finish();
+    }
+
+    #[test]
+    fn a_late_report_of_an_earlier_write_never_shows_after_a_later_one() {
+        let (rig, device) = up(in_transparency(), Fault::NeverConfirm);
+        let watch = rig.watch();
+        let mut client = Proto1::connect(rig.session());
+        for (id, word) in [(1, "anc"), (2, "adaptive")] {
+            let reply = client.ask(&set_request(id, "noise", word));
+            assert_eq!(outcome(&reply), "sent", "{word}: {reply}");
+        }
+        watch.lines_until(&rig.status());
+        // Both reports come late and in order; the bud taken out after them marks the end.
+        device.pods.set_setting(NOISE, ANC.wire);
+        device.pods.set_setting(NOISE, ADAPTIVE.wire);
+        device.pods.set_ear(Placed::OutOfEar, Placed::InEar);
+        let shown: Vec<Value> = lines_until_a_bud_is_out(&watch)
+            .iter()
+            .map(|state| state["noise_mode"].clone())
+            .collect();
+        assert!(
+            shown.iter().all(|mode| *mode == ADAPTIVE.status),
+            "{shown:?}"
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_report_held_back_is_taken_when_the_hold_of_a_later_write_passes() {
+        let (rig, device) = up(in_transparency(), Fault::NeverConfirm);
+        let mut client = Proto1::connect(rig.session());
+        assert_eq!(
+            outcome(&client.ask(&set_request(1, "noise", "anc"))),
+            "sent"
+        );
+        // The bud taken out after the report marks it read and held back.
+        device.pods.set_setting(NOISE, ADAPTIVE.wire);
+        device.pods.set_ear(Placed::OutOfEar, Placed::InEar);
+        rig.wait_status("a bud out", |status| in_ear(status) != [true, true]);
+        assert_eq!(rig.status()["noise_mode"], ANC.status);
+
+        let hold = Duration::from_millis(REPORT_HOLD_MS);
+        // Stamped before the ask, so the daemon's hold cannot start earlier than this.
+        let asked = Instant::now();
+        let reply = client.ask(&set_request(2, "noise", "transparency"));
+        let replied = Instant::now();
+        assert_eq!(outcome(&reply), "sent", "{reply}");
+        let left = hold.saturating_sub(asked.elapsed());
+        rig.holds_for(left, "transparency kept through the later hold", |status| {
+            status["noise_mode"] == TRANSPARENCY.status
+        });
+        wait_noise(&rig, ADAPTIVE.status);
+        assert_gap(
+            "adaptive shown",
+            replied,
+            Instant::now(),
+            &(Duration::ZERO..=hold + REAL_TIME_SLACK),
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn an_invalid_report_inside_a_hold_leaves_the_valid_one_it_held_back() {
+        let (rig, device) = up(in_transparency(), Fault::NeverConfirm);
+        let mut client = Proto1::connect(rig.session());
+        let hold = Duration::from_millis(REPORT_HOLD_MS);
+        // Stamped before the ask, so the daemon's hold cannot start earlier than this.
+        let asked = Instant::now();
+        let reply = client.ask(&set_request(1, "noise", "anc"));
+        assert_eq!(outcome(&reply), "sent", "{reply}");
+        device.pods.set_setting(NOISE, ADAPTIVE.wire);
+        device.pods.set_setting(NOISE, NO_MODE);
+        // The bud taken out after both reports marks them read inside the hold.
+        device.pods.set_ear(Placed::OutOfEar, Placed::InEar);
+        rig.wait_status("a bud out", |status| in_ear(status) != [true, true]);
+        let left = hold.saturating_sub(asked.elapsed());
+        rig.holds_for(left, "anc kept through the hold", |status| {
+            status["noise_mode"] == ANC.status
+        });
+        wait_noise(&rig, ADAPTIVE.status);
+        // The hold starts after `asked`, so the release cannot show before a hold from it.
+        assert_gap(
+            "adaptive shown",
+            asked,
+            Instant::now(),
+            &(hold..=hold + REAL_TIME_SLACK),
+        );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_write_that_fails_is_not_connected_and_changes_nothing() {
+        let (rig, device) = up(in_transparency(), Fault::None);
+        device.pods.stop_reading();
+        let mut client = Proto1::connect(rig.session());
+        let mut shown = TRANSPARENCY.status;
+        let mut request = 0;
+        let refused = loop {
+            assert!(request < WRITES_MAX, "{request} writes and none failed");
+            let (word, mode) = MODES[request % MODES.len()];
+            let reply = client.ask(&set_request(request, "noise", word));
+            if outcome(&reply) != "sent" {
+                break reply;
+            }
+            shown = mode.status;
+            request += 1;
+        };
+        assert_eq!(outcome(&refused), "not_connected", "{refused}");
+        let status = rig.status();
+        assert_eq!(status["noise_mode"], shown, "{status}");
+        rig.finish();
+    }
+
+    #[test]
+    fn a_report_of_another_value_is_taken_once_the_written_one_came_or_when_the_hold_passes() {
+        let (rig, device) = up(in_transparency(), Fault::NeverConfirm);
+        let mut client = Proto1::connect(rig.session());
+        assert_eq!(
+            outcome(&client.ask(&set_request(1, "noise", "anc"))),
+            "sent"
+        );
+        let first_replied = Instant::now();
+        let hold = Duration::from_millis(REPORT_HOLD_MS);
+        device.pods.set_setting(NOISE, ANC.wire);
+        device.pods.set_setting(NOISE, ADAPTIVE.wire);
+        wait_noise(&rig, ADAPTIVE.status);
+        // The written value's report ended the hold, so the next was taken long before the hold's end.
+        assert_gap(
+            "adaptive shown",
+            first_replied,
+            Instant::now(),
+            &(Duration::ZERO..=hold / 2),
+        );
+
+        // Stamped before the ask, so the daemon's hold cannot start earlier than this.
+        let asked = Instant::now();
+        let reply = client.ask(&set_request(2, "noise", "transparency"));
+        let replied = Instant::now();
+        assert_eq!(outcome(&reply), "sent", "{reply}");
+        device.pods.set_setting(NOISE, ANC.wire);
+        device.pods.set_ear(Placed::OutOfEar, Placed::InEar);
+        rig.wait_status("a bud out", |status| in_ear(status) != [true, true]);
+        assert_eq!(rig.status()["noise_mode"], TRANSPARENCY.status);
+        let left = hold.saturating_sub(asked.elapsed());
+        rig.holds_for(left, "transparency kept through the hold", |status| {
+            status["noise_mode"] == TRANSPARENCY.status
+        });
+        wait_noise(&rig, ANC.status);
+        // The write came before the reply, so the hold ended no later than a hold after it.
+        assert_gap(
+            "anc shown",
+            replied,
+            Instant::now(),
+            &(Duration::ZERO..=hold + REAL_TIME_SLACK),
+        );
         rig.finish();
     }
 }
