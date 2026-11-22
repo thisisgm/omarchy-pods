@@ -6,6 +6,7 @@ mod census;
 mod checks;
 mod idle;
 mod lab;
+mod old_line;
 mod report;
 mod system;
 mod unit;
@@ -164,6 +165,8 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return ExitCode::from(EXIT_FAILED);
         }
     };
+    // Read while the installed daemon still runs; the run stops it next.
+    let installed = old_line::read(&home, was_running);
     if stopped() {
         report("xtask hw: stopped by a signal; nothing was stopped");
         return ExitCode::from(EXIT_FAILED);
@@ -176,6 +179,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         rustix::process::getuid().as_raw(),
         &home,
         Duration::from_secs(link.idle_window_seconds),
+        installed,
     );
     let outcome = stop_then_check(lab, &link);
     let restored = guard.restore();
@@ -266,7 +270,12 @@ type CheckFn = fn(&Lab<'_>) -> Result<Check, Interrupted>;
 
 fn run_checks(lab: &Lab<'_>, link: &LinkArgs) -> Outcome {
     // The attended checks come first, so the person is free once they are done.
-    let mut plan: Vec<CheckFn> = vec![checks::adoption, |lab| Ok(checks::same_contract(lab))];
+    // C9 reads the settings the census changes, so it comes before it.
+    let mut plan: Vec<CheckFn> = vec![
+        checks::adoption,
+        |lab| Ok(checks::same_contract(lab)),
+        old_line::check,
+    ];
     if link.attended {
         plan.push(census::commands);
     }

@@ -15,7 +15,8 @@ pods-proto.workspace = true
 pods-sys.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }
 rusty_aac.workspace = true
-serde_json.workspace = true
+# `RawValue` keeps each value of a status line as the bytes it holds, for C9.
+serde_json = { workspace = true, features = ["raw_value"] }
 signal-hook.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true

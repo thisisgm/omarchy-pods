@@ -4,24 +4,45 @@
 #[derive(Debug)]
 pub(crate) struct Check {
     pub(crate) name: &'static str,
-    pub(crate) passed: bool,
+    verdict: Verdict,
     pub(crate) lines: Vec<String>,
     pub(crate) gates: Vec<Gate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Passed,
+    Failed,
+    /// Nothing to measure on this machine; the check's line says why.
+    Skipped,
 }
 
 impl Check {
     pub(crate) fn new(name: &'static str) -> Self {
         Self {
             name,
-            passed: true,
+            verdict: Verdict::Passed,
             lines: Vec::new(),
             gates: Vec::new(),
         }
     }
 
+    pub(crate) fn skipped(name: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            name,
+            verdict: Verdict::Skipped,
+            lines: vec![reason.into()],
+            gates: Vec::new(),
+        }
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        self.verdict == Verdict::Failed
+    }
+
     /// The check stays failed whatever passes after it.
     pub(crate) fn fail(&mut self, reason: impl Into<String>) {
-        self.passed = false;
+        self.verdict = Verdict::Failed;
         self.lines.push(reason.into());
     }
 
@@ -89,14 +110,18 @@ pub(crate) fn range_text(samples_ms: &[u64]) -> String {
 pub(crate) fn all_passed(checks: &[Check]) -> bool {
     checks
         .iter()
-        .all(|check| check.passed && check.gates.iter().all(Gate::met))
+        .all(|check| !check.failed() && check.gates.iter().all(Gate::met))
 }
 
 /// The report lines for every check, in the order the checks ran.
 pub(crate) fn lines(checks: &[Check]) -> Vec<String> {
     let mut out = Vec::new();
     for check in checks {
-        let verdict = if check.passed { "passed" } else { "FAILED" };
+        let verdict = match check.verdict {
+            Verdict::Passed => "passed",
+            Verdict::Failed => "FAILED",
+            Verdict::Skipped => "skipped",
+        };
         out.push(format!("{}: {verdict}", check.name));
         out.extend(check.lines.iter().map(|line| format!("  {line}")));
         out.extend(check.gates.iter().map(|gate| format!("  {}", gate.line())));

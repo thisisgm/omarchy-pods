@@ -103,7 +103,7 @@ fn the_first_request_with_no_reply_ends_the_census_and_is_named() {
         took < TEST_REPLY_TIMEOUT.checked_mul(5).unwrap(),
         "{took:?}"
     );
-    assert!(!check.passed);
+    assert!(check.failed());
     assert!(
         check
             .lines
@@ -123,14 +123,14 @@ fn a_timeout_reply_is_an_answer_and_the_census_goes_on() {
         requests.len(),
         CENSUS_TRIALS * (CENSUS.len() + adaptive_setups)
     );
-    assert!(!check.passed);
+    assert!(check.failed());
 }
 
 #[test]
 fn a_command_expected_to_answer_sent_fails_on_any_other_word() {
     let (rounds, check, _, _) = run_census(Some(CONFIRMED_REPLY));
     assert_eq!(rounds, Rounds::Answered);
-    assert!(!check.passed);
+    assert!(check.failed());
     let failures: Vec<&String> = check
         .lines
         .iter()
@@ -157,7 +157,7 @@ fn level_sent() -> Answer {
 fn every_adaptive_level_trial_is_a_write_and_only_sent_counts() {
     let (rounds, check, requests, _) = run_census_from(level_sent(), &originals_at(ORIGINAL_LEVEL));
     assert_eq!(rounds, Rounds::Answered);
-    assert!(check.passed, "{:?}", check.lines);
+    assert!(!check.failed(), "{:?}", check.lines);
     assert!(
         check.lines.iter().any(|line| line
             .starts_with("set adaptive_level 40 and 60 in turn: sent 10 of 10, only sent counts")),
@@ -185,7 +185,7 @@ fn alternating(first: &str, second: &str) -> Vec<String> {
 #[test]
 fn an_original_level_outside_the_two_starts_on_the_first() {
     let (_, check, requests, _) = run_census_from(level_sent(), &originals_at(50));
-    assert!(check.passed, "{:?}", check.lines);
+    assert!(!check.failed(), "{:?}", check.lines);
     assert_eq!(levels_sent(&requests), alternating("40", "60"));
 }
 
@@ -199,7 +199,7 @@ fn no_request_asks_for_the_value_already_set() {
     };
     let (rounds, check, requests, _) = run_census_from(level_sent(), &originals);
     assert_eq!(rounds, Rounds::Answered);
-    assert!(check.passed, "{:?}", check.lines);
+    assert!(!check.failed(), "{:?}", check.lines);
     let mut current = std::collections::HashMap::from([
         ("noise".to_owned(), "transparency".to_owned()),
         ("conversational_awareness".to_owned(), "true".to_owned()),
@@ -247,7 +247,7 @@ fn an_unconfirmed_lead_in_fails_c6() {
             .is_some_and(|line| line.contains(r#""value":"anc""#)),
         "{requests:?}"
     );
-    assert!(!check.passed);
+    assert!(check.failed());
     let failures: Vec<&String> = check
         .lines
         .iter()
@@ -265,7 +265,7 @@ fn an_unanswered_lead_in_ends_the_census() {
         run_census_from(Box::new(|_| None), &originals_at_transparency());
     assert_eq!(rounds, Rounds::Unanswered);
     assert_eq!(requests.len(), 1);
-    assert!(!check.passed);
+    assert!(check.failed());
     assert!(
         check
             .lines

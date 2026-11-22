@@ -195,9 +195,16 @@ log "pactl $*"
 printf 'Card #52\n\tName: bluez_card.02_00_00_00_00_01\n\tdevice.description = "Synthetic Pods 7"\n\tActive Profile: %s\n' "$(read_file profile)"
 "#;
 
-/// The binary under test, and the installed `librepods-ctl`; both answer only on the run's own runtime directory.
+/// The binary under test, and the installed `librepods-ctl`; on the session's own runtime directory the installed daemon answers while its service runs.
 pub(crate) const LIBREPODS: &str = r#"
 log "$(basename "$0") $*"
+if [ "$XDG_RUNTIME_DIR" = "$STUB/runtime" ] && [ "$(basename "$0") $*" = "librepods-ctl status" ]; then
+    [ "$(read_file unit-librepods.service)" = active ] || exit 1
+    [ -e "$STUB/installed-ctl-fails" ] && exit 3
+    # The line of the daemon under test unless a test names the installed daemon's own.
+    if [ -e "$STUB/installed-status.json" ]; then read_file installed-status.json; else read_file status-true.json; fi
+    exit 0
+fi
 [ "$XDG_RUNTIME_DIR" = "$(read_file run-dir)" ] || exit 1
 [ "$(read_file unit-librepods-hw.service)" = active ] || exit 1
 line() { read_file "status-$(read_file connected).json"; }
