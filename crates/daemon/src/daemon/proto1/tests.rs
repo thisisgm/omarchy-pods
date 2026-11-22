@@ -1,4 +1,4 @@
-//! Line framing at the bound, that no bytes can make it panic or keep more than one line, and the close after the client ends its side.
+//! Framing at the bound, no panic or growth from any bytes, and the close after the client ends.
 
 use proptest::prelude::*;
 use tokio::io::AsyncReadExt;

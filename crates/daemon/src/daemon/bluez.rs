@@ -1,4 +1,4 @@
-//! Watches BlueZ on the system bus and tells the driver when paired AirPods appear, connect, disconnect or go.
+//! Watches BlueZ and tells the driver when paired AirPods appear, connect, disconnect or go.
 
 mod calls;
 mod objects;
@@ -28,16 +28,15 @@ use super::log;
 use calls::Calls;
 use objects::{Candidates, Change, Properties};
 
-/// The service UUID a device lists when it offers the AirPods control channel.
+/// Listed by a device that offers the AirPods control channel.
 pub(super) const AAP_UUID: &str = "74ec2172-0bad-4d01-8f77-997b2be0722a";
 
-/// The C++ `sweepTimeoutMs`: bluetoothd answers in milliseconds, so a longer wait is a wedged BlueZ.
+/// The C++ `sweepTimeoutMs`: bluetoothd answers in milliseconds; longer is a wedged BlueZ.
 const SWEEP_TIMEOUT_MS: u64 = 2000;
 
-/// The wait before sweeping again after a sweep that failed with BlueZ on the bus, as a busy or starting bluetoothd answers a later one.
+/// A busy or starting bluetoothd answers a later sweep.
 const SWEEP_RETRY_MS: u64 = 1000;
 
-/// The wait before connecting again after the system bus was missing, the connection closed or a subscription failed.
 const SYSTEM_BUS_RETRY_MS: u64 = 5000;
 
 const BLUEZ: &str = "org.bluez";
@@ -51,19 +50,18 @@ const OBJECTS_RULE: &str =
     "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',path='/'";
 const PROPERTIES_RULE: &str = "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='/org/bluez',arg0='org.bluez.Device1'";
 
-/// The device properties whose change classifies a device again.
 const CLASSIFYING: [&str; 3] = ["Connected", "UUIDs", "ServicesResolved"];
 
-/// The changes that make a path not kept yet worth reading: its `Connected` comes before its `UUIDs`.
+/// A new path's `Connected` comes before its `UUIDs`, so these make it worth a read.
 const WORTH_A_READ: [&str; 2] = ["UUIDs", "ServicesResolved"];
 
-/// The signals of every match rule merged in the order the connection received them.
+/// Every match rule's signals, in the order the connection received them.
 type Signals = IntoStream<JoinMultiple<Vec<Peekable<MessageStream>>>>;
 
-/// The body of `GetManagedObjects`, path then interface then property: `{/org/bluez/hci0/dev_02_00_00_00_00_01: {"org.bluez.Device1": {"Connected": <true>}}}`.
+/// Sample: `{/org/bluez/hci0/dev_02_00_00_00_00_01: {"org.bluez.Device1": {"Connected": <true>}}}`
 type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>;
 
-/// Watches until aborted, or until the driver is gone; a call outlives the connection it went out on and ends by its own timeout.
+/// A call outlives the connection it went out on and ends by its own timeout.
 pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Receiver<Request>) {
     let mut errors = ErrorLog::default();
     let mut calls = Calls::default();
@@ -97,32 +95,28 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Recei
     }
 }
 
-/// What woke the watcher.
 enum Next {
     Signal(Message),
     Request(Request),
-    /// The wait after a failed sweep is over.
     Retry,
     CallEnded(Call, zbus::Result<()>),
-    /// The connection to the system bus closed.
     Closed,
-    /// The driver dropped its end of the request queue.
     DriverGone,
 }
 
-/// One connection to the system bus and the devices seen on it.
+/// One per system bus connection.
 struct Watcher<'a> {
     connection: Connection,
     inputs: &'a mpsc::Sender<Input>,
     candidates: Candidates,
     errors: &'a mut ErrorLog,
-    /// Set while a sweep that failed with BlueZ on the bus waits to be tried again.
+    /// Only after a sweep failed with BlueZ on the bus.
     retry: Option<Pin<Box<Sleep>>>,
     calls: &'a mut Calls,
 }
 
 impl Watcher<'_> {
-    /// Subscribes, sweeps, then follows BlueZ until the connection closes; `Break` once the driver is gone.
+    /// Subscribes, then sweeps; `Break` once the driver is gone.
     async fn run(&mut self, requests: &mut mpsc::Receiver<Request>) -> ControlFlow<()> {
         let mut streams = Vec::new();
         for rule in [OWNER_RULE, OBJECTS_RULE, PROPERTIES_RULE] {
@@ -151,9 +145,9 @@ impl Watcher<'_> {
         }
     }
 
-    /// Starts `call` on a path BlueZ holds for `device`, or fails it at once: no call goes to a device BlueZ does not hold.
+    /// No call goes to a device BlueZ does not hold.
     async fn call(&mut self, device: BdAddr, call: Call) -> ControlFlow<()> {
-        // A removal taken after the machine chose `device` and before this request leaves no path.
+        // A removal taken after the machine chose `device`, before this request, leaves no path.
         let Some(path) = self.candidates.path_of(device) else {
             return not_made(self.inputs, call, "BlueZ holds no such device").await;
         };
@@ -204,7 +198,7 @@ impl Watcher<'_> {
         }
     }
 
-    /// A `PropertiesChanged` of `Device1` such as `("org.bluez.Device1", {"Connected": <true>}, ["Alias"])`, read whole when it may make a candidate of a path not kept.
+    /// Sample input: `("org.bluez.Device1", {"Connected": <true>}, ["Alias"])`.
     async fn changed(&mut self, path: &str, message: &Message) -> Option<Change> {
         let (_, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
             self.body(message, "PropertiesChanged")?;
@@ -264,7 +258,7 @@ impl Watcher<'_> {
         self.report(Change::Swept(devices)).await
     }
 
-    /// Whether `NameHasOwner` answers `(true,)` for BlueZ; without BlueZ on the bus no sweep is tried again, as its return brings one.
+    /// Reads `(true,)`; without BlueZ no sweep is retried, as its return brings one.
     async fn bluez_on_bus(&self) -> bool {
         let call = self.connection.call_method(
             Some(BUS),
@@ -276,7 +270,7 @@ impl Watcher<'_> {
         reply::<bool>(call).await == Ok(true)
     }
 
-    /// The body of the signal `member`, or `None` with its signature logged once: a signature holds no device data.
+    /// On failure logs the signature once, which holds no device data.
     fn body<T>(&mut self, message: &Message, member: &str) -> Option<T>
     where
         T: for<'d> Deserialize<'d> + Type,
@@ -292,7 +286,6 @@ impl Watcher<'_> {
         read
     }
 
-    /// The reply, or `None` with the failure logged once.
     fn noted<T>(&mut self, reply: Result<T, String>, what: &str) -> Option<T> {
         match reply {
             Ok(body) => Some(body),
@@ -312,7 +305,6 @@ impl Watcher<'_> {
     }
 }
 
-/// The reply body of `call` within `SWEEP_TIMEOUT_MS`, or the failure as a line for the log.
 async fn reply<T>(call: impl Future<Output = zbus::Result<Message>>) -> Result<T, String>
 where
     T: for<'d> Deserialize<'d> + Type,
@@ -327,7 +319,7 @@ where
     }
 }
 
-/// A failed call as a line for the log: of a method error the name alone, since BlueZ may put the object path, and with it the address, in the message.
+/// A method error logs its name alone: BlueZ may put the path, so the address, in the message.
 fn failure(error: &zbus::Error) -> String {
     if let zbus::Error::MethodError(name, _, _) = error {
         name.to_string()
@@ -336,7 +328,6 @@ fn failure(error: &zbus::Error) -> String {
     }
 }
 
-/// Logs a call that failed and tells the driver; `Break` once the driver is gone.
 async fn call_ended(
     inputs: &mpsc::Sender<Input>,
     call: Call,
@@ -353,13 +344,11 @@ async fn call_ended(
     send(inputs, DeviceEvent::CallFailed(call)).await
 }
 
-/// Logs a call that was not made, and why, then tells the driver it failed; `Break` once the driver is gone.
 async fn not_made(inputs: &mpsc::Sender<Input>, call: Call, reason: &str) -> ControlFlow<()> {
     log(&format!("bluez: {:?} not made: {reason}", call.action));
     send(inputs, DeviceEvent::CallFailed(call)).await
 }
 
-/// The next signal, call that ended, request, or the end of the wait to sweep again.
 async fn next(
     signals: &mut Signals,
     requests: &mut mpsc::Receiver<Request>,
@@ -391,7 +380,6 @@ async fn next(
     .await
 }
 
-/// What woke a watcher waiting to reach the system bus again.
 enum Retry {
     Due,
     Request(Request),
@@ -399,7 +387,7 @@ enum Retry {
     DriverGone,
 }
 
-/// Waits `SYSTEM_BUS_RETRY_MS`, failing every new call meanwhile; `Break` once the driver is gone.
+/// Fails every new call meanwhile; `Break` once the driver is gone.
 async fn wait_to_retry(
     inputs: &mpsc::Sender<Input>,
     requests: &mut mpsc::Receiver<Request>,
@@ -440,7 +428,7 @@ async fn send(inputs: &mpsc::Sender<Input>, event: DeviceEvent) -> ControlFlow<(
     }
 }
 
-/// The last failure logged, so a repeat is not logged again until a success clears it, as the C++ `m_lastSweepError`.
+/// A repeat is not logged until a success clears it, as the C++ `m_lastSweepError`.
 #[derive(Debug, Default)]
 struct ErrorLog {
     last: Option<String>,

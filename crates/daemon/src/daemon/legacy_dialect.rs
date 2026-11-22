@@ -1,4 +1,4 @@
-//! One client of the C++ daemon's socket dialect: one verb in, at most one line out, then the connection closes.
+//! One client of the C++ daemon's dialect: one verb in, at most one line out, then close.
 
 use std::io::ErrorKind;
 use std::time::Duration;
@@ -13,22 +13,20 @@ use tokio::time::{Instant, timeout};
 use super::hub::Hub;
 use super::log;
 
-/// The most a request may hold; the longest verb is a few dozen bytes.
+/// The longest verb is a few dozen bytes.
 const MAX_REQUEST_BYTES: usize = 4096;
 
-/// How long after accept the request may take to arrive.
+/// Counted from accept.
 pub(super) const REQUEST_DEADLINE: Duration = Duration::from_millis(1000);
 
-/// How long the client may take to accept the reply.
 const REPLY_DEADLINE: Duration = Duration::from_millis(500);
 
-/// The reply to `reopen`, exactly as `daemon/main.cpp` writes it.
+/// Exactly as `daemon/main.cpp` writes it.
 const HEADLESS_REFUSAL: &str = "error: this daemon runs headless and has no window\n";
 
-/// The most of an unknown request the log quotes.
 const LOGGED_REQUEST_BYTES: usize = 64;
 
-/// Reads the rest of one request after the bytes already in `request`, within what is `left` of the request deadline, answers it if it gets an answer, and closes.
+/// `request` holds bytes already read; `left` is what remains of the request deadline.
 pub(super) async fn serve_connection(
     mut stream: UnixStream,
     hub: Hub,
@@ -41,7 +39,7 @@ pub(super) async fn serve_connection(
     };
     match timeout(REPLY_DEADLINE, stream.write_all(reply.as_bytes())).await {
         Ok(Ok(())) => {}
-        // A second daemon instance sends `reopen` and exits without reading the refusal, which is normal.
+        // A second daemon sends `reopen` and exits without reading the refusal, which is normal.
         Ok(Err(error)) if error.kind() == ErrorKind::BrokenPipe => {}
         Ok(Err(error)) => log(&format!("control socket: cannot send the reply: {error}")),
         Err(_elapsed) => log(&format!(
@@ -50,7 +48,6 @@ pub(super) async fn serve_connection(
     }
 }
 
-/// Reads until the bytes are a verb answered at once, the client stops sending, `MAX_REQUEST_BYTES`, or `left` runs out, and gives the verb they make.
 // Sample input: `status` with the client's write side left open, or `noise:anc` then end of stream.
 async fn read_request(
     stream: &mut (impl AsyncRead + Unpin),
@@ -87,7 +84,7 @@ fn answered_at_once(verb: Option<LegacyRequest>) -> bool {
     )
 }
 
-/// The reply to a verb, or to the bytes that made none, if any; only `status` and `reopen` get one.
+/// Only `status` and `reopen` get a reply.
 async fn respond(hub: &Hub, verb: Result<LegacyRequest, &[u8]>) -> Option<String> {
     match verb {
         Ok(LegacyRequest::Status) => Some(to_status_line(&hub.state())),
@@ -121,7 +118,6 @@ mod tests {
 
     use super::*;
 
-    /// A client that hands over one chunk per read, then ends the stream.
     struct Chunked {
         chunks: Vec<Vec<u8>>,
     }
@@ -158,7 +154,7 @@ mod tests {
         request
     }
 
-    /// What the reader must return: the first chunk boundary that makes `status` or `reopen`, else everything up to the bound.
+    /// The first chunk boundary that makes `status` or `reopen`, else everything up to the bound.
     fn expected(chunks: &[Vec<u8>]) -> Vec<u8> {
         let mut seen = Vec::new();
         for chunk in chunks {

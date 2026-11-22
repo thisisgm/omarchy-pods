@@ -1,4 +1,4 @@
-//! Support tests: the driver in process against the fake pods; the proof of each behaviour is a test against the built binary.
+//! Support tests: the driver in process; each behaviour's proof is a test against the binary.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -31,13 +31,11 @@ use super::{
 use crate::daemon::SUBSCRIBER_BACKLOG;
 use crate::daemon::hub::Hub;
 
-/// How often a poll of `/proc` looks again.
 const POLL: Duration = Duration::from_millis(5);
 
-/// Rounds of the tests that repeat a race or a write.
 const ROUNDS: usize = 200;
 
-/// Hang-up offsets around a submit, in microseconds: a set is confirmed in about 50, so both orders come up.
+/// Hang-up offsets around a submit: a set confirms in about 50 us, so both orders come up.
 const RACE_SPREAD_US: usize = 200;
 
 /// The most a set may take from submit to the pods hearing it.
@@ -49,10 +47,10 @@ const SENTINEL: Cell = Cell {
     charging: true,
 };
 
-/// The first rungs of the held ladder the one reader test climbs, 1 + 2 + 4 s apart; the rest is the pure machine's to prove.
+/// The first rungs of the held ladder, 1 + 2 + 4 s apart; the rest is the pure machine's to prove.
 const LADDER_ATTEMPTS: usize = 4;
 
-/// Spins for `duration`, finer than a sleep can wake.
+/// Finer than a sleep can wake.
 fn spin(duration: Duration) {
     let started = Instant::now();
     while started.elapsed() < duration {
@@ -60,7 +58,6 @@ fn spin(duration: Duration) {
     }
 }
 
-/// A connector that serves each channel with `pods` and sends the time of each connect.
 fn fake_connector(pods: &Pods) -> (Connector, std_mpsc::Receiver<Instant>) {
     let (connected, connects) = std_mpsc::channel();
     let pods = pods.clone();
@@ -74,7 +71,6 @@ fn fake_connector(pods: &Pods) -> (Connector, std_mpsc::Receiver<Instant>) {
     (connector, connects)
 }
 
-/// Connected, with the first burst's name, model and batteries in place.
 fn filled(state: &State) -> bool {
     state.connected
         && state.model == Model::AirPodsPro3
@@ -82,7 +78,6 @@ fn filled(state: &State) -> bool {
         && state.ear.any_in_ear()
 }
 
-/// Brings the link up against `pods` and waits for the first burst to fill the state.
 fn link_up(pods: &Pods) -> (Running, std_mpsc::Receiver<Instant>) {
     let (connector, connects) = fake_connector(pods);
     let running = Running::start(connector, None);
@@ -91,7 +86,7 @@ fn link_up(pods: &Pods) -> (Running, std_mpsc::Receiver<Instant>) {
     (running, connects)
 }
 
-/// Sends `sentinel` from the pods and waits until the state shows it, which is after everything queued before it.
+/// The state shows `sentinel` only after everything queued before it.
 fn wait_for_battery(pods: &Pods, hub: &Hub, sentinel: Cell) -> State {
     pods.set_battery(sentinel, RIGHT, CASE);
     wait_for_state(hub, HANG_LIMIT, "the sentinel battery", |state| {
@@ -103,7 +98,6 @@ fn tasks() -> usize {
     fs::read_dir("/proc/self/task").unwrap().count()
 }
 
-/// Waits until this process has `count` threads, giving how long that took; fails after `within`.
 async fn wait_for_tasks(count: usize, within: Duration) -> Duration {
     let started = Instant::now();
     loop {
@@ -123,7 +117,7 @@ fn noise(mode: NoiseMode) -> Command {
     Command::SetNoise(NoiseTarget::Mode(mode))
 }
 
-/// A noise mode that alternates by round between the two every model offers, and its byte.
+/// Alternates between the two modes every model offers.
 fn noise_for(round: usize) -> (NoiseMode, u8) {
     let mode = if round.is_multiple_of(2) {
         NoiseMode::Anc
@@ -139,7 +133,7 @@ fn range(durations: &[Duration]) -> (Duration, Duration) {
     (min, max)
 }
 
-/// A small generator, so a failing run repeats; xorshift64.
+/// Deterministic, so a failing run repeats; xorshift64.
 struct Noise(u64);
 
 impl Noise {
@@ -378,7 +372,7 @@ fn set_writes_in_the_turn_it_is_read() {
             .wait_heard(&frame, written_before + 1, HANG_LIMIT)
             .unwrap();
         latencies.push(heard[written_before].at - started);
-        // Confirmed only because the fake reports a setting back, a corner assumed until measured on hardware.
+        // Confirmed only as the fake reports a setting back; assumed until measured on hardware.
         assert_eq!(block_on(outcome), Outcome::Confirmed, "round {round}");
     }
     let (min, max) = range(&latencies);
@@ -548,7 +542,6 @@ fn a_full_input_queue_refuses_with_timeout() {
     });
 }
 
-/// Every input one reader thread sends, as labels, until it drops its sender.
 fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<String> {
     let (feedback, mut inputs) = mpsc::channel(INPUT_QUEUE);
     let reader = thread::spawn(move || reader::run(connector, device(), feedback));

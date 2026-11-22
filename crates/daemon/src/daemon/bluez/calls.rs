@@ -1,4 +1,4 @@
-//! The BlueZ method calls behind connect, disconnect and forget, each a task of the watcher's own.
+//! The BlueZ calls behind connect, disconnect and forget, each its own task.
 
 use std::collections::HashMap;
 use std::task::{Context, Poll};
@@ -14,12 +14,11 @@ use super::{BLUEZ, DEVICE_INTERFACE, PROPERTIES};
 /// A BlueZ `Connect` can run for a whole page and the set up of every profile.
 const CALL_TIMEOUT_MS: u64 = 30_000;
 
-/// BlueZ method calls not yet answered; the next one fails at once.
+/// Past this, the next call fails at once.
 const CALLS_IN_FLIGHT_MAX: usize = 4;
 
 const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 
-/// The calls under way, at most `CALLS_IN_FLIGHT_MAX`.
 #[derive(Debug, Default)]
 pub(super) struct Calls {
     tasks: JoinSet<zbus::Result<()>>,
@@ -27,7 +26,7 @@ pub(super) struct Calls {
 }
 
 impl Calls {
-    /// Starts `call` on the device at `path`; false, with nothing started, while `CALLS_IN_FLIGHT_MAX` are under way.
+    /// False, with nothing started, while `CALLS_IN_FLIGHT_MAX` are under way.
     #[must_use]
     pub(super) fn start(&mut self, connection: &Connection, path: String, call: Call) -> bool {
         if self.tasks.len() >= CALLS_IN_FLIGHT_MAX {
@@ -38,7 +37,7 @@ impl Calls {
         true
     }
 
-    /// The next call that ended; `Pending` while none has, or none is under way.
+    /// `Pending` while none has ended, or none is under way.
     pub(super) fn poll_ended(
         &mut self,
         context: &mut Context<'_>,
@@ -61,7 +60,6 @@ impl Calls {
     }
 }
 
-/// The BlueZ method that carries out `action`.
 fn method(action: DeviceAction) -> &'static str {
     match action {
         DeviceAction::Connect => "Connect",
@@ -70,7 +68,6 @@ fn method(action: DeviceAction) -> &'static str {
     }
 }
 
-/// Carries out `action` on the device at `path` within `CALL_TIMEOUT_MS`.
 pub(super) async fn run(
     connection: Connection,
     path: String,

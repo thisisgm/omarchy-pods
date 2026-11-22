@@ -30,18 +30,16 @@ use crate::daemon::link::tests::Running;
 /// A test still waiting after this long has hung, and fails.
 const CEILING: Duration = Duration::from_secs(10);
 
-/// The interface's name as clients write it.
 const INTERFACE: &str = "io.github.thisisgm.Omapods1";
 
-/// What every error name starts with.
 const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
 
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
-/// The public description of this interface, which must list every error name.
+/// Must list every error name.
 const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
 
-/// The error name a client sees for `error`, written out; a match with no catch-all, so a new variant fails to build until its name is spelled here.
+/// No catch-all, so a new variant fails to build until its name is spelled here.
 fn spelled(error: CommandError) -> &'static str {
     match error {
         CommandError::NotConnected => "io.github.thisisgm.Omapods1.Error.NotConnected",
@@ -56,13 +54,13 @@ fn spelled(error: CommandError) -> &'static str {
     }
 }
 
-/// State changes the stalled peer test makes; their signals overfill a socket buffer many times over.
+/// Their signals overfill a socket buffer many times over.
 const FLOOD_CHANGES: usize = 5_000;
 
-/// A quarter of the flood: a socket buffer holds a few hundred signals, and a queue would hold them all.
+/// A socket buffer holds a few hundred signals, and a queue would hold them all.
 const MOST_SIGNALS_HELD: usize = FLOOD_CHANGES / 4;
 
-/// The interface as `Introspect` describes it, compared after white space is removed.
+/// Compared after white space is removed.
 const INTROSPECTED: &str = r#"
 <interface name="io.github.thisisgm.Omapods1">
   <method name="SetNoiseMode">
@@ -112,7 +110,7 @@ const INTROSPECTED: &str = r#"
 </interface>
 "#;
 
-/// Runs one test on a current thread runtime like the daemon's, failing it once `CEILING` passes.
+/// A current thread runtime like the daemon's.
 fn run<F: Future>(test: F) -> F::Output {
     RuntimeBuilder::new_current_thread()
         .enable_all()
@@ -121,7 +119,6 @@ fn run<F: Future>(test: F) -> F::Output {
         .block_on(async { timeout(CEILING, test).await.expect("the test hung") })
 }
 
-/// A client connected straight to the interface, with the announcing task the daemon would run.
 struct Peer {
     hub: Hub,
     client: Connection,
@@ -182,7 +179,6 @@ async fn get_all(client: &Connection) -> HashMap<String, OwnedVariant> {
     reply.body().deserialize().unwrap()
 }
 
-/// Calls `method`, giving back its reply or the name of its error.
 async fn call<B: Serialize + DynamicType>(
     client: &Connection,
     method: &str,
@@ -198,7 +194,6 @@ async fn call<B: Serialize + DynamicType>(
     }
 }
 
-/// The next `PropertiesChanged` on `stream`, as its changed properties.
 async fn next_change(stream: &mut MessageStream) -> HashMap<String, OwnedVariant> {
     loop {
         let message = poll_fn(|context| Pin::new(&mut *stream).poll_next(context))
@@ -593,7 +588,7 @@ fn a_peer_that_stops_reading_neither_stalls_the_state_nor_queues_signals() {
             let stream = MessageStream::from(&client);
             (client, stream)
         });
-        // Between these two calls nothing drives the client's runtime, so nothing reads what the server sends.
+        // Nothing drives the client's runtime between these calls, so nothing reads the server.
         built.send(()).unwrap();
         released.recv().unwrap();
         runtime.block_on(async {
@@ -635,7 +630,7 @@ fn a_peer_that_stops_reading_neither_stalls_the_state_nor_queues_signals() {
             assert_eq!(submitted, Outcome::Confirmed);
             tokio::task::yield_now().await;
         }
-        // Every submit above returned while the peer read nothing; a stalled bus holding up the runtime fails the run by `CEILING`.
+        // The submits returned while the peer read nothing; a blocked runtime fails by `CEILING`.
         let awareness_on = Command::SetConversationalAwareness(true);
         let refused = Outcome::Refused(CommandError::NotConnected);
         assert_eq!(hub.submit(awareness_on).await, refused);

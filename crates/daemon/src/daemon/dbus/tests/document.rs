@@ -1,4 +1,4 @@
-//! The property and method tables of the interface document against `INTROSPECTED`, which the snapshot test pins to the served interface.
+//! The document's tables against `INTROSPECTED`, which the snapshot test pins to the interface.
 
 use std::collections::BTreeMap;
 
@@ -7,8 +7,7 @@ use pods_core::settings;
 
 use super::{API_DOCUMENT, INTROSPECTED};
 
-/// The cells of each row of the table under `heading`, backticks removed, header and separator rows skipped.
-// Sample input: the row `| `SetOneBudAnc` | `b` | `one_bud_anc` | |` gives `SetOneBudAnc`, `b`, `one_bud_anc` and an empty cell.
+// Sample input: `| `SetOneBudAnc` | `b` | `one_bud_anc` | |`, four cells, the last empty.
 fn table(heading: &str) -> Vec<Vec<String>> {
     let (_, section) = API_DOCUMENT
         .split_once(&format!("\n{heading}\n"))
@@ -27,7 +26,6 @@ fn table(heading: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The value of `name` in the first tag of `element`, empty when the tag has none.
 // Sample input: ` name="mode" type="s" direction="in"/>` with `type` gives `s`.
 fn attribute<'a>(element: &'a str, name: &str) -> &'a str {
     let tag = element.split('>').next().unwrap_or_default();
@@ -36,7 +34,6 @@ fn attribute<'a>(element: &'a str, name: &str) -> &'a str {
         .map_or("", |(value, _)| value)
 }
 
-/// Every property of `INTROSPECTED` with its type.
 fn introspected_properties() -> BTreeMap<String, String> {
     INTROSPECTED
         .split("<property")
@@ -48,7 +45,6 @@ fn introspected_properties() -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Every method of `INTROSPECTED` with its input and output signatures.
 fn introspected_methods() -> BTreeMap<String, (String, String)> {
     INTROSPECTED
         .split("<method")
@@ -69,8 +65,7 @@ fn introspected_methods() -> BTreeMap<String, (String, String)> {
         .collect()
 }
 
-/// The type every method returns, from the document's sentence saying so.
-// Sample input: the line `Each method returns `s`: `sent` when the pods have the command` gives `s`.
+// Sample input: `Each method returns `s`: `sent` when the pods have the command` gives `s`.
 fn documented_reply() -> String {
     let line = API_DOCUMENT
         .lines()

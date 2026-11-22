@@ -1,14 +1,14 @@
-//! The request rules: which lines are requests, which refusals echo the id, and that no bytes can panic the reader.
+//! Which lines are requests, which refusals echo the id, and that no bytes panic the reader.
 
 use proptest::prelude::*;
 
 use super::super::MAX_LINE_BYTES;
 use super::*;
 
-/// Arrays nested in a request object at the deepest JSON `serde_json` reads, 127 levels with the object.
+/// Arrays in a request object at the deepest JSON `serde_json` reads, 127 levels with the object.
 const ARRAYS_AT_THE_DEPTH_LIMIT: usize = 126;
 
-/// Members a request reads, which the generated objects use often so the checks past them run.
+/// Used often by the generated objects, so the checks past them run.
 const MEMBERS: [&str; 6] = ["v", "id", "op", "key", "value", "action"];
 
 fn bad(id: Option<u64>) -> Result<(u64, Request), Refusal> {
@@ -141,7 +141,6 @@ fn nesting_at_the_json_depth_limit_is_read_and_one_level_more_is_refused() {
     assert_eq!(parse(past_the_limit.as_bytes()), bad(None));
 }
 
-/// Any JSON value, nested a few levels.
 fn any_value() -> impl Strategy<Value = Value> {
     let leaf = prop_oneof![
         Just(Value::Null),
@@ -173,7 +172,6 @@ fn any_value() -> impl Strategy<Value = Value> {
     })
 }
 
-/// An object of request members, each present or not, with any value.
 fn any_request_object() -> impl Strategy<Value = Value> {
     proptest::collection::vec(proptest::option::of(any_value()), MEMBERS.len()).prop_map(|values| {
         let mut members = Map::new();
@@ -186,7 +184,6 @@ fn any_request_object() -> impl Strategy<Value = Value> {
     })
 }
 
-/// What a parse may return for `value`, checked against the members it was built from.
 fn check_against_members(value: &Value) -> Result<(), TestCaseError> {
     let line = value.to_string();
     let id = value.get("id").and_then(Value::as_u64);

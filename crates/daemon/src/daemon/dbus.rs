@@ -1,4 +1,4 @@
-//! The daemon's D-Bus interface on the session bus: properties that mirror the state and methods that submit commands.
+//! The session bus interface: properties mirror the state, methods submit commands.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -25,35 +25,31 @@ use zbus::{Connection, DBusError, Message, Variant, fdo, interface};
 use super::hub::Hub;
 use super::log;
 
-/// The well-known name the daemon owns on the session bus.
 const BUS_NAME: &str = "io.github.thisisgm.Omapods";
 
-/// The one object the daemon serves.
 const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
 
-/// The name segment between the interface name and an error's own name.
+/// Between the interface name and an error's own name.
 const ERROR_SEGMENT: &str = "Error";
 
-/// Messages the connection queues for the object server before it stops reading the bus, zbus's own default named here.
+/// zbus's own default; past it the connection stops reading the bus.
 const MAX_QUEUED_MESSAGES: NonZeroUsize = match NonZeroUsize::new(64) {
     Some(bound) => bound,
     None => NonZeroUsize::MIN,
 };
 
-/// The value of `ApiVersion`, the number in the interface name.
+/// The number in the interface name.
 const API_VERSION: u32 = 1;
 
-/// Every line the daemon logs about this interface starts with this.
 const LOG_PREFIX: &str = "D-Bus interface off";
 
-/// The status document key prefix of the flags `Capabilities` lists.
+/// The status document's prefix for the flags `Capabilities` lists.
 const CAPABILITY_KEY_PREFIX: &str = "supports_";
 
-/// Serves the interface for as long as the session bus keeps the connection, or logs one line and returns at once.
 pub(super) async fn serve(hub: Hub) {
-    // A watch, not `follow`: a property signal carries values, so a slow bus gets the net change, never a backlog or a drop.
+    // A watch, not `follow`: a slow bus gets the net change, never a backlog or a drop.
     let updates = hub.subscribe();
-    // Taken before the object is served, so a change while the name is requested is still announced.
+    // Taken before serving, so a change while the name is requested is still announced.
     let shown = Properties::of(&updates.borrow());
     // zbus would otherwise take the name from a running daemon and let the next one take it back.
     let connection = Builder::session()
@@ -72,7 +68,7 @@ pub(super) async fn serve(hub: Hub) {
     }
 }
 
-/// Each time it wakes, reads only the latest state and announces the properties that differ from the last signal, until the bus goes away.
+/// Reads only the latest state and announces what differs from the last signal.
 async fn announce(
     connection: Connection,
     mut updates: watch::Receiver<State>,
@@ -96,7 +92,7 @@ async fn announce(
                 ));
                 return;
             }
-            // The hub keeps the sender for the life of the daemon, so a closed channel means the runtime is stopping.
+            // The hub holds the sender for good, so a closed channel means the runtime is stopping.
             Wake::StateChanged(Err(_)) => return,
             Wake::StateChanged(Ok(())) => {}
         }
@@ -121,13 +117,12 @@ async fn announce(
     }
 }
 
-/// Why the announcing loop woke.
 enum Wake<T> {
     BusClosed,
     StateChanged(T),
 }
 
-/// Waits for the bus to close or `changed` to finish; a closed bus wins a tie, so nothing is written to it.
+/// A closed bus wins a tie, so nothing is written to it.
 async fn first_of<F: Future>(
     mut closed: Pin<&mut impl Future<Output = ()>>,
     changed: F,
@@ -142,7 +137,7 @@ async fn first_of<F: Future>(
     .await
 }
 
-/// The interface's properties as one state shows them, all but the constant `ApiVersion`.
+/// All but the constant `ApiVersion`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Properties {
     connected: bool,
@@ -196,7 +191,6 @@ impl Properties {
         }
     }
 
-    /// Each property by its D-Bus name, in the order of the struct.
     fn values(&self) -> [(&'static str, Variant<'_>); 12] {
         [
             ("Connected", Variant::from(self.connected)),
@@ -217,7 +211,6 @@ impl Properties {
         ]
     }
 
-    /// The properties whose value differs from `before`, by D-Bus name.
     fn changed_since(&self, before: &Self) -> HashMap<&'static str, Variant<'_>> {
         self.values()
             .into_iter()
@@ -228,7 +221,6 @@ impl Properties {
     }
 }
 
-/// The object at `OBJECT_PATH`: properties read the hub's state, and methods submit commands to it.
 #[derive(Debug)]
 struct Omapods {
     hub: Hub,
@@ -239,7 +231,7 @@ impl Omapods {
         Properties::of(&self.hub.state())
     }
 
-    /// Submits what `set <key> <value>` asks for on the control socket, by the same rules.
+    /// By the same rules as `set <key> <value>` on the control socket.
     async fn set(&self, key: &str, value: &str) -> Result<&'static str, CallError> {
         self.submit(settings::setting(key, value)?).await
     }
@@ -249,12 +241,11 @@ impl Omapods {
     }
 }
 
-/// A method's reply for how its command ended.
 fn answer(outcome: Outcome) -> Result<&'static str, CallError> {
     Ok(outcome.name()?)
 }
 
-// The interface name is written only here, and its trailing number is the interface version.
+// The interface name is written only here; its trailing number is the interface version.
 #[interface(name = "io.github.thisisgm.Omapods1", introspection_docs = false)]
 impl Omapods {
     #[zbus(property(emits_changed_signal = "const"))]
@@ -360,7 +351,6 @@ impl Omapods {
     }
 }
 
-/// A refused command as a D-Bus error reply: named after its `CommandError` variant, carrying the error's sentence.
 #[derive(Debug)]
 struct CallError(CommandError);
 
@@ -372,12 +362,12 @@ impl From<CommandError> for CallError {
 
 impl DBusError for CallError {
     fn create_reply(&self, call: &Header<'_>) -> zbus::Result<Message> {
-        // The name is checked here, so a name that broke the D-Bus rules would fail the reply, never send it.
+        // Checked here, so a name breaking the D-Bus rules fails the reply, never sends it.
         Message::error(call, error_name(self.0.code())).build(&(self.0.message(),))
     }
 
     fn name(&self) -> ErrorName<'_> {
-        // A test pins every name against the D-Bus name rules, which the snake case codes always meet.
+        // A test pins every name to the D-Bus name rules, which snake case codes always meet.
         ErrorName::from_string_unchecked(error_name(self.0.code()))
     }
 
@@ -386,7 +376,6 @@ impl DBusError for CallError {
     }
 }
 
-/// The error name of a refusal: the interface name, `Error` and the code in CamelCase.
 // Sample input: `not_connected`, which names `io.github.thisisgm.Omapods1.Error.NotConnected`.
 fn error_name(code: &str) -> String {
     let mut name = format!("{}.{ERROR_SEGMENT}.", Omapods::name());

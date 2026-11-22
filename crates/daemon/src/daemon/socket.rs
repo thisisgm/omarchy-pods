@@ -1,4 +1,4 @@
-//! The control socket: one daemon per runtime directory, a socket file only its owner can use, one task per client in either dialect.
+//! One daemon per runtime directory, a socket only its owner can use, a task per client.
 
 use std::fs::{self, File, TryLockError};
 use std::io::ErrorKind;
@@ -27,24 +27,22 @@ const REOPEN_WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 /// Bits cleared from the socket's mode while it is bound, which leaves 0600.
 const SOCKET_UMASK: u32 = 0o177;
 
-/// The lock file sits beside the socket under this extension.
 const LOCK_EXTENSION: &str = "lock";
 
-/// Mode of the lock file.
 const LOCK_MODE: u32 = 0o600;
 
-/// The pause after a failed accept, so a lasting failure such as no free descriptors does not spin.
+/// So a lasting failure such as no free descriptors does not spin.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
-/// The first byte of every protocol 1 connection; any other first byte is a legacy verb.
+/// Any other first byte is a legacy verb.
 const PROTOCOL_1_START: u8 = b'{';
 
-/// Whether a daemon already answers on `socket`; one that does is asked to reopen, as the C++ second instance asks.
+/// A live daemon is asked to reopen, as the C++ second instance asks.
 pub(super) async fn ask_running_daemon_to_reopen(socket: &Path) -> bool {
     let Ok(Ok(mut stream)) = timeout(LIVE_DAEMON_PROBE, UnixStream::connect(socket)).await else {
         return false;
     };
-    // The C++ does not check that `reopen` went out either; the live daemon is what decides the exit.
+    // The C++ does not check that `reopen` went out either; the live daemon decides the exit.
     drop(
         timeout(
             REOPEN_WRITE_TIMEOUT,
@@ -55,7 +53,7 @@ pub(super) async fn ask_running_daemon_to_reopen(socket: &Path) -> bool {
     true
 }
 
-/// Takes the lock beside `socket` that one starting or running daemon holds, or `None` while another holds it.
+/// `None` while another starting or running daemon holds it.
 pub(super) async fn lock(socket: &Path) -> Result<Option<File>, String> {
     let path = socket.with_extension(LOCK_EXTENSION);
     let job = path.clone();
@@ -69,12 +67,12 @@ pub(super) async fn lock(socket: &Path) -> Result<Option<File>, String> {
         })?
 }
 
-/// Opens and locks `path` on the calling thread, which `lock` keeps off the runtime; a link at `path` is never followed, a linked directory above it is.
+/// Blocking; a link at `path` is never followed, a linked directory above it is.
 fn take_lock(path: &Path) -> Result<Option<File>, String> {
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let file = match open(path, flags, Mode::from_raw_mode(LOCK_MODE)) {
         Ok(fd) => File::from(fd),
-        // O_NOFOLLOW fails with ELOOP when the last component is a link, dangling or not, so its target is never created.
+        // O_NOFOLLOW gives ELOOP on a final link, dangling or not, so its target is never created.
         Err(Errno::LOOP) => {
             return Err(format!(
                 "cannot open the daemon lock {}: it is a symbolic link, which the daemon never opens",
@@ -98,7 +96,7 @@ fn take_lock(path: &Path) -> Result<Option<File>, String> {
     }
 }
 
-/// Removes a socket file a dead daemon left, then binds `socket` with mode 0600; the caller holds the lock.
+/// Replaces a dead daemon's socket file; the caller holds the lock.
 pub(super) async fn bind(socket: &Path) -> Result<UnixListener, String> {
     let job = socket.to_path_buf();
     let listener = spawn_blocking(move || bind_now(&job))
@@ -117,7 +115,6 @@ pub(super) async fn bind(socket: &Path) -> Result<UnixListener, String> {
     })
 }
 
-/// The file work of `bind` on the calling thread, which `bind` keeps off the runtime.
 fn bind_now(socket: &Path) -> Result<StdUnixListener, String> {
     match fs::remove_file(socket) {
         Ok(()) => {}
@@ -129,7 +126,7 @@ fn bind_now(socket: &Path) -> Result<StdUnixListener, String> {
             ));
         }
     }
-    // The umask is process wide; startup awaits each blocking job before the next, so no other thread creates a file meanwhile.
+    // umask is per process; startup awaits each blocking job, so no other thread makes a file then.
     let previous = umask(Mode::from_raw_mode(SOCKET_UMASK));
     let bound = StdUnixListener::bind(socket);
     umask(previous);
@@ -148,7 +145,7 @@ fn bind_now(socket: &Path) -> Result<StdUnixListener, String> {
     Ok(listener)
 }
 
-/// Removes the socket file at shutdown, on the blocking pool; one already gone is not an error.
+/// One already gone is not an error.
 pub(super) async fn remove(socket: &Path) -> Result<(), String> {
     let job = socket.to_path_buf();
     let removal = spawn_blocking(move || fs::remove_file(job)).await;
@@ -166,7 +163,7 @@ pub(super) async fn remove(socket: &Path) -> Result<(), String> {
     }
 }
 
-/// Accepts clients until aborted, each in its own task, so a slow or silent client delays no other; dropping the set at abort ends every client.
+/// Dropping the set at abort ends every client.
 pub(super) async fn accept_loop(listener: UnixListener, hub: Hub) {
     let mut connections = JoinSet::new();
     loop {
@@ -190,7 +187,6 @@ pub(super) async fn accept_loop(listener: UnixListener, hub: Hub) {
     }
 }
 
-/// Reads the first byte within the legacy request deadline and serves the dialect it starts.
 async fn serve_client(mut stream: UnixStream, hub: Hub) {
     let accepted = Instant::now();
     let mut first = [0_u8; 1];
@@ -229,7 +225,6 @@ mod tests {
             .block_on(future)
     }
 
-    /// Opens the FIFO at `path` to read without waiting for a writer.
     fn open_reader(path: &Path) -> File {
         File::from(open(path, OFlags::RDONLY | OFlags::NONBLOCK, Mode::empty()).unwrap())
     }
@@ -299,7 +294,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("librepods.sock");
         let lock_path = socket.with_extension(LOCK_EXTENSION);
-        // Opening a FIFO to write waits for a reader, and only a task on the runtime thread opens one.
+        // Opening a FIFO to write waits for a reader; only a task on the runtime thread opens one.
         mkfifoat(CWD, &lock_path, Mode::from_raw_mode(LOCK_MODE)).unwrap();
         let reader_path = lock_path.clone();
         let (done, finished) = mpsc::channel();
