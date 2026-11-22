@@ -1,5 +1,6 @@
 //! The burst check C8: the command opens the pods' control channel itself, through the trap, after the test unit stopped.
 
+use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_fake::Fault;
@@ -7,12 +8,16 @@ use pods_samples::{METADATA_SERIAL, host};
 use pods_trap::Outcome;
 use rustix::io::Errno;
 
-use super::bench::{Bench, DEVICE_NAME, assert_restarted_after_the_run, text};
+use super::bench::{
+    Bench, DEVICE_NAME, RUN_DEADLINE, assert_restarted_after_the_run, signalled_once, text,
+};
 
 /// How long the fake pods may take to see a channel closed once the run has ended.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(2);
 /// How long C8 waits for each handshake acknowledgement, the bound its failure line names.
 const ACK_WAIT: Duration = Duration::from_secs(2);
+/// How often a test looks for the run's dial.
+const DIAL_POLL: Duration = Duration::from_millis(10);
 /// The restore after a failed C8 and the command's exit.
 const AFTER_ACK_WAIT: Duration = Duration::from_secs(1);
 /// The C8 line for `pods_samples::first_burst()` after its two acknowledgements.
@@ -146,6 +151,27 @@ fn silent_pods_fail_the_check_within_the_acknowledgement_wait() {
     let waited = ended.duration_since(dials[0].at);
     assert!(waited >= ACK_WAIT, "{waited:?}");
     assert!(waited < ACK_WAIT + AFTER_ACK_WAIT, "{waited:?}");
+    assert_restarted_after_the_run(&bench);
+}
+
+#[test]
+fn a_stop_signal_during_the_burst_check_ends_the_run_as_stopped() {
+    let bench = Bench::new();
+    bench.pods().fault(Fault::NeverAcknowledge);
+    let output = signalled_once(&bench, "1", "-INT", || {
+        let deadline = Instant::now() + RUN_DEADLINE;
+        while bench.dials().is_empty() {
+            assert!(Instant::now() < deadline, "the run never dialled the pods");
+            thread::sleep(DIAL_POLL);
+        }
+    });
+    let ended = Instant::now();
+    let stdout = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(text(&output.stderr).contains("stopped by a signal"));
+    assert!(!stdout.contains("C8 burst"), "{stdout}");
+    let waited = ended.duration_since(bench.dials()[0].at);
+    assert!(waited < ACK_WAIT, "{waited:?}");
     assert_restarted_after_the_run(&bench);
 }
 

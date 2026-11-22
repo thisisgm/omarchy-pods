@@ -742,10 +742,20 @@ pub(crate) fn interrupted_by(bench: &Bench, signal: &str, call: &str) {
 
 /// Starts a run, sends `signal` once the run has made `call`, and gives what the run printed.
 pub(crate) fn signalled(bench: &Bench, signal: &str, call: &str) -> Output {
-    let mut command = bench.command("60", &[]);
+    signalled_once(bench, "60", signal, || wait_for_call(bench, call))
+}
+
+/// Starts a run, sends `signal` once `wait` returns, and gives what the run printed.
+pub(crate) fn signalled_once(
+    bench: &Bench,
+    idle_seconds: &str,
+    signal: &str,
+    wait: impl FnOnce(),
+) -> Output {
+    let mut command = bench.command(idle_seconds, &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = bench.spawn(command);
-    wait_for_call(bench, call);
+    wait();
     let sent = Command::new("kill")
         .args([signal, &child.id().to_string()])
         .status()
