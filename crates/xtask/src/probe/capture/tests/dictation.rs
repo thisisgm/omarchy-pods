@@ -586,14 +586,14 @@ fn the_dictation_rescue_sends_the_stop_then_the_idle_marker_without_a_walk() {
 fn each_action_of_a_script_acts_when_it_fires_and_not_when_the_run_ends() {
     let bench = on_two_channels(&bench_script(), |engine, _clock, _far| {
         engine.checked = true;
-        engine.fire(Action::MarkActive).unwrap();
+        engine.fire(&Action::MarkActive).unwrap();
         let marked = engine.session.is_some();
-        engine.fire(Action::DictationStart).unwrap();
+        engine.fire(&Action::DictationStart).unwrap();
         let started = engine.dictation.is_some() && engine.recorder.dictation_starts == 1;
-        engine.fire(Action::DictationStop).unwrap();
+        engine.fire(&Action::DictationStop).unwrap();
         let stopped = engine.dictation.is_none() && engine.recorder.dictation_stops == 1;
         let still_marked = engine.session.is_some();
-        engine.fire(Action::MarkIdle).unwrap();
+        engine.fire(&Action::MarkIdle).unwrap();
         let idle = engine.session.is_none() && engine.dropped.idle.take().is_none();
         [marked, started, stopped, still_marked, idle]
     });

@@ -29,7 +29,6 @@ mod pods;
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
@@ -39,19 +38,18 @@ mod tests {
     use pods_proto::packets::{
         ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
     };
-    use pods_proto::sdulog::{self, Direction};
+    use pods_proto::sdulog::Direction;
     use pods_proto::uplink::{START, STOP};
     use pods_trap::{Answer, Outcome};
     use rustix::io::Errno;
 
-    use super::att_pods::{
-        BURST_PACKETS, DECLARED, FIND_INFORMATION, MADE_UP_TYPE, TABLE_END, declared_at,
-    };
+    use super::att_pods::{BURST_PACKETS, DECLARED, MADE_UP_TYPE, declared_at};
     use super::capture::{
-        FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, capture, far_end, files_of, hand_over,
-        hand_over_after, home_with_device, probe, read, route, run_path, transcript,
+        FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, assert_att_ran, assert_control_logged,
+        capture, far_end, files_of, hand_over, hand_over_after, home_with_device, kinds, logged,
+        probe, read, route, run_path, stamp_of, transcript,
     };
-    use super::pods::{self, Pods, Transcript};
+    use super::pods::{self, Pods};
 
     /// The cue every soak prints when its stream starts.
     const SOAK_CUE: &str = "cue Stay as you are. Nothing to do.\n";
@@ -71,57 +69,6 @@ mod tests {
             after: Duration::ZERO,
             errno,
         }
-    }
-
-    /// The packets of a channel log that went one way, in order.
-    // Sample input: `1203456789 < 0400040058000100`, a stamp in nanoseconds, the direction and the packet in hex.
-    fn logged(log: &str, direction: Direction) -> Vec<Vec<u8>> {
-        let records = log.lines().map(|line| sdulog::parse_line(line).unwrap());
-        records
-            .filter(|record| record.direction == direction)
-            .map(|record| record.sdu)
-            .collect()
-    }
-
-    /// The kind of every mark: the second field of `1203456789\tgate\tear`.
-    fn kinds(marks: &str) -> Vec<&str> {
-        marks
-            .lines()
-            .map(|line| line.split('\t').nth(1).unwrap())
-            .collect()
-    }
-
-    /// The stamp of the only mark of one kind: the first field of `1203456789\tgate\tear`, in nanoseconds.
-    fn stamp_of(marks: &str, kind: &str) -> u64 {
-        let of_kind = |line: &&str| line.split('\t').nth(1) == Some(kind);
-        let found: Vec<&str> = marks.lines().filter(of_kind).collect();
-        assert_eq!(found.len(), 1, "{kind} marks in\n{marks}");
-        found[0].split('\t').next().unwrap().parse().unwrap()
-    }
-
-    /// Asserts the walk of the attribute table and then `writes` reached the fake pods, and that the attribute log holds both directions as they went.
-    fn assert_att_ran(pods: &Transcript, run: &Path, writes: &[&[u8]]) {
-        let split = pods.att_got.len().saturating_sub(writes.len());
-        let (walk, sent) = pods.att_got.split_at(split);
-        assert_eq!(sent, writes, "{:02x?}", pods.att_got);
-        assert!(!walk.is_empty(), "{:02x?}", pods.att_got);
-        assert!(
-            walk.iter().all(|pdu| pdu[0] == FIND_INFORMATION),
-            "{walk:02x?}"
-        );
-        let att_log = read(run, "att.log");
-        assert_eq!(logged(&att_log, Direction::ToPods), pods.att_got);
-        assert_eq!(logged(&att_log, Direction::FromPods), pods.att_sent);
-        let listed = read(run, "handles.tsv");
-        let attributes = listed.lines().filter(|row| row.starts_with("attribute\t"));
-        assert_eq!(attributes.count(), usize::from(TABLE_END), "{listed}");
-    }
-
-    /// Asserts the control log of `run` holds both directions as they went.
-    fn assert_control_logged(pods: &Transcript, run: &Path) {
-        let log = read(run, "sdu.log");
-        assert_eq!(logged(&log, Direction::ToPods), pods.got());
-        assert_eq!(logged(&log, Direction::FromPods), pods.sent);
     }
 
     #[test]

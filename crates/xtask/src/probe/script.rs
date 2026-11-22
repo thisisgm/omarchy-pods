@@ -1,9 +1,15 @@
 //! The timed scripts a capture follows: what to send and what to tell the owner, at offsets from the gate.
 
+mod steps;
+
 use std::fmt;
 use std::str::FromStr;
 
 use pods_proto::uplink::MicSide;
+
+pub(crate) use steps::{
+    MAX_FILE_BYTES as MAX_STEPS_FILE_BYTES, StepPacket, StepsError, parse_steps,
+};
 
 const MS_PER_MINUTE: u32 = 60_000;
 /// The shortest run `--minutes` asks for.
@@ -286,6 +292,8 @@ pub(crate) enum ScriptError {
         "stop takes one route at a time: run it with --route uplink, then with --route dictation"
     )]
     RescueOfBoth,
+    #[error("a step file runs on the dictation route, not on {route}: pass --route dictation")]
+    StepsOffRoute { route: Route },
 }
 
 /// What a run does once the channel is open.
@@ -303,7 +311,7 @@ pub(crate) enum Opening {
     AttMap,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Action {
     Start,
     Stop,
@@ -320,11 +328,16 @@ pub(crate) enum Action {
     DictationStart,
     /// The write that stops the dictation stream.
     DictationStop,
+    /// A packet of a step file that no guard covers, with the line it was read from.
+    Step {
+        line: usize,
+        packet: StepPacket,
+    },
     End,
 }
 
 /// An action and its offset from the gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Event {
     pub(crate) at_ms: u32,
     pub(crate) action: Action,
@@ -344,8 +357,8 @@ pub(crate) struct Script {
 impl Script {
     /// Whether the run reads the pods' attribute table before its gate: to map it, or to check it before a start write.
     pub(crate) fn walks(&self) -> bool {
-        let mut actions = self.events.iter().map(|event| event.action);
-        self.opening == Opening::AttMap || actions.any(|action| action == Action::DictationStart)
+        let mut actions = self.events.iter().map(|event| &event.action);
+        self.opening == Opening::AttMap || actions.any(|action| *action == Action::DictationStart)
     }
 
     /// Lets the start write follow a walk that the pods did not answer, which `--unchecked` asks for; `route` is the one the script was built for.
@@ -585,6 +598,19 @@ fn both_streams() -> Vec<Event> {
         at(BOTH_END_MS, Action::End),
     ]);
     events
+}
+
+/// The script of a step file, whose events `parse_steps` read; it opens with the handshake, as the other scripts of its route do.
+pub(crate) fn stepped(route: Route, events: Vec<Event>) -> Result<Script, ScriptError> {
+    match route {
+        Route::Dictation => Ok(Script {
+            opening: Opening::Handshake,
+            needs_initial_side: false,
+            unchecked: false,
+            events,
+        }),
+        Route::Uplink | Route::Both => Err(ScriptError::StepsOffRoute { route }),
+    }
 }
 
 /// The rescue of one route: after the handshake, the stop that a killed capture did not send, and for dictation the idle marker after it.

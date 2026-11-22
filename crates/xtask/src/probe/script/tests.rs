@@ -44,10 +44,10 @@ fn built(name: ScriptName) -> Script {
     build(name, Route::Uplink, minutes_for(name), true).unwrap()
 }
 
-fn offsets(script: &Script, wanted: Action) -> Vec<u32> {
+fn offsets(script: &Script, wanted: &Action) -> Vec<u32> {
     let events = script.events.iter();
     events
-        .filter(|event| event.action == wanted)
+        .filter(|event| event.action == *wanted)
         .map(|event| event.at_ms)
         .collect()
 }
@@ -55,8 +55,8 @@ fn offsets(script: &Script, wanted: Action) -> Vec<u32> {
 #[test]
 fn trials_has_twenty_cycles_with_the_stated_gaps() {
     let script = built(ScriptName::Trials);
-    let starts = offsets(&script, Action::Start);
-    let stops = offsets(&script, Action::Stop);
+    let starts = offsets(&script, &Action::Start);
+    let stops = offsets(&script, &Action::Stop);
     assert_eq!(starts.len(), 20);
     assert_eq!(stops.len(), 20);
     for (start, stop) in starts.iter().zip(&stops) {
@@ -72,7 +72,7 @@ fn trials_has_twenty_cycles_with_the_stated_gaps() {
     assert_eq!(idle[15..], [60_000; 4]);
     assert_eq!(script.events.last(), Some(&at(495_000, Action::End)));
     let quiet = Action::Cue("Stop counting. Stay quiet.");
-    assert_eq!(offsets(&script, quiet), [70_000]);
+    assert_eq!(offsets(&script, &quiet), [70_000]);
     let first = at(0, Action::Cue("Count aloud until told to stop"));
     assert_eq!(script.events.first(), Some(&first));
 }
@@ -80,9 +80,9 @@ fn trials_has_twenty_cycles_with_the_stated_gaps() {
 #[test]
 fn firstword_has_three_starts_and_no_cue_at_a_start() {
     let script = built(ScriptName::Firstword);
-    let starts = offsets(&script, Action::Start);
+    let starts = offsets(&script, &Action::Start);
     assert_eq!(starts, [8_000, 23_000, 38_000]);
-    assert_eq!(offsets(&script, Action::Stop), [13_000, 28_000, 43_000]);
+    assert_eq!(offsets(&script, &Action::Stop), [13_000, 28_000, 43_000]);
     let cues: Vec<&Event> = script
         .events
         .iter()
@@ -131,6 +131,7 @@ fn every_script_that_starts_also_stops() {
                 | Action::MarkIdle
                 | Action::DictationStart
                 | Action::DictationStop => panic!("{name} touches the dictation stream"),
+                Action::Step { .. } => panic!("{name} sends a packet of a step file"),
             }
         }
         assert!(ended, "{name} never ends");
@@ -170,7 +171,7 @@ fn voice_and_side_do_what_their_scripts_say_and_when() {
     let tap = Action::Cue("Tap the left bud twice");
     let voice = [
         at(0, Action::Start),
-        at(3_000, tap),
+        at(3_000, tap.clone()),
         at(
             8_000,
             Action::Cue("Count one to ten slowly, then say the fox sentence"),
@@ -460,7 +461,7 @@ proptest! {
         match (build(name, Route::Uplink, minutes, true), minutes) {
             (Ok(script), Some(minutes)) => {
                 prop_assert!(timed && (1..=90).contains(&minutes));
-                prop_assert_eq!(script.events.last().map(|event| event.action), Some(Action::End));
+                prop_assert_eq!(script.events.last().map(|event| &event.action), Some(&Action::End));
             }
             (Ok(_), None) => prop_assert!(!timed),
             (Err(error), Some(minutes)) if timed => {

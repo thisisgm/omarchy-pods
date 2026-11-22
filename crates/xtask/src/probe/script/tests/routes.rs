@@ -1,7 +1,7 @@
 //! The scripts of the dictation route and of the route that runs both streams, checked against their written table.
 
 use super::super::*;
-use super::SOME_MINUTES;
+use super::{SOME_MINUTES, offsets};
 
 /// Every pair of a route and a script that asks for the dictation stream or opens the attribute channel alone.
 const PAIRS: [(Route, ScriptName); 6] = [
@@ -17,14 +17,6 @@ const PAIRS: [(Route, ScriptName); 6] = [
 fn built(route: Route, name: ScriptName, marker: bool) -> Script {
     let minutes = (name == ScriptName::Soak).then_some(SOME_MINUTES);
     build(name, route, minutes, marker).unwrap()
-}
-
-fn offsets(script: &Script, wanted: Action) -> Vec<u32> {
-    let events = script.events.iter();
-    events
-        .filter(|event| event.action == wanted)
-        .map(|event| event.at_ms)
-        .collect()
 }
 
 #[test]
@@ -45,7 +37,7 @@ fn the_dictation_scripts_do_what_their_table_says() {
     let expected = [
         at(0, Action::MarkActive),
         at(480, Action::DictationStart),
-        at(3_000, tap),
+        at(3_000, tap.clone()),
         at(
             8_000,
             Action::Cue("Count one to ten slowly, then say the fox sentence"),
@@ -134,7 +126,11 @@ fn the_minutes_rule_holds_on_the_dictation_and_both_routes() {
     // The soak of this route stops after the minutes asked, at both ends of the range.
     for (minutes, run_ms) in super::EDGE_RUNS {
         let soak = build(ScriptName::Soak, Route::Dictation, Some(minutes), true).unwrap();
-        assert_eq!(offsets(&soak, Action::DictationStop), [run_ms], "{minutes}");
+        assert_eq!(
+            offsets(&soak, &Action::DictationStop),
+            [run_ms],
+            "{minutes}"
+        );
     }
 }
 
@@ -174,11 +170,12 @@ fn every_script_that_starts_dictation_also_stops_it() {
                         panic!("{name} changes the microphone side")
                     }
                     Action::Cue(_) | Action::MarkActive | Action::MarkIdle => {}
+                    Action::Step { .. } => panic!("{name} sends a packet of a step file"),
                 }
             }
             assert_eq!(
-                script.events.last().map(|event| event.action),
-                Some(Action::End)
+                script.events.last().map(|event| &event.action),
+                Some(&Action::End)
             );
             let streams = !matches!(name, ScriptName::AttKnock | ScriptName::AttMap);
             assert_eq!(starts > 0, streams, "{name}");
@@ -216,13 +213,14 @@ fn every_active_marker_has_an_idle_marker() {
                 | Action::Cue(_)
                 | Action::SetSide(_)
                 | Action::RestoreSide => {}
+                Action::Step { .. } => panic!("{name} sends a packet of a step file"),
             }
         }
-        let marks = offsets(&script, Action::MarkActive).len();
-        assert_eq!(marks, offsets(&script, Action::MarkIdle).len(), "{name}");
+        let marks = offsets(&script, &Action::MarkActive).len();
+        assert_eq!(marks, offsets(&script, &Action::MarkIdle).len(), "{name}");
         assert_eq!(
             marks,
-            offsets(&script, Action::DictationStart).len(),
+            offsets(&script, &Action::DictationStart).len(),
             "{name}"
         );
     }
@@ -233,13 +231,13 @@ fn the_marker_leads_the_start_by_480_ms() {
     assert_eq!(MARKER_LEAD_MS, 480);
     for (route, name) in PAIRS {
         let script = built(route, name, true);
-        let starts = offsets(&script, Action::DictationStart);
+        let starts = offsets(&script, &Action::DictationStart);
         let leads: Vec<u32> = starts.iter().map(|start| start - 480).collect();
-        assert_eq!(offsets(&script, Action::MarkActive), leads, "{name}");
+        assert_eq!(offsets(&script, &Action::MarkActive), leads, "{name}");
         // The idle marker follows each stop write by half a second.
-        let stops = offsets(&script, Action::DictationStop);
+        let stops = offsets(&script, &Action::DictationStop);
         let lags: Vec<u32> = stops.iter().map(|stop| stop + 500).collect();
-        assert_eq!(offsets(&script, Action::MarkIdle), lags, "{name}");
+        assert_eq!(offsets(&script, &Action::MarkIdle), lags, "{name}");
     }
 }
 
