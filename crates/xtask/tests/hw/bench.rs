@@ -1,5 +1,6 @@
 //! The stub programs every hw test runs the command against, and the bench that holds them in a temporary directory.
 
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -15,11 +16,17 @@ use pods_core::link::ladder::Attempt;
 use pods_core::link::{Phase, STATE_POPULATED_LINE, phase_change_line};
 use pods_core::state::State;
 use pods_core::status::to_status_line;
+use pods_fake::{Pods, Profile};
 use pods_proto::model::Model;
+use pods_proto::packets::CONTROL_PSM;
+use pods_trap::{Answer, Dial, Route, Trap};
+use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process};
 
 /// The synthetic device every stub reports; none of it may reach the command's output.
 pub(crate) const ADDRESS: &str = "02:00:00:00:00:01";
+const UNDER_TEST: &str = "librepods-hw.service";
+const INSTALLED: &str = "librepods.service";
 pub(crate) const DEVICE_PATH: &str = "dev_02_00_00_00_00_01";
 pub(crate) const DEVICE_NAME: &str = "Synthetic Pods 7";
 
@@ -82,6 +89,8 @@ daemon_start() {
 daemon_stop() {
     [ -e "$STUB/hw-stop-ignored" ] && return 0
     echo inactive > "$STUB/unit-librepods-hw.service"
+    # Under pods-leave-after-idle the pods drop at the first stop after the idle check, so the burst check finds none connected.
+    [ -e "$STUB/pods-leave-after-idle" ] && [ -e "$STUB/idle-started" ] && echo false > "$STUB/bluez-connected"
     [ -e "$STUB/stop-leaves-files" ] && return 0
     for p in "$(read_file run-dir)/librepods.sock" "$(read_file state-dir)/librepods/status.json"; do
         inside "$p" && rm -f "$p"
@@ -109,10 +118,14 @@ show)
 is-active)
     s=$(cat "$STUB/unit-$2" 2>/dev/null || echo inactive)
     if [ "$2 $s" = "librepods-hw.service inactive" ] && [ -e "$STUB/hw-activity-fails" ] && [ ! -e "$STUB/hw-activity-failed" ]; then
-        : > "$STUB/hw-activity-failed"; exit 4
+        # A word with a failing status, so only the exit status can reject it.
+        : > "$STUB/hw-activity-failed"; echo inactive; exit 1
     fi
     echo "$s"
-    [ "$s" = active ] || exit 3 ;;
+    [ "$s" = active ] && exit 0
+    # systemd 257 exits 4 for a unit it does not hold: the collected test unit once inactive, or a missing service.
+    { [ "$2" = librepods-hw.service ] || [ -e "$STUB/installed-missing" ]; } && exit 4
+    exit 3 ;;
 stop)
     [ "$2" = librepods.service ] && [ -e "$STUB/hang-stop" ] && sleep "$hold_seconds"
     if [ "$2" = librepods-hw.service ]; then daemon_stop; else echo inactive > "$STUB/unit-$2"; fi ;;
@@ -241,10 +254,14 @@ const POLL: Duration = Duration::from_millis(10);
 /// How long a bench waits for the processes it ends to be gone.
 const SWEEP_DEADLINE: Duration = Duration::from_secs(5);
 
-/// A temporary directory holding the stubs, their state, the home and the temporary directory of one run.
+/// A temporary directory holding the stubs, their state, the home and the temporary directory of one run, and the fake pods every run dials through the trap.
 pub(crate) struct Bench {
     root: tempfile::TempDir,
     main: Child,
+    pods: Pods,
+    refusal: Cell<Option<Errno>>,
+    /// Dropped after the runs `drop` ends, so no run outlives its trap.
+    traps: RefCell<Vec<Trap>>,
 }
 
 impl Bench {
@@ -255,7 +272,17 @@ impl Bench {
             .current_dir(root.path())
             .spawn()
             .unwrap();
-        let bench = Self { root, main };
+        let pods = Pods::new(Profile {
+            name: DEVICE_NAME.to_owned(),
+            ..Profile::default()
+        });
+        let bench = Self {
+            root,
+            main,
+            pods,
+            refusal: Cell::new(None),
+            traps: RefCell::new(Vec::new()),
+        };
         for dir in ["bin", "home/.local/bin", "tmp", "runtime"] {
             fs::create_dir_all(bench.path(dir)).unwrap();
         }
@@ -346,13 +373,68 @@ impl Bench {
     }
 
     pub(crate) fn run(&self, extra: &[&str]) -> Output {
-        let child = self
-            .command("1", extra)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        finish(child, RUN_DEADLINE)
+        let mut command = self.command("1", extra);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        finish(self.spawn(command), RUN_DEADLINE)
+    }
+
+    /// Starts `command` under the trap, the pods' control channel routed to the fake pods unless `refuse_with` was called.
+    pub(crate) fn spawn(&self, command: Command) -> Child {
+        let answer = match self.refusal.get() {
+            Some(errno) => Answer::Refuse {
+                after: Duration::ZERO,
+                errno,
+            },
+            None => self.serve(),
+        };
+        let route = Route {
+            device: ADDRESS.parse().unwrap(),
+            psm: CONTROL_PSM,
+            answer,
+        };
+        let (child, trap) =
+            pods_trap::spawn(command, vec![route]).unwrap_or_else(|error| panic!("{error}"));
+        self.traps.borrow_mut().push(trap);
+        child
+    }
+
+    /// Hands each dial to the fake pods, first writing to `units-at-dial` the state of the test unit and the installed service.
+    fn serve(&self) -> Answer {
+        let pods = self.pods.clone();
+        let root = self.root.path().to_owned();
+        let serve = move |channel| {
+            let units = [UNDER_TEST, INSTALLED].map(|unit| {
+                let state =
+                    fs::read_to_string(root.join(format!("unit-{unit}"))).unwrap_or_default();
+                format!("{unit} {}", state.trim())
+            });
+            // A panic here would end the trap's thread, so a failed write only leaves the file missing.
+            drop(fs::write(root.join("units-at-dial"), units.join("\n")));
+            pods.serve(channel);
+        };
+        Answer::Accept {
+            after: Duration::ZERO,
+            serve: Arc::new(serve),
+        }
+    }
+
+    /// Makes the runs started after it find the pods refusing the control channel with `errno`.
+    pub(crate) fn refuse_with(&self, errno: Errno) {
+        self.refusal.set(Some(errno));
+    }
+
+    pub(crate) fn pods(&self) -> &Pods {
+        &self.pods
+    }
+
+    /// Every dial the trap answered, over every run of the bench.
+    pub(crate) fn dials(&self) -> Vec<Dial> {
+        self.traps.borrow().iter().flat_map(Trap::dials).collect()
+    }
+
+    /// Every Bluetooth socket call the trap saw, over every run of the bench.
+    pub(crate) fn sockets(&self) -> usize {
+        self.traps.borrow().iter().map(Trap::sockets).sum()
     }
 
     /// The processes still working in the bench once a run has ended, its stand-in for the daemon's main process aside.
@@ -430,13 +512,12 @@ impl Bench {
         let buds_out = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let server = self.serve_sets(Arc::clone(&buds_out), Arc::clone(&done));
-        let mut child = self
-            .command("1", flags)
+        let mut command = self.command("1", flags);
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::piped());
+        let mut child = self.spawn(command);
         let run = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
         let mut stdin = child.stdin.take().unwrap();
         let stderr = BufReader::new(child.stderr.take().unwrap());
@@ -496,6 +577,11 @@ impl Drop for Bench {
                 }
             }
             thread::sleep(POLL);
+        }
+        // Joins the fake pods' threads, and a thread that failed fails the test unless it is already failing.
+        let finished = self.pods.clone().finish();
+        if !thread::panicking() {
+            finished.unwrap_or_else(|failure| panic!("the fake pods failed: {failure}"));
         }
     }
 }
@@ -656,12 +742,9 @@ pub(crate) fn interrupted_by(bench: &Bench, signal: &str, call: &str) {
 
 /// Starts a run, sends `signal` once the run has made `call`, and gives what the run printed.
 pub(crate) fn signalled(bench: &Bench, signal: &str, call: &str) -> Output {
-    let child = bench
-        .command("60", &[])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut command = bench.command("60", &[]);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = bench.spawn(command);
     wait_for_call(bench, call);
     let sent = Command::new("kill")
         .args([signal, &child.id().to_string()])

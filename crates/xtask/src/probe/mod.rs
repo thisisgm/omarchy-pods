@@ -31,12 +31,13 @@ use rustix::time::{ClockId, clock_gettime};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
 use crate::{print_line, report};
+pub(crate) use capture::HANDSHAKE_STEP_TIMEOUT_MS;
 use capture::{EndReason, LOG_NAME, MARKS_NAME, Mark, Outcome, Outputs, STOP_TAIL_MS};
 use script::{ScriptError, ScriptName};
 use store::{Run, Session, StoreError};
 
 /// Bounds the connect: the connect timeout of aacp.rs in librepods-org/librepods pull request 655.
-const CONNECT_TIMEOUT_MS: u64 = 10_000;
+pub(crate) const CONNECT_TIMEOUT_MS: u64 = 10_000;
 /// What a run was recorded with and when its clock began.
 const META_NAME: &str = "meta.txt";
 /// The `tool=` line of `META_NAME`.

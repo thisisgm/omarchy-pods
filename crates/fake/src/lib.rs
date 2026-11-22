@@ -56,6 +56,10 @@ pub enum Fault {
     ReportsBeforeAck,
     /// The burst has no battery packet, however often it is asked for.
     WithholdBattery,
+    /// The burst's battery packet arrives one byte short, so it does not parse.
+    CutBattery,
+    /// The burst ends with one more packet, cut inside its opcode.
+    TrailingFragment,
     /// A setting from the host changes nothing and is not reported back.
     NeverConfirm,
 }

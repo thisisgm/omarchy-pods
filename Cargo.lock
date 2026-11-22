@@ -794,8 +794,11 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "pods-core",
+ "pods-fake",
  "pods-proto",
+ "pods-samples",
  "pods-sys",
+ "pods-trap",
  "proptest",
  "rustix",
  "rusty_aac",

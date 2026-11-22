@@ -224,6 +224,27 @@ fn an_existing_test_unit_refuses_the_run() {
 }
 
 #[test]
+fn a_missing_installed_service_refuses_the_run() {
+    let bench = Bench::new();
+    bench.set("installed-missing", "");
+    bench.set("unit-librepods.service", "inactive");
+    let output = bench.run(&[]);
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("xtask hw: systemctl is-active librepods.service gave no state (exit status: 4); nothing was stopped"),
+        "{stderr}"
+    );
+    assert_eq!(
+        bench.calls(),
+        [
+            "systemctl --user show --property=LoadState --value librepods-hw.service",
+            "systemctl --user is-active librepods.service"
+        ]
+    );
+}
+
+#[test]
 fn wrong_usage_exits_2() {
     for wrong in ["--no-such-option", "--adapter-cycle"] {
         let bench = Bench::new();
@@ -329,12 +350,9 @@ fn a_run_killed_outright_leaves_no_process_once_its_bench_is_gone() {
     let bench = Bench::new();
     bench.set("hang-status", "");
     let root = bench.path("");
-    let mut run = bench
-        .command("1", &[])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut command = bench.command("1", &[]);
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut run = bench.spawn(command);
     let status: i32 = wait_for_file(&bench.path("status-pid"))
         .trim()
         .parse()
@@ -353,19 +371,13 @@ fn a_run_killed_outright_leaves_no_process_once_its_bench_is_gone() {
 fn a_second_run_during_a_run_stops_and_starts_nothing() {
     let bench = Bench::new();
     bench.set("hang-stop", "");
-    let first = bench
-        .command("1", &[])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut command = bench.command("1", &[]);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let first = bench.spawn(command);
     wait_for_call(&bench, "systemctl --user stop librepods.service");
-    let second = bench
-        .command("1", &[])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut command = bench.command("1", &[]);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let second = bench.spawn(command);
     let second = finish(second, RUN_DEADLINE);
     let calls = bench.calls();
     let first = finish(first, RUN_DEADLINE);

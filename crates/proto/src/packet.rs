@@ -33,17 +33,17 @@ pub enum Incoming<'a> {
 
 /// Sample input: `04 00 04 00 09 00 28 01 00 00 00`, accessory header, opcode 0x0009, body.
 pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
-    let Some(after_header) = sdu.strip_prefix(&ACCESSORY_HEADER) else {
+    if !sdu.starts_with(&ACCESSORY_HEADER) {
         return Ok(Incoming::Foreign);
-    };
-    let Some(opcode) = after_header.first_chunk::<OPCODE_LEN>() else {
+    }
+    let Some(opcode) = opcode_of(sdu) else {
         return Err(ParseError::TooShort {
             parser: Parser::Packet,
             need: HEADER_LEN,
             got: sdu.len(),
         });
     };
-    Ok(match u16::from_le_bytes(*opcode) {
+    Ok(match opcode {
         OPCODE_BATTERY => Incoming::Battery(BatteryReport::parse(sdu)?),
         OPCODE_EAR => Incoming::Ear(EarReport::parse(sdu)?),
         OPCODE_CONTROL => Incoming::Control(ControlCommand::parse(sdu)?),
@@ -51,6 +51,14 @@ pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
         OPCODE_UPLINK => Incoming::Uplink(sdu),
         opcode => Incoming::Other { opcode },
     })
+}
+
+/// Sample input: `04 00 04 00 04 00 03`, opcode 0x0004 whether or not its body parses; none without the accessory header or cut inside the opcode.
+#[must_use]
+pub fn opcode_of(sdu: &[u8]) -> Option<u16> {
+    let after_header = sdu.strip_prefix(&ACCESSORY_HEADER)?;
+    let opcode = after_header.first_chunk::<OPCODE_LEN>()?;
+    Some(u16::from_le_bytes(*opcode))
 }
 
 #[cfg(test)]
@@ -77,6 +85,22 @@ mod tests {
         let metadata = pods_samples::metadata();
         let expected = Incoming::Metadata(Metadata::parse(&metadata).unwrap());
         assert_eq!(classify(&metadata), Ok(expected));
+    }
+
+    #[test]
+    fn each_packet_names_its_opcode_and_a_foreign_or_cut_one_none() {
+        let packets = [
+            (pods_samples::battery(), 0x04),
+            (hex("04 00 04 00 04 00 03"), 0x04),
+            (pods_samples::control(), 0x09),
+            (hex("04 00 04 00 04 01"), 0x0104),
+        ];
+        for (sdu, opcode) in packets {
+            assert_eq!(opcode_of(&sdu), Some(opcode), "{sdu:02x?}");
+        }
+        for sdu in [pods_samples::handshake_ack(), hex("04 00 04 00 09")] {
+            assert_eq!(opcode_of(&sdu), None, "{sdu:02x?}");
+        }
     }
 
     #[test]

@@ -171,12 +171,16 @@ pub(crate) fn systemctl_ok(args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// The word `systemctl is-active` prints for `unit`, such as `active` or `inactive`; sample input `inactive\n`, with exit status 3.
+/// The word `systemctl is-active` prints for `unit`, such as `active` or `inactive`; sample input `inactive\n`, with exit status 3, or 4 for the collected test unit once gone.
 pub(crate) fn activity(unit: &str) -> Result<String, String> {
     let ran = systemctl(&["is-active", unit])?;
     let word = ran.stdout.trim().to_owned();
-    // is-active exits 0 for active and 3 for every other state, so only the word it printed decides.
-    let known = matches!(ran.status.code(), Some(0 | 3));
+    // Exit 4 means systemd holds no such unit, which only the collected test unit may be.
+    let known = match ran.status.code() {
+        Some(0 | 3) => true,
+        Some(4) => unit == UNDER_TEST,
+        _ => false,
+    };
     if known && !word.is_empty() && !word.contains(char::is_whitespace) {
         Ok(word)
     } else {
@@ -185,6 +189,16 @@ pub(crate) fn activity(unit: &str) -> Result<String, String> {
             ran.status
         ))
     }
+}
+
+/// Stops `unit` and requires it not running after the stop.
+pub(crate) fn stop(unit: &str) -> Result<(), String> {
+    systemctl_ok(&["stop", unit])?;
+    let word = activity(unit)?;
+    if is_running(&word) {
+        return Err(format!("{unit} is still {word} after its stop"));
+    }
+    Ok(())
 }
 
 /// True for the states in which the unit's process is running or about to.

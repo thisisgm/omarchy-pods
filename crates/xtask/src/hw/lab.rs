@@ -146,11 +146,8 @@ impl<'a> Lab<'a> {
 
     /// Remembers the connected `AirPods`' `BlueZ` device and adapter, which C2, C5 and C7 read.
     pub(crate) fn find_device(&mut self) -> Result<(), String> {
-        let bluez = bluez()?;
-        let device = bluez
-            .devices
-            .into_iter()
-            .find(|device| device.connected)
+        let device = bluez()?
+            .connected()
             .ok_or("BlueZ reports no connected AirPods while the daemon reports connected")?;
         self.device = device.path;
         self.adapter = device.adapter;

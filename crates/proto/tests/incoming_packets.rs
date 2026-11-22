@@ -4,7 +4,7 @@ use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
 use pods_proto::ear::EarReport;
 use pods_proto::metadata::{FIELD_MAX_BYTES, Metadata};
-use pods_proto::packet::{Incoming, classify};
+use pods_proto::packet::{Incoming, classify, opcode_of};
 use proptest::prelude::*;
 
 const METADATA_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
@@ -27,6 +27,7 @@ proptest! {
     #[test]
     fn classify_never_panics(b in proptest::collection::vec(any::<u8>(), 0..4096)) {
         let _outcome = classify(&b);
+        let _opcode = opcode_of(&b);
     }
 
     // An opcode with a parser gets its result, 0x58 is handed over whole, any other is Other.
@@ -47,6 +48,7 @@ proptest! {
             _ => Ok(Incoming::Other { opcode }),
         };
         prop_assert_eq!(classify(&sdu), expected);
+        prop_assert_eq!(opcode_of(&sdu), Some(opcode));
     }
 
     #[test]
@@ -55,6 +57,7 @@ proptest! {
             .prop_filter("starts with the accessory header", |b| !b.starts_with(&ACCESSORY_HEADER)),
     ) {
         prop_assert_eq!(classify(&b), Ok(Incoming::Foreign));
+        prop_assert_eq!(opcode_of(&b), None);
     }
 
     // Short printable fields read back as the first three zero ended strings, missing ones empty.

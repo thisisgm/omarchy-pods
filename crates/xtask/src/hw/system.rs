@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use pods_core::link::ladder::Attempt;
 use pods_core::link::{Phase, STATE_POPULATED_LINE, phase_change_line};
+use pods_proto::addr::BdAddr;
 use serde_json::Value;
 
 use super::Interrupted;
@@ -170,10 +171,19 @@ pub(super) struct Bluez {
     pub(super) adapters: Vec<Adapter>,
 }
 
+impl Bluez {
+    /// The first `AirPods` device `BlueZ` reports connected.
+    pub(super) fn connected(self) -> Option<Device> {
+        self.devices.into_iter().find(|device| device.connected)
+    }
+}
+
 pub(super) struct Device {
     pub(super) path: String,
     pub(super) adapter: String,
     pub(super) connected: bool,
+    /// Held in memory only; `BdAddr` prints as `BdAddr(redacted)`.
+    pub(super) address: Option<BdAddr>,
 }
 
 pub(super) struct Adapter {
@@ -203,7 +213,7 @@ pub(super) fn bluez() -> Result<Bluez, String> {
     parse_bluez(&ran.stdout).ok_or_else(|| "busctl printed no BlueZ object tree".to_owned())
 }
 
-/// The `AirPods` devices and the adapters in `BlueZ`'s object tree, as `busctl --json=short` prints it; sample input `{"type":"a{oa{sa{sv}}}","data":[{"/org/bluez/hci0":{"org.bluez.Adapter1":{"Powered":{"type":"b","data":true},"Discovering":{"type":"b","data":false}}},"/org/bluez/hci0/dev_02_00_00_00_00_01":{"org.bluez.Device1":{"Adapter":{"type":"o","data":"/org/bluez/hci0"},"Connected":{"type":"b","data":true},"UUIDs":{"type":"as","data":["74ec2172-0bad-4d01-8f77-997b2be0722a"]}}}}]}`.
+/// The `AirPods` devices and the adapters in `BlueZ`'s object tree, as `busctl --json=short` prints it; sample input `{"type":"a{oa{sa{sv}}}","data":[{"/org/bluez/hci0":{"org.bluez.Adapter1":{"Powered":{"type":"b","data":true},"Discovering":{"type":"b","data":false}}},"/org/bluez/hci0/dev_02_00_00_00_00_01":{"org.bluez.Device1":{"Address":{"type":"s","data":"02:00:00:00:00:01"},"Adapter":{"type":"o","data":"/org/bluez/hci0"},"Connected":{"type":"b","data":true},"UUIDs":{"type":"as","data":["74ec2172-0bad-4d01-8f77-997b2be0722a"]}}}}]}`.
 pub(super) fn parse_bluez(text: &str) -> Option<Bluez> {
     let root: Value = serde_json::from_str(text.trim()).ok()?;
     let objects = root.get("data")?.get(0)?.as_object()?;
@@ -239,6 +249,8 @@ pub(super) fn parse_bluez(text: &str) -> Option<Bluez> {
                     .and_then(|value| value.as_str().map(str::to_owned))
                     .unwrap_or_default(),
                 connected: flag("org.bluez.Device1", "Connected"),
+                address: property("org.bluez.Device1", "Address")
+                    .and_then(|value| value.as_str()?.parse().ok()),
             });
         }
     }
@@ -367,6 +379,7 @@ mod tests {
     use std::time::Duration;
     use std::{process, thread};
 
+    use pods_proto::addr::BdAddr;
     use proptest::prelude::*;
 
     use super::super::lab::status_object;
@@ -408,11 +421,15 @@ mod tests {
 
     #[test]
     pub(super) fn bluez_objects_give_airpods_and_adapters() {
-        let text = r#"{"type":"a{oa{sa{sv}}}","data":[{"/org/bluez/hci0":{"org.bluez.Adapter1":{"Powered":{"type":"b","data":true},"Discovering":{"type":"b","data":false}}},"/org/bluez/hci0/dev_02_00_00_00_00_01":{"org.bluez.Device1":{"Adapter":{"type":"o","data":"/org/bluez/hci0"},"Connected":{"type":"b","data":true},"UUIDs":{"type":"as","data":["74ec2172-0bad-4d01-8f77-997b2be0722a"]}}},"/org/bluez/hci0/dev_02_00_00_00_00_02":{"org.bluez.Device1":{"Connected":{"type":"b","data":true},"UUIDs":{"type":"as","data":[]}}}}]}"#;
+        let text = r#"{"type":"a{oa{sa{sv}}}","data":[{"/org/bluez/hci0":{"org.bluez.Adapter1":{"Powered":{"type":"b","data":true},"Discovering":{"type":"b","data":false}}},"/org/bluez/hci0/dev_02_00_00_00_00_01":{"org.bluez.Device1":{"Address":{"type":"s","data":"02:00:00:00:00:01"},"Adapter":{"type":"o","data":"/org/bluez/hci0"},"Connected":{"type":"b","data":true},"UUIDs":{"type":"as","data":["74ec2172-0bad-4d01-8f77-997b2be0722a"]}}},"/org/bluez/hci0/dev_02_00_00_00_00_02":{"org.bluez.Device1":{"Connected":{"type":"b","data":true},"UUIDs":{"type":"as","data":[]}}}}]}"#;
         let bluez = parse_bluez(text).unwrap();
         assert_eq!(bluez.devices.len(), 1);
         assert!(bluez.devices[0].connected);
         assert_eq!(bluez.devices[0].adapter, "/org/bluez/hci0");
+        assert_eq!(
+            bluez.devices[0].address,
+            Some(BdAddr::from([0x02, 0, 0, 0, 0, 0x01]))
+        );
         assert!(bluez.adapters[0].powered && !bluez.adapters[0].discovering);
     }
 
