@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use pods_core::command::{CommandError, Outcome};
+use pods_core::settings;
 use serde_json::{Map, Value};
 
 use super::{
@@ -30,7 +31,11 @@ enum Failure {
     NoDaemon,
     TimedOut,
     WentAway,
-    Refused(String),
+    /// `error` is `None` for a code this client does not know.
+    Refused {
+        error: Option<CommandError>,
+        message: String,
+    },
     NotUnderstood,
 }
 
@@ -81,6 +86,15 @@ pub(crate) fn set(key: &str, value: &str, socket: &Path, err: &mut dyn Write) ->
     let request = request("set", &[("key", key), ("value", value)]);
     match open(socket, &request).and_then(|(_, reply)| result_reply(&reply)) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(Failure::Refused {
+            error: Some(CommandError::BadValue),
+            message,
+        }) => {
+            let values = settings::values(key)
+                .map_or_default(|words| format!("Values: {}\n", words.join(", ")));
+            emit(err, format!("{message}\n{values}").as_bytes());
+            ExitCode::FAILURE
+        }
         Err(failure) => report(failure, "set", socket, err),
     }
 }
@@ -155,14 +169,19 @@ fn refusal(reply: &Map<String, Value>, ours: bool) -> Failure {
     let code = error
         .and_then(|error| error.get("code"))
         .and_then(Value::as_str);
+    let known = CommandError::ALL
+        .into_iter()
+        .find(|known| code == Some(known.code()));
     // The daemon sends a null `id` only with this code, for a line it could not read an `id` from.
-    let unread =
-        reply.get("id") == Some(&Value::Null) && code == Some(CommandError::BadRequest.code());
+    let unread = reply.get("id") == Some(&Value::Null) && known == Some(CommandError::BadRequest);
     match error
         .and_then(|error| error.get("message"))
         .and_then(Value::as_str)
     {
-        Some(message) if ours || unread => Failure::Refused(message.to_owned()),
+        Some(message) if ours || unread => Failure::Refused {
+            error: known,
+            message: message.to_owned(),
+        },
         Some(_) | None => Failure::NotUnderstood,
     }
 }
@@ -203,7 +222,7 @@ fn report(failure: Failure, command: &str, socket: &Path, err: &mut dyn Write) -
         Failure::NoDaemon => return no_daemon(socket, err),
         Failure::TimedOut => return timed_out(command, err),
         Failure::WentAway => emit(err, WENT_AWAY.as_bytes()),
-        Failure::Refused(message) => emit(err, format!("{message}\n").as_bytes()),
+        Failure::Refused { message, .. } => emit(err, format!("{message}\n").as_bytes()),
         Failure::NotUnderstood => emit(
             err,
             format!("The daemon's reply to {command} was not understood.\n").as_bytes(),

@@ -98,6 +98,7 @@ the message.
 | `io.github.thisisgm.Omapods1.Error.NotSupported` | `not_supported` |
 | `io.github.thisisgm.Omapods1.Error.NotWorn` | `not_worn` |
 | `io.github.thisisgm.Omapods1.Error.OutOfRange` | `out_of_range` |
+| `io.github.thisisgm.Omapods1.Error.BadValue` | `bad_value` |
 | `io.github.thisisgm.Omapods1.Error.UnknownKey` | `unknown_key` |
 | `io.github.thisisgm.Omapods1.Error.BadRequest` | `bad_request` |
 | `io.github.thisisgm.Omapods1.Error.Timeout` | `timeout` |
@@ -109,7 +110,7 @@ No method of this interface names a setting or opens a window, so none returns
 report the change in time, when the daemon's input queue, which the AirPods'
 packets share, is full, or when too many commands already wait for the AirPods
 to confirm them. A `Set` method given a word its key does not take returns
-`BadRequest`.
+`BadValue`.
 
 A call the bus layer refuses before it reaches the daemon, such as one with the
 wrong argument type or one that writes a property, gets a standard

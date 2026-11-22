@@ -101,7 +101,7 @@ fn a_line_with_a_usable_id_echoes_it_in_the_refusal() {
         ),
         (
             r#"{"v":1,"id":4,"op":"set","key":"noise","value":"loud"}"#,
-            bad(Some(4)),
+            refused(4, CommandError::BadValue),
         ),
         (
             r#"{"v":1,"id":4,"op":"set","key":"volume","value":"3"}"#,

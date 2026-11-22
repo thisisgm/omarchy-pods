@@ -126,7 +126,7 @@ pub(crate) fn adaptive_level(payload: &str) -> Result<AdaptiveLevel, CommandErro
         {
             return Err(CommandError::OutOfRange);
         }
-        Err(_) => return Err(CommandError::BadRequest),
+        Err(_) => return Err(CommandError::BadValue),
     };
     let Ok(percent) = u8::try_from(value) else {
         return Err(CommandError::OutOfRange);
