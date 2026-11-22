@@ -1,10 +1,10 @@
-//! What a client can ask of the daemon, and what asking does to the state while there is no link.
+//! Client commands, and what each does to the state while there is no link.
 
 use pods_proto::noise::NoiseMode;
 
 use crate::state::{EarDetectionBehavior, State};
 
-/// The highest adaptive noise level, the upper bound of the C++ `parseIntVerb` and `qBound`.
+/// The upper bound of the C++ `parseIntVerb` and `qBound`.
 pub(crate) const ADAPTIVE_LEVEL_MAX: u8 = 100;
 
 /// The C++ `m_adaptiveNoiseLevel` initial value.
@@ -34,7 +34,6 @@ impl Default for AdaptiveLevel {
     }
 }
 
-/// One request to change the pods or the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     SetNoise(NoiseTarget),
@@ -45,20 +44,19 @@ pub enum Command {
     Connect,
     Disconnect,
     Forget,
-    /// Open the window, which a headless daemon does not have.
+    /// Open the window; a headless daemon has none.
     Reopen,
 }
 
-/// The listening mode a noise command asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseTarget {
     Mode(NoiseMode),
-    /// The mode after the current one, in the order of `NoiseMode::next`.
+    /// The next mode, in the order of `NoiseMode::next`.
     Cycle,
 }
 
 impl NoiseTarget {
-    /// The word after `noise:` in a legacy verb, which `set noise` takes and the `NoiseMode` property shows.
+    /// The word after `noise:`, which `set noise` also takes and the `NoiseMode` property shows.
     #[must_use]
     pub const fn word(self) -> &'static str {
         match self {
@@ -71,7 +69,6 @@ impl NoiseTarget {
     }
 }
 
-/// Why the daemon did not carry out a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandError {
     NotConnected,
@@ -98,7 +95,6 @@ impl CommandError {
         Self::NoDevice,
     ];
 
-    /// The snake case name a client sees.
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
@@ -114,7 +110,6 @@ impl CommandError {
         }
     }
 
-    /// The sentence a person reads for this refusal, beside the code a program reads.
     #[must_use]
     pub fn message(&self) -> &'static str {
         match self {
@@ -131,7 +126,6 @@ impl CommandError {
     }
 }
 
-/// How a command ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Refused(CommandError),
@@ -142,7 +136,6 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// The word a client reads for a command the daemon took, or the refusal.
     pub const fn name(self) -> Result<&'static str, CommandError> {
         match self {
             Self::Sent => Ok("sent"),
@@ -152,7 +145,7 @@ impl Outcome {
     }
 }
 
-/// Applies `command` to `state` with no link: values and counters change only where the C++ setters change them.
+/// With no link, values and counters change only where the C++ setters change them.
 pub fn apply(state: &mut State, command: &Command) -> Outcome {
     let counters = &mut state.counters;
     match *command {
@@ -176,7 +169,7 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         }
         Command::SetConversationalAwareness(enabled) => {
             if enabled != state.conversational_awareness {
-                // corner: the C++ stores even when the send fails, and the pods' own report overwrites it on connect.
+                // corner: stored even on a failed send, as in C++; the pods' report replaces it.
                 state.conversational_awareness = enabled;
                 raise(&mut counters.conversational_awareness_changes);
             }
@@ -184,13 +177,13 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         }
         Command::SetAdaptiveLevel(level) => {
             if level != state.adaptive_noise_level && state.noise_mode == NoiseMode::Adaptive {
-                // corner: the C++ stores even when the send fails, and the pods' own report overwrites it on connect.
+                // corner: stored even on a failed send, as in C++; the pods' report replaces it.
                 state.adaptive_noise_level = level;
                 raise(&mut counters.adaptive_level_changes);
             }
             Outcome::Refused(CommandError::NotConnected)
         }
-        // The C++ counts one bud only after a packet goes out, and the rest only with a device address.
+        // The C++ counts one bud only after a send, and the rest only with a device address.
         Command::SetOneBudAnc(_) | Command::Connect | Command::Disconnect | Command::Forget => {
             Outcome::Refused(CommandError::NotConnected)
         }

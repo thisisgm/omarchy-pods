@@ -1,4 +1,4 @@
-//! What each command does with no link, and the counters it raises, read against the C++ setters.
+//! Each command with no link and the counters it raises, read against the C++ setters.
 
 use cpp_source::MAIN;
 use pods_proto::noise::NoiseMode;
@@ -13,7 +13,6 @@ pub(crate) fn level(percent: u8) -> AdaptiveLevel {
     AdaptiveLevel::new(percent).unwrap()
 }
 
-/// Every command a client can send, for the properties that cover them all.
 pub(crate) fn any_command() -> impl Strategy<Value = Command> {
     let mode = prop_oneof![
         Just(NoiseMode::Off),
@@ -40,7 +39,7 @@ pub(crate) fn any_command() -> impl Strategy<Value = Command> {
     ]
 }
 
-/// States a disconnected daemon can be in, varied in every field a command reads.
+/// Disconnected states, varied in every field a command reads.
 fn any_state() -> impl Strategy<Value = State> {
     let mode = prop_oneof![
         Just(NoiseMode::Off),
@@ -134,7 +133,7 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(state.counters.ear_detection_changes, 1);
 }
 
-/// Asserts each sending statement of `function` is the call alone, as in `{ ... QByteArray packet = ...; writePacketToSocket(packet, "Noise control mode packet written: "); ++m_x; }`, so nothing reads whether it went out.
+/// Sample input: `{ ...; writePacketToSocket(packet, "..."); ++m_x; }`, each send the call alone.
 fn assert_send_is_unchecked(function: &str) {
     let body = MAIN.body(&format!("void {function}("));
     let statements: Vec<&str> = body
@@ -207,7 +206,7 @@ fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
     assert_eq!(state.adaptive_noise_level, level(0));
 }
 
-/// The error's own entry in `ALL`; a variant left out of `ALL` has no index to name here, so it does not build.
+/// A variant left out of `ALL` has no index to name here, so it does not build.
 fn entry_in_all(error: CommandError) -> CommandError {
     match error {
         CommandError::NotConnected => CommandError::ALL[0],
@@ -279,7 +278,6 @@ fn every_error_has_its_own_sentence() {
     );
 }
 
-/// The command a legacy verb carries.
 fn command_of(verb: &str) -> Command {
     match parse_verb(verb.as_bytes()) {
         Some(LegacyRequest::Command(command)) => command,
@@ -287,7 +285,7 @@ fn command_of(verb: &str) -> Command {
     }
 }
 
-/// The C++ handler of `verb` calls `chain[0]`, each link calls the next, and the body of the last is returned.
+// Sample input: `} else if (msg == "ca:off") { trayAppPtr->setConversationalAwareness(false);`
 fn cpp_chain_body(verb: &str, chain: &[&str]) -> &'static str {
     let handler = if verb.ends_with(':') {
         format!("msg.startsWith(\"{verb}\"))")
@@ -305,7 +303,7 @@ fn cpp_chain_body(verb: &str, chain: &[&str]) -> &'static str {
     body
 }
 
-/// The status key the C++ publishes for the counter member that `body` increments.
+// Sample input: `++m_caChangesTotal;` with `status.insert("ca_changes_total", caChangesTotal());`
 fn cpp_counter_key(body: &str) -> &'static str {
     let (_, after) = body
         .split_once("++m_")
@@ -325,7 +323,6 @@ fn cpp_counter_key(body: &str) -> &'static str {
     entry.strip_suffix(&suffix).unwrap()
 }
 
-/// Every `*_total` key of the status line with its value.
 fn counters_of(state: &State) -> Vec<(String, u64)> {
     let Value::Object(fields) = serde_json::from_str(&to_status_line(state)).unwrap() else {
         panic!("the status line is not an object");
@@ -337,7 +334,6 @@ fn counters_of(state: &State) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// The counters `verb` raises from `state`, as status keys with how much each rose.
 fn rises(verb: &str, state: &State) -> Vec<(String, u64)> {
     let before = counters_of(state);
     let mut after = state.clone();
@@ -402,7 +398,7 @@ fn each_verb_raises_the_counter_its_cpp_setter_raises() {
     }
 }
 
-/// Asserts that `guard`, then `then` after it, come before the counter increment in `body`.
+// Sample: `if (...conversationalAwareness() == enabled) { ...; return; } ... ++m_caChangesTotal;`
 fn assert_guard_precedes_counter(verb: &str, body: &str, guard: &str, then: &str) {
     let (_, after_guard) = body
         .split_once(guard)
