@@ -586,4 +586,122 @@ mod tests {
         reopened.leave();
         rig.finish();
     }
+
+    #[test]
+    fn a_pause_still_pending_when_the_channel_closes_is_never_sent() {
+        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let player = rig.player("slow", Playback::Playing);
+        player.hold_replies(true);
+        let out = Instant::now();
+        device.pods.set_ear(InEar, OutOfEar);
+        player.wait_reads(1, HANG_LIMIT);
+        rig.close_channel(&device);
+        // Inside the daemon's wait for the status read, or the answer below would reach nobody either way.
+        assert_gap(
+            "the close while the status read is pending",
+            out,
+            Instant::now(),
+            &(Duration::ZERO..=CALL_TIMEOUT),
+        );
+        player.hold_replies(false);
+        player.none_for(QUIET);
+        assert_eq!(player.asked(), []);
+        assert_eq!(player.playback(), Playback::Playing);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_settle_pending_when_the_channel_closes_pauses_nothing() {
+        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        prefer(&rig, "both", 1);
+        let player = rig.player("one", Playback::Playing);
+        let out = Instant::now();
+        place(&rig, &device, OutOfEar, OutOfEar);
+        rig.close_channel(&device);
+        assert_gap(
+            "the close inside the settle",
+            out,
+            Instant::now(),
+            &(Duration::ZERO..=SETTLE),
+        );
+        // The settle began before `place` returned, so it ends inside this window.
+        quiet_until(&player, Instant::now() + SETTLE + REAL_TIME_SLACK);
+        assert_eq!(player.asked(), []);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_channel_closing_with_the_buds_in_keeps_them_worn_and_pauses_nothing() {
+        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let player = rig.player("one", Playback::Playing);
+        place(&rig, &device, InEar, InEar);
+        rig.close_channel(&device);
+        player.none_for(QUIET);
+        assert_eq!(player.asked(), []);
+        let status = rig.status();
+        assert_eq!(status["right"]["in_ear"], true, "{status}");
+        assert_eq!(status["left"]["in_ear"], true, "{status}");
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_player_paused_before_the_channel_closed_is_played_when_it_reopens_with_the_buds_back() {
+        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let player = rig.player("one", Playback::Playing);
+        placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
+        // Time for the pause's report to reach the policy before the close drops work still in flight.
+        pause(QUIET);
+        rig.close_channel(&device);
+        rig.accept(&device);
+        rig.wait_filled();
+        rig.wait_audio_server("up");
+        placed_until(&device, InEar, InEar, &player, Asked::Play, HANG_LIMIT);
+        assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_resume_queued_when_the_channel_closes_still_plays_and_the_pause_ahead_of_it_does_not() {
+        resume_outlives_the_end("the close", Rig::close_channel);
+    }
+
+    #[test]
+    fn a_resume_queued_when_the_link_ends_still_plays_and_the_pause_ahead_of_it_does_not() {
+        resume_outlives_the_end("the disconnect", |rig, _| rig.disconnect());
+    }
+
+    /// Pauses `first` by a bud leaving, holds a second pause on a slow player, returns both buds so the resume waits behind it, then ends the link with `end`.
+    fn resume_outlives_the_end(what: &str, end: impl FnOnce(&Rig, &Device)) {
+        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let first = rig.player("first", Playback::Playing);
+        placed_until(&device, InEar, OutOfEar, &first, Asked::Pause, HANG_LIMIT);
+        // Time for the pause's report to reach the policy, so the return below asks this player.
+        pause(QUIET);
+        let slow = rig.player("slow", Playback::Playing);
+        slow.hold_replies(true);
+        let out = Instant::now();
+        device.pods.set_ear(OutOfEar, OutOfEar);
+        slow.wait_reads(1, HANG_LIMIT);
+        place(&rig, &device, InEar, InEar);
+        end(&rig, &device);
+        // Inside the second pause's wait for the slow read, so the resume is still queued behind it.
+        assert_gap(
+            &format!("{what} while the second pause is pending"),
+            out,
+            Instant::now(),
+            &(Duration::ZERO..=CALL_TIMEOUT),
+        );
+        first.wait_asked(Asked::Play, HANG_LIMIT);
+        slow.hold_replies(false);
+        slow.none_for(QUIET);
+        assert_eq!(slow.asked(), []);
+        assert_eq!(first.asked(), [Asked::Pause, Asked::Play]);
+        slow.leave();
+        first.leave();
+        rig.finish();
+    }
 }
