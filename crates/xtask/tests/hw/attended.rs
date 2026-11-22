@@ -7,7 +7,7 @@ use pods_proto::model::Model;
 use super::bench::{Bench, assert_restarted_after_the_run, text};
 
 #[test]
-fn the_command_census_confirms_and_finds_no_bud_worn() {
+fn the_command_census_sends_shows_reads_back_and_finds_no_bud_worn() {
     let bench = Bench::new();
     let (output, sets) = bench.run_attended();
     let stdout = text(&output.stdout);
@@ -17,14 +17,17 @@ fn the_command_census_confirms_and_finds_no_bud_worn() {
         "{stdout}{}",
         text(&output.stderr)
     );
-    assert!(
-        stdout.contains("set noise transparency: confirmed 10 of 10"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("set adaptive_level 40 and 60 in turn: sent 10 of 10, only sent counts"),
-        "{stdout}"
-    );
+    for row in [
+        "noise transparency",
+        "conversational_awareness false",
+        "adaptive_level 40",
+    ] {
+        assert!(
+            stdout.contains(&format!("set {row}: sent 10 of 10, shown at once 10 of 10")),
+            "{stdout}"
+        );
+    }
+    assert!(stdout.contains("settings put back: true"), "{stdout}");
     assert!(stdout.contains("answered not_worn"), "{stdout}");
     assert!(stdout.contains("gate G4c:"), "{stdout}");
     assert!(
@@ -43,7 +46,7 @@ fn the_command_census_confirms_and_finds_no_bud_worn() {
 }
 
 #[test]
-fn a_command_short_of_confirmed_or_a_worn_bud_fails_the_census() {
+fn a_command_short_of_sent_or_a_worn_bud_fails_the_census() {
     let bench = Bench::new();
     bench.set("weak-census", "");
     let (output, sets) = bench.run_attended();
@@ -51,7 +54,7 @@ fn a_command_short_of_confirmed_or_a_worn_bud_fails_the_census() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C6 commands: FAILED"), "{stdout}");
     assert!(
-        stdout.contains("set noise anc was not confirmed 10 of 10"),
+        stdout.contains("set noise anc was not sent 10 of 10"),
         "{stdout}"
     );
     assert!(
@@ -64,6 +67,17 @@ fn a_command_short_of_confirmed_or_a_worn_bud_fails_the_census() {
         "{stdout}"
     );
     assert!(bench.installed_is("active"));
+}
+
+#[test]
+fn a_setting_put_back_that_does_not_read_back_fails_the_census() {
+    let bench = Bench::new();
+    bench.set("status-misses-noise-off", "");
+    let (output, _) = bench.run_attended();
+    let stdout = text(&output.stdout);
+    assert_eq!(output.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("settings put back: false"), "{stdout}");
+    assert!(stdout.contains("noise read back changed"), "{stdout}");
 }
 
 #[test]

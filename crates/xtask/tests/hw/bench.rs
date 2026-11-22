@@ -12,8 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use pods_core::command::{Command as SetCommand, NoiseTarget};
 use pods_core::link::ladder::Attempt;
 use pods_core::link::{Phase, STATE_POPULATED_LINE, phase_change_line};
+use pods_core::settings::setting;
 use pods_core::state::State;
 use pods_core::status::to_status_line;
 use pods_fake::{Pods, Profile};
@@ -241,7 +243,7 @@ esac
 const SERVER_DEADLINE: Duration = Duration::from_secs(120);
 /// The start of the census prompt the command writes on its standard error.
 const PROMPT: &str = "C6: take both buds out";
-const CONFIRMED_REPLY: &str = r#"{"id":1,"ok":true,"result":"confirmed"}"#;
+const TIMEOUT_REPLY: &str = r#"{"id":1,"ok":false,"error":{"code":"timeout","message":"The AirPods did not answer in time."}}"#;
 const SENT_REPLY: &str = r#"{"id":1,"ok":true,"result":"sent"}"#;
 const NOT_WORN_REPLY: &str =
     r#"{"id":1,"ok":false,"error":{"code":"not_worn","message":"The AirPods are not in an ear."}}"#;
@@ -475,14 +477,15 @@ impl Bench {
             listener.set_nonblocking(true).unwrap();
             let weak = root.join("weak-census").exists();
             let refuse = root.join("refuse-one-bud-off").exists();
+            // Under status-misses-noise-off a `noise off` answered sent never shows, so a read back finds it changed.
+            let misses_off = root.join("status-misses-noise-off").exists();
             // Under census-silent every connection is accepted and held open, and nothing is ever read or answered.
             let silent = root.join("census-silent").exists();
             let mut held = Vec::new();
             let deadline = Instant::now() + SERVER_DEADLINE;
             let mut served = Served::default();
             let status = fs::read_to_string(root.join("status-true.json")).unwrap();
-            let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-            let mut level = status["adaptive_noise_level"].to_string();
+            let mut status: serde_json::Value = serde_json::from_str(&status).unwrap();
             while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
                 let Ok((stream, _)) = listener.accept() else {
                     thread::sleep(Duration::from_millis(5));
@@ -493,7 +496,16 @@ impl Bench {
                     continue;
                 }
                 let out = buds_out.load(Ordering::SeqCst);
-                if let Some(request) = answer(&stream, out, weak, refuse, &mut level) {
+                if let Some((key, value, reply)) = answer(&stream, out, weak, refuse) {
+                    // Shown before the reply goes out, as the daemon publishes before it answers.
+                    if reply == SENT_REPLY && !(misses_off && key == "noise" && value == "off") {
+                        show(&root, &mut status, &key, &value);
+                    }
+                    let mut writer = &stream;
+                    if writer.write_all(format!("{reply}\n").as_bytes()).is_err() {
+                        continue;
+                    }
+                    let request = format!("{key} {value}");
                     if out {
                         served.after_prompt.push(request);
                     } else {
@@ -618,14 +630,13 @@ pub(crate) fn processes_in(root: &Path) -> Vec<i32> {
     found
 }
 
-/// Answers one `set`: a new `adaptive_level` is sent and an unchanged one confirmed, the rest confirmed, and with the buds out `not_worn`; a weak link answers `noise anc` with sent, and with the buds out confirms it and nothing else, and `refuse` refuses `one_bud_anc false`.
+/// Reads one `set` and returns its key, value and the reply to give: `sent`, and with the buds out `not_worn`; a weak link answers `noise anc` with timeout, and with the buds out sends it and nothing else, and `refuse` refuses `one_bud_anc false`.
 fn answer(
     stream: &UnixStream,
     buds_out: bool,
     weak: bool,
     refuse: bool,
-    level: &mut String,
-) -> Option<String> {
+) -> Option<(String, String, &'static str)> {
     stream.set_nonblocking(false).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let mut line = String::new();
@@ -634,23 +645,28 @@ fn answer(
     let (key, value) = (request["key"].as_str()?, request["value"].as_str()?);
     let reply = match (buds_out, weak) {
         _ if refuse && key == "one_bud_anc" && value == "false" => NOT_SUPPORTED_REPLY,
-        (true, true) if key == "noise" && value == "anc" => CONFIRMED_REPLY,
+        (true, true) if key == "noise" && value == "anc" => SENT_REPLY,
         (true, _) => NOT_WORN_REPLY,
-        (false, _) if key == "adaptive_level" => {
-            if std::mem::replace(level, value.to_owned()) == value {
-                CONFIRMED_REPLY
-            } else {
-                SENT_REPLY
-            }
-        }
-        (false, true) if key == "noise" && value == "anc" => SENT_REPLY,
-        (false, _) => CONFIRMED_REPLY,
+        (false, true) if key == "noise" && value == "anc" => TIMEOUT_REPLY,
+        (false, _) => SENT_REPLY,
     };
-    {
-        let mut writer = stream;
-        writer.write_all(format!("{reply}\n").as_bytes()).ok()?;
-    }
-    Some(format!("{key} {value}"))
+    Some((key.to_owned(), value.to_owned(), reply))
+}
+
+/// Shows a `set` in the status line the stub daemon prints, as the daemon stores a written value at once.
+fn show(root: &Path, status: &mut serde_json::Value, key: &str, value: &str) {
+    let (field, shown) = match setting(key, value) {
+        Ok(SetCommand::SetNoise(NoiseTarget::Mode(mode))) => ("noise_mode", u8::from(mode).into()),
+        Ok(SetCommand::SetConversationalAwareness(on)) => ("conversational_awareness", on.into()),
+        Ok(SetCommand::SetOneBudAnc(on)) => ("one_bud_anc_mode", on.into()),
+        Ok(SetCommand::SetAdaptiveLevel(level)) => ("adaptive_noise_level", level.percent().into()),
+        _ => return,
+    };
+    status[field] = shown;
+    // Renamed into place, so the stub's `status` never reads half a line.
+    let staged = root.join("status-true.json.new");
+    fs::write(&staged, format!("{status}\n")).unwrap();
+    fs::rename(staged, root.join("status-true.json")).unwrap();
 }
 
 pub(crate) fn wait_for_file(path: &Path) -> String {

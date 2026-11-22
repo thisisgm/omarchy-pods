@@ -3,7 +3,7 @@
 `cargo xtask hw link` runs the daemon's link checks against real AirPods. The
 Rust test suite covers everything that can be driven without a radio; these
 checks cover what cannot: adopting a link BlueZ already holds, reconnecting,
-idle wakeups, and whether the AirPods confirm each command.
+idle wakeups, and whether each command is written and shown at once.
 
 A person starts every run by hand, on a commit of this repository itself. No
 runner is registered for it, so code from a fork never reaches the machine that
@@ -81,7 +81,7 @@ once more in the adapter check with `--adapter-cycle`.
 | C9 old line | reads the status line of the installed daemon before it is stopped, then the Rust daemon's on the same pods | every one of the C++ daemon's 36 keys is present in both (the Rust daemon's line adds 3, for 39), and each key outside the list below has byte equal values |
 | C4 reconnect | `do disconnect` then `do connect`, 5 times | `connected` is false within 5 s and the state is populated again within 15 s |
 | C5 idle | 10 minutes with the link up, then 10 minutes after `do disconnect` | the daemon's wakeups stay within the bounds below and the adapter is never discovering |
-| C6 commands | each command of the census 10 times, then one with no bud in (`--attended`) | every command answers its expected word 10 of 10 (`confirmed`, or `sent` for the adaptive level, which alternates between 40 and 60 so each trial is a write), and the last answers `not_worn` |
+| C6 commands | each command of the census 10 times, then one with no bud in (`--attended`) | every command answers `sent` 10 of 10 and the status shows its value right after each reply, the settings put back read back equal to the ones found, and the last answers `not_worn` |
 | C7 adapter | `bluetoothctl power off`, `power on`, `do connect` (`--adapter-cycle`) | `connected` is true before and false after power off, and the state is populated again |
 | C8 burst | opens the AirPods' control channel once, runs the opening exchange and reads for 3 s after the notification request | the distinct opcodes and the distinct setting identifiers equal those of the sample burst the test suite's fake AirPods play, and every packet parses |
 
@@ -119,8 +119,8 @@ show the reply. One 10 s bound covers each command's connect, request and
 reply. The first command that gets no reply at all within it ends the census
 as failed and is named, and putting the settings back stops at its first
 unanswered command too; a `timeout` reply is an answer.
-A setting already at the value its first row asks for is first set to its
-other value, once and unmeasured, so every trial is a write.
+Each key's rows alternate, so a status that stays at one value fails the row
+asking for the other.
 C6 needs AirPods whose status shows noise control, adaptive mode,
 conversational awareness and one bud noise control; with any of them missing
 it fails, naming what is missing, and sets nothing.
@@ -134,7 +134,7 @@ Timings are printed as a range with the number of trials, never as one number:
 |---|---|---|
 | G1a | unit start to populated, from the journal's own stamps | at most 2 s in 10 of 10 |
 | G1b | `link: idle to opening` to populated, after `do connect` | at most 500 ms in 4 of 5; a miss prints its phase lines |
-| G2b | wall time of each census command | every confirmable trial answers before the daemon's confirm timeout |
+| G2b | wall time of each census command | reported only, no bound yet |
 | G3 | voluntary context switches of the daemon, a minute | at most 12 with the link up, at most 2 with nothing connected, printed beside the number of `librepods watch` lines in the same window |
 | G4b | `do connect` reply to populated | at most 15 s in 5 of 5 |
 | G4c | adapter power on to populated | reported only, no bound yet |

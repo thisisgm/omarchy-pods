@@ -3,23 +3,25 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use pods_core::command::{Command, NoiseTarget};
+use pods_core::command::{AdaptiveLevel, Command, NoiseTarget};
 use pods_core::settings::setting;
+use pods_core::state::State;
+use pods_core::status::to_status_object;
 use pods_proto::noise::NoiseMode;
 use proptest::prelude::*;
 use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use super::{
-    CENSUS, CENSUS_TRIALS, MAX_REPLY_BYTES, NOISE_WORDS, NoWord, Originals, Rounds, WordError,
-    census, missing_features, read_word, reply_word, set_over_socket,
+    CENSUS, CENSUS_TRIALS, MAX_REPLY_BYTES, NOISE_WORDS, NoWord, Rounds, WordError, census,
+    missing_features, read_back, read_word, reply_word, set_over_socket, settings,
 };
 use crate::hw::report::Check;
 use crate::hw::unit::pause;
@@ -31,20 +33,43 @@ const SERVER_DEADLINE: Duration = Duration::from_secs(30);
 const TIMEOUT_REPLY: &str = r#"{"id":1,"ok":false,"error":{"code":"timeout","message":"m"}}"#;
 const CONFIRMED_REPLY: &str = r#"{"id":1,"ok":true,"result":"confirmed"}"#;
 const SENT_REPLY: &str = r#"{"id":1,"ok":true,"result":"sent"}"#;
-/// The adaptive level the stub's AirPods start at, one of the two the census alternates.
-const ORIGINAL_LEVEL: u64 = 40;
 
-/// Settings none of whose first rows the census asks for, with the adaptive level at `level`.
-fn originals_at(level: u64) -> Originals {
-    Originals {
-        noise: "off",
-        conversational_awareness: false,
-        one_bud_anc: false,
-        adaptive_level: level,
+/// The AirPods state behind the status document the stub serves.
+type Shown = Arc<Mutex<State>>;
+
+/// The stub's AirPods before the census: noise off, both switches off, the level at 50.
+fn original_status() -> Shown {
+    let state = State {
+        adaptive_noise_level: AdaptiveLevel::new(50).unwrap(),
+        ..State::default()
+    };
+    Arc::new(Mutex::new(state))
+}
+
+/// Shows the request `line` in `shown`, as the daemon stores a written value; sample input `{"v":1,"id":1,"op":"set","key":"noise","value":"anc"}`.
+fn show(shown: &Shown, line: &str) {
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let (Some(key), Some(value)) = (request["key"].as_str(), request["value"].as_str()) else {
+        return;
+    };
+    let mut state = shown.lock().unwrap();
+    match setting(key, value) {
+        Ok(Command::SetNoise(NoiseTarget::Mode(mode))) => state.noise_mode = mode,
+        Ok(Command::SetConversationalAwareness(on)) => state.conversational_awareness = on,
+        Ok(Command::SetOneBudAnc(on)) => state.one_bud_anc_mode = on,
+        Ok(Command::SetAdaptiveLevel(level)) => state.adaptive_noise_level = level,
+        _ => {}
     }
 }
 
-/// `None` never answers the request.
+/// The status document of `state`, as the daemon serves it.
+fn status_of(state: &State) -> Map<String, Value> {
+    to_status_object(state).as_object().unwrap().clone()
+}
+
+/// Gives the reply line to one request line, or `None` to never answer it.
 type Answer = Box<dyn FnMut(&str) -> Option<&'static str> + Send>;
 
 /// A stub daemon on `socket` that reads each request and gives it `answer`'s reply; it returns the requests it read.
@@ -73,21 +98,44 @@ fn serve(socket: &Path, mut answer: Answer, done: Arc<AtomicBool>) -> JoinHandle
     })
 }
 
-fn run_census(reply: Option<&'static str>) -> (Rounds, Check, Vec<String>, Duration) {
-    run_census_from(Box::new(move |_| reply), &originals_at(ORIGINAL_LEVEL))
+/// Whether the stub's status shows one request line.
+type Follows = Box<dyn FnMut(&str) -> bool + Send>;
+
+/// Reads the stub's status as the census reads the daemon's.
+type Read = fn(&Shown) -> Result<Map<String, Value>, String>;
+
+fn read_shown(shown: &Shown) -> Result<Map<String, Value>, String> {
+    let state = shown.lock().map_err(|error| error.to_string())?;
+    Ok(status_of(&state))
 }
 
+fn run_census(reply: Option<&'static str>) -> (Rounds, Check, Vec<String>, Duration) {
+    run_census_from(Box::new(move |_| reply), Box::new(|_| true), read_shown)
+}
+
+/// The census against a stub answering with `answer`, whose status shows each request `follows` takes, read by `read`.
 fn run_census_from(
     answer: Answer,
-    originals: &Originals,
+    mut follows: Follows,
+    read: Read,
 ) -> (Rounds, Check, Vec<String>, Duration) {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("librepods.sock");
     let done = Arc::new(AtomicBool::new(false));
+    let shown = original_status();
+    let mut answer = answer;
+    let stub_shown = Arc::clone(&shown);
+    let answer: Answer = Box::new(move |line| {
+        if follows(line) {
+            show(&stub_shown, line);
+        }
+        answer(line)
+    });
     let server = serve(&socket, answer, Arc::clone(&done));
     let mut check = Check::new("C6 commands");
     let began = Instant::now();
-    let rounds = census(&socket, &mut check, TEST_REPLY_TIMEOUT, originals).unwrap();
+    let status = || read(&shown);
+    let rounds = census(&socket, &mut check, TEST_REPLY_TIMEOUT, &status).unwrap();
     let took = began.elapsed();
     done.store(true, Ordering::SeqCst);
     (rounds, check, server.join().unwrap(), took)
@@ -127,7 +175,23 @@ fn a_timeout_reply_is_an_answer_and_the_census_goes_on() {
 }
 
 #[test]
-fn a_command_expected_to_answer_sent_fails_on_any_other_word() {
+fn every_command_answered_sent_and_shown_passes() {
+    let (rounds, check, _, _) = run_census(Some(SENT_REPLY));
+    assert_eq!(rounds, Rounds::Answered);
+    assert!(!check.failed(), "{:?}", check.lines);
+    assert!(
+        check
+            .lines
+            .iter()
+            .any(|line| line
+                .starts_with("set adaptive_level 40: sent 10 of 10, shown at once 10 of 10")),
+        "{:?}",
+        check.lines
+    );
+}
+
+#[test]
+fn a_command_answered_with_any_other_word_fails() {
     let (rounds, check, _, _) = run_census(Some(CONFIRMED_REPLY));
     assert_eq!(rounds, Rounds::Answered);
     assert!(check.failed());
@@ -136,157 +200,91 @@ fn a_command_expected_to_answer_sent_fails_on_any_other_word() {
         .iter()
         .filter(|line| line.contains("was not"))
         .collect();
-    assert_eq!(
-        failures,
-        ["set adaptive_level 40 and 60 in turn was not sent 10 of 10"]
-    );
-}
-
-/// `sent` to every adaptive level, `confirmed` to the rest; the bench confirms an unchanged level.
-fn level_sent() -> Answer {
-    Box::new(|line| {
-        Some(if line.contains("adaptive_level") {
-            SENT_REPLY
-        } else {
-            CONFIRMED_REPLY
-        })
-    })
-}
-
-#[test]
-fn every_adaptive_level_trial_is_a_write_and_only_sent_counts() {
-    let (rounds, check, requests, _) = run_census_from(level_sent(), &originals_at(ORIGINAL_LEVEL));
-    assert_eq!(rounds, Rounds::Answered);
-    assert!(!check.failed(), "{:?}", check.lines);
+    assert_eq!(failures.len(), CENSUS.len() + 1, "{failures:?}");
     assert!(
-        check.lines.iter().any(|line| line
-            .starts_with("set adaptive_level 40 and 60 in turn: sent 10 of 10, only sent counts")),
-        "{:?}",
-        check.lines
+        failures.contains(
+            &&"set noise adaptive was not sent before adaptive_level in 20 of 20".to_owned()
+        ),
+        "{failures:?}"
     );
-    assert_eq!(levels_sent(&requests), alternating("60", "40"));
-}
-
-fn levels_sent(requests: &[String]) -> Vec<String> {
-    requests
-        .iter()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|request| request["key"] == "adaptive_level")
-        .filter_map(|request| request["value"].as_str().map(str::to_owned))
-        .collect()
-}
-
-fn alternating(first: &str, second: &str) -> Vec<String> {
-    (0..CENSUS_TRIALS)
-        .map(|trial| if trial % 2 == 0 { first } else { second }.to_owned())
-        .collect()
 }
 
 #[test]
-fn an_original_level_outside_the_two_starts_on_the_first() {
-    let (_, check, requests, _) = run_census_from(level_sent(), &originals_at(50));
-    assert!(!check.failed(), "{:?}", check.lines);
-    assert_eq!(levels_sent(&requests), alternating("40", "60"));
-}
-
-#[test]
-fn no_request_asks_for_the_value_already_set() {
-    let originals = Originals {
-        noise: "transparency",
-        conversational_awareness: true,
-        one_bud_anc: true,
-        adaptive_level: ORIGINAL_LEVEL,
-    };
-    let (rounds, check, requests, _) = run_census_from(level_sent(), &originals);
-    assert_eq!(rounds, Rounds::Answered);
-    assert!(!check.failed(), "{:?}", check.lines);
-    let mut current = std::collections::HashMap::from([
-        ("noise".to_owned(), "transparency".to_owned()),
-        ("conversational_awareness".to_owned(), "true".to_owned()),
-        ("one_bud_anc".to_owned(), "true".to_owned()),
-        ("adaptive_level".to_owned(), ORIGINAL_LEVEL.to_string()),
-    ]);
-    for (index, line) in requests.iter().enumerate() {
-        let request: serde_json::Value = serde_json::from_str(line).unwrap();
-        let key = request["key"].as_str().unwrap().to_owned();
-        let value = request["value"].as_str().unwrap().to_owned();
-        let before = current.insert(key.clone(), value.clone());
-        assert_ne!(
-            before.as_ref(),
-            Some(&value),
-            "request {index}: set {key} {value}"
-        );
-    }
-}
-
-/// Settings whose noise is at the census's first noise row, so C6 sends `noise anc` before it.
-fn originals_at_transparency() -> Originals {
-    Originals {
-        noise: "transparency",
-        ..originals_at(ORIGINAL_LEVEL)
-    }
-}
-
-#[test]
-fn an_unconfirmed_lead_in_fails_c6() {
-    let mut first = true;
-    let answer: Answer = Box::new(move |line| {
-        Some(
-            if std::mem::take(&mut first) || line.contains("adaptive_level") {
-                SENT_REPLY
-            } else {
-                CONFIRMED_REPLY
-            },
-        )
-    });
-    let (rounds, check, requests, _) = run_census_from(answer, &originals_at_transparency());
-    assert_eq!(rounds, Rounds::Answered);
-    assert!(
-        requests
-            .first()
-            .is_some_and(|line| line.contains(r#""value":"anc""#)),
-        "{requests:?}"
+fn a_status_that_keeps_the_old_values_fails_every_row_asking_another() {
+    let (rounds, check, _, _) = run_census_from(
+        Box::new(|_| Some(SENT_REPLY)),
+        Box::new(|_| false),
+        read_shown,
     );
+    assert_eq!(rounds, Rounds::Answered);
     assert!(check.failed());
-    let failures: Vec<&String> = check
+    let unshown: Vec<&String> = check
         .lines
         .iter()
-        .filter(|line| line.contains("before the first trial"))
+        .filter(|line| line.contains("was not shown at once"))
         .collect();
     assert_eq!(
-        failures,
-        ["set noise anc before the first trial was not confirmed"]
+        unshown,
+        [
+            "set noise transparency was not shown at once 10 of 10",
+            "set noise anc was not shown at once 10 of 10",
+            "set conversational_awareness true was not shown at once 10 of 10",
+            "set one_bud_anc true was not shown at once 10 of 10",
+            "set adaptive_level 40 was not shown at once 10 of 10",
+            "set adaptive_level 60 was not shown at once 10 of 10",
+        ]
     );
 }
 
 #[test]
-fn an_unanswered_lead_in_ends_the_census() {
-    let (rounds, check, requests, _) =
-        run_census_from(Box::new(|_| None), &originals_at_transparency());
-    assert_eq!(rounds, Rounds::Unanswered);
-    assert_eq!(requests.len(), 1);
+fn a_level_the_status_shows_only_once_fails_though_it_holds_a_value_asked_for() {
+    let mut level_shown = false;
+    let follows: Follows = Box::new(move |line| {
+        if !line.contains("adaptive_level") {
+            return true;
+        }
+        !std::mem::replace(&mut level_shown, true)
+    });
+    let (_, check, _, _) = run_census_from(Box::new(|_| Some(SENT_REPLY)), follows, read_shown);
     assert!(check.failed());
     assert!(
         check
             .lines
             .iter()
-            .any(|line| line == "set noise anc: no reply within 200 ms; the census stopped there"),
+            .any(|line| line == "set adaptive_level 60 was not shown at once 10 of 10"),
         "{:?}",
         check.lines
     );
 }
 
 #[test]
-fn an_unconfirmed_adaptive_setup_is_named() {
-    let (_, check, _, _) = run_census(Some(SENT_REPLY));
+fn a_status_that_cannot_be_read_fails_naming_why() {
+    let (_, check, _, _) =
+        run_census_from(Box::new(|_| Some(SENT_REPLY)), Box::new(|_| true), |_| {
+            Err("librepods status exited with exit status: 1".to_owned())
+        });
+    assert!(check.failed());
     assert!(
-        check
-            .lines
-            .iter()
-            .any(|line| line
-                == "set noise adaptive was not confirmed before adaptive_level in 10 of 10"),
+        check.lines.iter().any(|line| line
+            == "the status could not be read after a set: librepods status exited with exit status: 1"),
         "{:?}",
         check.lines
+    );
+}
+
+#[test]
+fn a_setting_that_reads_back_changed_is_named() {
+    let state = original_status().lock().unwrap().clone();
+    let original = status_of(&state);
+    let originals = settings(&original).unwrap();
+    assert_eq!(read_back(&|| Ok(original.clone()), &originals), Ok(()));
+    let changed = status_of(&State {
+        one_bud_anc_mode: true,
+        ..state
+    });
+    assert_eq!(
+        read_back(&|| Ok(changed.clone()), &originals),
+        Err("one_bud_anc read back changed".to_owned())
     );
 }
 
