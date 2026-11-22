@@ -17,7 +17,7 @@ use pods_core::link::{
 };
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
-use pods_core::policy::{Effect, Fact, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge};
+use pods_core::policy::{Effect, Era, Fact, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge};
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -70,8 +70,8 @@ pub(super) enum Input {
     Sleep(SleepEdge),
     Shutdown(oneshot::Sender<()>),
     Audio(AudioFact),
-    /// The players the media adapter paused.
-    Media(Vec<PlayerOwner>),
+    /// The players a pause of that era paused.
+    Media(Era, Vec<PlayerOwner>),
     Advert(Sighting),
     Monitor(MonitorFact),
 }
@@ -247,7 +247,7 @@ impl Driver {
                 return ControlFlow::Break(());
             }
             Input::Audio(fact) => self.observe(Fact::Audio(fact)),
-            Input::Media(paused) => self.observe(Fact::Paused(paused)),
+            Input::Media(era, paused) => self.observe(Fact::Paused(era, paused)),
             Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
             Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
         }

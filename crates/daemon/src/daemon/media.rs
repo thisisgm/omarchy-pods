@@ -106,8 +106,8 @@ impl Queue {
 /// Serves each request in turn until the driver drops the queue or stops hearing facts.
 pub(super) async fn run(session: Connection, inputs: mpsc::Sender<Input>, mut queue: Queue) {
     while let Some(Stamped { losses, request }) = queue.requests.recv().await {
-        // Only pause work ends with the link, as its report could no longer be recorded; a resume decided while the link was up always goes out.
-        let pause = matches!(request, MediaRequest::PauseAll);
+        // Only pause work ends when the link leaves up, so a pause still pending at a close is never sent; a resume always goes out.
+        let pause = matches!(request, MediaRequest::PauseAll(_));
         let served = serve(&session, &inputs, request);
         let flow = if pause {
             unless_lost(&mut queue.losses, losses, served).await
@@ -145,9 +145,9 @@ async fn serve(
     request: MediaRequest,
 ) -> ControlFlow<()> {
     match request {
-        MediaRequest::PauseAll => {
+        MediaRequest::PauseAll(era) => {
             let paused = pause_playing(session).await;
-            if !paused.is_empty() && inputs.send(Input::Media(paused)).await.is_err() {
+            if !paused.is_empty() && inputs.send(Input::Media(era, paused)).await.is_err() {
                 return ControlFlow::Break(());
             }
         }

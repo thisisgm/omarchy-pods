@@ -74,7 +74,7 @@ pub fn server_after(was: AudioServer, fact: &Fact) -> AudioServer {
         | Fact::Changed
         | Fact::Sleep(_)
         | Fact::Tick
-        | Fact::Paused(_) => was,
+        | Fact::Paused(..) => was,
     }
 }
 
