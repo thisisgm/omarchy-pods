@@ -191,6 +191,8 @@ struct Engine<'a, 'o> {
     checked: bool,
     /// When the last dictation start write left, which the delay of the pods' reply counts from.
     start_sent_ns: Option<u64>,
+    /// When the attribute channel was last dialled again, which blocks inside a turn and so ends after the stamp of that turn.
+    redialled_ns: u64,
     // Fields drop in this order: each stream is stopped, then the session is marked idle, then the side is put back.
     uplink: Option<Uplink<'a>>,
     dictation: Option<Dictation<'a>>,
@@ -399,7 +401,9 @@ impl Engine<'_, '_> {
         }
     }
 
-    fn open_gate(&mut self, gate_ns: u64, why: &str) -> Flow {
+    /// Opens the gate, dated no earlier than a redial of the attribute channel that this turn waited out.
+    fn open_gate(&mut self, now_ns: u64, why: &str) -> Flow {
+        let gate_ns = now_ns.max(self.redialled_ns);
         self.recorder.mark(gate_ns, Mark::Gate, &why)?;
         self.phase = Phase::Scripted { gate_ns, next: 0 };
         self.fire_due(gate_ns)
@@ -623,6 +627,7 @@ fn run_with(
             asked: Asked::Nothing,
             checked: false,
             start_sent_ns: None,
+            redialled_ns: 0,
             uplink: None,
             dictation: None,
             session: None,

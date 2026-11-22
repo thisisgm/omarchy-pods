@@ -185,6 +185,7 @@ impl Engine<'_, '_> {
                 let at_ns = self.wires.now();
                 self.recorder.mark(at_ns, Mark::Handles, &"unchecked")?;
                 self.checked = true;
+                self.redialled_ns = at_ns;
                 Ok(())
             }
             HandleCheck::Present => {
