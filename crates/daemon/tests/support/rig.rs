@@ -6,6 +6,7 @@ use std::mem;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -18,6 +19,7 @@ use pods_trap::{Answer, Dial, Route, Trap, TrapError};
 use rustix::process::{Signal, kill_process};
 use serde_json::Value;
 
+use super::audio::FakeAudio;
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, start_bus};
 use super::logind::{FakeLogind, Impostor};
@@ -97,6 +99,7 @@ pub(crate) struct Rig {
     /// Set once the test itself has ended the daemon, the one exit before `finish` that is no failure.
     stopped: bool,
     trap: Option<Trap>,
+    audio: Option<Rc<FakeAudio>>,
     bluez: Option<FakeBluez>,
     adapter: Option<AdapterPath>,
     logind: Option<FakeLogind>,
@@ -139,6 +142,7 @@ impl Rig {
             daemon: None,
             stopped: false,
             trap: None,
+            audio: None,
             bluez: None,
             adapter: None,
             logind: None,
@@ -164,6 +168,14 @@ impl Rig {
         self.logind = Some(FakeLogind::start(&bus));
         self.bluez = Some(bluez);
         self.system_bus = Some(bus);
+    }
+
+    /// The fake audio server in this session; the rig keeps a share so the daemon always ends first.
+    pub(crate) fn start_audio(&mut self) -> Rc<FakeAudio> {
+        assert!(self.audio.is_none(), "the fake audio server runs already");
+        let audio = Rc::new(FakeAudio::start(&self.session.runtime_dir()));
+        self.audio = Some(Rc::clone(&audio));
+        audio
     }
 
     pub(crate) fn system_bus_address(&self) -> String {
