@@ -461,8 +461,10 @@ impl Bench {
         thread::spawn(move || {
             let run_dir = wait_for_file(&root.join("run-dir"));
             let socket = Path::new(run_dir.trim()).join("librepods.sock");
-            drop(fs::remove_file(&socket));
-            let listener = UnixListener::bind(&socket).unwrap();
+            // Renamed into place: the stand-in's start can write its placeholder between a remove and a bind.
+            let fresh = socket.with_extension("sock.new");
+            let listener = UnixListener::bind(&fresh).unwrap();
+            fs::rename(&fresh, &socket).unwrap();
             listener.set_nonblocking(true).unwrap();
             let weak = root.join("weak-census").exists();
             let refuse = root.join("refuse-one-bud-off").exists();
