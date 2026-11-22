@@ -7,6 +7,7 @@ use pods_proto::sdulog::Record;
 use tempfile::TempDir;
 
 use super::super::backlog::with_backlog;
+use super::super::dictation::SAMPLE_BYTES;
 use super::super::fixture::{TONE_UNIT, ffprobe, installed};
 use super::super::signal::{SEED, close, samples_in};
 use super::super::synth::{SILENT_UNIT, synth};
@@ -31,8 +32,6 @@ const BURST_PACE_MS: u32 = 6;
 const JITTER_MS: u32 = 2;
 /// A recorder runs this long past the last start mark: the search of a head and a body ends 6 s after it.
 const RECORDER_TAIL_MS: u32 = 7_000;
-/// The bytes of one sample the oracle writes.
-const SAMPLE_BYTES: usize = 4;
 /// The cycles of `trials`: sixteen that start 15 s apart, then four after a minute of idle each.
 const TRIALS_SHORT_CYCLES: u32 = 16;
 const TRIALS_SHORT_PERIOD_MS: u32 = 15_000;

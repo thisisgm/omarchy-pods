@@ -137,14 +137,19 @@ impl Mark {
     }
 }
 
-/// Writes one marks line in a single write, so a line is whole or absent: `1203456789\tgate\tear\n`, the stamp in nanoseconds, the kind and a text.
+/// One marks line: `1203456789\tgate\tear\n`, the stamp in nanoseconds, the kind and a text.
+pub(crate) fn mark_line(at_ns: u64, kind: Mark, text: &dyn fmt::Display) -> String {
+    format!("{at_ns}\t{kind}\t{text}\n", kind = kind.name())
+}
+
+/// Writes one marks line in a single write, so a line is whole or absent.
 pub(crate) fn write_mark(
     marks: &mut dyn Write,
     at_ns: u64,
     kind: Mark,
     text: &dyn fmt::Display,
 ) -> Result<(), IoFailure> {
-    let line = format!("{at_ns}\t{kind}\t{text}\n", kind = kind.name());
+    let line = mark_line(at_ns, kind, text);
     let written = marks.write_all(line.as_bytes());
     written.map_err(|error| write_failure(MARKS_NAME, &error))
 }

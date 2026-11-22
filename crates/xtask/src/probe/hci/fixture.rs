@@ -204,7 +204,12 @@ impl Trace {
 
     /// Sets the clock to `ms` milliseconds after the start of the trace.
     pub(crate) fn at_ms(&mut self, ms: u64) {
-        self.micros = START_UNIX_MICROS.saturating_add(ms.saturating_mul(MICROS_PER_MILLI));
+        self.at_micros(ms.saturating_mul(MICROS_PER_MILLI));
+    }
+
+    /// Sets the clock to `micros` microseconds after the start of the trace.
+    pub(crate) fn at_micros(&mut self, micros: u64) {
+        self.micros = START_UNIX_MICROS.saturating_add(micros);
     }
 
     /// Sends what follows on another connection handle.
@@ -658,8 +663,8 @@ pub(crate) fn mac_att_packets() -> Vec<(Direction, Vec<u8>)> {
     ]
 }
 
-/// One whole synthetic session as macOS logs it: no channel is opened by a request, and the synchronous data records hold no audio.
-pub(crate) fn mac_session() -> Trace {
+/// How a trace macOS wrote opens when recording starts after the accessory exchange: the events that name the pods and a keyboard that types.
+pub(crate) fn mac_naming() -> Trace {
     let mut trace = Trace::packet_logger();
     let mut connect = CREATE_CONNECTION.to_le_bytes().to_vec();
     connect.push(
@@ -675,6 +680,12 @@ pub(crate) fn mac_session() -> Trace {
     trace.logged(PKLG_COMMAND, &connect);
     paired(&mut trace);
     keystrokes(&mut trace);
+    trace
+}
+
+/// How a trace macOS wrote opens: the naming events, then the accessory packets; no channel is opened by a request.
+pub(crate) fn mac_opening() -> Trace {
+    let mut trace = mac_naming();
     for (direction, packet) in mac_accessory_packets() {
         let sizes: &[usize] = match packet.len() {
             THREE_FRAGMENT_LEN => &THREE_FRAGMENT_SIZES,
@@ -683,6 +694,12 @@ pub(crate) fn mac_session() -> Trace {
         let cid = receiver_cid(direction, CONTROL_CIDS);
         trace.fragments(direction, cid, &packet, sizes);
     }
+    trace
+}
+
+/// One whole synthetic session as macOS logs it: one dictation session, and synchronous data records that hold no audio.
+pub(crate) fn mac_session() -> Trace {
+    let mut trace = mac_opening();
     for (direction, packet) in mac_att_packets() {
         trace.send(direction, ATT_CIDS, &packet);
     }

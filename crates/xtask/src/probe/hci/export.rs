@@ -5,6 +5,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use pods_proto::dictation;
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{Direction, LogError, Record, format_line};
 
@@ -14,6 +15,8 @@ use super::{
     channels_by_content, read,
 };
 use crate::probe::a2dp::{self, AVDTP_PSM, Codec, CodecKind, Music, Second, Unread, VENDOR_CODEC};
+use crate::probe::analyse::input::{ATT_LOG_FILE, LOG_FILE, META_FILE, meta_text};
+use crate::probe::capture::{MARKS_NAME, Mark, mark_line};
 use crate::probe::store::{self, Run, Session, StoreError};
 
 /// The log of the first channel on the control PSM; a second channel gets `sdu-2.log`.
@@ -28,6 +31,9 @@ const SECONDS_TABLE: &str = "a2dp";
 const CODECS_LIST: &str = "avdtp";
 /// The counts, which the command also prints.
 const LINKS_NAME: &str = "links.txt";
+/// What the meta file of a run names as its script when a trace made it, and as its tool.
+const SCRIPT: &str = "trace";
+const TOOL: &str = concat!("xtask probe hci ", env!("CARGO_PKG_VERSION"));
 /// The column names of `psm.tsv`.
 const REQUESTS_HEADER: &str =
     "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode";
@@ -243,6 +249,23 @@ fn music_tables(number: usize, first: &Channel, found: &Channels) -> (String, [O
     (counted, tables)
 }
 
+// Sample input: `52 07 00 01 00` from the host at 2 s gives the mark `2000000000\tdictation-start\tthe start write of the trace\n`, and `52 0a 00 01 00 00` the stop mark.
+fn dictation_marks(sdus: &[Record]) -> String {
+    let from_host = sdus.iter().filter(|sdu| sdu.direction == Direction::ToPods);
+    let marks = from_host.filter_map(|sdu| {
+        if sdu.sdu == dictation::START {
+            let text = &"the start write of the trace";
+            Some(mark_line(sdu.at_ns, Mark::DictationStart, text))
+        } else if sdu.sdu == dictation::STOP {
+            let text = &"the stop write of the trace";
+            Some(mark_line(sdu.at_ns, Mark::DictationStop, text))
+        } else {
+            None
+        }
+    });
+    marks.collect()
+}
+
 /// Where zero is and how often the stamps of the records step back, as `links.txt` states them.
 #[derive(Debug, Clone, Copy)]
 struct Clock {
@@ -423,6 +446,7 @@ pub(crate) fn render(read: Read) -> Result<Vec<Output>, ExportError> {
     let pods = pods_links(&found);
     let mut links = link_lines(opening, clock, &records, &found, &pods);
     let mut outputs = Vec::new();
+    let mut marks = String::new();
     for (psm, carries, stem) in [
         (CONTROL_PSM, Carries::Accessory, CONTROL_LOG),
         (ATT_PSM, Carries::Attributes, ATT_LOG),
@@ -441,15 +465,46 @@ pub(crate) fn render(read: Read) -> Result<Vec<Output>, ExportError> {
                 continue;
             };
             let name = numbered(stem, number, "log");
+            // The analysis reads the first attribute log alone, so the marks are of that one.
+            if stem == ATT_LOG && number == 1 {
+                marks = dictation_marks(sdus);
+            }
             let (text, counted) = log(&name, handle, sdus)?;
             links.push(counted);
             outputs.push(Output { name, text });
         }
     }
-    outputs.push(Output {
-        name: REQUESTS_NAME.to_owned(),
-        text: requests_table(&found),
-    });
+    // A capture that dials the attribute channel alone still writes an empty accessory log, and the analysis opens it beside the attribute one.
+    let accessory_found = found.list.iter().any(|channel| channel.psm == CONTROL_PSM)
+        || found
+            .by_content
+            .iter()
+            .any(|told| told.carries == Carries::Accessory);
+    let attributes_logged = outputs.iter().any(|output| output.name == ATT_LOG_FILE);
+    if attributes_logged && !accessory_found {
+        links.push(format!(
+            "accessory_log_written_empty reason=no_accessory_channel_found_and_analyse_opens_{LOG_FILE}_beside_{ATT_LOG_FILE}"
+        ));
+        outputs.push(Output {
+            name: LOG_FILE.to_owned(),
+            text: String::new(),
+        });
+    }
+    // The two files a capture writes beside its logs, so the analysis reads this run as it reads a captured one.
+    outputs.extend([
+        Output {
+            name: MARKS_NAME.to_owned(),
+            text: marks,
+        },
+        Output {
+            name: META_FILE.to_owned(),
+            text: meta_text(&SCRIPT, TOOL, clock.zero_ns),
+        },
+        Output {
+            name: REQUESTS_NAME.to_owned(),
+            text: requests_table(&found),
+        },
+    ]);
     // Each pods' link gets tables of its own, since a row that sums two links describes neither.
     for (number, first) in (1_usize..).zip(&pods) {
         let (counted, tables) = music_tables(number, first, &found);

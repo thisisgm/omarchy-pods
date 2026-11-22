@@ -4,8 +4,14 @@
 #[path = "../src/probe/analyse/backlog.rs"]
 mod backlog;
 #[cfg(test)]
+#[path = "support/dictation.rs"]
+mod dictation;
+#[cfg(test)]
 #[path = "../src/probe/fixture.rs"]
 mod fixture;
+#[cfg(test)]
+#[path = "support/oracles.rs"]
+mod oracles;
 #[cfg(test)]
 #[path = "support/run.rs"]
 mod run;
@@ -32,6 +38,7 @@ mod audio {
     mod reference;
     mod refusals;
     mod short_starts;
+    mod whole;
 
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -143,13 +150,15 @@ mod audio {
 
     /// The table of a command that succeeded, which is also what it left in the run with the mode of the store.
     fn table_of(measured: &Output, run: &Path) -> String {
+        table_in(measured, run, "audio.tsv")
+    }
+
+    /// The same of a command that leaves its table under the name `file`.
+    fn table_in(measured: &Output, run: &Path, file: &str) -> String {
         assert!(measured.status.success(), "{measured:?}");
         let table = String::from_utf8(measured.stdout.clone()).unwrap();
-        assert_eq!(fs::read_to_string(run.join("audio.tsv")).unwrap(), table);
-        let mode = fs::metadata(run.join("audio.tsv"))
-            .unwrap()
-            .permissions()
-            .mode();
+        assert_eq!(fs::read_to_string(run.join(file)).unwrap(), table);
+        let mode = fs::metadata(run.join(file)).unwrap().permissions().mode();
         assert_eq!(mode & PERMISSION_BITS, OWNER_FILE);
         for word in PRIVATE {
             assert!(!shows(&table, word), "{word}");

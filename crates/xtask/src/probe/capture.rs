@@ -25,7 +25,8 @@ use att::Asked;
 use guard::{Dictation, Dropped, Session, SideChange, Tail, Uplink};
 use record::Recorder;
 pub(crate) use record::{
-    ATT_LOG_NAME, Bearer, HANDLES_NAME, IoFailure, LOG_NAME, MARKS_NAME, Mark, Outputs, write_mark,
+    ATT_LOG_NAME, Bearer, HANDLES_NAME, IoFailure, LOG_NAME, MARKS_NAME, Mark, Outputs, mark_line,
+    write_mark,
 };
 pub(crate) use wires::OpenAtt;
 use wires::{RECV_TIMEOUT_MS, Wake, Wires, receive};

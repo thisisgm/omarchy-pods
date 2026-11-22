@@ -35,6 +35,7 @@ use rustix::time::{ClockId, clock_gettime};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
 use crate::{print_line, report};
+use analyse::input::meta_text;
 pub(crate) use capture::HANDSHAKE_STEP_TIMEOUT_MS;
 use capture::{
     ATT_LOG_NAME, EndReason, HANDLES_NAME, LOG_NAME, Links, MARKS_NAME, Mark, OpenAtt, Outcome,
@@ -74,7 +75,7 @@ enum ProbeCommand {
     Capture(CaptureArgs),
     /// Sends the stop of one route to the pods, for a capture that was killed before it could.
     Stop(StopArgs),
-    /// Reads a trace written by btmon -w, or a .pklg file of Apple's packet logger, and writes its channel logs and tables into a new run.
+    /// Reads a trace written by btmon -w, or a .pklg file of Apple's packet logger, and writes its channel logs and tables into a new run, with the marks.tsv and meta.txt that analyse reads.
     Hci {
         /// The btsnoop or .pklg file: the caller's own, with no access for group or others.
         file: PathBuf,
@@ -100,7 +101,7 @@ enum ProbeCommand {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,
     },
-    /// Measures the decoded audio of a run, alone or against a reference recording, and writes audio.tsv into it.
+    /// Measures the decoded audio of a run, alone or against a reference recording, and writes audio.tsv into it; with --whole, one decoded file as one window.
     Audio(audio::AudioArgs),
 }
 
@@ -306,10 +307,8 @@ fn record(
             args.route, args.no_marker, args.unchecked
         ),
     };
-    let meta_text = format!(
-        "script={script_name}\ntool={TOOL}\nrealtime_at_zero_ns={realtime_at_zero_ns}\n{route_line}"
-    );
-    let written = meta.write_all(meta_text.as_bytes());
+    let about = meta_text(&script_name, TOOL, realtime_at_zero_ns) + &route_line;
+    let written = meta.write_all(about.as_bytes());
     written.map_err(|source| ProbeError::Write {
         file: META_NAME,
         source,

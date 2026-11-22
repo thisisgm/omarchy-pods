@@ -189,7 +189,6 @@ fn a_silent_window_of_zeros_gives_no_reach_and_no_floor() {
     assert_eq!(row(&table, "cue_1_floor"), ("none", no_floor));
     assert_eq!(row(&table, "cue_3_noise_rms"), ("none", no_floor));
     assert_eq!(row(&table, "cue_3_exact_zeros").0, "yes");
-    let nothing_under =
-        "the silent window holds nothing at 250 Hz to lie over, as digital silence does";
+    let nothing_under = "the quiet stretch it is set against holds nothing at 250 Hz to lie over, as digital silence does";
     assert_eq!(row(&table, "cue_2_reach"), ("none", nothing_under));
 }
