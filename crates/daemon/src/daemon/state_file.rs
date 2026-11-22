@@ -1,4 +1,4 @@
-//! The state file the plugin watches: one status line, replaced whole on every change, removed when the daemon stops.
+//! The state file the plugin watches: replaced whole on every change, removed at stop.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -18,32 +18,29 @@ use tokio::time::sleep;
 
 use super::log;
 
-/// The directory under the state home, as `daemon/main.cpp` names it.
+/// As `daemon/main.cpp` names it.
 const STATE_DIR_NAME: &str = "librepods";
 
-/// The file in that directory, as `daemon/main.cpp` names it.
+/// As `daemon/main.cpp` names it.
 const STATE_FILE_NAME: &str = "status.json";
 
-/// The state home under `HOME` when `XDG_STATE_HOME` cannot place it, as Qt's `GenericStateLocation` falls back.
+/// Qt's `GenericStateLocation` fallback when `XDG_STATE_HOME` cannot place it.
 const HOME_STATE_DIR: &str = ".local/state";
 
-/// Appended to the state file's name for the copy written before the rename.
 const TEMP_SUFFIX: &str = ".tmp";
 
 /// The state file carries the pods' identity, so only its owner reads it.
 const STATE_FILE_MODE: u32 = 0o600;
 
-/// Mode of a state directory this daemon creates.
 const STATE_DIR_MODE: u32 = 0o700;
 
-/// The longest line published; a longer one is refused, which only an absurd device name could cause.
+/// A longer line is refused, which only an absurd device name could cause.
 const MAX_STATE_LINE_BYTES: usize = 65536;
 
-/// The pause before a failed write is tried again, the C++ state writer's one second timer.
+/// The C++ state writer's one second timer.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 
-/// The state file path, under `XDG_STATE_HOME` when it is absolute and under `HOME` otherwise, as Qt places it.
-// Sample input: `XDG_STATE_HOME=/home/u/.local/state`, or it unset, empty or relative with `HOME=/home/u`.
+// Sample: `XDG_STATE_HOME=/home/u/.local/state`, or `HOME=/home/u` if unset, empty or relative.
 pub(crate) fn path(xdg_state_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
     let state_home = match xdg_state_home
         .map(Path::new)
@@ -55,14 +52,12 @@ pub(crate) fn path(xdg_state_home: Option<&OsStr>, home: Option<&OsStr>) -> Opti
     Some(state_home.join(STATE_DIR_NAME).join(STATE_FILE_NAME))
 }
 
-/// Why the state file at `path` could not be published or removed.
 #[derive(Debug)]
 pub(super) struct StateFileError {
     path: PathBuf,
     failure: Failure,
 }
 
-/// The step that failed, with the directory or copy it acted on and the cause.
 #[derive(Debug)]
 enum Failure {
     LineTooLong(usize),
@@ -178,7 +173,6 @@ impl PartialEq for Failure {
     }
 }
 
-/// Two causes print alike when they carry the same OS error number, or the same message when neither has one.
 fn same_cause(one: &io::Error, other: &io::Error) -> bool {
     match (one.raw_os_error(), other.raw_os_error()) {
         (Some(one), Some(other)) => one == other,
@@ -187,7 +181,7 @@ fn same_cause(one: &io::Error, other: &io::Error) -> bool {
     }
 }
 
-/// The state file, shared by the writer and the shutdown so no write lands after the removal.
+/// Shared by the writer and the shutdown so no write lands after the removal.
 #[derive(Debug, Clone)]
 pub(super) struct StateFile {
     path: PathBuf,
@@ -202,7 +196,6 @@ impl StateFile {
         }
     }
 
-    /// Writes `line` on the calling thread, which `publish` keeps off the runtime.
     fn publish_now(&self, line: &str) -> Result<(), StateFileError> {
         let removed = self.removed.lock().unwrap_or_else(PoisonError::into_inner);
         if *removed {
@@ -211,7 +204,6 @@ impl StateFile {
         write_atomically(&self.path, line)
     }
 
-    /// Writes `line` on the blocking pool, off the runtime thread.
     pub(super) async fn publish(&self, line: String) -> Result<(), StateFileError> {
         let file = self.clone();
         spawn_blocking(move || file.publish_now(&line))
@@ -219,7 +211,7 @@ impl StateFile {
             .map_err(|cause| self.error(Failure::PublishUnfinished(cause)))?
     }
 
-    /// Removes the file and stops every later write, waiting for one in progress.
+    /// Stops every later write, waiting for one in progress.
     pub(super) async fn remove(&self) -> Result<(), StateFileError> {
         let file = self.clone();
         spawn_blocking(move || file.remove_now())
@@ -245,14 +237,13 @@ impl StateFile {
     }
 }
 
-/// The last write error, so a write that keeps failing is logged when it starts, when its error changes and when it recovers.
+/// Logs a failing write when it starts, when its error changes and when it recovers.
 #[derive(Debug, Default)]
 pub(super) struct WriteFailures {
     last: Option<Failure>,
 }
 
 impl WriteFailures {
-    /// Takes the result of one write of `file`, and logs it if it starts, changes or ends a failure.
     pub(super) fn note(&mut self, file: &StateFile, result: Result<(), StateFileError>) {
         if let Some(message) = self.message(&file.path, result) {
             log(&message);
@@ -279,7 +270,7 @@ impl WriteFailures {
     }
 }
 
-/// Publishes every change `updates` announces until aborted, and retries a failed write, the first one included, every `RETRY_DELAY`.
+/// Retries a failed write, the first one included, every `RETRY_DELAY`.
 pub(super) async fn follow(
     mut updates: watch::Receiver<State>,
     file: StateFile,
@@ -298,7 +289,7 @@ pub(super) async fn follow(
     }
 }
 
-/// Replaces `path` with `line` through a 0600 copy created fresh beside it, synced, then renamed over it; a link at either is never followed, a linked directory above them is.
+/// A fresh 0600 copy, synced, renamed over; a link at either is never followed, one above them is.
 fn write_atomically(path: &Path, line: &str) -> Result<(), StateFileError> {
     let fail = |failure| StateFileError {
         path: path.to_path_buf(),

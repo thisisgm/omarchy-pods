@@ -1,4 +1,4 @@
-//! A driver on a thread of its own, so a test calls `submit` from any thread or runtime and blocks on the fake pods freely.
+//! A driver on its own thread, so a test calls `submit` from any runtime and blocks on the pods.
 
 mod driver;
 mod failures;
@@ -22,7 +22,7 @@ use crate::daemon::hub::Hub;
 /// A wait in a test still running after this long has hung, and the test fails.
 pub(in crate::daemon) const HANG_LIMIT: Duration = Duration::from_secs(10);
 
-/// Runs `future` on a fresh current thread runtime with a clock, as the daemon's own runtime has.
+/// A current thread runtime with a clock, as the daemon's own.
 pub(in crate::daemon) fn block_on<F: Future>(future: F) -> F::Output {
     Builder::new_current_thread()
         .enable_time()
@@ -52,7 +52,6 @@ fn device_up(inputs: &mpsc::Sender<Input>) {
         .unwrap();
 }
 
-/// Waits for a state `ready` accepts and gives it back, failing the test after `within`.
 fn wait_for_state(
     hub: &Hub,
     within: Duration,
@@ -86,7 +85,6 @@ async fn wait_for_state_async(
     })
 }
 
-/// The byte `mode` takes in a `NOISE` setting.
 fn wire(mode: NoiseMode) -> u8 {
     let [wire, ..] = mode.command().value;
     wire
@@ -95,7 +93,7 @@ fn wire(mode: NoiseMode) -> u8 {
 /// Sees each input a reader sends, before the driver does.
 pub(super) type Tap = Box<dyn Fn(&Input) + Send>;
 
-/// A running driver and its hub; dropping it aborts the driver and joins its thread.
+/// Dropping it aborts the driver and joins its thread.
 #[derive(Debug)]
 pub(in crate::daemon) struct Running {
     hub: Hub,
@@ -105,13 +103,12 @@ pub(in crate::daemon) struct Running {
 }
 
 impl Running {
-    /// A driver whose connector refuses every connect, for tests that never bring a link up.
+    /// Its connector refuses every connect, for tests that never bring a link up.
     pub(in crate::daemon) fn new() -> Self {
         let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
         Self::start(refuse, None)
     }
 
-    /// Starts `drive` with `connector`; with `tap`, every input a reader sends passes through it before the driver gets it.
     pub(super) fn start(connector: Connector, tap: Option<Tap>) -> Self {
         let (link, inputs) = queue();
         let hub = Hub::new(link.clone());
@@ -174,7 +171,6 @@ impl Drop for Running {
     }
 }
 
-/// A sender whose inputs `tap` sees, then the driver gets, in order.
 fn forward_through(tap: Tap, link: mpsc::Sender<Input>) -> mpsc::Sender<Input> {
     let (tapped, mut taken) = mpsc::channel(super::INPUT_QUEUE);
     tokio::spawn(async move {

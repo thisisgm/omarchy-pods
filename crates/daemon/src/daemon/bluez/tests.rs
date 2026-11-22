@@ -55,7 +55,7 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
             path: PODS.to_owned(),
             properties: pods,
         });
-        // The machine chose these pods; BlueZ's removal reaches the watcher before the machine's call does.
+        // The machine chose these pods; BlueZ's removal reaches the watcher before its call does.
         candidates.apply(Change::Removed {
             path: PODS.to_owned(),
         });

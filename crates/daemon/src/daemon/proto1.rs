@@ -1,4 +1,4 @@
-//! One protocol 1 client: requests answered in order, and after `subscribe` one event line per state change.
+//! One protocol 1 client: replies in order; after `subscribe`, one event line per state change.
 
 mod reply;
 mod request;
@@ -22,51 +22,47 @@ use super::hub::Hub;
 use super::log;
 use request::Request;
 
-/// The longest request line, newline excluded; a longer one closes the connection.
+/// Newline excluded; a longer one closes the connection.
 const MAX_LINE_BYTES: usize = 4096;
 
-/// What `pending` may hold: one line at the bound plus the byte that shows it is past it.
+/// One line at the bound plus the byte that shows it is past it.
 const PENDING_BYTES: usize = MAX_LINE_BYTES + 1;
 
-/// Lines waiting for a slow client; an event that finds the queue full closes the connection instead of being skipped.
+/// An event that finds the queue full closes the connection instead of being skipped.
 const QUEUE_LINES: usize = 16;
 
-/// How long a client may leave a line unfinished, a reply unread or, unsubscribed, the connection idle; twice the legacy request deadline.
+/// For a line unfinished, a reply unread or an idle unsubscribed client; twice the legacy deadline.
 const STALL_DEADLINE: Duration = Duration::from_millis(2000);
 
-/// What woke the connection.
 #[derive(Debug)]
 enum Wake {
-    /// Bytes from the client, now at the end of `pending`; zero is the end of its stream.
+    /// Bytes now at the end of `pending`; zero is the end of the stream.
     Received(io::Result<usize>),
-    /// A state change, or `None` when the hub dropped this subscriber for falling behind.
+    /// `None` when the hub dropped this subscriber for falling behind.
     Changed(Option<State>),
     /// Bytes of the first queued line taken by the socket.
     Wrote(io::Result<usize>),
-    /// The client made no progress for `STALL_DEADLINE` while the connection waited on it.
     Stalled,
 }
 
-/// The state of one connection between wakes.
 #[derive(Debug)]
 struct Connection {
     stream: UnixStream,
-    /// Received bytes not yet answered, at most `PENDING_BYTES`.
+    /// At most `PENDING_BYTES`.
     pending: Vec<u8>,
     chunk: [u8; PENDING_BYTES],
-    /// Replies and events not yet written, at most `QUEUE_LINES`.
+    /// At most `QUEUE_LINES`.
     queue: VecDeque<String>,
     /// How much of the first queued line the socket has taken.
     written: usize,
-    /// Changes after the last `subscribe`, if the client subscribed.
     changes: Option<mpsc::Receiver<State>>,
-    /// Whether the client ended its side, after which no more requests are read and the connection closes once the queue is written.
+    /// After the client's end no request is read; the connection closes once the queue is written.
     ended: bool,
-    /// Runs while the connection waits on the client and restarts at each answered request and each written line.
+    /// Runs while waiting on the client; restarts at each answered request and written line.
     stall: Option<Pin<Box<Sleep>>>,
 }
 
-/// Serves one client whose first bytes, already read, are `received`; returns when either side is done.
+/// `received` holds the client's first bytes, already read.
 pub(super) async fn serve_connection(stream: UnixStream, hub: Hub, received: Vec<u8>) {
     let mut connection = Connection {
         stream,
@@ -86,7 +82,6 @@ pub(super) async fn serve_connection(stream: UnixStream, hub: Hub, received: Vec
 }
 
 impl Connection {
-    /// Answers, reads, writes and relays changes until the client is gone or must be closed.
     async fn run(&mut self, hub: &Hub) -> Result<(), String> {
         loop {
             self.answer(hub).await?;
@@ -122,10 +117,10 @@ impl Connection {
         }
     }
 
-    /// Answers each complete line in `pending` while the queue has room for the reply and no change waits to be queued.
+    /// Only while the queue has room for the reply and no change waits to be queued.
     async fn answer(&mut self, hub: &Hub) -> Result<(), String> {
         while self.queue.len() < QUEUE_LINES {
-            // A subscriber's own sets would otherwise fill its hand-off from the hub before it is drained.
+            // Else a subscriber's own sets would fill its hand-off from the hub before it drains.
             if self
                 .changes
                 .as_ref()
@@ -146,7 +141,7 @@ impl Connection {
                 }
                 Ok((id, Request::Submit(command))) => {
                     let outcome = hub.submit(command).await;
-                    // One change per turn, so every subscriber's task runs before this client makes the next one.
+                    // One change per turn: all subscriber tasks run before this client's next one.
                     task::yield_now().await;
                     reply::outcome(id, outcome)
                 }
@@ -157,7 +152,6 @@ impl Connection {
         Ok(())
     }
 
-    /// Queues the event line for one change, or closes when the client has left the queue full.
     fn enqueue_event(&mut self, state: &State) -> Result<(), String> {
         if self.queue.len() >= QUEUE_LINES {
             return Err(format!("it left {QUEUE_LINES} lines unread"));
@@ -166,7 +160,6 @@ impl Connection {
         Ok(())
     }
 
-    /// Notes `sent` more bytes of the first queued line as written, dropping the line once all of it is.
     fn advance(&mut self, sent: usize) -> Result<(), String> {
         if sent == 0 {
             return Err("the socket took no bytes of a reply".to_owned());
@@ -184,14 +177,14 @@ impl Connection {
         Ok(())
     }
 
-    /// Whether the client ended its side and was sent everything owed; `answer` leaves complete lines only while a change waits or the queue is full.
+    /// `answer` leaves complete lines only while a change waits or the queue is full.
     fn owes_nothing_after_its_end(&self) -> bool {
         self.ended
             && self.queue.is_empty()
             && self.changes.as_ref().is_none_or(mpsc::Receiver::is_empty)
     }
 
-    /// Starts the stall deadline when the connection waits on its client, and stops it while it waits only for changes.
+    /// Stopped while the connection waits only for changes.
     fn watch_for_stall(&mut self) {
         let waits_on_client =
             self.changes.is_none() || !self.pending.is_empty() || !self.queue.is_empty();
@@ -202,7 +195,7 @@ impl Connection {
         }
     }
 
-    /// Polls, in order, the write of the first queued line, the next change, the stall deadline and the next request bytes.
+    /// In order: the first line's write, the next change, the stall deadline, then request bytes.
     fn poll_wake(&mut self, context: &mut Context<'_>) -> Poll<Wake> {
         if let Some(line) = self.queue.front() {
             let unsent = line.as_bytes().get(self.written..).unwrap_or_default();
@@ -241,7 +234,6 @@ impl Connection {
     }
 }
 
-/// Takes the first complete line out of `pending`, newline excluded, or fails once a line is past `MAX_LINE_BYTES`.
 // Sample input: `{"v":1,"id":7,"op":"get"}\n{"v":1,` gives the first object and keeps `{"v":1,`.
 fn take_line(pending: &mut Vec<u8>) -> Result<Option<Vec<u8>>, String> {
     match pending.iter().position(|&byte| byte == b'\n') {

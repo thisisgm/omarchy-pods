@@ -1,4 +1,4 @@
-//! The one owner of the daemon state: the socket and the state file read it here and ask it to change here.
+//! The one owner of the daemon state; every read and every change goes through it.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -9,18 +9,16 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::SUBSCRIBER_BACKLOG;
 use super::link::Input;
 
-/// A handle on the state; every clone shares it, and only the link driver changes it, through `publish`.
+/// Clones share one state; only the link driver changes it, through `publish`.
 #[derive(Debug, Clone)]
 pub(crate) struct Hub {
     state: watch::Sender<State>,
-    /// One sender per subscriber, each getting every change in order; only taken inside the state's lock.
+    /// Only taken inside the state's lock, so each subscriber gets every change in order.
     subscribers: Arc<Mutex<Vec<mpsc::Sender<State>>>>,
-    /// The link driver's input queue, which every command goes through.
     link: mpsc::Sender<Input>,
 }
 
 impl Hub {
-    /// A hub holding the state of a daemon with no pods connected.
     pub(super) fn new(link: mpsc::Sender<Input>) -> Self {
         Self {
             state: watch::Sender::new(State::default()),
@@ -29,33 +27,32 @@ impl Hub {
         }
     }
 
-    /// A copy of the current state.
     pub(crate) fn state(&self) -> State {
         self.state.borrow().clone()
     }
 
-    /// A receiver that wakes on every change after this call, coalescing changes it has not seen yet.
+    /// Coalesces changes the receiver has not seen yet.
     pub(crate) fn subscribe(&self) -> watch::Receiver<State> {
         self.state.subscribe()
     }
 
-    /// The current state and a receiver of every change after it, none skipped or repeated; it closes if it falls `SUBSCRIBER_BACKLOG` behind.
+    /// None skipped or repeated; the receiver closes if it falls `SUBSCRIBER_BACKLOG` behind.
     pub(crate) fn follow(&self) -> (State, mpsc::Receiver<State>) {
-        // The read lock on the state is held until the sender is listed, so no change lands between the copy and the listing.
+        // The read lock is held until the sender is listed, so no change falls between the two.
         let current = self.state.borrow();
         let (sender, receiver) = mpsc::channel(SUBSCRIBER_BACKLOG);
         let mut subscribers = self.subscribers();
-        // Departed subscribers leave here too, so the list stays at the live ones while the state stands still.
+        // Gone subscribers leave here too, so the list stays live while the state stands still.
         subscribers.retain(|subscriber| !subscriber.is_closed());
         subscribers.push(sender);
         drop(subscribers);
         (current.clone(), receiver)
     }
 
-    /// Hands `command` to the link driver now and resolves with its outcome; a full queue or a driver that is gone is `Timeout`.
+    /// A full queue or a driver that is gone is `Timeout`.
     pub(crate) fn submit(&self, command: Command) -> impl Future<Output = Outcome> + use<> {
         let (reply, outcome) = oneshot::channel();
-        // Queued before the first poll, so commands reach the driver in the order they are submitted.
+        // Queued before the first poll, so commands reach the driver in submission order.
         let queued = self
             .link
             .try_send(Input::Command { command, reply })
@@ -69,7 +66,7 @@ impl Hub {
         }
     }
 
-    /// Makes `next` the state and tells subscribers when it differs; two calls at once would lose a change, and the one driver is the only caller.
+    /// Two calls at once would lose a change; the one driver is the only caller.
     pub(super) fn publish(&self, next: State) {
         self.state.send_if_modified(|state| {
             if *state == next {
@@ -77,21 +74,21 @@ impl Hub {
             }
             // Inside the write lock, so each subscriber gets the changes in the order they land.
             let mut subscribers = self.subscribers();
-            // A subscriber that is full or gone is dropped, and its connection closes rather than skip a change.
+            // A full or gone subscriber is dropped: its connection closes, never skips a change.
             subscribers.retain(|subscriber| subscriber.try_send(next.clone()).is_ok());
             *state = next;
             true
         });
     }
 
-    /// The subscriber list; a panic while it was held left it whole, since every change to it is one call.
+    /// A panic while held left the list whole, since every change to it is one call.
     fn subscribers(&self) -> MutexGuard<'_, Vec<mpsc::Sender<State>>> {
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Replaces the state as a link would, which no command can do while there is none.
+    /// Replaces the state as a link would; no command can while there is none.
     #[cfg(test)]
     pub(crate) fn replace(&self, state: State) {
         self.state.send_replace(state);
@@ -112,10 +109,8 @@ mod tests {
     use super::*;
     use crate::daemon::link::tests::{HANG_LIMIT, Running, block_on};
 
-    /// Subscriptions the ordering test takes while another thread changes the state.
     const FOLLOWS: usize = 2000;
 
-    /// The ear detection command that is a change from the one before it, alternating by `turn`.
     fn ear_change(turn: usize) -> Command {
         if turn.is_multiple_of(2) {
             Command::SetEarDetection(EarDetectionBehavior::PauseWhenBothRemoved)
@@ -124,7 +119,6 @@ mod tests {
         }
     }
 
-    /// The next change, failing the test once `HANG_LIMIT` passes without one.
     fn next_change(changes: &mut mpsc::Receiver<State>) -> State {
         let started = Instant::now();
         loop {
@@ -136,7 +130,7 @@ mod tests {
         }
     }
 
-    /// Raises the flag when dropped, so the changing thread stops even when the test panics.
+    /// Raised on drop, so the changing thread stops even when the test panics.
     struct StopOnDrop<'flag>(&'flag AtomicBool);
 
     impl Drop for StopOnDrop<'_> {

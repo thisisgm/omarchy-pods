@@ -1,4 +1,4 @@
-//! The lines the daemon writes in protocol 1, each ended by a newline, members in the documented order.
+//! Protocol 1 lines, each ended by a newline, members in the documented order.
 
 use pods_core::command::Outcome;
 use pods_core::state::State;
@@ -8,13 +8,11 @@ use serde_json::{Value, json};
 use super::request::RequestError;
 use crate::protocol::VERSION;
 
-/// The code of a request in a version this daemon does not speak; every other code is a `CommandError` code.
+/// Every other refusal code is a `CommandError` code.
 const UNSUPPORTED_VERSION: &str = "unsupported_version";
 
-/// The sentence a person reads for `UNSUPPORTED_VERSION`.
 const UNSUPPORTED_VERSION_MESSAGE: &str = "This daemon speaks protocol version 1 only.";
 
-/// The reply to `get` and `subscribe`.
 pub(super) fn state(id: u64, state: &State) -> String {
     format!(
         "{{\"id\":{id},\"ok\":true,\"state\":{}}}\n",
@@ -22,7 +20,6 @@ pub(super) fn state(id: u64, state: &State) -> String {
     )
 }
 
-/// The reply to `set` and `do`.
 pub(super) fn outcome(id: u64, outcome: Outcome) -> String {
     match outcome.name() {
         Ok(result) => format!("{{\"id\":{id},\"ok\":true,\"result\":\"{result}\"}}\n"),
@@ -30,7 +27,7 @@ pub(super) fn outcome(id: u64, outcome: Outcome) -> String {
     }
 }
 
-/// The reply to a refused request; `None` writes the id as null.
+/// `None` writes the id as null.
 pub(super) fn refusal(id: Option<u64>, error: RequestError) -> String {
     let error = match error {
         RequestError::Command(error) => json!({"code": error.code(), "message": error.message()}),
@@ -46,7 +43,6 @@ pub(super) fn refusal(id: Option<u64>, error: RequestError) -> String {
     )
 }
 
-/// The line a subscriber gets for each change.
 pub(super) fn event(state: &State) -> String {
     format!(
         "{{\"event\":\"state\",\"state\":{}}}\n",

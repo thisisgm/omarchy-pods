@@ -1,4 +1,4 @@
-//! The AirPods BlueZ knows, by object path, and the device events each change of them makes.
+//! The AirPods BlueZ knows, by object path, and the device events each change makes.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -9,7 +9,7 @@ use zbus::{Array, OwnedVariant, Variant};
 use super::AAP_UUID;
 use crate::daemon::link::DeviceEvent;
 
-/// What one source says of a device object; a signal names only the properties that changed.
+/// A signal names only the properties that changed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Properties {
     pub(super) address: Option<BdAddr>,
@@ -27,7 +27,7 @@ pub(super) enum Change {
     Removed {
         path: String,
     },
-    /// Every device object BlueZ holds, from `GetManagedObjects`.
+    /// From `GetManagedObjects`.
     Swept(Vec<(String, Properties)>),
     /// `org.bluez` has no owner, so none of its objects stands.
     Lost,
@@ -39,14 +39,14 @@ struct Entry {
     connected: bool,
 }
 
-/// One address may stand under several paths, one per adapter that knows it; at most `KNOWN_MAX` paths are kept.
+/// One address may stand under several paths, one per adapter; at most `KNOWN_MAX` are kept.
 #[derive(Debug, Default)]
 pub(super) struct Candidates {
     paths: BTreeMap<String, Entry>,
 }
 
 impl Properties {
-    /// Reads `Address`, `UUIDs` and `Connected` of `{"Address": <"02:00:00:00:00:01">, "UUIDs": <["74ec2172-0bad-4d01-8f77-997b2be0722a"]>, "Connected": <true>}`; a value of another type reads as absent.
+    /// Sample input: `{"Address": <"02:00:00:00:00:01">, "UUIDs": <["74ec2172-0bad-4d01-8f77-997b2be0722a"]>, "Connected": <true>}`; another type reads as absent.
     pub(super) fn read(properties: &HashMap<String, OwnedVariant>) -> Self {
         let value = |name: &str| properties.get(name).map(|value| &**value);
         Self {
@@ -73,7 +73,7 @@ impl Candidates {
         self.paths.contains_key(path)
     }
 
-    /// A path of `device`, a connected one first; `None` when BlueZ holds no object of it.
+    /// A connected path first; `None` when BlueZ holds no object of `device`.
     pub(super) fn path_of(&self, device: BdAddr) -> Option<&str> {
         let mut paths = self
             .paths
@@ -99,7 +99,7 @@ impl Candidates {
         }
     }
 
-    /// Classifies the device at `path` again, a path not kept yet taking only what `properties` says.
+    /// A path not kept yet takes only what `properties` says.
     fn update(&mut self, path: String, properties: Properties) -> Option<DeviceEvent> {
         let kept = self.paths.get(&path).copied();
         let device = kept.map(|entry| entry.device).or(properties.address)?;
@@ -126,7 +126,7 @@ impl Candidates {
         edge(device, before, self.presence(device))
     }
 
-    /// Keeps only what the sweep found, reports every address it dropped gone and every address it kept.
+    /// Reports every dropped address gone and every kept one again.
     fn replace(&mut self, devices: Vec<(String, Properties)>) -> Vec<DeviceEvent> {
         let before = self.devices();
         self.paths.clear();
@@ -149,7 +149,6 @@ impl Candidates {
         gone.chain(reported).collect()
     }
 
-    /// Every address kept, once each.
     fn devices(&self) -> Vec<BdAddr> {
         let mut devices: Vec<BdAddr> = Vec::new();
         for entry in self.paths.values() {
@@ -172,7 +171,6 @@ impl Candidates {
     }
 }
 
-/// The event that moves the driver from what it was told of `device` to what holds now.
 fn edge(device: BdAddr, before: Option<bool>, after: Option<bool>) -> Option<DeviceEvent> {
     match (before, after) {
         (None | Some(false), Some(true)) => Some(DeviceEvent::Up(device)),

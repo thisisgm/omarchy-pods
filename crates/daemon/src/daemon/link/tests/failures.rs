@@ -1,4 +1,4 @@
-//! Support tests: the driver under a queue that never empties, a write that fails, and a queue that closes.
+//! Support tests: a queue that never empties, a write that fails, and a queue that closes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
@@ -31,18 +31,16 @@ const SENDS_MAX: usize = 10_000;
 /// Threads feeding the queue at once, so it never empties between two inputs.
 const FLOODERS: usize = 4;
 
-/// How long a driver with a closed queue is watched for spinning or ending.
 const IDLE_WATCH: Duration = Duration::from_millis(200);
 
-/// CPU a thread that only sleeps through `IDLE_WATCH` stays under; a spinning driver takes all of it.
+/// A sleeping thread stays under this through `IDLE_WATCH`; a spinning driver takes it all.
 const IDLE_CPU: Duration = Duration::from_millis(50);
 
-/// A driver whose first channel's pods end comes back to the test unread, with the time its connect returned.
 fn hand_held() -> (Running, Channel, Instant) {
     let (far_ends, far) = std_mpsc::channel();
     let connector: Connector = Arc::new(move |_| {
         let (host_end, pods_end) = pair();
-        // Only the first connect reaches the test; a retry after it finds the receiver gone and fails.
+        // Only the first connect reaches the test; a later retry finds the receiver gone and fails.
         match far_ends.send((pods_end, Instant::now())) {
             Ok(()) => Ok(host_end),
             Err(_) => Err(ChannelError::Connect(Errno::HOSTDOWN)),
@@ -54,7 +52,6 @@ fn hand_held() -> (Running, Channel, Instant) {
     (running, pods_end, connected)
 }
 
-/// Every SDU left on `pods_end` until the host's close shows.
 fn drain(pods_end: &Channel) -> Vec<Vec<u8>> {
     pods_end.set_recv_timeout(HANG_LIMIT).unwrap();
     let mut buf = vec![0_u8; RECV_BUFFER_LEN];
@@ -82,7 +79,7 @@ fn packets_never_hold_back_a_passed_deadline() {
     pods_end.set_recv_timeout(HANG_LIMIT).unwrap();
     let mut buf = vec![0_u8; RECV_BUFFER_LEN];
     assert!(matches!(pods_end.recv(&mut buf), Ok(Received::Sdu(_))));
-    // The handshake request is never answered, and a packet the handshake ignores keeps the queue full.
+    // The handshake is never answered, and a packet it ignores keeps the queue full.
     let flood = pods_samples::battery();
     let inputs = running.inputs();
     let stop = AtomicBool::new(false);
@@ -93,7 +90,7 @@ fn packets_never_hold_back_a_passed_deadline() {
                     let sdu = Input::Sdu(flood.clone().into_boxed_slice());
                     match inputs.try_send(sdu) {
                         Ok(()) => {}
-                        // Never blocks, so the stop ends a flooder even when the driver no longer reads.
+                        // Never blocks, so the stop ends a flooder whatever the driver does.
                         Err(TrySendError::Full(_)) => thread::yield_now(),
                         Err(TrySendError::Closed(_)) => return,
                     }
@@ -187,7 +184,7 @@ fn a_closed_queue_neither_ends_nor_spins_the_driver() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let (link, inputs) = queue();
-        // Only a test can close the queue: the hub and the feedback here hold another queue's senders.
+        // Only a test can close the queue: the hub and feedback here hold another queue's senders.
         let (elsewhere, _unread_elsewhere) = queue();
         let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
         let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));

@@ -1,4 +1,4 @@
-//! The daemon: it owns the state, serves the control socket in protocol 1 and the C++ daemon's dialect, publishes the state file and serves D-Bus.
+//! Owns the state; serves the control socket in both dialects, the state file and D-Bus.
 
 mod bluez;
 mod dbus;
@@ -28,27 +28,24 @@ use tokio::task::JoinHandle;
 use hub::Hub;
 use state_file::{StateFile, WriteFailures};
 
-/// What `daemon/main.cpp` logs when the session has no runtime directory.
+/// As `daemon/main.cpp` logs it.
 pub(crate) const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot place the control socket";
 
-/// What the daemon logs when neither variable can place the state file.
 pub(crate) const NO_STATE_HOME: &str =
     "XDG_STATE_HOME is not an absolute path and HOME is unset; cannot place the state file";
 
-/// Clients served at once; a client past this is closed as soon as it is accepted.
+/// A client past this is closed as soon as it is accepted.
 const MAX_CONNECTIONS: usize = 64;
 
-/// Changes a subscriber may leave untaken before the hub drops it; each client makes at most one change between two turns of a subscriber's task.
+/// Each client makes at most one change between two turns of a subscriber's task.
 const SUBSCRIBER_BACKLOG: usize = MAX_CONNECTIONS;
 
-/// Where one daemon serves and publishes.
 #[derive(Debug)]
 pub(crate) struct Paths {
     pub(crate) socket: PathBuf,
     pub(crate) state_file: PathBuf,
 }
 
-/// Runs the daemon until a stop signal, on a current thread runtime.
 pub(crate) fn run(paths: Paths) -> ExitCode {
     match Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime.block_on(serve(paths)),
@@ -59,7 +56,6 @@ pub(crate) fn run(paths: Paths) -> ExitCode {
     }
 }
 
-/// Becomes the one daemon on the socket, publishes, serves, and cleans up on a stop signal or when a task it serves with ends.
 async fn serve(paths: Paths) -> ExitCode {
     let mut stop = match signals::listen() {
         Ok(stop) => stop,
@@ -104,7 +100,7 @@ async fn serve(paths: Paths) -> ExitCode {
     ));
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
-    // Before the socket exists, so a client that can connect finds the state file unless the write failed.
+    // Before the socket, so any client that connects finds the state file unless the write failed.
     let first = to_status_line(&updates.borrow());
     let mut failures = WriteFailures::default();
     failures.note(&file, file.publish(first).await);
@@ -128,7 +124,7 @@ async fn serve(paths: Paths) -> ExitCode {
         link::stop(&link, driver).await;
     }
     bus.abort();
-    // Awaited so the connection closes and the name is released first; the result is only the cancellation.
+    // Awaited so the bus name is released first; the result is only the cancellation.
     drop(bus.await);
     if let Err(error) = socket::remove(&paths.socket).await {
         log(&error);
@@ -137,7 +133,6 @@ async fn serve(paths: Paths) -> ExitCode {
     code
 }
 
-/// What ended the wait in `until_stopped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ended {
     Signal,
@@ -145,7 +140,7 @@ enum Ended {
     Driver,
 }
 
-/// Waits for `stop` or for any task to end, logs which, and ends every task but the driver; the exit code is 1 when a task ended, so the service manager restarts the daemon, and the driver comes back while it still runs, for `link::stop`.
+/// A task ending exits 1 so the service restarts; a live driver comes back for `link::stop`.
 async fn until_stopped(
     stop: impl Future<Output = &'static str>,
     mut accept: JoinHandle<()>,
@@ -188,14 +183,14 @@ async fn until_stopped(
     }
 }
 
-/// Removes the state file, which is how a watcher learns the daemon stopped.
+/// The file going is how a watcher learns the daemon stopped.
 async fn remove_state_file(file: &StateFile) {
     if let Err(error) = file.remove().await {
         log(&error.to_string());
     }
 }
 
-/// Writes one line to stderr, which the service manager keeps in the journal.
+/// The service manager keeps stderr in the journal.
 pub(crate) fn log(message: &str) {
     // A failed write to stderr has nowhere left to be reported.
     drop(writeln!(io::stderr().lock(), "{message}"));
@@ -217,10 +212,9 @@ mod tests {
     use super::*;
     use crate::daemon::link::tests::HANG_LIMIT;
 
-    /// How long a wait with nothing ended must still be waiting; nothing in it takes time, so any wait shows a wrong return.
+    /// A wait with nothing ended must still wait this long; nothing in it takes time.
     const STILL_WAITING_AFTER: Duration = Duration::from_millis(100);
 
-    /// Runs `until_stopped` with `stop` and the four tasks the futures make, failing if it never returns.
     fn exit_code(
         stop: impl Future<Output = &'static str>,
         accept: impl Future<Output = ()> + Send + 'static,
@@ -241,7 +235,7 @@ mod tests {
         })
     }
 
-    /// Sets its flag when dropped, which an aborted task does to its future.
+    /// An aborted task drops its future, which sets the flag.
     struct DropFlag(Arc<AtomicBool>);
 
     impl Drop for DropFlag {

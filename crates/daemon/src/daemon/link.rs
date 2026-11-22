@@ -1,4 +1,4 @@
-//! Runs the link machine: device events, the channel's SDUs, commands and the clock go in, the state is published and the actions carried out.
+//! Runs the link machine: events, SDUs, commands and the clock in; state and actions out.
 
 mod reader;
 
@@ -24,16 +24,16 @@ use tokio::time::{Instant, timeout, timeout_at};
 use super::hub::Hub;
 use super::{MAX_CONNECTIONS, log};
 
-/// The connect timeout of aacp.rs in librepods-org/librepods pull request 655; a reader thread waits in a connect this long at most.
+/// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Room for one command from each client, shared with the reader's SDUs; a reader waits for room, a command finding none is refused.
+/// One command per client, shared with SDUs; when full a reader waits, a command is refused.
 pub(super) const INPUT_QUEUE: usize = MAX_CONNECTIONS;
 
-/// Device requests waiting for the watcher; one sweep reads every device, so a few waiting cover any burst of events.
+/// One sweep reads every device, so a few waiting cover any burst of events.
 pub(super) const REQUEST_QUEUE: usize = 8;
 
-/// A stop step is a few calls that never block, so a driver still busy after this is stuck and is aborted.
+/// Stop steps never block, so a driver still busy after this is stuck and is aborted.
 const STOP_WAIT_MS: u64 = 500;
 
 const READER_THREAD: &str = "link-reader";
@@ -70,12 +70,12 @@ pub(super) enum Request {
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
 
-/// The driver's input queue, the one place its bound is set.
+/// The one place the queue's bound is set.
 pub(super) fn queue() -> (mpsc::Sender<Input>, mpsc::Receiver<Input>) {
     mpsc::channel(INPUT_QUEUE)
 }
 
-/// Asks the driver to stop and waits `STOP_WAIT_MS` for it, then aborts it; a reader thread still inside its connect is left to the end of the process.
+/// A reader thread still inside its connect is left to the end of the process.
 pub(super) async fn stop(link: &mpsc::Sender<Input>, driver: JoinHandle<()>) {
     let (done, stopped) = oneshot::channel();
     let asked = async {
@@ -93,7 +93,7 @@ pub(super) async fn stop(link: &mpsc::Sender<Input>, driver: JoinHandle<()>) {
         ));
     }
     driver.abort();
-    // Awaited so the driver's channel and replies are dropped before the daemon goes on; the result is only the cancellation.
+    // Awaited so the driver's channel and replies drop first; the result is only the cancellation.
     drop(driver.await);
 }
 
@@ -137,10 +137,8 @@ pub(super) async fn drive(
     }
 }
 
-/// What woke the driver.
 enum Turn {
     Input(Input),
-    /// The machine's deadline passed.
     Tick,
 }
 
@@ -153,10 +151,10 @@ struct Driver {
     connector: Connector,
     /// The open channel, from its `Opened` until its close or its `Ended`.
     channel: Option<Arc<Channel>>,
-    /// At most `PENDING_MAX` entries outlive the turn they came in, since the machine resolves every other ticket at once.
+    /// At most `PENDING_MAX` outlive their turn: the machine resolves every other ticket at once.
     replies: HashMap<Ticket, oneshot::Sender<Outcome>>,
     next_ticket: u64,
-    /// Inputs the driver makes itself, at most one per action of a step, taken before the queue.
+    /// At most one per action of a step, taken before the queue.
     fed_back: VecDeque<Input>,
     /// `STATE_POPULATED_LINE` was logged since the link last came up.
     announced: bool,
@@ -255,7 +253,7 @@ impl Driver {
     fn open(&mut self, device: BdAddr) {
         let connector = Arc::clone(&self.connector);
         let feedback = self.feedback.clone();
-        // Never joined, at stop or anywhere else: a thread inside connect cannot be woken, and the end of the process ends it.
+        // Never joined: a thread inside connect cannot be woken; the end of the process ends it.
         let spawned = thread::Builder::new()
             .name(READER_THREAD.to_owned())
             .spawn(move || reader::run(connector, device, feedback));
