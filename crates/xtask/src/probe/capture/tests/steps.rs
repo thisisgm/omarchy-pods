@@ -68,7 +68,6 @@ pub(super) fn engine_in<'a, 'o>(
         asked: Asked::Nothing,
         checked: false,
         start_sent_ns: None,
-        redialled_ns: 0,
         uplink: None,
         dictation: None,
         session: None,

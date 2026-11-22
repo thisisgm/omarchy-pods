@@ -11,14 +11,14 @@ use super::census::{
     ControlReply, battery, census, control_replies, largest_packet, without_opcode,
 };
 use super::input::{CutLines, LOG_FILE, MARKS_FILE, Mark, MarkKind};
-use super::load::{Loaded, load, windows};
+use super::load::{Loaded, UPLINK, load, windows};
 
 /// The first line of the analysis table.
 const TABLE_HEADER: &str = "key\tvalue\tunit\tnote";
 /// The first line of the units table.
 const UNITS_HEADER: &str = "index\tsdu\tarrival_ns\tstamp\tlen\tmax_sfb";
 /// Joins the items of a note.
-const NOTE_SEPARATOR: &str = "; ";
+pub(crate) const NOTE_SEPARATOR: &str = "; ";
 /// The key of the row that counts the units of a run.
 pub(crate) const UNITS_KEY: &str = "audio_units";
 /// The key of the rows that hold the sample clock of each start.
@@ -27,10 +27,14 @@ pub(crate) const CLOCK_KEY: &str = "clock_hz";
 pub(crate) const COARSE_CLOCK_KEY: &str = "clock_hz_coarse";
 /// What a row reads when there is nothing to measure.
 pub(crate) const NONE: &str = "none";
-const PACKETS: &str = "packets";
+/// What a row reads when its figure cannot be formed; the note says why.
+pub(crate) const REFUSED: &str = "refused";
+pub(crate) const PACKETS: &str = "packets";
 const UNITS: &str = "units";
-const BYTES: &str = "bytes";
-const MS: &str = "ms";
+pub(crate) const BYTES: &str = "bytes";
+pub(crate) const MS: &str = "ms";
+pub(crate) const HZ: &str = "Hz";
+pub(crate) const BIT_PER_SECOND: &str = "bit/s";
 const PERCENT: &str = "percent";
 
 /// One line of the analysis table.
@@ -62,6 +66,13 @@ pub(crate) struct Report {
     pub(crate) units: String,
     /// The strings of the first device information packet; they can name the device, so no row holds them.
     pub(crate) device_strings: Option<Vec<String>>,
+}
+
+/// A note that opens with `label`, then every item that is not empty.
+pub(crate) fn labelled(label: &str, items: &[&str]) -> String {
+    let said = items.iter().copied().filter(|item| !item.is_empty());
+    let all: Vec<&str> = std::iter::once(label).chain(said).collect();
+    all.join(NOTE_SEPARATOR)
 }
 
 /// A table of rows: a header, then one line a row, each ending in a newline.
@@ -130,7 +141,7 @@ fn cut_rows(cut: CutLines) -> [Row; 2] {
 }
 
 fn count_rows(whole: &Loaded, marks: &[Mark]) -> Vec<Row> {
-    let windows = windows(marks);
+    let windows = windows(marks, UPLINK);
     let in_a_start = |at_ns| windows.iter().any(|window| window.holds(at_ns));
     let outside = whole.audio.iter().filter(|sdu| !in_a_start(sdu.at_ns));
     let stray = whole.audio.iter().filter(|sdu| sdu.trailing > 0);
@@ -245,7 +256,10 @@ fn control_row(reply: &ControlReply) -> Row {
             let kind = match nearest.kind {
                 MarkKind::Start => "start",
                 MarkKind::Stop => "stop",
-                MarkKind::Truncated | MarkKind::Other => "mark",
+                MarkKind::DictationStart
+                | MarkKind::DictationStop
+                | MarkKind::Truncated
+                | MarkKind::Other => "mark",
             };
             let (offset_ms, ordinal) = (nearest.offset_ms, nearest.ordinal);
             format!("{offset_ms:+.3} ms from {kind} {ordinal}")

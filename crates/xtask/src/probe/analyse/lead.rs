@@ -7,8 +7,8 @@ use super::stats::{NS_PER_MS, millis, to_f64};
 pub(crate) const LEAD_WINDOW_NS: u64 = 10_000_000_000;
 /// No lead is given from fewer packets than this inside the window.
 pub(crate) const LEAD_MIN_PACKETS: usize = 50;
-/// A packet is part of the burst while it is more than this many frames behind the line.
-const BURST_FRAMES_BEHIND: f64 = 3.0;
+/// A packet is part of the burst while it finds more audio than this owed: a steady uplink packet finds 30 ms and a steady dictation packet 20 ms.
+const BURST_OWED_NS: f64 = 52_500_000.0;
 
 /// When a packet arrived and how many frames the stream had delivered once it had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +42,7 @@ impl Arrival {
 pub(crate) struct Lead {
     /// The start command minus the earliest arrival line; positive when the first frame is older than the command.
     pub(crate) lead_ms: f64,
-    /// Packets of the leading run that arrived over three frames behind the line.
+    /// Packets of the leading run that each found more than `BURST_OWED_NS` of audio owed: how far it came behind the line and the frames it brought.
     pub(crate) burst_packets: u32,
     /// Frames delivered by the end of that run.
     pub(crate) burst_frames: u32,
@@ -65,10 +65,16 @@ pub(crate) fn lead(arrivals: &[Arrival], start_ns: u64, frame_ns: f64) -> Option
         return None;
     }
     let zero = in_window.map(delay).reduce(f64::min)?;
-    let behind = BURST_FRAMES_BEHIND * frame_ns;
+    let owed =
+        |at_ns: u64, frames_before: u64| to_f64(at_ns) - to_f64(frames_before) * frame_ns - zero;
+    let frames_before = [0]
+        .into_iter()
+        .chain(arrivals.iter().map(|arrival| arrival.frames_done));
     let burst: Vec<&Arrival> = arrivals
         .iter()
-        .take_while(|arrival| delay(arrival) - zero > behind)
+        .zip(frames_before)
+        .take_while(|(arrival, frames_before)| owed(arrival.at_ns, *frames_before) > BURST_OWED_NS)
+        .map(|(arrival, _)| arrival)
         .collect();
     let (burst_frames, burst_ms) = match (burst.first(), burst.last()) {
         (Some(first), Some(last)) => (

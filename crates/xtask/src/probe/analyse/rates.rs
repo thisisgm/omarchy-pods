@@ -1,12 +1,18 @@
 //! The rates of one stretch of audio, refused when the stretch is too thin to support them.
 
+use super::lead::Arrival;
 use super::load::{AudioPacket, Loaded};
-use super::stats::{count, least_squares, median, mode, per_second, ppm, seconds, share};
+use super::stats::{count, least_squares, median, mode, per_second, ppm, seconds, share, to_f64};
 
 /// A rate needs at least this long between the first and the last audio SDU: half a one minute soak, which ends just under 60 s.
 pub(crate) const THIN_MIN_SPAN_NS: u64 = 30_000_000_000;
 /// A rate needs at least this many audio SDUs.
 pub(crate) const THIN_MIN_SDUS: usize = 500;
+/// What a stretch of the uplink must hold before a rate is formed from it.
+const UPLINK_FLOOR: Floor = Floor {
+    sdus: THIN_MIN_SDUS,
+    span_ns: THIN_MIN_SPAN_NS,
+};
 /// The slope and the first to last ratio must agree within this many parts per million.
 const DISAGREE_PPM: f64 = 50.0;
 const BITS_PER_BYTE: f64 = 8.0;
@@ -17,6 +23,24 @@ pub(crate) struct Thin {
     pub(crate) sdus: usize,
     /// From the first audio SDU to the last.
     pub(crate) span_ns: u64,
+}
+
+/// The least a stretch must hold before a rate is formed from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Floor {
+    pub(crate) sdus: usize,
+    pub(crate) span_ns: u64,
+}
+
+impl Floor {
+    /// The time from the first of `sdus` packets to the last, or what the stretch held when that is under the floor.
+    pub(crate) fn span(self, sdus: usize, first_ns: u64, last_ns: u64) -> Result<u64, Thin> {
+        let span_ns = last_ns.saturating_sub(first_ns);
+        if sdus < self.sdus || span_ns < self.span_ns {
+            return Err(Thin { sdus, span_ns });
+        }
+        Ok(span_ns)
+    }
 }
 
 /// How the audio SDUs arrive.
@@ -83,9 +107,8 @@ pub(crate) struct Bitrate {
     pub(crate) unit_bytes: Option<(usize, usize)>,
 }
 
-/// A stretch long enough for a rate: its first SDU, the ones after it and the time they span.
+/// A stretch long enough for a rate: the SDUs after its first and the time they span.
 struct Stretch<'a> {
-    first: &'a AudioPacket,
     rest: &'a [AudioPacket],
     span_ns: u64,
     /// What a figure that cannot be formed after all is refused with.
@@ -98,16 +121,11 @@ fn stretch(loaded: &Loaded) -> Result<Stretch<'_>, Thin> {
     else {
         return Err(Thin { sdus, span_ns: 0 });
     };
-    let span_ns = last.at_ns.saturating_sub(first.at_ns);
-    let thin = Thin { sdus, span_ns };
-    if sdus < THIN_MIN_SDUS || span_ns < THIN_MIN_SPAN_NS {
-        return Err(thin);
-    }
+    let span_ns = UPLINK_FLOOR.span(sdus, first.at_ns, last.at_ns)?;
     Ok(Stretch {
-        first,
         rest,
         span_ns,
-        thin,
+        thin: Thin { sdus, span_ns },
     })
 }
 
@@ -138,32 +156,51 @@ pub(crate) fn cadence(loaded: &Loaded) -> Result<Cadence, Thin> {
     })
 }
 
-/// The unit clock: the slope of units completed against the arrival of the SDU that completed them, beside the plain ratio.
+/// The unit clock of the uplink: every audio SDU counts, one with no unit too.
 pub(crate) fn clock(loaded: &Loaded, samples_per_unit: u32) -> Result<ClockEstimate, Thin> {
-    let Stretch {
-        first,
-        rest,
-        span_ns,
-        thin,
-    } = stretch(loaded)?;
-    let mut done = 0_usize;
-    let points: Vec<(f64, f64)> = loaded
+    let mut frames_done = 0_u64;
+    let arrivals: Vec<Arrival> = loaded
         .audio
         .iter()
         .map(|sdu| {
-            done = done.saturating_add(sdu.units.len());
-            let since_first_ns = sdu.at_ns.saturating_sub(first.at_ns);
-            (seconds(since_first_ns), count(done))
+            // No Rust target has a usize wider than 64 bits, so the fallback is never taken.
+            let units = u64::try_from(sdu.units.len()).unwrap_or(u64::MAX);
+            frames_done = frames_done.saturating_add(units);
+            let at_ns = sdu.at_ns;
+            Arrival { at_ns, frames_done }
+        })
+        .collect();
+    clock_of(&arrivals, samples_per_unit, UPLINK_FLOOR)
+}
+
+/// The clock behind `arrivals`: the slope of frames delivered against the arrival of the packet that completed them, beside the plain ratio.
+pub(crate) fn clock_of(
+    arrivals: &[Arrival],
+    samples_per_unit: u32,
+    floor: Floor,
+) -> Result<ClockEstimate, Thin> {
+    let (Some(first), Some(last)) = (arrivals.first(), arrivals.last()) else {
+        return Err(Thin {
+            sdus: 0,
+            span_ns: 0,
+        });
+    };
+    let sdus = arrivals.len();
+    let span_ns = floor.span(sdus, first.at_ns, last.at_ns)?;
+    let thin = Thin { sdus, span_ns };
+    let points: Vec<(f64, f64)> = arrivals
+        .iter()
+        .map(|arrival| {
+            let since_first_ns = arrival.at_ns.saturating_sub(first.at_ns);
+            (seconds(since_first_ns), to_f64(arrival.frames_done))
         })
         .collect();
     let fit = least_squares(&points).ok_or(thin)?;
-    let after_first = rest
-        .iter()
-        .fold(0_usize, |units, sdu| units.saturating_add(sdu.units.len()));
+    let after_first = last.frames_done.saturating_sub(first.frames_done);
     Ok(ClockEstimate {
         units_per_second: fit.slope,
         half_width: fit.half_width,
-        ratio: per_second(count(after_first), span_ns).ok_or(thin)?,
+        ratio: per_second(to_f64(after_first), span_ns).ok_or(thin)?,
         samples_per_unit,
     })
 }

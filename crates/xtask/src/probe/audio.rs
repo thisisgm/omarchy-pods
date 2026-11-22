@@ -17,7 +17,7 @@ use clap::Args;
 use super::analyse::input::{
     InputError, MARKS_FILE, META_FILE, parse_cues, parse_marks, parse_meta, text_of, whole_lines,
 };
-use super::analyse::load::windows;
+use super::analyse::load::{UPLINK, windows};
 use super::analyse::report::table;
 use super::analyse::{UNITS_FILE, write_new};
 use super::decode::{SAMPLES_PER_UNIT, WAV_FILE};
@@ -116,7 +116,7 @@ pub(crate) fn audio_run(args: &AudioArgs) -> Result<String, AudioError> {
     if samples != listed {
         return Err(AudioError::NotOfOneDecode { samples, listed });
     }
-    let starts = windows(&marks);
+    let starts = windows(&marks, UPLINK);
     if cues.is_empty() && starts.is_empty() {
         return Err(AudioError::NothingToMeasure);
     }

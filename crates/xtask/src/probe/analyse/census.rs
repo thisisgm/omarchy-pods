@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use pods_proto::battery::BatteryReport;
 
 use super::input::{Mark, MarkKind};
-use super::load::{Loaded, windows};
+use super::load::{Loaded, UPLINK, windows};
 use super::stats::millis;
 
 /// How many packets that are not uplink packets carry each opcode, by opcode.
@@ -63,7 +63,7 @@ pub(crate) struct Trial {
 pub(crate) fn trials(loaded: &Loaded, marks: &[Mark]) -> Vec<Trial> {
     let controls = || loaded.controls.iter().map(|control| control.at_ns);
     let audio = || loaded.audio.iter().map(|sdu| sdu.at_ns);
-    windows(marks)
+    windows(marks, UPLINK)
         .into_iter()
         .map(|window| {
             let after = |at_ns: u64| at_ns.saturating_sub(window.start_ns);
@@ -104,7 +104,10 @@ fn nearest(marks: &[Mark], at_ns: u64) -> Option<Nearest> {
         let of_kind = match mark.kind {
             MarkKind::Start => &mut starts,
             MarkKind::Stop => &mut stops,
-            MarkKind::Truncated | MarkKind::Other => continue,
+            MarkKind::DictationStart
+            | MarkKind::DictationStop
+            | MarkKind::Truncated
+            | MarkKind::Other => continue,
         };
         *of_kind = of_kind.saturating_add(1);
         let away_ns = at_ns.abs_diff(mark.at_ns);

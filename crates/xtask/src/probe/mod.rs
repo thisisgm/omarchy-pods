@@ -83,7 +83,7 @@ enum ProbeCommand {
         #[arg(long)]
         run: String,
     },
-    /// Measures the shape of the audio stream in one run and writes analysis.tsv and units.tsv into it.
+    /// Measures the shape of the audio streams in one run and writes analysis.tsv and units.tsv into it, and analysis-att.tsv, frames.tsv and att-handles.tsv when the run holds att.log.
     Analyse {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,

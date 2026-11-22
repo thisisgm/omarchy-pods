@@ -4,6 +4,8 @@ use pods_proto::sdulog::{LogError, Record, parse_line};
 
 /// The packet log of a run, one line a packet.
 pub(crate) const LOG_FILE: &str = "sdu.log";
+/// The log of the attribute channel, in the lines of the packet log; only a run that opened the channel holds one.
+pub(crate) const ATT_LOG_FILE: &str = "att.log";
 /// What the capture did and when, one line a mark.
 pub(crate) const MARKS_FILE: &str = "marks.tsv";
 /// What produced the run, one `key=value` a line.
@@ -18,6 +20,10 @@ const KIND_MAX: usize = 16;
 const KIND_START: &str = "start";
 /// The kind of the mark written when STOP goes out.
 const KIND_STOP: &str = "stop";
+/// The kind of the mark written when the dictation start write goes out.
+const KIND_DICTATION_START: &str = "dictation-start";
+/// The kind of the mark written when the dictation stop write goes out.
+const KIND_DICTATION_STOP: &str = "dictation-stop";
 /// The kind of the mark written for a receive the buffer cut, in two parts: a store test bans the whole word from this crate.
 const KIND_CUT: &str = concat!("trunc", "ated");
 /// The kind of the mark written for each line shown to the owner.
@@ -36,6 +42,8 @@ const REALTIME_KEY: &str = "realtime_at_zero_ns";
 pub(crate) enum MarkKind {
     Start,
     Stop,
+    DictationStart,
+    DictationStop,
     Truncated,
     Other,
 }
@@ -104,6 +112,8 @@ pub(crate) enum InputError {
     },
     #[error("{LOG_FILE} holds no packet, so there is nothing to measure")]
     EmptyLog,
+    #[error("{LOG_FILE} and {ATT_LOG_FILE} hold no packet, so there is nothing to measure")]
+    EmptyLogs,
     #[error("{META_FILE} has no {SCRIPT_KEY}{META_SEPARATOR} line")]
     NoScript,
 }
@@ -137,13 +147,22 @@ pub(crate) fn text_of<'a>(file: &'static str, bytes: &'a [u8]) -> Result<&'a str
     })
 }
 
-// Sample input: "1203456789 < 0400040058000100\n1203460000 > 0400040058000000\n", whole lines only; one bad line or a stamp that goes back refuses the log.
+/// The packet log of a run, which must hold a packet.
 pub(crate) fn parse_log(text: &str) -> Result<Vec<Record>, InputError> {
+    let records = parse_lines(LOG_FILE, text)?;
+    if records.is_empty() {
+        return Err(InputError::EmptyLog);
+    }
+    Ok(records)
+}
+
+// Sample input: "1203456789 < 0400040058000100\n1203460000 > 0400040058000000\n", whole lines only; one bad line or a stamp that goes back refuses the log.
+pub(crate) fn parse_lines(file: &'static str, text: &str) -> Result<Vec<Record>, InputError> {
     let mut records: Vec<Record> = Vec::new();
     let mut last_ns = 0;
     for (index, line) in text.lines().enumerate() {
         let refused = |rule| InputError::Line {
-            file: LOG_FILE,
+            file,
             line: index.saturating_add(1),
             rule,
         };
@@ -153,9 +172,6 @@ pub(crate) fn parse_log(text: &str) -> Result<Vec<Record>, InputError> {
         }
         last_ns = record.at_ns;
         records.push(record);
-    }
-    if records.is_empty() {
-        return Err(InputError::EmptyLog);
     }
     Ok(records)
 }
@@ -216,7 +232,7 @@ fn parse_stamp(stamp: &str) -> Option<u64> {
     (at_ns.to_string() == stamp).then_some(at_ns)
 }
 
-// Sample input: "start", "stop" or the kind of a cut receive; any other name is a kind the analysis does not read.
+// Sample input: "start", "stop", "dictation-start", "dictation-stop" or the kind of a cut receive; any other name is a kind the analysis does not read.
 fn parse_kind(kind: &str) -> Option<MarkKind> {
     if !is_name(kind, KIND_MAX) {
         return None;
@@ -224,6 +240,8 @@ fn parse_kind(kind: &str) -> Option<MarkKind> {
     Some(match kind {
         KIND_START => MarkKind::Start,
         KIND_STOP => MarkKind::Stop,
+        KIND_DICTATION_START => MarkKind::DictationStart,
+        KIND_DICTATION_STOP => MarkKind::DictationStop,
         KIND_CUT => MarkKind::Truncated,
         _ => MarkKind::Other,
     })
