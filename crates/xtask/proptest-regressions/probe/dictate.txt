@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 59328eb383ade1f7a8461bf45f199985ba1f75fcf5ebec81bfe6e21e11e1cf41 # shrinks to pdus = [[5, 1, 117, 151, 3, 40], [5, 1, 0, 0, 3, 40]]

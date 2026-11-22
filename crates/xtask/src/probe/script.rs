@@ -11,11 +11,27 @@ const MS_PER_MINUTE: u32 = 60_000;
 const MIN_MINUTES: u32 = 1;
 /// The longest run `--minutes` asks for.
 const MAX_MINUTES: u32 = 90;
-/// How long `knock` holds the channel open after the connect.
+/// How long `knock` and `att-knock` hold the channel open after the connect.
 const KNOCK_HOLD_MS: u32 = 3_000;
-/// How long `soak` keeps logging after its STOP.
+/// How long `soak` keeps logging after its STOP, on either route.
 const SOAK_TAIL_MS: u32 = 5_000;
-/// How long the uplink runs in each cycle of `trials` and `firstword`.
+/// How long the active session marker leads the start write: a Mac was seen to send it 446 to 508 ms before, in three sessions with one pair of pods.
+const MARKER_LEAD_MS: u32 = 480;
+/// How long after the stop write the idle session marker follows in every script that starts the dictation stream.
+const IDLE_LAG_MS: u32 = 500;
+/// When `voice` stops its stream, on either route.
+const VOICE_STOP_MS: u32 = 84_000;
+/// When `voice` ends, on either route.
+const VOICE_END_MS: u32 = 89_000;
+/// When `both` starts the uplink, with the dictation stream already running.
+const BOTH_UPLINK_START_MS: u32 = 5_000;
+/// When `both` stops the uplink.
+const BOTH_UPLINK_STOP_MS: u32 = 60_000;
+/// When `both` stops the dictation stream, after the uplink.
+const BOTH_DICTATION_STOP_MS: u32 = 65_000;
+/// When `both` ends.
+const BOTH_END_MS: u32 = 70_000;
+/// How long the stream runs in each cycle of `trials` and `firstword`, on either route.
 const CYCLE_STREAM_MS: u32 = 5_000;
 /// The first sixteen cycles of `trials` start this far apart, which leaves 10 s of idle between them.
 const TRIALS_SHORT_PERIOD_MS: u32 = 15_000;
@@ -54,8 +70,8 @@ const VOICE: [Event; 11] = [
     at(59_000, Action::Cue("Jingle your keys for five seconds")),
     at(67_000, Action::Cue("Stay silent")),
     at(79_000, Action::Cue(TAP_LEFT_TWICE)),
-    at(84_000, Action::Stop),
-    at(89_000, Action::End),
+    at(VOICE_STOP_MS, Action::Stop),
+    at(VOICE_END_MS, Action::End),
 ];
 
 /// `side`: one uplink run under each microphone side, then with each bud out of the ear.
@@ -98,6 +114,57 @@ const EARLY: [Event; 4] = [
     at(18_000, Action::End),
 ];
 
+/// Which microphone stream a run asks the pods for, by the name `--route` takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// The stream on the control channel.
+    Uplink,
+    /// The stream in notifications on the attribute channel.
+    Dictation,
+    /// Both streams in one run.
+    Both,
+}
+
+impl Route {
+    /// Every route, in the order the usage text lists them.
+    pub(crate) const ALL: [Self; 3] = [Self::Uplink, Self::Dictation, Self::Both];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Uplink => "uplink",
+            Self::Dictation => "dictation",
+            Self::Both => "both",
+        }
+    }
+
+    /// The scripts of this route as a refusal lists them; a test holds the list equal to what `build` takes.
+    fn scripts(self) -> &'static str {
+        match self {
+            Self::Uplink => "knock, listen, soak, voice, side, trials, early and firstword",
+            Self::Dictation => "soak, voice, firstword, att-knock and att-map",
+            Self::Both => "both",
+        }
+    }
+}
+
+impl fmt::Display for Route {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Route {
+    type Err = ScriptError;
+
+    // Sample input: `dictation`, one of the route names in lowercase.
+    fn from_str(text: &str) -> Result<Self, ScriptError> {
+        let mut routes = Self::ALL.into_iter();
+        routes
+            .find(|route| route.as_str() == text)
+            .ok_or(ScriptError::UnknownRoute)
+    }
+}
+
 /// The scripts, by the name `--script` takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScriptName {
@@ -109,11 +176,14 @@ pub(crate) enum ScriptName {
     Trials,
     Early,
     Firstword,
+    AttKnock,
+    AttMap,
+    Both,
 }
 
 impl ScriptName {
     /// Every script, in the order the usage text lists them.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Knock,
         Self::Listen,
         Self::Soak,
@@ -122,6 +192,9 @@ impl ScriptName {
         Self::Trials,
         Self::Early,
         Self::Firstword,
+        Self::AttKnock,
+        Self::AttMap,
+        Self::Both,
     ];
 
     fn as_str(self) -> &'static str {
@@ -134,6 +207,9 @@ impl ScriptName {
             Self::Trials => "trials",
             Self::Early => "early",
             Self::Firstword => "firstword",
+            Self::AttKnock => "att-knock",
+            Self::AttMap => "att-map",
+            Self::Both => "both",
         }
     }
 }
@@ -147,7 +223,7 @@ impl fmt::Display for ScriptName {
 impl FromStr for ScriptName {
     type Err = ScriptError;
 
-    // Sample input: firstword, one of the eight names in lowercase.
+    // Sample input: `firstword`, one of the script names in lowercase.
     fn from_str(text: &str) -> Result<Self, ScriptError> {
         let mut names = Self::ALL.into_iter();
         names
@@ -160,15 +236,30 @@ impl FromStr for ScriptName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ScriptError {
     #[error(
-        "that is not a script; the scripts are knock, listen, soak, voice, side, trials, early and firstword"
+        "that is not a script; the scripts are knock, listen, soak, voice, side, trials, early, firstword, att-knock, att-map and both"
     )]
     UnknownName,
+    #[error("that is not a route; the routes are uplink, dictation and both")]
+    UnknownRoute,
+    #[error(
+        "script {name} is not a script of the {route} route, whose scripts are {scripts}",
+        scripts = .route.scripts()
+    )]
+    NotOnRoute { name: ScriptName, route: Route },
     #[error("script {name} runs for a set time: pass --minutes {MIN_MINUTES} to {MAX_MINUTES}")]
     MinutesRequired { name: ScriptName },
     #[error("script {name} has a fixed length: --minutes is only for listen and soak")]
     MinutesRefused { name: ScriptName },
     #[error("--minutes {minutes} is outside {MIN_MINUTES} to {MAX_MINUTES}")]
     MinutesOutOfRange { minutes: u32 },
+    #[error("--no-marker is refused on the uplink route, which sends no session marker")]
+    NoMarkerOnUplink,
+    #[error("--unchecked is refused on the uplink route, which checks no handle")]
+    UncheckedOnUplink,
+    #[error(
+        "stop takes one route at a time: run it with --route uplink, then with --route dictation"
+    )]
+    RescueOfBoth,
 }
 
 /// What a run does once the channel is open.
@@ -180,6 +271,10 @@ pub(crate) enum Opening {
     Knock,
     /// START goes out before the handshake.
     EarlyStart,
+    /// Only the attribute channel is open and nothing is sent; events count from the connect.
+    AttKnock,
+    /// Only the attribute channel is open; the table is walked and its declarations are read, then the gate opens.
+    AttMap,
 }
 
 /// One thing a script does.
@@ -192,6 +287,14 @@ pub(crate) enum Action {
     SetSide(MicSide),
     /// Puts the microphone side back to the value the pods reported.
     RestoreSide,
+    /// The session marker a Mac sends on the control channel before the start write.
+    MarkActive,
+    /// The session marker a Mac sends on the control channel after the stop write.
+    MarkIdle,
+    /// The write that starts the dictation stream.
+    DictationStart,
+    /// The write that stops the dictation stream.
+    DictationStop,
     End,
 }
 
@@ -208,28 +311,77 @@ pub(crate) struct Script {
     pub(crate) opening: Opening,
     /// The run needs the microphone side the pods report before it may start.
     pub(crate) needs_initial_side: bool,
+    /// The owner allowed the start write after a walk the pods did not answer.
+    pub(crate) unchecked: bool,
     pub(crate) events: Vec<Event>,
+}
+
+impl Script {
+    /// Whether the run reads the pods' attribute table before its gate: to map it, or to check it before a start write.
+    pub(crate) fn walks(&self) -> bool {
+        let mut actions = self.events.iter().map(|event| event.action);
+        self.opening == Opening::AttMap || actions.any(|action| action == Action::DictationStart)
+    }
+
+    /// Lets the start write follow a walk that the pods did not answer, which `--unchecked` asks for; `route` is the one the script was built for.
+    pub(crate) fn allow_unchecked(mut self, route: Route) -> Result<Self, ScriptError> {
+        match route {
+            Route::Uplink => Err(ScriptError::UncheckedOnUplink),
+            Route::Dictation | Route::Both => {
+                self.unchecked = true;
+                Ok(self)
+            }
+        }
+    }
 }
 
 const fn at(at_ms: u32, action: Action) -> Event {
     Event { at_ms, action }
 }
 
-/// Builds the script `name`; `minutes` is how long `listen` and `soak` run, and no other script takes it.
-// Sample input: (soak, Some(2)) is two minutes of uplink; (voice, None) is the fixed voice script.
-pub(crate) fn build(name: ScriptName, minutes: Option<u32>) -> Result<Script, ScriptError> {
-    let mut events = match (name, minutes) {
-        (ScriptName::Listen, Some(minutes)) => vec![at(run_ms(minutes)?, Action::End)],
-        (ScriptName::Soak, Some(minutes)) => soak(run_ms(minutes)?),
+/// Builds the script `name` of `route`, as `(soak, uplink, Some(2), true)` builds two minutes of uplink; `minutes` is how long `listen` and `soak` run, and `marker` false drops the two session markers and nothing else.
+pub(crate) fn build(
+    name: ScriptName,
+    route: Route,
+    minutes: Option<u32>,
+    marker: bool,
+) -> Result<Script, ScriptError> {
+    let (opening, mut events) = match route {
+        Route::Uplink if !marker => return Err(ScriptError::NoMarkerOnUplink),
+        Route::Uplink => uplink(name, minutes)?,
+        Route::Dictation => dictation(name, minutes)?,
+        Route::Both => both(name, minutes)?,
+    };
+    if !marker {
+        events.retain(|event| !matches!(event.action, Action::MarkActive | Action::MarkIdle));
+    }
+    // The sort is stable, so events at one offset keep the order they are written in.
+    events.sort_by_key(|event| event.at_ms);
+    Ok(Script {
+        opening,
+        needs_initial_side: route == Route::Uplink && name == ScriptName::Side,
+        unchecked: false,
+        events,
+    })
+}
+
+/// How a script of the uplink route opens and what it does.
+fn uplink(name: ScriptName, minutes: Option<u32>) -> Result<(Opening, Vec<Event>), ScriptError> {
+    let script = match (name, minutes) {
+        (ScriptName::Listen, Some(minutes)) => {
+            let end = at(run_ms(minutes)?, Action::End);
+            (Opening::Handshake, vec![end])
+        }
+        (ScriptName::Soak, Some(minutes)) => (Opening::Handshake, soak(run_ms(minutes)?)),
         (ScriptName::Listen | ScriptName::Soak, None) => {
             return Err(ScriptError::MinutesRequired { name });
         }
-        (ScriptName::Knock, None) => vec![at(KNOCK_HOLD_MS, Action::End)],
-        (ScriptName::Voice, None) => VOICE.to_vec(),
-        (ScriptName::Side, None) => SIDE.to_vec(),
-        (ScriptName::Trials, None) => trials(),
-        (ScriptName::Early, None) => EARLY.to_vec(),
-        (ScriptName::Firstword, None) => firstword(),
+        (ScriptName::Knock, None) => (Opening::Knock, vec![at(KNOCK_HOLD_MS, Action::End)]),
+        (ScriptName::Voice, None) => (Opening::Handshake, VOICE.to_vec()),
+        (ScriptName::Side, None) => (Opening::Handshake, SIDE.to_vec()),
+        (ScriptName::Trials, None) => (Opening::Handshake, trials()),
+        (ScriptName::Early, None) => (Opening::EarlyStart, EARLY.to_vec()),
+        (ScriptName::Firstword, None) => (Opening::Handshake, firstword()),
         (
             ScriptName::Knock
             | ScriptName::Voice
@@ -239,27 +391,69 @@ pub(crate) fn build(name: ScriptName, minutes: Option<u32>) -> Result<Script, Sc
             | ScriptName::Firstword,
             Some(_),
         ) => return Err(ScriptError::MinutesRefused { name }),
+        (ScriptName::AttKnock | ScriptName::AttMap | ScriptName::Both, _) => {
+            let route = Route::Uplink;
+            return Err(ScriptError::NotOnRoute { name, route });
+        }
     };
-    // The sort is stable, so events at one offset keep the order they are written in.
-    events.sort_by_key(|event| event.at_ms);
-    let opening = match name {
-        ScriptName::Knock => Opening::Knock,
-        ScriptName::Early => Opening::EarlyStart,
-        ScriptName::Listen
-        | ScriptName::Soak
-        | ScriptName::Voice
-        | ScriptName::Side
-        | ScriptName::Trials
-        | ScriptName::Firstword => Opening::Handshake,
-    };
-    Ok(Script {
-        opening,
-        needs_initial_side: name == ScriptName::Side,
-        events,
-    })
+    Ok(script)
 }
 
-// Sample input: 2, read as 120000 milliseconds; 0 and 91 are refused.
+/// How a script of the dictation route opens and what it does.
+fn dictation(name: ScriptName, minutes: Option<u32>) -> Result<(Opening, Vec<Event>), ScriptError> {
+    let script = match (name, minutes) {
+        (ScriptName::AttKnock, None) => (Opening::AttKnock, vec![at(KNOCK_HOLD_MS, Action::End)]),
+        // The walk and the one read end before the gate, so nothing is left for the script to wait on.
+        (ScriptName::AttMap, None) => (Opening::AttMap, vec![at(0, Action::End)]),
+        (ScriptName::Soak, Some(minutes)) => (Opening::Handshake, dictation_soak(run_ms(minutes)?)),
+        (ScriptName::Soak, None) => return Err(ScriptError::MinutesRequired { name }),
+        (ScriptName::Voice, None) => (Opening::Handshake, dictation_voice()),
+        (ScriptName::Firstword, None) => (Opening::Handshake, dictation_firstword()),
+        (
+            ScriptName::AttKnock | ScriptName::AttMap | ScriptName::Voice | ScriptName::Firstword,
+            Some(_),
+        ) => return Err(ScriptError::MinutesRefused { name }),
+        (
+            ScriptName::Knock
+            | ScriptName::Listen
+            | ScriptName::Side
+            | ScriptName::Trials
+            | ScriptName::Early
+            | ScriptName::Both,
+            _,
+        ) => {
+            let route = Route::Dictation;
+            return Err(ScriptError::NotOnRoute { name, route });
+        }
+    };
+    Ok(script)
+}
+
+/// The one script of the route that runs both streams.
+fn both(name: ScriptName, minutes: Option<u32>) -> Result<(Opening, Vec<Event>), ScriptError> {
+    match (name, minutes) {
+        (ScriptName::Both, None) => Ok((Opening::Handshake, both_streams())),
+        (ScriptName::Both, Some(_)) => Err(ScriptError::MinutesRefused { name }),
+        (
+            ScriptName::Knock
+            | ScriptName::Listen
+            | ScriptName::Soak
+            | ScriptName::Voice
+            | ScriptName::Side
+            | ScriptName::Trials
+            | ScriptName::Early
+            | ScriptName::Firstword
+            | ScriptName::AttKnock
+            | ScriptName::AttMap,
+            _,
+        ) => {
+            let route = Route::Both;
+            Err(ScriptError::NotOnRoute { name, route })
+        }
+    }
+}
+
+// Sample input: `2`, read as 120000 milliseconds; 0 and 91 are refused.
 fn run_ms(minutes: u32) -> Result<u32, ScriptError> {
     if (MIN_MINUTES..=MAX_MINUTES).contains(&minutes) {
         Ok(minutes.saturating_mul(MS_PER_MINUTE))
@@ -309,13 +503,84 @@ fn firstword() -> Vec<Event> {
     events
 }
 
-/// The rescue: after the handshake, a STOP for an uplink that a killed capture left running.
-pub(crate) fn rescue() -> Script {
-    Script {
+/// One dictation stream that ends at `stop_ms`: the marker, the start write `MARKER_LEAD_MS` later, the stop write, and the idle marker `IDLE_LAG_MS` after it.
+fn dictation_run(stop_ms: u32) -> [Event; 4] {
+    [
+        at(0, Action::MarkActive),
+        at(MARKER_LEAD_MS, Action::DictationStart),
+        at(stop_ms, Action::DictationStop),
+        at(stop_ms.saturating_add(IDLE_LAG_MS), Action::MarkIdle),
+    ]
+}
+
+/// The dictation `soak`: one stream until `run_ms` with nothing asked of the owner.
+fn dictation_soak(run_ms: u32) -> Vec<Event> {
+    let mut events = dictation_run(run_ms).to_vec();
+    let still = Action::Cue("Stay as you are. Nothing to do.");
+    let end = at(run_ms.saturating_add(SOAK_TAIL_MS), Action::End);
+    events.extend([at(MARKER_LEAD_MS, still), end]);
+    events
+}
+
+/// The dictation `voice`: one stream under the cues of the uplink `voice`, at the same offsets.
+fn dictation_voice() -> Vec<Event> {
+    let mut events = dictation_run(VOICE_STOP_MS).to_vec();
+    let cues = VOICE.into_iter();
+    events.extend(cues.filter(|event| matches!(event.action, Action::Cue(_))));
+    events.push(at(VOICE_END_MS, Action::End));
+    events
+}
+
+/// The dictation `firstword`: three streams that begin while the owner is already counting, each start write led by its marker.
+fn dictation_firstword() -> Vec<Event> {
+    let counting = Action::Cue("Count aloud from one and do not stop until told");
+    let mut events = vec![at(0, counting)];
+    for start_ms in FIRSTWORD_STARTS_MS {
+        let stop_ms = start_ms.saturating_add(CYCLE_STREAM_MS);
+        events.extend([
+            at(start_ms.saturating_sub(MARKER_LEAD_MS), Action::MarkActive),
+            at(start_ms, Action::DictationStart),
+            at(stop_ms, Action::DictationStop),
+            at(stop_ms.saturating_add(IDLE_LAG_MS), Action::MarkIdle),
+        ]);
+    }
+    let quiet = Action::Cue("Stop counting");
+    events.extend([
+        at(FIRSTWORD_QUIET_MS, quiet),
+        at(FIRSTWORD_END_MS, Action::End),
+    ]);
+    events
+}
+
+/// `both`: the uplink starts and stops while the dictation stream runs, and the owner counts aloud from the uplink's start.
+fn both_streams() -> Vec<Event> {
+    let mut events = dictation_run(BOTH_DICTATION_STOP_MS).to_vec();
+    events.extend([
+        at(BOTH_UPLINK_START_MS, Action::Start),
+        at(BOTH_UPLINK_START_MS, Action::Cue("Count aloud to twenty")),
+        at(BOTH_UPLINK_STOP_MS, Action::Stop),
+        at(BOTH_END_MS, Action::End),
+    ]);
+    events
+}
+
+/// The rescue of one route: after the handshake, the stop that a killed capture did not send, and for dictation the idle marker after it.
+pub(crate) fn rescue(route: Route) -> Result<Script, ScriptError> {
+    let events = match route {
+        Route::Uplink => vec![at(0, Action::Stop), at(0, Action::End)],
+        Route::Dictation => vec![
+            at(0, Action::DictationStop),
+            at(0, Action::MarkIdle),
+            at(0, Action::End),
+        ],
+        Route::Both => return Err(ScriptError::RescueOfBoth),
+    };
+    Ok(Script {
         opening: Opening::Handshake,
         needs_initial_side: false,
-        events: vec![at(0, Action::Stop), at(0, Action::End)],
-    }
+        unchecked: false,
+        events,
+    })
 }
 
 #[cfg(test)]
