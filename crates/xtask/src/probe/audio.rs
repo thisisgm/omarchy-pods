@@ -11,7 +11,6 @@ mod spectrum;
 mod timeline;
 
 use std::path::PathBuf;
-use std::str::FromStr;
 
 use clap::Args;
 
@@ -34,45 +33,16 @@ use timeline::{Timeline, TimelineError, cue_windows};
 
 /// The table of figures, which is also what the command prints.
 const AUDIO_FILE: &str = "audio.tsv";
-/// The decoded dictation stream and the table that says where its frames lie, which a later command writes.
-const DICTATION_FILE: &str = "dictation.f32.wav";
-const FRAMES_FILE: &str = "frames.tsv";
 /// A decode writes at most 293 MiB of samples, and twenty minutes of 24 bit stereo at 48 kHz are 330 MiB.
 const MAX_WAV_BYTES: u64 = 512 * 1024 * 1024;
 /// The least rate measured: at it the 2 kHz a tap is read above still lies an octave under half the rate.
 const MIN_RATE_HZ: u32 = 8000;
-
-/// The decoded file of the run that is measured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pcm {
-    Pods,
-    Dictation,
-}
-
-impl FromStr for Pcm {
-    type Err = &'static str;
-
-    // Sample input: `pods.f32.wav`, the name of a decoded file inside the run, never a path.
-    fn from_str(name: &str) -> Result<Self, Self::Err> {
-        match name {
-            WAV_FILE => Ok(Self::Pods),
-            DICTATION_FILE => Ok(Self::Dictation),
-            _ if name.contains('/') => {
-                Err("the decoded file is named without a directory: it is read inside the run")
-            }
-            _ => Err("the decoded files of a run are pods.f32.wav and dictation.f32.wav"),
-        }
-    }
-}
 
 /// What `probe audio` takes.
 #[derive(Debug, Args)]
 pub(crate) struct AudioArgs {
     /// The run directory, a session directory of the store then the run name.
     run_dir: PathBuf,
-    /// The decoded file inside the run: pods.f32.wav, or dictation.f32.wav for the dictation stream.
-    #[arg(long, default_value = WAV_FILE)]
-    pcm: Pcm,
     /// A WAV recording of the same sound by another microphone: the caller's own, with no access for group or others.
     #[arg(long, requires = "reference_start_ns")]
     reference: Option<PathBuf>,
@@ -104,10 +74,6 @@ pub(crate) enum AudioError {
         "{META_FILE} has no realtime_at_zero_ns line, so nothing places the reference on the clock of the run"
     )]
     NoRealtime,
-    #[error(
-        "{FRAMES_FILE} places the frames of {DICTATION_FILE}, and this command does not read it yet"
-    )]
-    FramesNotRead,
 }
 
 fn read_wav(file: &str, bytes: &[u8]) -> Result<Wav, AudioError> {
@@ -128,9 +94,6 @@ fn read_wav(file: &str, bytes: &[u8]) -> Result<Wav, AudioError> {
 /// Measures the decoded audio of the run, writes the table into the run and returns it.
 pub(crate) fn audio_run(args: &AudioArgs) -> Result<String, AudioError> {
     let run = Run::open(&args.run_dir)?;
-    if args.pcm == Pcm::Dictation {
-        return Err(AudioError::FramesNotRead);
-    }
     let marks = run.read(MARKS_FILE, MAX_READ_BYTES)?;
     let meta = run.read(META_FILE, MAX_READ_BYTES)?;
     let units = run.read(UNITS_FILE, MAX_READ_BYTES)?;
