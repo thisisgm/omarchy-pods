@@ -38,6 +38,9 @@ mod tests {
     /// The daemon's limit on one BlueZ method call.
     const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// The most a user disconnect may take to clear the state once the pods left, far inside the 7750 ms grace.
+    const CLEARED_WITHIN: Duration = Duration::from_secs(1);
+
     /// Pods that refuse every dial, the daemon started and BlueZ not yet reporting them connected.
     fn refused_pods() -> (Rig, Device) {
         let mut rig = Rig::new();
@@ -213,6 +216,50 @@ mod tests {
         let status = rig.status();
         assert_eq!(failures(&status), CALLS_IN_FLIGHT_MAX);
         assert!(!connected(&status));
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "half a minute at real time; the slow job runs it"]
+    fn a_disconnect_that_times_out_after_the_pods_came_back_leaves_a_newer_one_holding() {
+        let mut rig = Rig::new();
+        let device = rig.add_pods(Profile::default());
+        rig.start();
+        rig.link_up(&device);
+        rig.wait_filled();
+        let mut client = Proto1::connect(rig.session());
+        let mut held = Vec::new();
+        for id in 1..=2 {
+            rig.bluez().hold_replies(true);
+            assert_eq!(outcome(&client.ask(&do_request(id, "disconnect"))), "sent");
+            held.push(device.call(DeviceMethod::Disconnect));
+            wait_for("the held disconnect at the fake BlueZ", || {
+                (rig.bluez().calls() == held).then_some(())
+            });
+            rig.bluez().hold_replies(false);
+            if id == 1 {
+                rig.link_down(&device);
+                rig.wait_status("the name cleared", |status| status["device_name"] == "");
+                rig.link_up(&device);
+                rig.wait_filled();
+            }
+        }
+        wait_within(
+            "the first disconnect counted as failed",
+            CALL_TIMEOUT.saturating_add(HANG_LIMIT),
+            || (total(&rig.status(), "disconnect_failures_total") == 1).then_some(()),
+        );
+        let left = Instant::now();
+        rig.link_down(&device);
+        let cleared = rig.wait_status("the name cleared", |status| status["device_name"] == "");
+        assert_gap(
+            "the name cleared after the pods left",
+            left,
+            Instant::now(),
+            &(Duration::ZERO..=CLEARED_WITHIN),
+        );
+        assert!(!connected(&cleared));
+        assert_eq!(total(&cleared, "disconnect_failures_total"), 1);
         rig.finish();
     }
 }

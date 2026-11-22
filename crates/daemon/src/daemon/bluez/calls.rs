@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use pods_core::link::DeviceAction;
+use pods_core::link::{Call, DeviceAction};
 use tokio::task::{Id, JoinSet};
 use tokio::time::timeout;
 use zbus::{Connection, ObjectPath, OwnedObjectPath, OwnedVariant};
@@ -19,27 +19,22 @@ const CALLS_IN_FLIGHT_MAX: usize = 4;
 
 const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 
-/// The calls under way, at most `CALLS_IN_FLIGHT_MAX`, and the action each carries out.
+/// The calls under way, at most `CALLS_IN_FLIGHT_MAX`.
 #[derive(Debug, Default)]
 pub(super) struct Calls {
     tasks: JoinSet<zbus::Result<()>>,
-    actions: HashMap<Id, DeviceAction>,
+    made: HashMap<Id, Call>,
 }
 
 impl Calls {
-    /// Starts `action` on the device at `path`; false, with nothing started, while `CALLS_IN_FLIGHT_MAX` are under way.
+    /// Starts `call` on the device at `path`; false, with nothing started, while `CALLS_IN_FLIGHT_MAX` are under way.
     #[must_use]
-    pub(super) fn start(
-        &mut self,
-        connection: &Connection,
-        path: String,
-        action: DeviceAction,
-    ) -> bool {
+    pub(super) fn start(&mut self, connection: &Connection, path: String, call: Call) -> bool {
         if self.tasks.len() >= CALLS_IN_FLIGHT_MAX {
             return false;
         }
-        let task = self.tasks.spawn(run(connection.clone(), path, action));
-        self.actions.insert(task.id(), action);
+        let task = self.tasks.spawn(run(connection.clone(), path, call.action));
+        self.made.insert(task.id(), call);
         true
     }
 
@@ -47,7 +42,7 @@ impl Calls {
     pub(super) fn poll_ended(
         &mut self,
         context: &mut Context<'_>,
-    ) -> Poll<(DeviceAction, zbus::Result<()>)> {
+    ) -> Poll<(Call, zbus::Result<()>)> {
         let (id, result) = match self.tasks.poll_join_next_with_id(context) {
             Poll::Ready(Some(Ok(ended))) => ended,
             Poll::Ready(Some(Err(error))) => (
@@ -59,8 +54,8 @@ impl Calls {
             Poll::Ready(None) | Poll::Pending => return Poll::Pending,
         };
         // Every task's id was kept when it was spawned, so none is missing.
-        match self.actions.remove(&id) {
-            Some(action) => Poll::Ready((action, result)),
+        match self.made.remove(&id) {
+            Some(call) => Poll::Ready((call, result)),
             None => Poll::Pending,
         }
     }

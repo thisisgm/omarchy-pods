@@ -12,7 +12,7 @@ use std::pin::{Pin, pin};
 use std::task::Poll;
 use std::time::Duration;
 
-use pods_core::link::DeviceAction;
+use pods_core::link::Call;
 use pods_proto::addr::BdAddr;
 use tokio::sync::mpsc;
 use tokio::time::{Sleep, sleep, timeout};
@@ -103,7 +103,7 @@ enum Next {
     Request(Request),
     /// The wait after a failed sweep is over.
     Retry,
-    CallEnded(DeviceAction, zbus::Result<()>),
+    CallEnded(Call, zbus::Result<()>),
     /// The connection to the system bus closed.
     Closed,
     /// The driver dropped its end of the request queue.
@@ -141,24 +141,24 @@ impl Watcher<'_> {
             match next(&mut signals, requests, &mut self.retry, self.calls).await {
                 Next::Signal(message) => self.take(&message).await?,
                 Next::Request(Request::Sweep) | Next::Retry => self.sweep().await?,
-                Next::Request(Request::Call { device, action }) => {
-                    self.call(device, action).await?;
+                Next::Request(Request::Call { device, call }) => {
+                    self.call(device, call).await?;
                 }
-                Next::CallEnded(action, result) => call_ended(self.inputs, action, result).await?,
+                Next::CallEnded(call, result) => call_ended(self.inputs, call, result).await?,
                 Next::Closed => return ControlFlow::Continue(()),
                 Next::DriverGone => return ControlFlow::Break(()),
             }
         }
     }
 
-    /// Starts `action` on a path BlueZ holds for `device`, or fails it at once: no call goes to a device BlueZ does not hold.
-    async fn call(&mut self, device: BdAddr, action: DeviceAction) -> ControlFlow<()> {
+    /// Starts `call` on a path BlueZ holds for `device`, or fails it at once: no call goes to a device BlueZ does not hold.
+    async fn call(&mut self, device: BdAddr, call: Call) -> ControlFlow<()> {
         // A removal taken after the machine chose `device` and before this request leaves no path.
         let Some(path) = self.candidates.path_of(device) else {
-            return not_made(self.inputs, action, "BlueZ holds no such device").await;
+            return not_made(self.inputs, call, "BlueZ holds no such device").await;
         };
-        if !self.calls.start(&self.connection, path.to_owned(), action) {
-            return not_made(self.inputs, action, "too many calls already wait for BlueZ").await;
+        if !self.calls.start(&self.connection, path.to_owned(), call) {
+            return not_made(self.inputs, call, "too many calls already wait for BlueZ").await;
         }
         ControlFlow::Continue(())
     }
@@ -339,24 +339,24 @@ fn failure(error: &zbus::Error) -> String {
 /// Logs a call that failed and tells the driver; `Break` once the driver is gone.
 async fn call_ended(
     inputs: &mpsc::Sender<Input>,
-    action: DeviceAction,
+    call: Call,
     result: zbus::Result<()>,
 ) -> ControlFlow<()> {
     let Err(error) = result else {
         return ControlFlow::Continue(());
     };
-    log(&format!("bluez: {action:?} failed: {}", failure(&error)));
-    send(inputs, DeviceEvent::CallFailed(action)).await
+    log(&format!(
+        "bluez: {:?} failed: {}",
+        call.action,
+        failure(&error)
+    ));
+    send(inputs, DeviceEvent::CallFailed(call)).await
 }
 
 /// Logs a call that was not made, and why, then tells the driver it failed; `Break` once the driver is gone.
-async fn not_made(
-    inputs: &mpsc::Sender<Input>,
-    action: DeviceAction,
-    reason: &str,
-) -> ControlFlow<()> {
-    log(&format!("bluez: {action:?} not made: {reason}"));
-    send(inputs, DeviceEvent::CallFailed(action)).await
+async fn not_made(inputs: &mpsc::Sender<Input>, call: Call, reason: &str) -> ControlFlow<()> {
+    log(&format!("bluez: {:?} not made: {reason}", call.action));
+    send(inputs, DeviceEvent::CallFailed(call)).await
 }
 
 /// The next signal, call that ended, request, or the end of the wait to sweep again.
@@ -373,8 +373,8 @@ async fn next(
             Poll::Ready(Some(Err(_)) | None) => return Poll::Ready(Next::Closed),
             Poll::Pending => {}
         }
-        if let Poll::Ready((action, result)) = calls.poll_ended(context) {
-            return Poll::Ready(Next::CallEnded(action, result));
+        if let Poll::Ready((call, result)) = calls.poll_ended(context) {
+            return Poll::Ready(Next::CallEnded(call, result));
         }
         if let Poll::Ready(request) = requests.poll_recv(context) {
             return Poll::Ready(request.map_or(Next::DriverGone, Next::Request));
@@ -395,7 +395,7 @@ async fn next(
 enum Retry {
     Due,
     Request(Request),
-    CallEnded(DeviceAction, zbus::Result<()>),
+    CallEnded(Call, zbus::Result<()>),
     DriverGone,
 }
 
@@ -411,8 +411,8 @@ async fn wait_to_retry(
             if pause.as_mut().poll(context).is_ready() {
                 return Poll::Ready(Retry::Due);
             }
-            if let Poll::Ready((action, result)) = calls.poll_ended(context) {
-                return Poll::Ready(Retry::CallEnded(action, result));
+            if let Poll::Ready((call, result)) = calls.poll_ended(context) {
+                return Poll::Ready(Retry::CallEnded(call, result));
             }
             requests.poll_recv(context).map(|request| match request {
                 Some(request) => Retry::Request(request),
@@ -424,10 +424,10 @@ async fn wait_to_retry(
             Retry::Due => return ControlFlow::Continue(()),
             Retry::DriverGone => return ControlFlow::Break(()),
             Retry::Request(Request::Sweep) => {}
-            Retry::Request(Request::Call { action, .. }) => {
-                not_made(inputs, action, "the system bus is out of reach").await?;
+            Retry::Request(Request::Call { call, .. }) => {
+                not_made(inputs, call, "the system bus is out of reach").await?;
             }
-            Retry::CallEnded(action, result) => call_ended(inputs, action, result).await?,
+            Retry::CallEnded(call, result) => call_ended(inputs, call, result).await?,
         }
     }
 }

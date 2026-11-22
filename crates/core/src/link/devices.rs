@@ -3,7 +3,7 @@
 use pods_proto::addr::BdAddr;
 
 use super::ladder::Attempt;
-use super::{Action, DeviceAction, Machine, Phase, Ticket, raise, resolve};
+use super::{Action, Call, DeviceAction, Machine, Phase, Ticket, raise, resolve};
 use crate::command::{CommandError, Outcome};
 use crate::state::{Counters, State};
 
@@ -39,7 +39,7 @@ impl Machine {
             actions.push(resolve(ticket, Outcome::Sent));
             return actions;
         }
-        call(state, ticket, device, DeviceAction::Connect)
+        self.call(state, ticket, device, DeviceAction::Connect)
     }
 
     pub(super) fn disconnect(&mut self, state: &mut State, ticket: Ticket) -> Vec<Action> {
@@ -53,7 +53,7 @@ impl Machine {
             )];
         }
         self.user_disconnects = self.user_disconnects.saturating_add(1);
-        call(state, ticket, device, DeviceAction::Disconnect)
+        self.call(state, ticket, device, DeviceAction::Disconnect)
     }
 
     /// The device's `DeviceGone` does the rest once BlueZ removed it.
@@ -61,17 +61,35 @@ impl Machine {
         let Some(device) = self.target() else {
             return no_device(ticket);
         };
-        call(state, ticket, device, DeviceAction::Forget)
+        self.call(state, ticket, device, DeviceAction::Forget)
     }
 
-    pub(super) fn call_failed(&mut self, state: &mut State, action: DeviceAction) -> Vec<Action> {
-        if let Some(failures) = action.failures(&mut state.counters) {
+    pub(super) fn call_failed(&mut self, state: &mut State, call: Call) -> Vec<Action> {
+        if let Some(failures) = call.action.failures(&mut state.counters) {
             raise(failures);
         }
-        if action == DeviceAction::Disconnect {
+        if call.action == DeviceAction::Disconnect && call.session == self.session {
             self.user_disconnects = self.user_disconnects.saturating_sub(1);
         }
         Vec::new()
+    }
+
+    fn call(
+        &self,
+        state: &mut State,
+        ticket: Ticket,
+        device: BdAddr,
+        action: DeviceAction,
+    ) -> Vec<Action> {
+        raise(action.calls(&mut state.counters));
+        let call = Call {
+            action,
+            session: self.session,
+        };
+        vec![
+            Action::Call { device, call },
+            resolve(ticket, Outcome::Sent),
+        ]
     }
 
     /// The active device, else the last one linked, else the only one known.
@@ -82,14 +100,6 @@ impl Machine {
         };
         self.active.or(self.last_linked).or(only)
     }
-}
-
-fn call(state: &mut State, ticket: Ticket, device: BdAddr, action: DeviceAction) -> Vec<Action> {
-    raise(action.calls(&mut state.counters));
-    vec![
-        Action::Call { device, action },
-        resolve(ticket, Outcome::Sent),
-    ]
 }
 
 fn no_device(ticket: Ticket) -> Vec<Action> {

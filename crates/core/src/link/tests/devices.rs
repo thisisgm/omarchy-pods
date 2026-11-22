@@ -223,6 +223,23 @@ fn a_second_disconnect_skips_the_grace_when_the_first_fails() {
 }
 
 #[test]
+fn a_disconnect_that_fails_after_the_pods_came_back_leaves_a_newer_one_holding() {
+    let mut sim = up_named();
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::Down(0));
+    assert_eq!(sim.machine.phase(), Phase::Idle);
+    sim.bring_up(0);
+    sim.feed(Input::Packet(pods_samples::metadata()));
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::FirstCallFailed(DeviceAction::Disconnect));
+    assert_eq!(sim.state.counters.disconnect_failures, 1);
+    sim.feed(Input::Down(0));
+    assert_eq!(sim.machine.phase(), Phase::Idle);
+    assert_eq!(sim.state.device_name, "");
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
 fn a_disconnect_that_ends_the_channel_first_dials_nothing_until_bluez_says_it_left() {
     let mut sim = up_named();
     sim.feed(Input::Command(Command::Disconnect));

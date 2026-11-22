@@ -8,7 +8,7 @@ use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURE
 
 use crate::command::{Command, Outcome};
 use crate::link::ladder::PENDING_MAX;
-use crate::link::{Action, DeviceAction, End, Event, Machine, Phase, Ticket};
+use crate::link::{Action, Call, DeviceAction, End, Event, Machine, Phase, Session, Ticket};
 use crate::state::State;
 
 /// What a step that asks for nothing returns.
@@ -41,7 +41,10 @@ pub(super) enum Input {
     BluezLost,
     Packet(Vec<u8>),
     Command(Command),
+    /// The call of this action the machine made last fails.
     CallFailed(DeviceAction),
+    /// The call of this action the machine made first fails, however long ago.
+    FirstCallFailed(DeviceAction),
     Tick,
     /// Moves the clock on, ticking at every deadline on the way.
     Wait(Duration),
@@ -85,7 +88,7 @@ enum Queued {
     Ended(End),
     Packet(Vec<u8>),
     Command(Command),
-    CallFailed(DeviceAction),
+    CallFailed(Call),
     SendFailed,
     Tick,
     Shutdown,
@@ -113,6 +116,8 @@ pub(super) struct Sim {
     write_fails: bool,
     next_ticket: u64,
     resolves: BTreeMap<u64, Vec<Outcome>>,
+    /// Every call the machine asked for, oldest first.
+    made: Vec<Call>,
     violations: Vec<String>,
 }
 
@@ -136,6 +141,7 @@ impl Sim {
             write_fails: false,
             next_ticket: 0,
             resolves: BTreeMap::new(),
+            made: Vec::new(),
             violations: Vec::new(),
         }
     }
@@ -148,7 +154,18 @@ impl Sim {
             Input::BluezLost => Queued::BluezLost,
             Input::Packet(bytes) => Queued::Packet(bytes),
             Input::Command(command) => Queued::Command(command),
-            Input::CallFailed(action) => Queued::CallFailed(action),
+            Input::CallFailed(action) => {
+                let made = self.made.iter().rev().find(|call| call.action == action);
+                // A failure of a call never made still reaches the machine, as one of its first session.
+                Queued::CallFailed(made.copied().unwrap_or(Call {
+                    action,
+                    session: Session::default(),
+                }))
+            }
+            Input::FirstCallFailed(action) => {
+                let made = self.made.iter().find(|call| call.action == action);
+                Queued::CallFailed(*made.unwrap())
+            }
             Input::Tick => Queued::Tick,
             Input::Shutdown => Queued::Shutdown,
             Input::Wait(span) => return self.run_until(self.now.saturating_add(span)),
@@ -319,7 +336,7 @@ impl Sim {
                 self.next_ticket = self.next_ticket.saturating_add(1);
                 Event::Command { ticket, command }
             }
-            Queued::CallFailed(action) => Event::CallFailed(action),
+            Queued::CallFailed(call) => Event::CallFailed(call),
             Queued::SendFailed => Event::SendFailed,
             Queued::Tick => Event::Tick,
             Queued::Shutdown => Event::Shutdown,
@@ -393,7 +410,10 @@ impl Sim {
                 }
                 "Sweep".into()
             }
-            Action::Call { device, action } => format!("Call({}, {action:?})", index(device)),
+            Action::Call { device, call } => {
+                self.made.push(call);
+                format!("Call({}, {:?})", index(device), call.action)
+            }
             Action::Resolve { ticket, outcome } => {
                 self.resolves.entry(ticket.0).or_default().push(outcome);
                 format!("Resolve({})", ticket.0)
