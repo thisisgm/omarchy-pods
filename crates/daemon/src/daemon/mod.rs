@@ -5,6 +5,7 @@ mod dbus;
 mod hub;
 mod legacy_dialect;
 mod link;
+mod notify;
 mod proto1;
 mod signals;
 mod socket;
@@ -22,7 +23,7 @@ use pods_core::status::to_status_line;
 use pods_proto::packets::CONTROL_PSM;
 use pods_sys::l2cap;
 use tokio::runtime::Builder;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use hub::Hub;
@@ -91,12 +92,16 @@ async fn serve(paths: Paths) -> ExitCode {
     let (requests, watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
     let connector: link::Connector =
         Arc::new(|device| l2cap::connect(device, CONTROL_PSM, link::CONNECT_TIMEOUT));
+    let (notices, notice_queue) = notify::queue();
+    let (stop_notifier, notifier_stops) = oneshot::channel();
+    let notifier = tokio::spawn(notify::run(notice_queue, notifier_stops));
     let driver = tokio::spawn(link::drive(
         hub.clone(),
         inputs,
         link.clone(),
         requests,
         connector,
+        link::Outlets { notices },
     ));
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
@@ -109,6 +114,7 @@ async fn serve(paths: Paths) -> ExitCode {
         Err(error) => {
             log(&error);
             link::stop(&link, driver).await;
+            notify::stop(stop_notifier, notifier).await;
             remove_state_file(&file).await;
             return ExitCode::FAILURE;
         }
@@ -123,6 +129,8 @@ async fn serve(paths: Paths) -> ExitCode {
     if let Some(driver) = driver {
         link::stop(&link, driver).await;
     }
+    // After the driver, so no notice comes in once the notifier is stopping.
+    notify::stop(stop_notifier, notifier).await;
     bus.abort();
     // Awaited so the bus name is released first; the result is only the cancellation.
     drop(bus.await);
@@ -357,7 +365,15 @@ mod tests {
             let (requests, _unread) = mpsc::channel(link::REQUEST_QUEUE);
             let refuse: link::Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
             let hub = Hub::new(link.clone());
-            let driver = tokio::spawn(link::drive(hub, inputs, link.clone(), requests, refuse));
+            let outlets = link::tests::unread_outlets();
+            let driver = tokio::spawn(link::drive(
+                hub,
+                inputs,
+                link.clone(),
+                requests,
+                refuse,
+                outlets,
+            ));
             // The real driver returns after a `Shutdown`, here one the stop path never sent.
             let (done, _stopped) = oneshot::channel();
             link.send(link::Input::Shutdown(done)).await.unwrap();

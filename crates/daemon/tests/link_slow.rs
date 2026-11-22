@@ -10,19 +10,18 @@ mod support;
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::time::{Duration, Instant};
 
     use pods_fake::Profile;
-    use pods_trap::Answer;
-    use rustix::io::Errno;
     use serde_json::Value;
     use zbus::OwnedVariant;
 
     use super::support::bluez::DeviceMethod;
+    use super::support::children::{children, reaped_children_faults};
+    use super::support::parked::{climb_to_parked, refused_pods};
     use super::support::rig::{
-        ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Device, HELD_LADDER, REAL_TIME_SLACK, Rig,
-        assert_gap, connected, not_before, total,
+        ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, REAL_TIME_SLACK, Rig, assert_gap,
+        connected, not_before, total,
     };
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for, wait_within};
 
@@ -31,9 +30,6 @@ mod tests {
 
     /// The wait in the parked phase before BlueZ reports the pods again.
     const PARKED_FOR: Duration = Duration::from_secs(5);
-
-    /// Where `cminflt`, the minor faults of the children a process waited for, sits among the `/proc/<pid>/stat` fields after the name.
-    const REAPED_FAULTS_AFTER_NAME: usize = 8;
 
     /// The daemon's limit on one BlueZ method call.
     const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -44,56 +40,8 @@ mod tests {
     /// Keeps the second disconnect waiting for BlueZ long after the first one timed out.
     const DISCONNECTS_APART: Duration = Duration::from_secs(5);
 
-    /// Pods that refuse every dial, the daemon started and BlueZ not yet reporting them connected.
-    fn refused_pods() -> (Rig, Device) {
-        let mut rig = Rig::new();
-        let device = rig.add_pods(Profile::default());
-        rig.start();
-        rig.answer(
-            &device,
-            Answer::Refuse {
-                after: Duration::ZERO,
-                errno: Errno::CONNREFUSED,
-            },
-        );
-        (rig, device)
-    }
-
     fn failures(status: &Value) -> usize {
         usize::try_from(total(status, "connect_failures_total")).unwrap()
-    }
-
-    /// Waits for the eleven dials of the held ladder, each gap not before its step, then for the failure that parks the pods.
-    fn climb_to_parked(rig: &Rig) {
-        let mut dials = rig.wait_dials(1, HANG_LIMIT);
-        for delay in HELD_LADDER {
-            let before = dials.last().unwrap().at;
-            dials = rig.wait_dials(
-                dials.len().saturating_add(1),
-                delay.saturating_add(HANG_LIMIT),
-            );
-            let what = format!("held dial {} after the one before", dials.len());
-            assert_gap(&what, before, dials.last().unwrap().at, &not_before(delay));
-        }
-        rig.wait_status("one failure after the eleventh dial", |status| {
-            status["reconnect_failures_total"] == 1
-        });
-    }
-
-    /// The minor faults of every child `pid` waited for, above zero once it ran any program; sample input `4242 (librepods) S 4200 4242 4200 0 -1 4194560 1534 0 0 0 3 1 0 0 20 0 9 0 81234`.
-    fn reaped_children_faults(pid: i32) -> u64 {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
-        // The name may hold spaces and parentheses, so the fields are counted from its last closing parenthesis.
-        let (_, after_name) = stat
-            .rsplit_once(')')
-            .unwrap_or_else(|| panic!("no name in {stat:?}"));
-        let field = after_name
-            .split_whitespace()
-            .nth(REAPED_FAULTS_AFTER_NAME)
-            .unwrap_or_else(|| panic!("no cminflt in {stat:?}"));
-        field
-            .parse()
-            .unwrap_or_else(|error| panic!("cminflt {field:?} in {stat:?}: {error}"))
     }
 
     #[test]
@@ -121,29 +69,12 @@ mod tests {
         });
         lines.extend(watch.lines_until(&last));
         assert!(lines.iter().all(|line| !connected(line)), "{lines:#?}");
-        let pid = rig.daemon().pid().as_raw_nonzero();
-        // Each thread lists only the processes it started, so every thread is read.
-        for task in fs::read_dir(format!("/proc/{pid}/task")).unwrap() {
-            let path = task.unwrap().path().join("children");
-            // Sample input: `4242 4243 `, the pids of the thread's children, each followed by a space.
-            let children = match fs::read_to_string(&path) {
-                Ok(children) => children,
-                // A thread that ended after the listing has nothing left to list.
-                Err(error)
-                    if matches!(
-                        Errno::from_io_error(&error),
-                        Some(Errno::NOENT | Errno::SRCH)
-                    ) =>
-                {
-                    continue;
-                }
-                Err(error) => panic!("{}: {error}", path.display()),
-            };
-            assert_eq!(children.trim(), "", "{} lists processes", path.display());
-        }
+        let pid = rig.daemon().pid();
+        let running = children(pid);
+        assert!(running.is_empty(), "the daemon has children {running:?}");
         // A child already reaped is in no children file, but its page faults stay counted in the parent.
         assert_eq!(
-            reaped_children_faults(pid.get()),
+            reaped_children_faults(pid),
             0,
             "the daemon ran and reaped a process"
         );

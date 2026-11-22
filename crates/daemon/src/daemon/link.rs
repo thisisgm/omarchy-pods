@@ -13,6 +13,7 @@ use pods_core::command::{Command, Outcome};
 use pods_core::link::{
     Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket, phase_change_line,
 };
+use pods_core::policy::notices::{self, Notice};
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pods_proto::model::Model;
@@ -22,7 +23,7 @@ use tokio::task::{self, JoinHandle};
 use tokio::time::{Instant, timeout, timeout_at};
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, log};
+use super::{MAX_CONNECTIONS, log, notify};
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -34,7 +35,7 @@ pub(super) const INPUT_QUEUE: usize = MAX_CONNECTIONS;
 pub(super) const REQUEST_QUEUE: usize = 8;
 
 /// Stop steps never block, so a driver still busy after this is stuck and is aborted.
-const STOP_WAIT_MS: u64 = 500;
+pub(super) const STOP_WAIT_MS: u64 = 500;
 
 const READER_THREAD: &str = "link-reader";
 
@@ -66,6 +67,12 @@ pub(super) enum Input {
 pub(super) enum Request {
     Sweep,
     Call { device: BdAddr, call: Call },
+}
+
+/// Where the policy's notices go, one queue per adapter.
+#[derive(Debug)]
+pub(super) struct Outlets {
+    pub(super) notices: mpsc::Sender<Notice>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -103,10 +110,12 @@ pub(super) async fn drive(
     feedback: mpsc::Sender<Input>,
     requests: mpsc::Sender<Request>,
     connector: Connector,
+    outlets: Outlets,
 ) {
     let mut driver = Driver {
         hub,
         machine: Machine::new(),
+        outlets,
         started: Instant::now(),
         feedback,
         requests,
@@ -145,6 +154,7 @@ enum Turn {
 struct Driver {
     hub: Hub,
     machine: Machine,
+    outlets: Outlets,
     started: Instant,
     feedback: mpsc::Sender<Input>,
     requests: mpsc::Sender<Request>,
@@ -211,11 +221,19 @@ impl Driver {
         ControlFlow::Continue(())
     }
 
+    /// The link machine, then the policy on its signals, then one publish.
     fn step(&mut self, event: Event<'_>) {
         let before = self.machine.phase();
         let mut next = self.hub.state();
         let actions = self.machine.step(&mut next, event, self.started.elapsed());
         self.log_progress(before, &next);
+        for action in &actions {
+            if let Action::Signal(signal) = action
+                && let Some(notice) = notices::disconnected(*signal)
+            {
+                notify::offer(&self.outlets.notices, notice);
+            }
+        }
         self.hub.publish(next);
         for action in actions {
             self.execute(action);
@@ -247,6 +265,8 @@ impl Driver {
                     reply.send(outcome).ok();
                 }
             }
+            // Already handed to the policy, before the publish.
+            Action::Signal(_) => {}
         }
     }
 

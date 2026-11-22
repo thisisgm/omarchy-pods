@@ -16,11 +16,18 @@ use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
-use super::{Connector, DeviceEvent, Input, REQUEST_QUEUE, drive, queue};
+use super::{Connector, DeviceEvent, Input, Outlets, REQUEST_QUEUE, drive, queue};
 use crate::daemon::hub::Hub;
+use crate::daemon::notify;
 
 /// A wait in a test still running after this long has hung, and the test fails.
 pub(in crate::daemon) const HANG_LIMIT: Duration = Duration::from_secs(10);
+
+/// Outlets whose queues nobody reads, for a test that looks only at the link.
+pub(in crate::daemon) fn unread_outlets() -> Outlets {
+    let (notices, _unread) = notify::queue();
+    Outlets { notices }
+}
 
 /// A current thread runtime with a clock, as the daemon's own.
 pub(in crate::daemon) fn block_on<F: Future>(future: F) -> F::Output {
@@ -123,7 +130,14 @@ impl Running {
                     None => link,
                     Some(tap) => forward_through(tap, link),
                 };
-                let driver = tokio::spawn(drive(shared, inputs, feedback, requests, connector));
+                let driver = tokio::spawn(drive(
+                    shared,
+                    inputs,
+                    feedback,
+                    requests,
+                    connector,
+                    unread_outlets(),
+                ));
                 // An error is a dropped `Running`, which stops the driver all the same.
                 asked.await.ok();
                 driver.abort();

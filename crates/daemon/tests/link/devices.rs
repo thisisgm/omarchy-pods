@@ -9,12 +9,10 @@ use serde_json::Value;
 use zbus::OwnedVariant;
 
 use crate::support::rig::{
-    DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, named, not_before, serve,
+    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, named, not_before,
+    serve,
 };
 use crate::support::{HANG_LIMIT, pause};
-
-/// The C++ absent ladder as one wait, `firstDelayMs` then `delayMs(1..=3)`: 750 + 1000 + 2000 + 4000 ms.
-const ABSENT_GRACE: Duration = Duration::from_millis(7750);
 
 /// Gone for a while, well inside the grace.
 const AWAY: Duration = Duration::from_secs(3);

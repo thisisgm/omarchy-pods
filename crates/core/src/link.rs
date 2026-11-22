@@ -97,6 +97,17 @@ pub enum Action {
         ticket: Ticket,
         outcome: Outcome,
     },
+    /// For the policy, which the driver hands it before it publishes the state.
+    Signal(Signal),
+}
+
+/// A moment of the link that other parts of the daemon act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// The link entered `Up`.
+    Up { device: BdAddr },
+    /// The device was reset; `populated` says its link reached `Up` since the reset before.
+    Lost { device: BdAddr, populated: bool },
 }
 
 /// Where the session is, with the data each state needs.
@@ -346,8 +357,9 @@ impl Machine {
             }
             (P::Backoff { .. } | P::Parked { .. } | P::Grace { .. }, E::DeviceGone(device)) => {
                 if self.is_active(device) {
+                    let actions = self.idle(state);
                     self.forget(device);
-                    self.idle(state)
+                    actions
                 } else {
                     self.forget(device);
                     Vec::new()
@@ -418,7 +430,12 @@ impl Machine {
                 self.enter(state, P::Up { rerequest });
                 self.populated = true;
                 self.last_linked = self.active;
-                vec![Action::Send(reply.to_vec())]
+                let mut actions = vec![Action::Send(reply.to_vec())];
+                actions.extend(
+                    self.active
+                        .map(|device| Action::Signal(Signal::Up { device })),
+                );
+                actions
             }
             (P::Up { .. }, E::Packet(sdu)) => self.report(state, sdu),
             (
@@ -619,8 +636,8 @@ impl Machine {
             self.forget(device);
             return Vec::new();
         }
+        actions.extend(self.reset(state));
         self.forget(device);
-        self.reset(state);
         self.enter(state, Phase::Closing { attempt: None });
         actions.push(Action::Sweep);
         actions
@@ -669,18 +686,27 @@ impl Machine {
 
     /// Resets the device and the session, then sweeps for the next device.
     fn idle(&mut self, state: &mut State) -> Vec<Action> {
-        self.reset(state);
+        let mut actions = Vec::from_iter(self.reset(state));
         self.enter(state, Phase::Idle);
-        vec![Action::Sweep]
+        actions.push(Action::Sweep);
+        actions
     }
 
-    fn reset(&mut self, state: &mut State) {
+    /// Signals `Lost` when a device had the session; the caller forgets a removed device after this.
+    fn reset(&mut self, state: &mut State) -> Option<Action> {
+        let lost = self.active.map(|device| {
+            Action::Signal(Signal::Lost {
+                device,
+                populated: self.populated,
+            })
+        });
         state.reset_device();
         self.active = None;
         self.held = false;
         self.populated = false;
         self.session = Session(self.session.0.wrapping_add(1));
         self.user_disconnects = 0;
+        lost
     }
 
     fn is_active(&self, device: BdAddr) -> bool {
@@ -744,5 +770,6 @@ mod tests {
     mod lifecycle;
     mod log_lines;
     mod reports;
+    mod signals;
     mod sim;
 }

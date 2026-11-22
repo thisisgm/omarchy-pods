@@ -25,8 +25,8 @@ use super::super::reader::{self, RECV_BUFFER_LEN};
 use super::super::{Connector, DeviceEvent, INPUT_QUEUE, Input, REQUEST_QUEUE, STOP_WAIT_MS};
 use super::super::{drive, queue, stop};
 use super::{
-    HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device, device_up, report, wait_for_state,
-    wait_for_state_async, wire,
+    HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device, device_up, report, unread_outlets,
+    wait_for_state, wait_for_state_async, wire,
 };
 use crate::daemon::SUBSCRIBER_BACKLOG;
 use crate::daemon::hub::Hub;
@@ -430,6 +430,7 @@ fn stop_with_the_link_up_ends_the_reader_thread() {
             link.clone(),
             requests,
             connector,
+            unread_outlets(),
         ));
         link.send(Input::Device(DeviceEvent::Up(device())))
             .await

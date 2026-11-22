@@ -53,6 +53,11 @@ pub const MAIN: CppHeader = CppHeader {
     text: include_str!("../../../daemon/main.cpp"),
 };
 
+pub const NOTIFIER: CppHeader = CppHeader {
+    path: "daemon/notifier.hpp",
+    text: include_str!("../../../daemon/notifier.hpp"),
+};
+
 pub const IPC_VERB: CppHeader = CppHeader {
     path: "daemon/ipcverb.hpp",
     text: include_str!("../../../daemon/ipcverb.hpp"),

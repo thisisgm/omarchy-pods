@@ -55,6 +55,9 @@ pub(crate) const HELD_LADDER: [Duration; 10] = [
     Duration::from_secs(16),
 ];
 
+/// The C++ absent ladder as one wait, `firstDelayMs` then `delayMs(1..=3)`: 750 + 1000 + 2000 + 4000 ms.
+pub(crate) const ABSENT_GRACE: Duration = Duration::from_millis(7750);
+
 /// A listening mode as the pods carry it on the wire and as the status document numbers it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Mode {
@@ -236,6 +239,16 @@ impl Rig {
         let device = rig.add_pods(Profile::default());
         rig.start();
         rig.wait_disconnect_answers("not_connected");
+        (rig, device)
+    }
+
+    /// The daemon with one pair of pods, linked and filled.
+    pub(crate) fn with_linked_pods() -> (Self, Device) {
+        let mut rig = Self::new();
+        let device = rig.add_pods(Profile::default());
+        rig.start();
+        rig.link_up(&device);
+        rig.wait_filled();
         (rig, device)
     }
 
@@ -441,8 +454,33 @@ impl Rig {
         })
     }
 
+    /// Takes `do disconnect`, then waits for the name to clear, which only the reset does.
+    pub(crate) fn disconnect(&self) {
+        let output = self.client(&["do", "disconnect"]);
+        assert!(output.status.success(), "do disconnect: {output:?}");
+        self.wait_status("the name cleared", |status| status["device_name"] == "");
+    }
+
+    /// Links `device` again after a loss and waits for it to fill the state.
+    pub(crate) fn relink(&self, device: &Device) {
+        self.link_up(device);
+        self.wait_filled();
+    }
+
     pub(crate) fn daemon(&mut self) -> &mut Daemon {
         self.daemon.as_mut().expect("a started daemon")
+    }
+
+    /// Waits for a line of the daemon's log equal to `line`.
+    pub(crate) fn wait_logged(&mut self, line: &str) {
+        let daemon = self.daemon();
+        wait_for(&format!("the daemon to log `{line}`"), || {
+            daemon
+                .log()
+                .lines()
+                .any(|logged| logged == line)
+                .then_some(())
+        });
     }
 
     fn trap(&self) -> &Trap {

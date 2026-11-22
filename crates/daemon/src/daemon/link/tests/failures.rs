@@ -21,7 +21,8 @@ use tokio::time::sleep;
 use super::super::reader::RECV_BUFFER_LEN;
 use super::super::{Connector, Input, REQUEST_QUEUE, drive, queue};
 use super::{
-    HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device_up, report, wait_for_state, wire,
+    HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device_up, report, unread_outlets,
+    wait_for_state, wire,
 };
 use crate::daemon::hub::Hub;
 
@@ -189,7 +190,14 @@ fn a_closed_queue_neither_ends_nor_spins_the_driver() {
         let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
         let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
         let hub = Hub::new(elsewhere.clone());
-        let driver = tokio::spawn(drive(hub, inputs, elsewhere, requests, refuse));
+        let driver = tokio::spawn(drive(
+            hub,
+            inputs,
+            elsewhere,
+            requests,
+            refuse,
+            unread_outlets(),
+        ));
         drop(link);
         let before = thread_cpu();
         sleep(IDLE_WATCH).await;
