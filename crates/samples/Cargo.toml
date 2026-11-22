@@ -9,6 +9,8 @@ publish.workspace = true
 
 # Test support only: a dev-dependency, or a dependency of another test-only crate, never of the product.
 [dependencies]
+# Seals a synthetic advert and builds its address with the AES block the C++ daemon uses.
+aes = { version = "0.9.4", default-features = false }
 cpp-source = { path = "../cpp-source" }
 
 [lints]

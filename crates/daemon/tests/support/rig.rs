@@ -571,22 +571,28 @@ fn link_down(bluez: &Bluez, path: &DevicePath, pods: &Pods) {
 
 /// Moves the fake BlueZ and the fake pods together after a call BlueZ answered, as the real ones move.
 fn react(bluez: &Bluez, call: &Call, devices: &Mutex<Vec<Device>>) {
-    let path = match call.method {
-        DeviceMethod::Connect | DeviceMethod::Disconnect => call.object.clone(),
-        DeviceMethod::RemoveDevice => call.argument.clone().expect("the device path"),
+    let device = |path: &str| {
+        let found = lock(devices)
+            .iter()
+            .find(|device| device.path.0 == path)
+            .cloned();
+        found.expect("a call on a device of the rig")
     };
-    let device = lock(devices)
-        .iter()
-        .find(|device| device.path.0 == path)
-        .cloned()
-        .expect("a call on a device of the rig");
     match call.method {
-        DeviceMethod::Connect => link_up(bluez, &device.path),
-        DeviceMethod::Disconnect => link_down(bluez, &device.path, &device.pods),
+        DeviceMethod::Connect => link_up(bluez, &device(&call.object).path),
+        DeviceMethod::Disconnect => {
+            let device = device(&call.object);
+            link_down(bluez, &device.path, &device.pods);
+        }
         DeviceMethod::RemoveDevice => {
+            let device = device(call.argument.as_deref().expect("the device path"));
             bluez.remove(&device.path);
             device.pods.hang_up();
         }
+        DeviceMethod::StartDiscovery
+        | DeviceMethod::StopDiscovery
+        | DeviceMethod::SetDiscoveryFilter
+        | DeviceMethod::Set { .. } => {}
     }
 }
 

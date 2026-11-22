@@ -1,5 +1,7 @@
 //! A fake BlueZ on a private bus: the object manager at `/`, adapters and devices, served from one thread of its own.
 
+pub(crate) mod monitor;
+
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
 use std::ops::Deref;
@@ -14,6 +16,7 @@ use std::time::{Duration, Instant};
 use pods_proto::addr::BdAddr;
 use tokio::runtime::{Builder as RuntimeBuilder, Handle};
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use zbus::connection::Builder;
 use zbus::export::futures_core::Stream;
@@ -26,6 +29,7 @@ use zbus::{
 };
 
 use super::HANG_LIMIT;
+use monitor::{MANAGER_INTERFACE, Monitors, Registration};
 
 /// The service UUID AirPods list, the one the daemon looks for.
 pub(crate) const AAP_UUID: &str = "74ec2172-0bad-4d01-8f77-997b2be0722a";
@@ -33,11 +37,14 @@ pub(crate) const AAP_UUID: &str = "74ec2172-0bad-4d01-8f77-997b2be0722a";
 pub(crate) const DEVICE_INTERFACE: &str = "org.bluez.Device1";
 const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 const BLUEZ_NAME: &str = "org.bluez";
-const ADAPTER_PREFIX: &str = "/org/bluez/hci";
+const ADAPTER_PREFIX: &str = "/org/bluez/";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const FAILED: &str = "org.bluez.Error.Failed";
 const UNKNOWN: &str = "org.freedesktop.DBus.Error.UnknownMethod";
+const BUS_DRIVER: &str = "org.freedesktop.DBus";
+/// Every name leaving the bus, which ends the registrations its owner made.
+const NAMES_LEAVING: &str = "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged'";
 const THREAD_NAME: &str = "fake-bluez";
 const REACTOR_THREAD: &str = "fake-bluez-reactions";
 /// Answered calls waiting for their reaction; a test makes a handful.
@@ -49,11 +56,19 @@ pub(crate) struct AdapterPath(pub(crate) String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DevicePath(pub(crate) String);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeviceMethod {
     Connect,
     Disconnect,
     RemoveDevice,
+    StartDiscovery,
+    StopDiscovery,
+    SetDiscoveryFilter,
+    /// A `Properties.Set` on `Adapter1`, the value as D-Bus text writes it: `false`.
+    Set {
+        property: String,
+        value: String,
+    },
 }
 
 /// A method call on a device or an adapter; `argument` is the device path a `RemoveDevice` names.
@@ -84,8 +99,9 @@ pub(crate) struct FakeBluez {
 
 #[derive(Default)]
 struct Objects {
-    adapters: Vec<String>,
+    adapters: Vec<Adapter>,
     devices: HashMap<String, Device>,
+    monitors: Monitors,
     /// Every change of a device object's connection, its adding and its removal included, oldest first.
     edges: Vec<Edge>,
     calls: Vec<Call>,
@@ -94,6 +110,18 @@ struct Objects {
     /// When each `GetManagedObjects` call reached the fake, held ones included.
     sweeps: Vec<Instant>,
     reactions: Option<SyncSender<Call>>,
+}
+
+struct Adapter {
+    path: String,
+    powered: bool,
+}
+
+/// What the serving thread does with a call: send these messages in order, the reply last, send nothing, or read an application.
+enum Answer {
+    Send(Vec<Message>),
+    Held,
+    Register(Registration),
 }
 
 struct Device {
@@ -194,14 +222,26 @@ impl Deref for FakeBluez {
 }
 
 impl Bluez {
+    /// Adds a powered adapter named after the count of adapters before it: `hci0` first.
     pub(crate) fn add_adapter(&self) -> AdapterPath {
-        let path = {
-            let mut objects = self.lock();
-            let path = format!("{ADAPTER_PREFIX}{}", objects.adapters.len());
-            objects.adapters.push(path.clone());
-            path
+        let count = self.lock().adapters.len();
+        self.add_adapter_at(&format!("hci{count}"))
+    }
+
+    /// Adds a powered adapter at `/org/bluez/<name>`.
+    pub(crate) fn add_adapter_at(&self, name: &str) -> AdapterPath {
+        let adapter = Adapter {
+            path: format!("{ADAPTER_PREFIX}{name}"),
+            powered: true,
         };
-        let interfaces = HashMap::from([(ADAPTER_INTERFACE, HashMap::<&str, OwnedVariant>::new())]);
+        let interfaces = HashMap::from([(ADAPTER_INTERFACE.to_owned(), adapter.properties())]);
+        let path = adapter.path.clone();
+        {
+            let mut objects = self.lock();
+            let taken = objects.adapters.iter().any(|known| known.path == path);
+            assert!(!taken, "the fake already has an adapter at {path}");
+            objects.adapters.push(adapter);
+        }
         self.emit(
             "/",
             OBJECT_MANAGER,
@@ -209,6 +249,27 @@ impl Bluez {
             &(object(&path), interfaces),
         );
         AdapterPath(path)
+    }
+
+    /// Powers the adapter on or off and emits `PropertiesChanged` for it; an adapter off hears no advert.
+    pub(crate) fn power(&self, adapter: &AdapterPath, on: bool) {
+        let lost = {
+            let mut objects = self.lock();
+            let found = objects
+                .adapters
+                .iter_mut()
+                .find(|known| known.path == adapter.0);
+            found.expect("an adapter of the fake").powered = on;
+            if on {
+                Vec::new()
+            } else {
+                objects.monitors.power_down(&adapter.0)
+            }
+        };
+        let changed = HashMap::from([("Powered", OwnedVariant::from(on))]);
+        let body = (ADAPTER_INTERFACE, changed, Vec::<String>::new());
+        self.emit(&adapter.0, PROPERTIES, "PropertiesChanged", &body);
+        self.send(lost);
     }
 
     pub(crate) fn add_device(
@@ -373,6 +434,14 @@ impl Bluez {
             .emit_signal(None::<&str>, path, interface, member, body);
         self.handle.block_on(emitted).unwrap();
     }
+
+    fn send(&self, messages: Vec<Message>) {
+        self.handle.block_on(async {
+            for message in messages {
+                self.connection.send(&message).await.unwrap();
+            }
+        });
+    }
 }
 
 impl Drop for FakeBluez {
@@ -399,19 +468,37 @@ impl Objects {
     }
 
     fn managed(&self) -> Managed {
-        let adapters = self.adapters.iter().map(|path| {
-            let interfaces = HashMap::from([(ADAPTER_INTERFACE.to_owned(), HashMap::new())]);
-            (object(path).into(), interfaces)
+        let adapters = self.adapters.iter().map(|adapter| {
+            let mut interfaces =
+                HashMap::from([(ADAPTER_INTERFACE.to_owned(), adapter.properties())]);
+            interfaces.extend(self.monitors.manager_of(&adapter.path));
+            (object(&adapter.path).into(), interfaces)
         });
         let devices = self.devices.iter().map(|(path, device)| {
             let interfaces = HashMap::from([(DEVICE_INTERFACE.to_owned(), device.properties())]);
             (object(path).into(), interfaces)
         });
-        adapters.chain(devices).collect()
+        adapters
+            .chain(devices)
+            .chain(self.monitors.managed_devices())
+            .collect()
     }
 
-    /// The reply to `call`, or none while replies are held; a sweep's arrival and a device or adapter method are recorded first.
-    fn answer(&mut self, call: &Message) -> Option<Message> {
+    /// The properties `Get` and `GetAll` read at `path`, a device's or an adapter's.
+    fn properties(&self, path: &str) -> Option<HashMap<String, OwnedVariant>> {
+        let adapter = || {
+            let adapter = self.adapters.iter().find(|adapter| adapter.path == path)?;
+            Some(adapter.properties())
+        };
+        self.devices
+            .get(path)
+            .map(Device::properties)
+            .or_else(|| self.monitors.device_properties(path))
+            .or_else(adapter)
+    }
+
+    /// The answer to `call`; a sweep's arrival and a device or adapter method are recorded first.
+    fn answer(&mut self, call: &Message) -> Answer {
         let header = call.header();
         if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
             self.sweeps.push(Instant::now());
@@ -421,15 +508,19 @@ impl Objects {
             self.calls.push(recorded.clone());
         }
         if self.hold {
-            return None;
+            return Answer::Held;
         }
         if self.fail {
-            return Some(Message::error(&header, FAILED).build(&("Failed",)).unwrap());
+            let failed = Message::error(&header, FAILED).build(&("Failed",)).unwrap();
+            return Answer::Send(vec![failed]);
         }
         let interface = header.interface().map(InterfaceName::as_str);
         let member = header.member().map(MemberName::as_str);
         let path = header.path().map(ObjectPath::as_str);
         let reply = match (interface, member, path) {
+            (Some(MANAGER_INTERFACE), Some(member), Some(path)) if self.monitors.serves(path) => {
+                return self.monitors.answer(call, path, member);
+            }
             (Some(OBJECT_MANAGER), Some("GetManagedObjects"), Some("/")) => {
                 Message::method_return(&header).build(&self.managed())
             }
@@ -441,8 +532,8 @@ impl Objects {
                 }
                 Message::method_return(&header).build(&())
             }
-            (Some(PROPERTIES), Some("GetAll"), Some(path)) => match self.devices.get(path) {
-                Some(device) => Message::method_return(&header).build(&device.properties()),
+            (Some(PROPERTIES), Some("GetAll"), Some(path)) => match self.properties(path) {
+                Some(properties) => Message::method_return(&header).build(&properties),
                 None => Message::error(&header, UNKNOWN).build(&("No such object",)),
             },
             (Some(PROPERTIES), Some("Get"), Some(path)) => {
@@ -450,7 +541,7 @@ impl Objects {
                     .body()
                     .deserialize::<(String, String)>()
                     .ok()
-                    .and_then(|(_, name)| self.devices.get(path)?.properties().remove(&name));
+                    .and_then(|(_, name)| self.properties(path)?.remove(&name));
                 match property {
                     Some(value) => Message::method_return(&header).build(&value),
                     None => Message::error(&header, UNKNOWN).build(&("No such property",)),
@@ -458,7 +549,13 @@ impl Objects {
             }
             _ => Message::error(&header, UNKNOWN).build(&("Not served by the fake",)),
         };
-        Some(reply.unwrap())
+        Answer::Send(vec![reply.unwrap()])
+    }
+}
+
+impl Adapter {
+    fn properties(&self) -> HashMap<String, OwnedVariant> {
+        HashMap::from([("Powered".to_owned(), OwnedVariant::from(self.powered))])
     }
 }
 
@@ -510,7 +607,7 @@ impl Edge {
     }
 }
 
-/// The call as `calls` lists it, when it is `Connect` or `Disconnect` on `Device1` or `RemoveDevice` on `Adapter1`.
+/// The call as `calls` lists it: `Connect` or `Disconnect` on `Device1`, a method of `Adapter1` that `DeviceMethod` names, or a `Set` on `Adapter1`.
 fn record(call: &Message) -> Option<Call> {
     let header = call.header();
     let interface = header.interface().map(InterfaceName::as_str);
@@ -521,6 +618,21 @@ fn record(call: &Message) -> Option<Call> {
         (Some(ADAPTER_INTERFACE), Some("RemoveDevice")) => {
             let device: OwnedObjectPath = call.body().deserialize().ok()?;
             (DeviceMethod::RemoveDevice, Some(device.as_str().to_owned()))
+        }
+        (Some(ADAPTER_INTERFACE), Some("StartDiscovery")) => (DeviceMethod::StartDiscovery, None),
+        (Some(ADAPTER_INTERFACE), Some("StopDiscovery")) => (DeviceMethod::StopDiscovery, None),
+        (Some(ADAPTER_INTERFACE), Some("SetDiscoveryFilter")) => {
+            (DeviceMethod::SetDiscoveryFilter, None)
+        }
+        // Sample body: ("org.bluez.Adapter1", "Powered", <false>).
+        (Some(PROPERTIES), Some("Set")) => {
+            let (interface, property, value): (String, String, OwnedVariant) =
+                call.body().deserialize().ok()?;
+            if interface != ADAPTER_INTERFACE {
+                return None;
+            }
+            let value = value.to_string();
+            (DeviceMethod::Set { property, value }, None)
         }
         _ => return None,
     };
@@ -543,6 +655,26 @@ fn octets(address: BdAddr, separator: &str) -> String {
         .join(separator)
 }
 
+/// The unique name a `NameOwnerChanged` of the bus says has left; sample body `(":1.7", ":1.7", "")`.
+fn name_left(message: &Message) -> Option<String> {
+    let header = message.header();
+    let signal = message.message_type() == Type::Signal
+        && header.interface().map(InterfaceName::as_str) == Some(BUS_DRIVER)
+        && header.member().map(MemberName::as_str) == Some("NameOwnerChanged");
+    if !signal {
+        return None;
+    }
+    let (name, _, owner): (String, String, String) = message.body().deserialize().ok()?;
+    owner.is_empty().then_some(name)
+}
+
+/// What the serving thread waits on: the stop, the next message, or a registration read that ended.
+enum Event {
+    Stop,
+    Message(Option<zbus::Result<Message>>),
+    Read(Result<(), tokio::task::JoinError>),
+}
+
 /// The thread's body: connects, owns the name if asked, hands the connection back, then answers calls until stopped.
 fn run(
     address: &str,
@@ -558,32 +690,77 @@ fn run(
     runtime.block_on(async {
         let connection = Builder::address(address).build().await.unwrap();
         let mut calls = MessageStream::from(&connection);
+        let driver = Some(BUS_DRIVER);
+        let watch = connection.call_method(
+            driver,
+            "/org/freedesktop/DBus",
+            driver,
+            "AddMatch",
+            &(NAMES_LEAVING,),
+        );
+        watch.await.unwrap();
         if own_name {
             connection.request_name(BLUEZ_NAME).await.unwrap();
         }
         ready.send((connection.clone(), Handle::current())).unwrap();
+        let mut registrations = JoinSet::new();
         loop {
             let next = poll_fn(|context| {
                 if Pin::new(&mut stopped).poll(context).is_ready() {
-                    return Poll::Ready(None);
+                    return Poll::Ready(Event::Stop);
                 }
-                Pin::new(&mut calls).poll_next(context).map(Some)
+                if let Poll::Ready(Some(read)) = registrations.poll_join_next(context) {
+                    return Poll::Ready(Event::Read(read));
+                }
+                Pin::new(&mut calls).poll_next(context).map(Event::Message)
             });
             let call = match next.await {
-                None => return,
-                Some(Some(Ok(call))) => call,
-                Some(Some(Err(error))) => panic!("the fake BlueZ cannot read its bus: {error}"),
-                Some(None) => panic!("the fake BlueZ's bus closed before the end of the test"),
+                Event::Stop => {
+                    while let Some(read) = registrations.try_join_next() {
+                        if let Err(error) = read
+                            && error.is_panic()
+                        {
+                            panic::resume_unwind(error.into_panic());
+                        }
+                    }
+                    return;
+                }
+                Event::Read(Ok(())) => continue,
+                Event::Read(Err(error)) => panic::resume_unwind(error.into_panic()),
+                Event::Message(Some(Ok(call))) => call,
+                Event::Message(Some(Err(error))) => {
+                    panic!("the fake BlueZ cannot read its bus: {error}")
+                }
+                Event::Message(None) => {
+                    panic!("the fake BlueZ's bus closed before the end of the test")
+                }
             };
-            if call.message_type() != Type::MethodCall {
-                continue;
-            }
-            let reply = objects
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .answer(&call);
-            if let Some(reply) = reply {
-                connection.send(&reply).await.unwrap();
+            let answer = {
+                let mut state = objects.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(owner) = name_left(&call) {
+                    state.monitors.forget(&owner);
+                    continue;
+                }
+                if call.message_type() != Type::MethodCall {
+                    continue;
+                }
+                state.answer(&call)
+            };
+            match answer {
+                Answer::Send(messages) => {
+                    for message in messages {
+                        connection.send(&message).await.unwrap();
+                    }
+                }
+                Answer::Held => {}
+                Answer::Register(registration) => {
+                    let shared = Arc::clone(objects);
+                    registrations.spawn(monitor::register(
+                        connection.clone(),
+                        shared,
+                        registration,
+                    ));
+                }
             }
         }
     });
