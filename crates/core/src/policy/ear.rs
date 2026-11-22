@@ -106,11 +106,12 @@ impl Ear {
         self.pause()
     }
 
-    /// The sink is unknown until the adapter reads it again; a loss is not a bud leaving, and it forgets what was paused.
+    /// The sink is unknown until the adapter reads it again; a closed channel or a loss is not a bud leaving, and only a loss forgets what was paused.
     pub(super) fn link(&mut self, signal: &Signal, state: &State) {
         match signal {
             Signal::Up { .. } => self.ours = false,
-            Signal::Down | Signal::Keys(_) => {}
+            Signal::Down => self.settle = None,
+            Signal::Keys(_) => {}
             Signal::Lost { .. } => {
                 self.ours = false;
                 self.settle = None;

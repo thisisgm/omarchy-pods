@@ -265,7 +265,7 @@ impl Driver {
         let mut facts = Vec::new();
         for action in &actions {
             if let Action::Signal(signal) = action {
-                if let Signal::Lost { .. } = signal {
+                if let Signal::Down | Signal::Lost { .. } = signal {
                     self.outlets.media.link_lost();
                 }
                 facts.push(Fact::Link(signal.clone()));

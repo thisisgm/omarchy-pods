@@ -44,7 +44,7 @@ const QUEUE_FULL: &str = "media: request queue full";
 
 const ADAPTER_GONE: &str = "media: the adapter has ended; request dropped";
 
-/// A request and the count of link losses when it was made, so the work of an ended link is dropped.
+/// A request and the count of link losses when it was made, so the pause work of an ended link is dropped.
 #[derive(Debug)]
 struct Stamped {
     losses: u64,
@@ -89,7 +89,7 @@ impl Outlet {
         }
     }
 
-    /// Ends every request made so far, queued or in flight, before it sends another call.
+    /// Ends every pause made so far, queued or in flight, before it sends another call.
     pub(super) fn link_lost(&self) {
         self.losses
             .send_modify(|losses| *losses = losses.wrapping_add(1));
@@ -106,8 +106,15 @@ impl Queue {
 /// Serves each request in turn until the driver drops the queue or stops hearing facts.
 pub(super) async fn run(session: Connection, inputs: mpsc::Sender<Input>, mut queue: Queue) {
     while let Some(Stamped { losses, request }) = queue.requests.recv().await {
+        // Only pause work ends with the link, as its report could no longer be recorded; a resume decided while the link was up always goes out.
+        let pause = matches!(request, MediaRequest::PauseAll);
         let served = serve(&session, &inputs, request);
-        if unless_lost(&mut queue.losses, losses, served).await == Some(ControlFlow::Break(())) {
+        let flow = if pause {
+            unless_lost(&mut queue.losses, losses, served).await
+        } else {
+            Some(served.await)
+        };
+        if flow == Some(ControlFlow::Break(())) {
             return;
         }
     }

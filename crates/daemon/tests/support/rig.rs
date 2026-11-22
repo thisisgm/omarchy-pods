@@ -16,6 +16,7 @@ use pods_fake::{Pods, Profile};
 use pods_proto::addr::BdAddr;
 use pods_proto::packets::CONTROL_PSM;
 use pods_trap::{Answer, Dial, Route, Trap, TrapError};
+use rustix::io::Errno;
 use rustix::process::{Signal, kill_process};
 use serde_json::Value;
 
@@ -531,6 +532,20 @@ impl Rig {
         let output = self.client(&["do", "disconnect"]);
         assert!(output.status.success(), "do disconnect: {output:?}");
         self.wait_status("the name cleared", |status| status["device_name"] == "");
+    }
+
+    /// Closes the control channel with every redial refused while BlueZ keeps `device` connected, then waits for the status to show it.
+    pub(crate) fn close_channel(&self, device: &Device) {
+        let refused = Answer::Refuse {
+            after: Duration::ZERO,
+            errno: Errno::CONNREFUSED,
+        };
+        self.answer(device, refused);
+        device.pods.hang_up();
+        // A loss would clear the name, so a kept name shows the channel closed and the link was not lost.
+        self.wait_status("the channel closed with the name kept", |status| {
+            !connected(status) && status["device_name"] != ""
+        });
     }
 
     /// Links `device` again after a loss and waits for it to fill the state.
