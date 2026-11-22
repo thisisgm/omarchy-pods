@@ -13,6 +13,9 @@ pub(crate) const HANG: Duration = Duration::from_secs(8);
 
 pub(crate) const PROGRAM: &str = "omarchy";
 
+/// How long a slow stand-in takes, long enough that two runs at once would be seen alive together.
+pub(crate) const SLOW: Duration = Duration::from_millis(300);
+
 /// The daemon's wait for one run before it kills it.
 pub(crate) const NOTIFY_WAIT: Duration = Duration::from_millis(5000);
 
@@ -32,6 +35,8 @@ pub(crate) const DISCONNECT_NOTICE: [&str; 8] = [
 ];
 /// What a failing stand-in says on its standard error before it exits.
 pub(crate) const REFUSAL: &str = "omarchy: refused";
+/// The arguments of `DISCONNECT_NOTICE` before its title and its message.
+const SENDER_ARGS: usize = 6;
 const RECORD: &str = "omarchy.calls";
 /// Written whole beside `bin` and renamed into it, so a run never finds half a script.
 const NEXT: &str = "omarchy.next";
@@ -39,9 +44,21 @@ const NEXT: &str = "omarchy.next";
 const END_OF_RUN: &str = "--";
 const RUNNABLE: u32 = 0o700;
 
+/// The run the daemon makes for the low battery notice of `part`, the text of the C++ `main.cpp`.
+pub(crate) fn low_battery_notice(part: &str, percent: u8) -> Vec<String> {
+    let title = format!("{part} AirPod Low Battery");
+    let message = format!("{percent}% remaining");
+    DISCONNECT_NOTICE[..SENDER_ARGS]
+        .iter()
+        .map(|argument| (*argument).to_owned())
+        .chain([title, message])
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Mood {
     Works,
+    Slow,
     Fails,
     Hangs,
     Absent,
@@ -67,6 +84,7 @@ impl Omarchy {
     pub(crate) fn become_(&self, mood: Mood) {
         let after = match mood {
             Mood::Works => String::new(),
+            Mood::Slow => format!("exec /usr/bin/sleep {}\n", SLOW.as_secs_f64()),
             Mood::Fails => format!("echo '{REFUSAL}' >&2\nexit 1\n"),
             // `exec` keeps one process, so the guard that kills the stand-in kills the sleep too.
             Mood::Hangs => format!("exec /usr/bin/sleep {}\n", HANG.as_secs()),

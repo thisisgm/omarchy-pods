@@ -13,7 +13,8 @@ use pods_core::command::{Command, Outcome};
 use pods_core::link::{
     Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket, phase_change_line,
 };
-use pods_core::policy::notices::{self, Notice};
+use pods_core::policy::notices::Notice;
+use pods_core::policy::{Effect, Fact, Policy};
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pods_proto::model::Model;
@@ -115,6 +116,7 @@ pub(super) async fn drive(
     let mut driver = Driver {
         hub,
         machine: Machine::new(),
+        policy: Policy::default(),
         outlets,
         started: Instant::now(),
         feedback,
@@ -154,6 +156,7 @@ enum Turn {
 struct Driver {
     hub: Hub,
     machine: Machine,
+    policy: Policy,
     outlets: Outlets,
     started: Instant,
     feedback: mpsc::Sender<Input>,
@@ -221,22 +224,36 @@ impl Driver {
         ControlFlow::Continue(())
     }
 
-    /// The link machine, then the policy on its signals, then one publish.
+    /// The link machine, then the policy on its signals and on a changed state, then one publish.
     fn step(&mut self, event: Event<'_>) {
         let before = self.machine.phase();
-        let mut next = self.hub.state();
+        let last = self.hub.state();
+        let mut next = last.clone();
         let actions = self.machine.step(&mut next, event, self.started.elapsed());
         self.log_progress(before, &next);
+        let mut facts = Vec::new();
         for action in &actions {
-            if let Action::Signal(signal) = action
-                && let Some(notice) = notices::disconnected(*signal)
-            {
-                notify::offer(&self.outlets.notices, notice);
+            if let Action::Signal(signal) = action {
+                facts.push(Fact::Link(*signal));
+            }
+        }
+        if next != last {
+            facts.push(Fact::Changed);
+        }
+        for fact in facts {
+            for effect in self.policy.step(&next, fact) {
+                self.route(effect);
             }
         }
         self.hub.publish(next);
         for action in actions {
             self.execute(action);
+        }
+    }
+
+    fn route(&self, effect: Effect) {
+        match effect {
+            Effect::Notify(notice) => notify::offer(&self.outlets.notices, notice),
         }
     }
 

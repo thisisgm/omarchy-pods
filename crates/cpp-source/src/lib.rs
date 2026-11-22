@@ -63,6 +63,11 @@ pub const NOTIFIER: CppHeader = CppHeader {
     text: include_str!("../../../daemon/notifier.hpp"),
 };
 
+pub const LOW_BATTERY: CppHeader = CppHeader {
+    path: "daemon/lowbatterywatcher.hpp",
+    text: include_str!("../../../daemon/lowbatterywatcher.hpp"),
+};
+
 pub const IPC_VERB: CppHeader = CppHeader {
     path: "daemon/ipcverb.hpp",
     text: include_str!("../../../daemon/ipcverb.hpp"),
