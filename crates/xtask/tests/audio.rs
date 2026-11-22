@@ -1,6 +1,12 @@
 //! The built binary's `probe audio` command on generated runs in a store under a temporary `HOME`.
 
 #[cfg(test)]
+#[path = "../src/probe/analyse/backlog.rs"]
+mod backlog;
+#[cfg(test)]
+#[path = "../src/probe/fixture.rs"]
+mod fixture;
+#[cfg(test)]
 #[path = "support/run.rs"]
 mod run;
 #[cfg(test)]
@@ -9,6 +15,9 @@ mod signal;
 #[cfg(test)]
 #[path = "../src/probe/analyse/synth.rs"]
 mod synth;
+#[cfg(test)]
+#[path = "support/units.rs"]
+mod units;
 #[cfg(test)]
 #[path = "../src/probe/wav/fixture.rs"]
 mod wav;
@@ -22,6 +31,7 @@ mod audio {
     mod bounds;
     mod reference;
     mod refusals;
+    mod short_starts;
 
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -33,7 +43,7 @@ mod audio {
 
     use super::run::{
         DEVICE_INFO, OWNER_FILE, PERMISSION_BITS, PRIVATE, RATE_HZ as RATE, SAMPLES_PER_UNIT,
-        UNITS_PER_SDU, log_text, names_in, probe, put_file, row, run_holding,
+        UNITS_PER_SDU, log_text, names_in, probe, put_file, row, rows, run_holding,
     };
     use super::signal::{
         BIN_HZ, ROOM, SEED, add, band_noise, close, noise, samples_in, sine, span,
@@ -45,10 +55,11 @@ mod audio {
     const REFUSED: i32 = 1;
     /// The wall clock at the zero of every generated run.
     const REALTIME_AT_ZERO_NS: u64 = 1_763_640_000_000_000_000;
+    const MS_PER_SECOND: u32 = 1000;
     /// The generated peer is never late.
     const NO_JITTER_MS: u32 = 0;
     /// The time one SDU of the generated peer holds: its units arrive together, this long after the first of their samples.
-    const SDU_MS: u32 = SAMPLES_PER_UNIT * UNITS_PER_SDU * 1000 / RATE;
+    const SDU_MS: u32 = SAMPLES_PER_UNIT * UNITS_PER_SDU * MS_PER_SECOND / RATE;
     /// The cues of the voice script, as a capture writes them.
     const TAP: &str = "Tap the left bud twice";
     const COUNT: &str = "Count one to ten slowly, then say the fox sentence";
@@ -57,6 +68,8 @@ mod audio {
     const SSS: &str = "Say sss for three seconds, then shh for three seconds";
     const JINGLE: &str = "Jingle your keys for five seconds";
     const SILENT: &str = "Stay silent";
+    /// The cue `firstword` shows at its zero.
+    const COUNT_ON: &str = "Count aloud from one and do not stop until told";
 
     /// The marks file: one line for each of a time in milliseconds, a kind and a text.
     fn marks(lines: &[(u32, &str, &str)]) -> String {
@@ -67,22 +80,38 @@ mod audio {
         lines.iter().map(line).collect()
     }
 
+    /// A start mark and the stop mark `seconds` after it for each of `starts`, in order.
+    fn uplink_lines(starts: &[(u32, u32)]) -> Vec<(u32, &'static str, &'static str)> {
+        let cycle = |&(start_ms, seconds): &(u32, u32)| {
+            let stop_ms = start_ms.saturating_add(seconds.saturating_mul(MS_PER_SECOND));
+            [(start_ms, "start", ""), (stop_ms, "stop", "")]
+        };
+        starts.iter().flat_map(cycle).collect()
+    }
+
     /// A captured and analysed run: a peer that sent a device information packet, then silent units for `seconds` after each of `starts_ms`.
     fn analysed(home: &TempDir, script: &str, marks: &str, starts: &[(u32, u32)]) -> PathBuf {
-        let mut records = vec![Record {
-            at_ns: 1,
-            direction: Direction::FromPods,
-            sdu: DEVICE_INFO.to_vec(),
-        }];
+        let mut sent = Vec::new();
         for &(start_ms, seconds) in starts {
             let start_ns = u64::from(start_ms).saturating_mul(NS_PER_MS);
             let units = (SAMPLES_PER_UNIT, UNITS_PER_SDU);
-            let sent = synth(RATE, units.0, units.1, seconds, NO_JITTER_MS, SEED).into_iter();
-            records.extend(sent.map(|mut record| {
+            let silent = synth(RATE, units.0, units.1, seconds, NO_JITTER_MS, SEED).into_iter();
+            sent.extend(silent.map(|mut record| {
                 record.at_ns = record.at_ns.saturating_add(start_ns);
                 record
             }));
         }
+        analysed_sending(home, script, marks, sent)
+    }
+
+    /// A captured and analysed run: a peer that sent a device information packet, then `sent`.
+    fn analysed_sending(home: &TempDir, script: &str, marks: &str, sent: Vec<Record>) -> PathBuf {
+        let mut records = vec![Record {
+            at_ns: 0,
+            direction: Direction::FromPods,
+            sdu: DEVICE_INFO.to_vec(),
+        }];
+        records.extend(sent);
         let meta = format!("script={script}\nrealtime_at_zero_ns={REALTIME_AT_ZERO_NS}\n");
         let files = [
             ("sdu.log", log_text(&records)),

@@ -23,6 +23,8 @@ const NOTE_SEPARATOR: &str = "; ";
 pub(crate) const UNITS_KEY: &str = "audio_units";
 /// The key of the rows that hold the sample clock of each start.
 pub(crate) const CLOCK_KEY: &str = "clock_hz";
+/// The key of the rows that hold the coarse clock of each start, which a short start still gives.
+pub(crate) const COARSE_CLOCK_KEY: &str = "clock_hz_coarse";
 /// What a row reads when there is nothing to measure.
 pub(crate) const NONE: &str = "none";
 const PACKETS: &str = "packets";

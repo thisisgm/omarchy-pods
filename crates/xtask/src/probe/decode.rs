@@ -3,7 +3,10 @@
 mod candidate;
 mod compare;
 mod experiments;
+mod label;
 mod oracle;
+#[cfg(test)]
+mod refused;
 
 use std::fmt::Display;
 use std::io;
@@ -13,7 +16,7 @@ use pods_proto::sdulog::{Direction, Record};
 use pods_proto::uplink::UplinkPacket;
 
 use super::analyse::input::{InputError, LOG_FILE, parse_log, text_of, whole_lines};
-use super::analyse::report::{CLOCK_KEY, Row, UNITS_KEY, table, values};
+use super::analyse::report::{Row, UNITS_KEY, table, values};
 use super::analyse::{ANALYSIS_FILE, MAX_LOG_BYTES};
 use super::store::{MAX_READ_BYTES, Run, StoreError, Unnamed};
 use super::wav;
@@ -21,6 +24,7 @@ use candidate::{Candidate, Tally};
 use compare::{
     CompareError, Comparison, LSB_PER_FULL_SCALE, SEARCH_UNITS, TOLERANCE_LSB, compare, lsb_apart,
 };
+use label::{Label, LabelError};
 use oracle::{OracleError, OracleRun, STDERR_FILE, oracle};
 
 /// The configuration the host supplies for the stream: AAC-ELD, mono, 480 sample frames, declared at 48 kHz.
@@ -31,12 +35,6 @@ pub(crate) const SAMPLES_PER_UNIT: u16 = 480;
 const DECODE_FILE: &str = "decode.tsv";
 /// What the candidate decoded, as a WAV file of floats.
 pub(crate) const WAV_FILE: &str = "pods.f32.wav";
-/// The rate the stream is thought to run at, and the rate its configuration declares.
-const TRUE_RATE_HZ: u32 = 64_000;
-const DECLARED_RATE_HZ: u32 = 48_000;
-/// A measured clock within this many percent of a rate is labelled with that rate.
-const LABEL_WITHIN_PERCENT: f64 = 1.0;
-const PERCENT: f64 = 100.0;
 /// Twenty minutes of units at 133.33 a second: each decode of that many is 300 MiB of samples, and three are held at once.
 const MAX_UNITS: u32 = 160_000;
 const UNITS: &str = "units";
@@ -56,20 +54,8 @@ pub(crate) enum DecodeError {
     Input(#[from] InputError),
     #[error(transparent)]
     Oracle(#[from] OracleError),
-    #[error(
-        "{ANALYSIS_FILE} has no {CLOCK_KEY} row, so the decoded audio has no rate to be labelled with"
-    )]
-    NoClock,
-    #[error(
-        "{ANALYSIS_FILE} gives {CLOCK_KEY} as {value:?}, which is no number: the clock of a start was not measured"
-    )]
-    ClockNotMeasured { value: String },
-    #[error(
-        "{CLOCK_KEY} {hz} is within {LABEL_WITHIN_PERCENT} percent of neither {TRUE_RATE_HZ} Hz nor {DECLARED_RATE_HZ} Hz, so the decoded audio has no rate to be labelled with"
-    )]
-    NeitherRate { hz: String },
-    #[error("the {CLOCK_KEY} rows of {ANALYSIS_FILE} are not all near one rate")]
-    ClocksDisagree,
+    #[error(transparent)]
+    Label(#[from] LabelError),
     #[error(
         "{ANALYSIS_FILE} does not count the {found} units that {LOG_FILE} holds, so the two are not of one run"
     )]
@@ -192,28 +178,6 @@ fn figure(
     }
 }
 
-// Sample input: `["63998.412"]`, the value of each clock row of the analysis table, one for every start.
-fn label(clocks: &[&str]) -> Result<u32, DecodeError> {
-    let mut label = None;
-    for &value in clocks {
-        let not_measured = |_| DecodeError::ClockNotMeasured {
-            value: value.to_owned(),
-        };
-        let hz: f64 = value.parse().map_err(not_measured)?;
-        let off_percent = |rate: u32| (hz / f64::from(rate) - 1.0).abs() * PERCENT;
-        let near = |rate: &u32| off_percent(*rate) <= LABEL_WITHIN_PERCENT;
-        let rate = [TRUE_RATE_HZ, DECLARED_RATE_HZ].into_iter().find(near);
-        let rate = rate.ok_or_else(|| DecodeError::NeitherRate {
-            hz: value.to_owned(),
-        })?;
-        if label.is_some_and(|other| other != rate) {
-            return Err(DecodeError::ClocksDisagree);
-        }
-        label = Some(rate);
-    }
-    label.ok_or(DecodeError::NoClock)
-}
-
 /// The coded bytes of every whole unit of every audio SDU the pods sent, in log order: the units the analysis counts.
 fn coded_units(records: &[Record]) -> Vec<&[u8]> {
     let mut units = Vec::new();
@@ -316,7 +280,7 @@ pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeError> {
     let log = run.read(LOG_FILE, MAX_LOG_BYTES)?;
     let analysis = text_of(ANALYSIS_FILE, &analysis)?;
     // Refused before any decoding: a decode with no rate to label it would be work for nothing.
-    let rate = label(&values(analysis, CLOCK_KEY))?;
+    let label = Label::read(analysis)?;
     let (log, _cut) = whole_lines(&log);
     let records = parse_log(text_of(LOG_FILE, log)?)?;
     let units = coded_units(&records);
@@ -332,18 +296,13 @@ pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeError> {
 
     // The first file this makes is the media file, so a run decoded before is refused here, before any work.
     let full = Both::of(&run, EXPECTED_CONFIG, &units, SAMPLES_PER_UNIT)?;
-    let label_note = format!(
-        "{CLOCK_KEY} is within {LABEL_WITHIN_PERCENT} percent of it; written into {WAV_FILE}"
-    );
-    let mut rows = vec![
-        Row::new(
-            "units_in",
-            &found,
-            UNITS,
-            "whole units of the audio SDUs in the log, in order",
-        ),
-        Row::new("rate_label", &rate, "Hz", &label_note),
-    ];
+    let mut rows = vec![Row::new(
+        "units_in",
+        &found,
+        UNITS,
+        "whole units of the audio SDUs in the log, in order",
+    )];
+    rows.extend(label.rows());
     rows.extend(full.rows(""));
     let from_candidate = full.candidate.as_ref().ok();
     rows.extend(output_rows(
@@ -363,7 +322,7 @@ pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeError> {
     } = full;
     let decoded = candidate.map_or_default(|tally| tally.samples);
     let mut wav = Vec::new();
-    wav::write_f32(&mut wav, rate, &decoded).map_err(DecodeError::Wav)?;
+    wav::write_f32(&mut wav, label.rate_hz, &decoded).map_err(DecodeError::Wav)?;
     let files = [
         run.write_unnamed(DECODE_FILE, table.as_bytes())?,
         oracle.media,

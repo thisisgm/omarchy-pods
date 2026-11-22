@@ -13,8 +13,8 @@ use super::super::signal::{
 use super::super::wav::{FLOAT, INTEGER, chunk, extensible, file, pcm16, riff};
 use super::super::xorshift::next_random;
 use super::{
-    COUNT, NS_PER_MS, RATE, REALTIME_AT_ZERO_NS, TAP, analysed, decoded, marks, number, probe,
-    put_file, refusal, row, table_of,
+    COUNT, COUNT_ON, NS_PER_MS, RATE, REALTIME_AT_ZERO_NS, TAP, analysed, decoded, marks, number,
+    probe, put_file, refusal, row, table_of, uplink_lines,
 };
 
 /// The rate of the reference recorder.
@@ -75,12 +75,8 @@ pub(super) fn start_with_head_from(scene: &[f32], from_ms: u32, head_from_ms: u3
 
 /// A `firstword` run whose starts, five seconds each, hold `segments`.
 pub(super) fn firstword_run(home: &TempDir, starts_ms: &[u32], segments: &[Vec<f32>]) -> PathBuf {
-    let mut lines = vec![(0, "cue", "Count aloud from one and do not stop until told")];
-    for &start_ms in starts_ms {
-        lines.push((start_ms, "start", ""));
-        lines.push((start_ms.saturating_add(5000), "stop", ""));
-    }
     let starts: Vec<(u32, u32)> = starts_ms.iter().map(|&start_ms| (start_ms, 5)).collect();
+    let lines = [vec![(0, "cue", COUNT_ON)], uplink_lines(&starts)].concat();
     let run = analysed(home, "firstword", &marks(&lines), &starts);
     decoded(&run, RATE, &segments.concat());
     run
@@ -374,7 +370,7 @@ fn scene_recording(home: &TempDir, heard: &[f32]) -> PathBuf {
 fn the_head_of_each_start_is_placed_against_its_body() {
     let home = tempfile::tempdir().unwrap();
     let lines = [
-        (0, "cue", "Count aloud from one and do not stop until told"),
+        (0, "cue", COUNT_ON),
         (1500, "start", ""),
         (6500, "stop", ""),
         (8000, "start", ""),

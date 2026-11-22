@@ -4,10 +4,16 @@
 #[path = "../src/probe/fixture.rs"]
 mod fixture;
 #[cfg(test)]
+#[path = "../src/probe/decode/refused.rs"]
+mod refused;
+#[cfg(test)]
 mod support;
 #[cfg(test)]
 #[path = "../src/probe/analyse/synth.rs"]
 mod synth;
+#[cfg(test)]
+#[path = "support/units.rs"]
+mod units;
 #[cfg(test)]
 #[path = "../src/probe/xorshift.rs"]
 mod xorshift;
@@ -24,15 +30,16 @@ mod tests {
     use std::process::Output;
 
     use pods_proto::sdulog::{Direction, Record};
-    use pods_proto::uplink::{AccessUnit, UplinkPacket, encode_audio};
     use tempfile::TempDir;
 
-    use super::fixture::{REFUSED_MESSAGE, REFUSED_UNIT, TONE_UNIT, ffprobe, installed};
+    use super::fixture::{TONE_UNIT, ffprobe, installed};
+    use super::refused::{REFUSED_MESSAGE, REFUSED_UNIT};
     use super::support::{
         DEVICE_INFO, OWNER_FILE, PERMISSION_BITS, PRIVATE, RATE_HZ, SAMPLES_PER_UNIT, SHORT_RUN_S,
         UNITS_PER_SDU, log_text, make_run, names_in, probe, row, run_path, soak,
     };
     use super::synth::{NS_PER_MS, SILENT_UNIT, shows};
+    use super::units::with_units;
     use super::xorshift::next_random;
 
     /// The status the command exits with when it refuses; a panic would exit with 101.
@@ -98,31 +105,6 @@ mod tests {
     const RUNNABLE: u32 = 0o700;
     /// A line a stand-in writes on its standard error.
     const STAND_IN_LINE: &str = "a line from the stand-in";
-
-    /// The same stream with what `unit_of` gives in place of each unit in turn, stamps and arrival times kept.
-    fn with_units<'unit>(
-        records: &[Record],
-        mut unit_of: impl FnMut() -> &'unit [u8],
-    ) -> Vec<Record> {
-        let mut replaced = |record: &Record| {
-            let Ok(Some(UplinkPacket::Audio(audio))) = UplinkPacket::parse(&record.sdu) else {
-                panic!("the generator makes audio SDUs only");
-            };
-            let units: Vec<AccessUnit<'_>> = audio
-                .units()
-                .map(|coded| AccessUnit {
-                    stamp: coded.stamp,
-                    data: unit_of(),
-                })
-                .collect();
-            Record {
-                at_ns: record.at_ns,
-                direction: record.direction,
-                sdu: encode_audio(audio.opaque, &units).unwrap(),
-            }
-        };
-        records.iter().map(&mut replaced).collect()
-    }
 
     /// A short run clocked at `rate_hz` that opens with a device information packet and holds what `unit_of` gives as each unit in turn, analysed.
     fn analysed_units<'unit>(

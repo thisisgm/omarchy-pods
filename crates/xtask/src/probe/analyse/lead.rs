@@ -1,5 +1,6 @@
 //! How far the first frame of a stream lies before its start command, and the burst that delivers the backlog.
 
+use super::load::Loaded;
 use super::stats::{NS_PER_MS, millis, to_f64};
 
 /// The earliest arrival line is taken from the packets of this long after the start.
@@ -14,6 +15,22 @@ const BURST_FRAMES_BEHIND: f64 = 3.0;
 pub(crate) struct Arrival {
     pub(crate) at_ns: u64,
     pub(crate) frames_done: u64,
+}
+
+impl Arrival {
+    /// Every audio SDU with a whole unit as an arrival: when it came and the units delivered by then; one with none brings no audio and cannot place its start.
+    pub(crate) fn of(loaded: &Loaded) -> Vec<Self> {
+        let mut frames_done = 0_u64;
+        let heard = loaded.audio.iter().filter(|sdu| !sdu.units.is_empty());
+        let arrivals = heard.map(|sdu| {
+            // No Rust target has a usize wider than 64 bits, so the fallback is never taken.
+            let frames = u64::try_from(sdu.units.len()).unwrap_or(u64::MAX);
+            frames_done = frames_done.saturating_add(frames);
+            let at_ns = sdu.at_ns;
+            Self { at_ns, frames_done }
+        });
+        arrivals.collect()
+    }
 }
 
 /// Where a stream starts against its start command.

@@ -8,9 +8,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::super::super::analyse::support::{SILENT_UNIT, run_with};
-use super::super::super::fixture::{REFUSED_MESSAGE, REFUSED_UNIT, TONE_UNIT, installed};
+use super::super::super::fixture::{TONE_UNIT, installed};
 use super::super::candidate::{Candidate, Tally};
 use super::super::compare::{TOLERANCE_LSB, compare};
+use super::super::refused::{REFUSED_MESSAGE, REFUSED_UNIT};
 use super::super::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};
 use super::*;
 

@@ -15,6 +15,8 @@ use super::super::tests::{
     start_at_zero, steady,
 };
 
+mod coarse;
+
 /// What every rate row of the short segment of `mixed_run` says it held.
 const THIN: &str = "start 1; 2 audio SDUs over 0.030 s; needs 500 over 30 s";
 
@@ -71,6 +73,12 @@ const START_ROWS: &[(&str, &str, &str, &str)] = &[
     refused("clock_hz_high", "Hz"),
     refused("clock_ppm_vs_64000", "ppm"),
     refused("clock_ppm_vs_48000", "ppm"),
+    (
+        "clock_hz_coarse",
+        "refused",
+        "Hz",
+        "start 1; 0 audio SDUs over 0.000 s; needs 75 over 3 s; counted from 1 s after the first audio SDU",
+    ),
     refused("audio_bits_per_second", "bit/s"),
     refused("sdu_bits_per_second", "bit/s"),
     refused("unit_bytes_min", "bytes"),
@@ -177,6 +185,9 @@ fn a_start_with_no_audio_still_gets_its_rows() {
         assert_eq!(row.value, "refused", "{key}");
         assert!(has_note(row, "0 audio SDUs over 0.000 s"), "{row:?}");
     }
+    let coarse = one(&report, "clock_hz_coarse");
+    assert_eq!(coarse.value, "none");
+    assert_eq!(coarse.note, "start 1; no audio SDU with a whole unit");
     for key in ["stamp_delta_per_unit", "stamp_delta_per_sdu", "stamp_unit"] {
         assert_eq!(one(&report, key).value, "none", "{key}");
     }

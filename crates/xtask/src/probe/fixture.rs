@@ -1,4 +1,4 @@
-//! Units and a check shared by the unit tests of the decoders and the test of the built command.
+//! A unit and the checks shared by the unit tests of the decoders and the tests of the built commands.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -6,11 +6,6 @@ use std::process::{Command, Stdio};
 
 /// A unit that is not silence: a gain of 0xb4, one band coded with the first codebook, and in it one quad that holds one line.
 pub(crate) const TONE_UNIT: [u8; 4] = [0xb4, 0x04, 0x42, 0x50];
-/// A unit FFmpeg refuses: it declares 63 bands, and a 480 sample frame at this rate has 35.
-pub(crate) const REFUSED_UNIT: [u8; 2] = [0xff, 0xff];
-/// What FFmpeg says of `REFUSED_UNIT`, from `decode_ics_info` in its libavcodec/aac/aacdec.c.
-pub(crate) const REFUSED_MESSAGE: &str =
-    "Number of scalefactor bands in group (63) exceeds limit (35).";
 
 /// Whether `tool` starts here; where it does not, the test that asked says so on its standard error and passes without it.
 pub(crate) fn installed(tool: &str) -> bool {
