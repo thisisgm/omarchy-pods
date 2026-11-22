@@ -1,8 +1,11 @@
 //! The status line against the one the C++ 1.3.6 daemon wrote with no pods connected.
 
 use pods_core::state::{Counters, LidState, State};
-use pods_core::status::to_status_line;
+use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT, to_status_line};
 use serde_json::Value;
+
+/// The line the C++ daemon wrote.
+const GOLDEN: &str = include_str!("fixtures/status-disconnected.json");
 
 /// The state the C++ daemon was in when the fixture was captured.
 fn fixture_state() -> State {
@@ -55,18 +58,30 @@ fn top_level_keys(line: &str) -> Vec<String> {
 
 #[test]
 fn disconnected_status_line_matches_the_cpp_daemon_byte_for_byte() {
-    let golden = include_str!("fixtures/status-disconnected.json");
-    assert_eq!(to_status_line(&fixture_state()), golden);
+    let raw = to_status_line(&fixture_state());
+    let mut line: Value = serde_json::from_str(&raw).unwrap();
+    // The raw line is the compact form of its own parse, so the compare below stays a byte compare.
+    assert_eq!(format!("{line}\n"), raw);
+    // `retain` keeps the order of the rest, whatever `serde_json` features are on.
+    line.as_object_mut()
+        .unwrap()
+        .retain(|key, _| !ADDITIVE_KEYS.contains(&key.as_str()));
+    assert_eq!(format!("{line}\n"), GOLDEN);
 }
 
 #[test]
 fn status_keys_are_in_ascending_byte_order() {
     let keys = top_level_keys(&to_status_line(&fixture_state()));
-    assert_eq!(keys.len(), 36, "{keys:?}");
+    assert_eq!(keys.len(), CPP_KEY_COUNT + ADDITIVE_KEYS.len(), "{keys:?}");
     let mut sorted = keys.clone();
     sorted.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     sorted.dedup();
     assert_eq!(keys, sorted);
+}
+
+#[test]
+fn the_cpp_key_count_is_the_golden_line_s() {
+    assert_eq!(top_level_keys(GOLDEN).len(), CPP_KEY_COUNT);
 }
 
 #[test]

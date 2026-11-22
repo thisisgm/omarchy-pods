@@ -22,9 +22,10 @@ mod tests {
     use zbus::{Connection, MessageStream, OwnedVariant};
 
     use super::support::bus::{
-        BUS_NAME, CONVERSATION_LIMIT, INTERFACE, OBJECT_PATH, bus_address, owned_connection,
-        start_bus, start_daemon,
+        BUS_NAME, CONVERSATION_LIMIT, INTERFACE, OBJECT_PATH, bus_address, changes_rule,
+        owned_connection, start_bus, start_daemon,
     };
+    use super::support::players::PROPERTIES;
     use super::support::{BINARY, HANG_LIMIT, Session, log_lines, wait_for};
 
     /// How the daemon's line about a missing bus or a taken name starts, from `serve` in `src/daemon/dbus.rs`.
@@ -37,9 +38,7 @@ mod tests {
     /// How zbus 6 starts an address it cannot reach, after `NO_BUS_LOG`; the address follows in backquotes.
     const CONNECT_FAILED: &str = "failed to connect to";
 
-    const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
     const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
-    const CHANGES_RULE: &str = "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/io/github/thisisgm/Omapods'";
 
     /// What `librepods <args>` prints, after checking that it exited 0.
     fn client(session: &Session, args: &[&str]) -> String {
@@ -53,7 +52,7 @@ mod tests {
             .call_method(
                 Some(BUS_NAME),
                 OBJECT_PATH,
-                Some(PROPERTIES_INTERFACE),
+                Some(PROPERTIES),
                 "Get",
                 &(INTERFACE, property),
             )
@@ -138,7 +137,7 @@ mod tests {
                 xml.contains(&format!(r#"<interface name="{INTERFACE}">"#)),
                 "{xml}"
             );
-            let mut changes = MessageStream::for_match_rule(CHANGES_RULE, bus, None)
+            let mut changes = MessageStream::for_match_rule(changes_rule().as_str(), bus, None)
                 .await
                 .unwrap();
             let refused = bus

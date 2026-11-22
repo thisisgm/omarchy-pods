@@ -65,6 +65,7 @@ impl Policy {
     }
 }
 
+/// Blind to the notifications switch, which the notifier checks at the send as the C++ `Notifier` does.
 fn notify(due: impl IntoIterator<Item = Notice>) -> Vec<Effect> {
     due.into_iter().map(Effect::Notify).collect()
 }

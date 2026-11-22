@@ -52,6 +52,8 @@ fn every_documented_value_sets_its_command() {
         ),
         ("one_bud_anc", "true", Command::SetOneBudAnc(true)),
         ("one_bud_anc", "false", Command::SetOneBudAnc(false)),
+        ("notifications", "true", Command::SetNotifications(true)),
+        ("notifications", "false", Command::SetNotifications(false)),
         ("adaptive_level", "0", Command::SetAdaptiveLevel(level(0))),
         ("adaptive_level", "37", Command::SetAdaptiveLevel(level(37))),
         (
@@ -101,6 +103,9 @@ fn a_word_the_key_does_not_take_is_bad_value() {
         ("conversational_awareness", "1"),
         ("one_bud_anc", "off"),
         ("one_bud_anc", "True"),
+        ("notifications", "on"),
+        ("notifications", "maybe"),
+        ("notifications", ""),
         ("adaptive_level", ""),
         ("adaptive_level", "high"),
         ("adaptive_level", " 50"),
@@ -119,7 +124,7 @@ fn a_word_the_key_does_not_take_is_bad_value() {
 
 #[test]
 fn values_lists_every_word_each_key_takes() {
-    let table: [(&str, Option<&[&str]>); 6] = [
+    let table: [(&str, Option<&[&str]>); 7] = [
         (
             NOISE,
             Some(&["off", "anc", "transparency", "adaptive", "cycle"]),
@@ -128,6 +133,7 @@ fn values_lists_every_word_each_key_takes() {
         (CONVERSATIONAL_AWARENESS, Some(&["true", "false"])),
         (ONE_BUD_ANC, Some(&["true", "false"])),
         (ADAPTIVE_LEVEL, None),
+        (NOTIFICATIONS, Some(&["true", "false"])),
         ("volume", None),
     ];
     for (key, _) in KEYS {

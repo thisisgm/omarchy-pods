@@ -9,9 +9,10 @@ use std::task::Poll;
 use std::time::Duration;
 
 use pods_core::policy::notices::Notice;
+use pods_core::prefs::Prefs;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc::{self, error::TrySendError};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -79,10 +80,18 @@ pub(super) fn offer(notices: &mpsc::Sender<Notice>, notice: Notice) {
     }
 }
 
-/// Shows each notice in turn until `stop` fires or its sender is dropped.
-pub(super) async fn run(mut notices: mpsc::Receiver<Notice>, mut stop: oneshot::Receiver<()>) {
+/// Shows each notice in turn, dropping it while `prefs` has notices off, until `stop` fires or its sender is dropped.
+pub(super) async fn run(
+    mut notices: mpsc::Receiver<Notice>,
+    prefs: watch::Receiver<Prefs>,
+    mut stop: oneshot::Receiver<()>,
+) {
     let mut said = Said::default();
     while let Some(notice) = next(&mut notices, &mut stop).await {
+        // At the send, as the C++ `Notifier` checks, so a notice queued before the switch went off never starts.
+        if !prefs.borrow().notifications {
+            continue;
+        }
         let Some(mut child) = start(notice, &mut said) else {
             continue;
         };

@@ -83,6 +83,17 @@ level included.
 | `conversational_awareness` | `true` or `false` |
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
+| `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
+
+`ear_detection` and `notifications` are kept across restarts in
+`settings.json` beside the state file, readable only by its owner. When that
+file is absent, the daemon takes the two choices once from the older
+`${XDG_CONFIG_HOME:-$HOME/.config}/AirPodsTrayApp/AirPodsTrayApp.conf` and
+writes `settings.json`; it never changes the older file. A `settings.json` the
+daemon cannot read or parse, or finds larger than 65536 bytes, gives the
+defaults, `one` and `true`, and one line in the log; the next change replaces
+it unless it is a directory or a symbolic link, which stay in place.
+`notifications` has no verb in the older dialect.
 
 ### `do`
 
@@ -124,7 +135,8 @@ A reply carries the request's `id` and `ok`.
 ```
 
 - `get` and `subscribe` reply with `state`, the same object `librepods status`
-  prints and the state file holds.
+  prints and the state file holds. Besides the keys the older daemon wrote, it
+  carries `notifications_enabled`, the `notifications` setting.
 - `set` and `do` reply with `result`. `confirmed` means the state shows the
   change: either it already did, or the AirPods reported the change within
   700 ms of the command. `sent` means the command was handed on and the reply

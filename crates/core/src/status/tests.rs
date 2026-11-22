@@ -58,6 +58,7 @@ fn populated_state_lands_every_field_on_its_key() {
             one_bud_anc_changes: 12,
             reopen_calls: 13,
         },
+        notifications: false,
     };
     let expected = json!({
         "adaptive_level_changes_total": 11,
@@ -84,6 +85,7 @@ fn populated_state_lands_every_field_on_its_key() {
         "model_number": "A3048",
         "noise_control_changes_total": 3,
         "noise_mode": 3,
+        "notifications_enabled": false,
         "one_bud_anc_changes_total": 12,
         "one_bud_anc_mode": true,
         "reconnect_attempts_total": 1,
@@ -188,5 +190,19 @@ fn every_noise_mode_ear_detection_behavior_and_lid_state_lands_on_its_key() {
             ..State::default()
         });
         assert_eq!(line["lid_state"], Value::from(lid.number()), "{lid:?}");
+    }
+}
+
+#[test]
+fn the_document_has_the_cpp_keys_and_each_additive_key_once() {
+    let document = status(&State::default());
+    let keys = document.as_object().unwrap();
+    assert_eq!(
+        keys.len(),
+        CPP_KEY_COUNT + ADDITIVE_KEYS.len(),
+        "{document}"
+    );
+    for key in ADDITIVE_KEYS {
+        assert!(keys.contains_key(*key), "{key}");
     }
 }

@@ -18,6 +18,8 @@ const RUNTIME_DIR_VAR: &str = "XDG_RUNTIME_DIR";
 
 const STATE_HOME_VAR: &str = "XDG_STATE_HOME";
 
+const CONFIG_HOME_VAR: &str = "XDG_CONFIG_HOME";
+
 const HOME_VAR: &str = "HOME";
 
 fn main() -> ExitCode {
@@ -61,7 +63,13 @@ fn run_daemon() -> ExitCode {
         daemon::log(daemon::NO_STATE_HOME);
         return ExitCode::FAILURE;
     };
-    daemon::run(daemon::Paths { socket, state_file })
+    let old_conf =
+        daemon::prefs::old_conf_path(env::var_os(CONFIG_HOME_VAR).as_deref(), home.as_deref());
+    daemon::run(daemon::Paths {
+        socket,
+        state_file,
+        old_conf,
+    })
 }
 
 /// Prints a clap error, help or version where clap chooses, and exits with clap's code.

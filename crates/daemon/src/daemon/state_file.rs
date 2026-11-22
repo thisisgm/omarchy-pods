@@ -2,21 +2,19 @@
 
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{self, DirBuilder, File};
-use std::io::{self, ErrorKind, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::fs;
+use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use pods_core::state::State;
 use pods_core::status::to_status_line;
-use rustix::fs::{Mode, OFlags, open};
 use tokio::sync::watch;
 use tokio::task::{JoinError, spawn_blocking};
 use tokio::time::sleep;
 
-use super::log;
+use super::owner_file::{self, Failures, WriteError, same_cause};
 
 /// As `daemon/main.cpp` names it.
 const STATE_DIR_NAME: &str = "librepods";
@@ -27,29 +25,29 @@ const STATE_FILE_NAME: &str = "status.json";
 /// Qt's `GenericStateLocation` fallback when `XDG_STATE_HOME` cannot place it.
 const HOME_STATE_DIR: &str = ".local/state";
 
-const TEMP_SUFFIX: &str = ".tmp";
-
-/// The state file carries the pods' identity, so only its owner reads it.
-const STATE_FILE_MODE: u32 = 0o600;
-
-const STATE_DIR_MODE: u32 = 0o700;
-
-/// A longer line is refused, which only an absurd device name could cause.
-const MAX_STATE_LINE_BYTES: usize = 65536;
-
 /// The C++ state writer's one second timer.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 
 // Sample: `XDG_STATE_HOME=/home/u/.local/state`, or `HOME=/home/u` if unset, empty or relative.
 pub(crate) fn path(xdg_state_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
-    let state_home = match xdg_state_home
-        .map(Path::new)
-        .filter(|dir| dir.is_absolute())
-    {
-        Some(dir) => dir.to_path_buf(),
-        None => Path::new(home.filter(|home| !home.is_empty())?).join(HOME_STATE_DIR),
-    };
-    Some(state_home.join(STATE_DIR_NAME).join(STATE_FILE_NAME))
+    Some(
+        xdg_dir(xdg_state_home, home, HOME_STATE_DIR)?
+            .join(STATE_DIR_NAME)
+            .join(STATE_FILE_NAME),
+    )
+}
+
+/// An absolute XDG variable's directory, else `home_relative` under a non empty `HOME`.
+// Sample: `/home/u/.config` from `XDG_CONFIG_HOME=/home/u/.config`, or from `HOME=/home/u` and `.config`.
+pub(super) fn xdg_dir(
+    xdg: Option<&OsStr>,
+    home: Option<&OsStr>,
+    home_relative: &str,
+) -> Option<PathBuf> {
+    match xdg.map(Path::new).filter(|dir| dir.is_absolute()) {
+        Some(dir) => Some(dir.to_path_buf()),
+        None => Some(Path::new(home.filter(|home| !home.is_empty())?).join(home_relative)),
+    }
 }
 
 #[derive(Debug)]
@@ -60,15 +58,7 @@ pub(super) struct StateFileError {
 
 #[derive(Debug)]
 enum Failure {
-    LineTooLong(usize),
-    NoDirectory,
-    CreateDirectory(PathBuf, io::Error),
-    Inspect(io::Error),
-    Link,
-    ClearCopy(PathBuf, io::Error),
-    CreateCopy(PathBuf, io::Error),
-    WriteCopy(PathBuf, io::Error),
-    RenameCopy(PathBuf, io::Error),
+    Write(WriteError),
     PublishUnfinished(JoinError),
     Remove(io::Error),
     RemoveUnfinished(JoinError),
@@ -79,46 +69,7 @@ impl fmt::Display for StateFileError {
         let path = self.path.display();
         let publish = "cannot publish the state file";
         match &self.failure {
-            Failure::LineTooLong(bytes) => write!(
-                formatter,
-                "{publish} {path}: refusing the line: {bytes} bytes is over {MAX_STATE_LINE_BYTES}"
-            ),
-            Failure::NoDirectory => write!(
-                formatter,
-                "{publish} {path}: finding its directory: the path has none"
-            ),
-            Failure::CreateDirectory(dir, cause) => write!(
-                formatter,
-                "{publish} {path}: creating {}: {cause}",
-                dir.display()
-            ),
-            Failure::Inspect(cause) => {
-                write!(formatter, "{publish} {path}: inspecting it: {cause}")
-            }
-            Failure::Link => write!(
-                formatter,
-                "{publish} {path}: refusing to replace it: it is a symbolic link, and its target stays untouched"
-            ),
-            Failure::ClearCopy(copy, cause) => write!(
-                formatter,
-                "{publish} {path}: clearing {}: {cause}",
-                copy.display()
-            ),
-            Failure::CreateCopy(copy, cause) => write!(
-                formatter,
-                "{publish} {path}: creating {}: {cause}",
-                copy.display()
-            ),
-            Failure::WriteCopy(copy, cause) => write!(
-                formatter,
-                "{publish} {path}: writing {}: {cause}",
-                copy.display()
-            ),
-            Failure::RenameCopy(copy, cause) => write!(
-                formatter,
-                "{publish} {path}: renaming {} over it: {cause}",
-                copy.display()
-            ),
+            Failure::Write(step) => write!(formatter, "{publish} {path}: {step}"),
             Failure::PublishUnfinished(cause) => write!(
                 formatter,
                 "{publish} {path}: the write did not finish: {cause}"
@@ -134,50 +85,32 @@ impl fmt::Display for StateFileError {
     }
 }
 
+impl PartialEq for StateFileError {
+    /// One writer has one path, so the failure alone decides.
+    fn eq(&self, other: &Self) -> bool {
+        self.failure == other.failure
+    }
+}
+
 impl PartialEq for Failure {
     /// The same step with the same cause, which is what makes the logged sentence the same.
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::LineTooLong(one), Self::LineTooLong(other)) => one == other,
-            (Self::NoDirectory, Self::NoDirectory) | (Self::Link, Self::Link) => true,
-            (Self::CreateDirectory(one, cause), Self::CreateDirectory(other, other_cause))
-            | (Self::ClearCopy(one, cause), Self::ClearCopy(other, other_cause))
-            | (Self::CreateCopy(one, cause), Self::CreateCopy(other, other_cause))
-            | (Self::WriteCopy(one, cause), Self::WriteCopy(other, other_cause))
-            | (Self::RenameCopy(one, cause), Self::RenameCopy(other, other_cause)) => {
-                one == other && same_cause(cause, other_cause)
-            }
-            (Self::Inspect(cause), Self::Inspect(other_cause))
-            | (Self::Remove(cause), Self::Remove(other_cause)) => same_cause(cause, other_cause),
+            (Self::Write(one), Self::Write(other)) => one == other,
+            (Self::Remove(cause), Self::Remove(other_cause)) => same_cause(cause, other_cause),
             // Each write is its own task, so the failure of another write never matches.
             (Self::PublishUnfinished(cause), Self::PublishUnfinished(other_cause))
             | (Self::RemoveUnfinished(cause), Self::RemoveUnfinished(other_cause)) => {
                 cause.id() == other_cause.id()
             }
             (
-                Self::LineTooLong(_)
-                | Self::NoDirectory
-                | Self::CreateDirectory(..)
-                | Self::Inspect(_)
-                | Self::Link
-                | Self::ClearCopy(..)
-                | Self::CreateCopy(..)
-                | Self::WriteCopy(..)
-                | Self::RenameCopy(..)
+                Self::Write(_)
                 | Self::PublishUnfinished(_)
                 | Self::Remove(_)
                 | Self::RemoveUnfinished(_),
                 _,
             ) => false,
         }
-    }
-}
-
-fn same_cause(one: &io::Error, other: &io::Error) -> bool {
-    match (one.raw_os_error(), other.raw_os_error()) {
-        (Some(one), Some(other)) => one == other,
-        (None, None) => one.to_string() == other.to_string(),
-        (Some(_), None) | (None, Some(_)) => false,
     }
 }
 
@@ -201,7 +134,8 @@ impl StateFile {
         if *removed {
             return Ok(());
         }
-        write_atomically(&self.path, line)
+        owner_file::write(&self.path, line.as_bytes())
+            .map_err(|step| self.error(Failure::Write(step)))
     }
 
     pub(super) async fn publish(&self, line: String) -> Result<(), StateFileError> {
@@ -229,6 +163,13 @@ impl StateFile {
         }
     }
 
+    pub(super) fn failures(&self) -> Failures<StateFileError> {
+        Failures::new(format!(
+            "state file {} is published again",
+            self.path.display()
+        ))
+    }
+
     fn error(&self, failure: Failure) -> StateFileError {
         StateFileError {
             path: self.path.clone(),
@@ -237,44 +178,11 @@ impl StateFile {
     }
 }
 
-/// Logs a failing write when it starts, when its error changes and when it recovers.
-#[derive(Debug, Default)]
-pub(super) struct WriteFailures {
-    last: Option<Failure>,
-}
-
-impl WriteFailures {
-    pub(super) fn note(&mut self, file: &StateFile, result: Result<(), StateFileError>) {
-        if let Some(message) = self.message(&file.path, result) {
-            log(&message);
-        }
-    }
-
-    fn message(&mut self, path: &Path, result: Result<(), StateFileError>) -> Option<String> {
-        match result {
-            Ok(()) => self
-                .last
-                .take()
-                .map(|_| format!("state file {} is published again", path.display())),
-            Err(error) if self.last.as_ref() == Some(&error.failure) => None,
-            Err(error) => {
-                let message = error.to_string();
-                self.last = Some(error.failure);
-                Some(message)
-            }
-        }
-    }
-
-    fn failing(&self) -> bool {
-        self.last.is_some()
-    }
-}
-
 /// Retries a failed write, the first one included, every `RETRY_DELAY`.
 pub(super) async fn follow(
     mut updates: watch::Receiver<State>,
     file: StateFile,
-    mut failures: WriteFailures,
+    mut failures: Failures<StateFileError>,
 ) {
     loop {
         if failures.failing() {
@@ -285,57 +193,12 @@ pub(super) async fn follow(
             return;
         }
         let line = to_status_line(&updates.borrow_and_update());
-        failures.note(&file, file.publish(line).await);
+        failures.note(file.publish(line).await);
     }
-}
-
-/// A fresh 0600 copy, synced, renamed over; a link at either is never followed, one above them is.
-fn write_atomically(path: &Path, line: &str) -> Result<(), StateFileError> {
-    let fail = |failure| StateFileError {
-        path: path.to_path_buf(),
-        failure,
-    };
-    if line.len() > MAX_STATE_LINE_BYTES {
-        return Err(fail(Failure::LineTooLong(line.len())));
-    }
-    let dir = path.parent().ok_or_else(|| fail(Failure::NoDirectory))?;
-    DirBuilder::new()
-        .recursive(true)
-        .mode(STATE_DIR_MODE)
-        .create(dir)
-        .map_err(|cause| fail(Failure::CreateDirectory(dir.to_path_buf(), cause)))?;
-    match fs::symlink_metadata(path) {
-        Ok(found) if found.file_type().is_symlink() => return Err(fail(Failure::Link)),
-        Ok(_) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(fail(Failure::Inspect(error))),
-    }
-    let mut temp_name = path.as_os_str().to_os_string();
-    temp_name.push(TEMP_SUFFIX);
-    let temp = PathBuf::from(temp_name);
-    // A copy left by a crash would make the exclusive create below fail on every later write.
-    match fs::remove_file(&temp) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(fail(Failure::ClearCopy(temp, error))),
-    }
-    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let mut copy = match open(&temp, flags, Mode::from_raw_mode(STATE_FILE_MODE)) {
-        Ok(copy) => File::from(copy),
-        Err(errno) => return Err(fail(Failure::CreateCopy(temp, errno.into()))),
-    };
-    if let Err(error) = copy
-        .write_all(line.as_bytes())
-        .and_then(|()| copy.sync_all())
-    {
-        return Err(fail(Failure::WriteCopy(temp, error)));
-    }
-    fs::rename(&temp, path).map_err(|error| fail(Failure::RenameCopy(temp, error)))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
     use cpp_source::MAIN;
     use rustix::io::Errno;
@@ -383,95 +246,6 @@ mod tests {
             .join(STATE_FILE_NAME)
     }
 
-    #[test]
-    fn write_creates_the_directory_and_a_0600_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        write_atomically(&path, "{\"a\":1}\n").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":1}\n");
-        let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, STATE_FILE_MODE);
-        let dir_mode = fs::metadata(path.parent().unwrap())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(dir_mode & 0o777, STATE_DIR_MODE);
-    }
-
-    #[test]
-    fn write_replaces_the_file_with_a_new_inode() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        write_atomically(&path, "one\n").unwrap();
-        let first = fs::metadata(&path).unwrap().ino();
-        write_atomically(&path, "two\n").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "two\n");
-        assert_ne!(fs::metadata(&path).unwrap().ino(), first);
-    }
-
-    #[test]
-    fn write_refuses_a_symlink_and_leaves_its_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let target = dir.path().join("target");
-        fs::write(&target, "original").unwrap();
-        symlink(&target, &path).unwrap();
-        let error = write_atomically(&path, "line\n").unwrap_err();
-        let sentence = format!(
-            "cannot publish the state file {}: refusing to replace it: it is a symbolic link, and its target stays untouched",
-            path.display()
-        );
-        assert_eq!(error.to_string(), sentence);
-        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
-        assert!(fs::symlink_metadata(&path).unwrap().is_symlink());
-    }
-
-    #[test]
-    fn write_replaces_a_leftover_copy_without_following_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let target = dir.path().join("target");
-        fs::write(&target, "original").unwrap();
-        let mut temp = path.as_os_str().to_os_string();
-        temp.push(TEMP_SUFFIX);
-        symlink(&target, PathBuf::from(&temp)).unwrap();
-        write_atomically(&path, "line\n").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "line\n");
-        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
-        assert!(!PathBuf::from(temp).exists());
-    }
-
-    #[test]
-    fn write_goes_through_a_linked_state_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        fs::create_dir(dir.path().join("state")).unwrap();
-        let real = dir.path().join("real");
-        fs::create_dir(&real).unwrap();
-        symlink(&real, path.parent().unwrap()).unwrap();
-        write_atomically(&path, "line\n").unwrap();
-        assert_eq!(
-            fs::read_to_string(real.join(STATE_FILE_NAME)).unwrap(),
-            "line\n"
-        );
-    }
-
-    #[test]
-    fn write_refuses_a_line_over_the_bound() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = state_path(&dir);
-        let error = write_atomically(&path, &"x".repeat(MAX_STATE_LINE_BYTES + 1)).unwrap_err();
-        let sentence = format!(
-            "cannot publish the state file {}: refusing the line: 65537 bytes is over 65536",
-            path.display()
-        );
-        assert_eq!(error.to_string(), sentence);
-        assert!(!path.exists());
-        write_atomically(&path, &"x".repeat(MAX_STATE_LINE_BYTES)).unwrap();
-    }
-
     const PATH: &str = "/s/librepods/status.json";
 
     fn error(failure: Failure) -> StateFileError {
@@ -490,32 +264,35 @@ mod tests {
 
     #[test]
     fn a_failure_is_logged_when_it_starts_changes_and_ends() {
-        let path = Path::new(PATH);
-        let mut failures = WriteFailures::default();
-        let inspect = |errno: Errno| Err(error(Failure::Inspect(errno.into())));
+        let mut failures = StateFile::new(PathBuf::from(PATH)).failures();
+        let inspect = |errno: Errno| Err(error(Failure::Write(WriteError::Inspect(errno.into()))));
         let denied = "cannot publish the state file /s/librepods/status.json: inspecting it: Permission denied (os error 13)";
         let not_permitted = "cannot publish the state file /s/librepods/status.json: inspecting it: Operation not permitted (os error 1)";
-        assert_eq!(failures.message(path, Ok(())), None);
+        assert_eq!(failures.message(Ok(())), None);
         assert_eq!(
-            failures.message(path, inspect(Errno::ACCESS)).as_deref(),
+            failures.message(inspect(Errno::ACCESS)).as_deref(),
             Some(denied)
         );
-        assert_eq!(failures.message(path, inspect(Errno::ACCESS)), None);
+        assert_eq!(failures.message(inspect(Errno::ACCESS)), None);
         assert!(failures.failing());
-        let changed = failures.message(path, inspect(Errno::PERM));
+        let changed = failures.message(inspect(Errno::PERM));
         assert_eq!(changed.as_deref(), Some(not_permitted));
-        let custom = |text: &str| Err(error(Failure::Inspect(io::Error::other(text))));
-        assert!(failures.message(path, custom("one")).is_some());
-        assert_eq!(failures.message(path, custom("one")), None);
-        assert!(failures.message(path, custom("two")).is_some());
+        let custom = |text: &str| {
+            Err(error(Failure::Write(WriteError::Inspect(
+                io::Error::other(text),
+            ))))
+        };
+        assert!(failures.message(custom("one")).is_some());
+        assert_eq!(failures.message(custom("one")), None);
+        assert!(failures.message(custom("two")).is_some());
         for _ in 0..2 {
             let unfinished = Err(error(Failure::PublishUnfinished(cancelled())));
-            assert!(failures.message(path, unfinished).is_some());
+            assert!(failures.message(unfinished).is_some());
         }
         let recovered = "state file /s/librepods/status.json is published again";
-        assert_eq!(failures.message(path, Ok(())), Some(recovered.to_owned()));
+        assert_eq!(failures.message(Ok(())), Some(recovered.to_owned()));
         assert!(!failures.failing());
-        assert_eq!(failures.message(path, Ok(())), None);
+        assert_eq!(failures.message(Ok(())), None);
     }
 
     #[test]
@@ -526,39 +303,39 @@ mod tests {
         let publish = "cannot publish the state file /s/librepods/status.json";
         let cases = [
             (
-                Failure::LineTooLong(65537),
+                Failure::Write(WriteError::TooLong(65537)),
                 "refusing the line: 65537 bytes is over 65536",
             ),
             (
-                Failure::NoDirectory,
+                Failure::Write(WriteError::NoDirectory),
                 "finding its directory: the path has none",
             ),
             (
-                Failure::CreateDirectory(dir, denied()),
+                Failure::Write(WriteError::CreateDirectory(dir, denied())),
                 "creating /s/librepods: Permission denied (os error 13)",
             ),
             (
-                Failure::Inspect(denied()),
+                Failure::Write(WriteError::Inspect(denied())),
                 "inspecting it: Permission denied (os error 13)",
             ),
             (
-                Failure::Link,
+                Failure::Write(WriteError::Link),
                 "refusing to replace it: it is a symbolic link, and its target stays untouched",
             ),
             (
-                Failure::ClearCopy(copy.clone(), denied()),
+                Failure::Write(WriteError::ClearCopy(copy.clone(), denied())),
                 "clearing /s/librepods/status.json.tmp: Permission denied (os error 13)",
             ),
             (
-                Failure::CreateCopy(copy.clone(), denied()),
+                Failure::Write(WriteError::CreateCopy(copy.clone(), denied())),
                 "creating /s/librepods/status.json.tmp: Permission denied (os error 13)",
             ),
             (
-                Failure::WriteCopy(copy.clone(), denied()),
+                Failure::Write(WriteError::WriteCopy(copy.clone(), denied())),
                 "writing /s/librepods/status.json.tmp: Permission denied (os error 13)",
             ),
             (
-                Failure::RenameCopy(copy, denied()),
+                Failure::Write(WriteError::RenameCopy(copy, denied())),
                 "renaming /s/librepods/status.json.tmp over it: Permission denied (os error 13)",
             ),
         ];

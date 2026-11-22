@@ -47,7 +47,7 @@ nothing, and a command that changes nothing sends none.
 | `Batteries` | `a{s(bby)}` | Always the keys `left`, `right`, `case` and `headset`, each `(available, charging, level)`. A part with no reading is `(false, false, 0)`. |
 | `InEar` | `a{sb}` | Always the keys `left` and `right`. |
 | `Capabilities` | `as` | The names of the status object's true `supports_*` keys without the prefix, sorted, for example `adaptive`. |
-| `StatusJson` | `s` | The whole status object, the same JSON the state file holds, without the trailing newline. It changes whenever any key changes, counters included. |
+| `StatusJson` | `s` | The whole status object, the same JSON the state file holds, without the trailing newline. It changes whenever any key changes, counters included. No property of its own carries the `notifications` setting; it is this object's `notifications_enabled`. |
 
 ## Methods
 
@@ -77,6 +77,7 @@ refuses the same way.
 | `SetConversationalAwareness` | `b` | `conversational_awareness` | |
 | `SetOneBudAnc` | `b` | `one_bud_anc` | |
 | `SetAdaptiveLevel` | `y` | `adaptive_level` | 0 to 100 |
+| `SetNotifications` | `b` | `notifications` | |
 | `Connect` | none | | |
 | `Disconnect` | none | | |
 | `Forget` | none | | |

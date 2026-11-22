@@ -550,6 +550,7 @@ fn reset_device_matches_the_cpp_reset() {
             reconnect_failures: 3,
             ..Default::default()
         },
+        notifications: false,
     };
     let kept = state.clone();
     state.reset_device();

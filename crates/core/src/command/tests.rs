@@ -32,6 +32,7 @@ pub(crate) fn any_command() -> impl Strategy<Value = Command> {
         any::<bool>().prop_map(Command::SetConversationalAwareness),
         any::<bool>().prop_map(Command::SetOneBudAnc),
         (0..=ADAPTIVE_LEVEL_MAX).prop_map(|percent| Command::SetAdaptiveLevel(level(percent))),
+        any::<bool>().prop_map(Command::SetNotifications),
         Just(Command::Connect),
         Just(Command::Disconnect),
         Just(Command::Forget),
@@ -83,6 +84,7 @@ proptest! {
         expected.counters = after.counters;
         match command {
             Command::SetEarDetection(behavior) => expected.ear_detection_behavior = behavior,
+            Command::SetNotifications(enabled) => expected.notifications = enabled,
             Command::SetConversationalAwareness(enabled) => {
                 expected.conversational_awareness = enabled;
             }
@@ -107,7 +109,7 @@ proptest! {
     ) {
         let outcome = apply(&mut state.clone(), &command);
         let expected = match command {
-            Command::SetEarDetection(_) => Outcome::Confirmed,
+            Command::SetEarDetection(_) | Command::SetNotifications(_) => Outcome::Confirmed,
             Command::Reopen => Outcome::Refused(CommandError::Headless),
             Command::SetNoise(_)
             | Command::SetConversationalAwareness(_)

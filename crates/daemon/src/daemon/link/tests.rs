@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pods_proto::noise::NoiseMode;
 use pods_sys::l2cap::ChannelError;
 use rustix::io::Errno;
 use tokio::runtime::Builder;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::timeout;
 
 use super::{Connector, DeviceEvent, Input, Outlets, REQUEST_QUEUE, drive, queue};
@@ -26,7 +27,8 @@ pub(in crate::daemon) const HANG_LIMIT: Duration = Duration::from_secs(10);
 /// Outlets whose queues nobody reads, for a test that looks only at the link.
 pub(in crate::daemon) fn unread_outlets() -> Outlets {
     let (notices, _unread) = notify::queue();
-    Outlets { notices }
+    let (prefs, _unwritten) = watch::channel(Prefs::default());
+    Outlets { notices, prefs }
 }
 
 /// A current thread runtime with a clock, as the daemon's own.
@@ -118,7 +120,7 @@ impl Running {
 
     pub(super) fn start(connector: Connector, tap: Option<Tap>) -> Self {
         let (link, inputs) = queue();
-        let hub = Hub::new(link.clone());
+        let hub = Hub::new(link.clone(), State::default());
         let fed = link.clone();
         let (halt, asked) = oneshot::channel::<()>();
         let shared = hub.clone();

@@ -11,7 +11,7 @@ mod support;
 #[cfg(test)]
 mod tests {
     use pods_core::state::State;
-    use pods_core::status::to_status_object;
+    use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT, to_status_object};
     use pods_fake::Profile;
     use pods_samples::ALLOW_OFF_OPTION;
     use serde_json::{Value, json};
@@ -36,9 +36,6 @@ mod tests {
     const OFFERED: u8 = 1;
     const NOT_OFFERED: u8 = 2;
     const OFF_STATUS: u8 = 0;
-    /// The keys the plugin reads, which no change here adds to or takes away.
-    const STATUS_KEYS: usize = 36;
-
     /// Pods of `model_number` in noise cancelling, so a change to Off is a real write.
     fn pods(model_number: &str) -> Profile {
         Profile {
@@ -147,7 +144,10 @@ mod tests {
             sorted_keys(&status),
             sorted_keys(&to_status_object(&State::default()))
         );
-        assert_eq!(status.as_object().unwrap().len(), STATUS_KEYS);
+        assert_eq!(
+            status.as_object().unwrap().len(),
+            CPP_KEY_COUNT + ADDITIVE_KEYS.len()
+        );
         let generic = json!({
             "model_number": UNKNOWN_MODEL,
             "model_name": "",

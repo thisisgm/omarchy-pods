@@ -84,6 +84,10 @@ const INTROSPECTED: &str = r#"
     <arg name="level" type="y" direction="in"/>
     <arg type="s" direction="out"/>
   </method>
+  <method name="SetNotifications">
+    <arg name="enabled" type="b" direction="in"/>
+    <arg type="s" direction="out"/>
+  </method>
   <method name="Connect">
     <arg type="s" direction="out"/>
   </method>

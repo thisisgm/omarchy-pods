@@ -6,6 +6,8 @@ mod hub;
 mod legacy_dialect;
 mod link;
 mod notify;
+mod owner_file;
+pub(crate) mod prefs;
 mod proto1;
 mod signals;
 mod sleep;
@@ -20,15 +22,16 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::task::Poll;
 
+use pods_core::prefs::Prefs;
 use pods_core::status::to_status_line;
 use pods_proto::packets::CONTROL_PSM;
 use pods_sys::l2cap;
 use tokio::runtime::Builder;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use hub::Hub;
-use state_file::{StateFile, WriteFailures};
+use state_file::StateFile;
 
 /// As `daemon/main.cpp` logs it.
 pub(crate) const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot place the control socket";
@@ -46,11 +49,15 @@ const SUBSCRIBER_BACKLOG: usize = MAX_CONNECTIONS;
 pub(crate) struct Paths {
     pub(crate) socket: PathBuf,
     pub(crate) state_file: PathBuf,
+    /// The C++ daemon's settings, read once if `settings.json` is absent.
+    pub(crate) old_conf: Option<PathBuf>,
 }
 
 pub(crate) fn run(paths: Paths) -> ExitCode {
+    let settings = paths.state_file.with_file_name(prefs::FILE_NAME);
+    let loaded = prefs::load(&settings, paths.old_conf.as_deref());
     match Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime.block_on(serve(paths)),
+        Ok(runtime) => runtime.block_on(serve(paths, settings, loaded)),
         Err(error) => {
             log(&format!("cannot start the daemon's async runtime: {error}"));
             ExitCode::FAILURE
@@ -58,7 +65,7 @@ pub(crate) fn run(paths: Paths) -> ExitCode {
     }
 }
 
-async fn serve(paths: Paths) -> ExitCode {
+async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
     let mut stop = match signals::listen() {
         Ok(stop) => stop,
         Err(error) => {
@@ -89,27 +96,28 @@ async fn serve(paths: Paths) -> ExitCode {
     };
 
     let (link, inputs) = link::queue();
-    let hub = Hub::new(link.clone());
+    let hub = Hub::new(link.clone(), loaded.into_state());
     let (requests, watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
     let connector: link::Connector =
         Arc::new(|device| l2cap::connect(device, CONTROL_PSM, link::CONNECT_TIMEOUT));
     let (notices, notice_queue) = notify::queue();
     let (stop_notifier, notifier_stops) = oneshot::channel();
-    let notifier = tokio::spawn(notify::run(notice_queue, notifier_stops));
+    let (prefs, prefs_changes) = watch::channel(loaded);
+    let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
     let driver = tokio::spawn(link::drive(
         hub.clone(),
         inputs,
         link.clone(),
         requests,
         connector,
-        link::Outlets { notices },
+        link::Outlets { notices, prefs },
     ));
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
     // Before the socket, so any client that connects finds the state file unless the write failed.
     let first = to_status_line(&updates.borrow());
-    let mut failures = WriteFailures::default();
-    failures.note(&file, file.publish(first).await);
+    let mut failures = file.failures();
+    failures.note(file.publish(first).await);
     let listener = match socket::bind(&paths.socket).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -123,6 +131,7 @@ async fn serve(paths: Paths) -> ExitCode {
 
     let accept = tokio::spawn(socket::accept_loop(listener, hub.clone()));
     let follow = tokio::spawn(state_file::follow(updates, file.clone(), failures));
+    let prefs_writer = tokio::spawn(prefs::follow(prefs_changes, settings));
     // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(dbus::serve(hub.clone()));
     let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests));
@@ -143,6 +152,10 @@ async fn serve(paths: Paths) -> ExitCode {
         log(&error);
     }
     remove_state_file(&file).await;
+    // Last: it returns once the stopped driver's sender is gone and the final change is written.
+    if let Err(error) = prefs_writer.await {
+        log(&format!("prefs: the writer ended: {error}"));
+    }
     code
 }
 
@@ -216,6 +229,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
+    use pods_core::state::State;
     use pods_sys::l2cap::ChannelError;
     use rustix::io::Errno;
     use tokio::sync::oneshot;
@@ -369,7 +383,7 @@ mod tests {
             let (link, inputs) = link::queue();
             let (requests, _unread) = mpsc::channel(link::REQUEST_QUEUE);
             let refuse: link::Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
-            let hub = Hub::new(link.clone());
+            let hub = Hub::new(link.clone(), State::default());
             let outlets = link::tests::unread_outlets();
             let driver = tokio::spawn(link::drive(
                 hub,

@@ -421,7 +421,7 @@ fn stop_with_the_link_up_ends_the_reader_thread() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     let ended_after = runtime.block_on(async {
         let (link, inputs) = queue();
-        let hub = Hub::new(link.clone());
+        let hub = Hub::new(link.clone(), State::default());
         let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
         let before = tasks();
         let driver = tokio::spawn(drive(
@@ -521,7 +521,7 @@ fn never_more_than_one_reader_thread() {
 #[test]
 fn a_full_input_queue_refuses_with_timeout() {
     let (link, mut inputs) = queue();
-    let hub = Hub::new(link);
+    let hub = Hub::new(link, State::default());
     let ear = Command::SetEarDetection(pods_core::state::EarDetectionBehavior::Disabled);
     block_on(async {
         let waiting: Vec<_> = (0..INPUT_QUEUE).map(|_| hub.submit(ear)).collect();
