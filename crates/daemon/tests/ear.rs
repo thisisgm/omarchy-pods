@@ -18,7 +18,7 @@ mod tests {
 
     use super::support::audio::wire::sink_named;
     use super::support::audio::{Asked as AudioAsked, FakeAudio, PERCENT};
-    use super::support::players::{Asked, FakePlayer, Playback};
+    use super::support::players::{Asked, CALL_TIMEOUT, FakePlayer, Playback};
     use super::support::rig::{
         ANSWERED_WITHIN, Device, REAL_TIME_SLACK, Rig, assert_gap, connected, not_before,
     };
@@ -27,8 +27,6 @@ mod tests {
     const SETTLE: Duration = Duration::from_millis(BOTH_OUT_SETTLE_MS);
     /// Two flaps end well before the first settle, and leave time to change the preference before the last one ends.
     const FLAP: Duration = Duration::from_millis(BOTH_OUT_SETTLE_MS * 3 / 8);
-    /// The daemon's bound on one player's answers, from `PLAYER_CALL_TIMEOUT_MS` in `src/daemon/media.rs`.
-    const CALL_TIMEOUT: Duration = Duration::from_millis(500);
     /// The most players the daemon asks, `PLAYERS_MAX` in `src/daemon/media.rs`, which is the policy's own bound.
     const PLAYERS_MAX: usize = PAUSED_MAX;
     const PLAYERS_ON_A_BUSY_BUS: usize = 60;

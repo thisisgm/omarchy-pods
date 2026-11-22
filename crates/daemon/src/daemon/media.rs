@@ -2,7 +2,6 @@
 
 use std::future::poll_fn;
 use std::ops::ControlFlow;
-use std::pin::pin;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -89,7 +88,7 @@ impl Outlet {
         }
     }
 
-    /// Ends every pause made so far, queued or in flight, before it sends another call.
+    /// Ends every pause made so far, queued or in flight, before its next status read or pause.
     pub(super) fn link_lost(&self) {
         self.losses
             .send_modify(|losses| *losses = losses.wrapping_add(1));
@@ -103,39 +102,29 @@ impl Queue {
     }
 }
 
-/// Serves each request in turn until the driver drops the queue or stops hearing facts.
-pub(super) async fn run(session: Connection, inputs: mpsc::Sender<Input>, mut queue: Queue) {
-    while let Some(Stamped { losses, request }) = queue.requests.recv().await {
-        // Only pause work ends when the link leaves up, so a pause still pending at a close is never sent; a resume always goes out.
-        let pause = matches!(request, MediaRequest::PauseAll(_));
-        let served = serve(&session, &inputs, request);
-        let flow = if pause {
-            unless_lost(&mut queue.losses, losses, served).await
-        } else {
-            Some(served.await)
-        };
-        if flow == Some(ControlFlow::Break(())) {
-            return;
-        }
+/// The link's loss count a request was made at, read against the driver's count before each call to a player.
+struct Since<'count> {
+    counted: &'count watch::Receiver<u64>,
+    losses: u64,
+}
+
+impl Since<'_> {
+    fn lost(&self) -> bool {
+        *self.counted.borrow() != self.losses
     }
 }
 
-/// Runs `work` until the link is lost after `losses`; a loss already counted wins, so no call and no report follows it.
-async fn unless_lost<T>(
-    counted: &mut watch::Receiver<u64>,
-    losses: u64,
-    work: impl Future<Output = T>,
-) -> Option<T> {
-    let mut lost = pin!(counted.wait_for(|now| *now != losses));
-    let mut work = pin!(work);
-    poll_fn(|context| {
-        // An ended driver is a lost link too: nobody is left to take the result.
-        if lost.as_mut().poll(context).is_ready() {
-            return Poll::Ready(None);
+/// Serves each request in turn until the driver drops the queue or stops hearing facts.
+pub(super) async fn run(session: Connection, inputs: mpsc::Sender<Input>, mut queue: Queue) {
+    while let Some(Stamped { losses, request }) = queue.requests.recv().await {
+        let since = Since {
+            counted: &queue.losses,
+            losses,
+        };
+        if serve(&session, &inputs, request, &since).await.is_break() {
+            return;
         }
-        work.as_mut().poll(context).map(Some)
-    })
-    .await
+    }
 }
 
 /// One request; `Break` when the driver no longer hears facts.
@@ -143,10 +132,11 @@ async fn serve(
     session: &Connection,
     inputs: &mpsc::Sender<Input>,
     request: MediaRequest,
+    since: &Since<'_>,
 ) -> ControlFlow<()> {
     match request {
         MediaRequest::PauseAll(era) => {
-            let paused = pause_playing(session).await;
+            let paused = pause_playing(session, since).await;
             if !paused.is_empty() && inputs.send(Input::Media(era, paused)).await.is_err() {
                 return ControlFlow::Break(());
             }
@@ -167,7 +157,7 @@ async fn serve(
 }
 
 /// The owners of the players that read `Playing` and took the pause.
-async fn pause_playing(session: &Connection) -> Vec<PlayerOwner> {
+async fn pause_playing(session: &Connection, since: &Since<'_>) -> Vec<PlayerOwner> {
     let players = match list_players(session).await {
         Ok(players) => players,
         Err(error) => {
@@ -177,7 +167,7 @@ async fn pause_playing(session: &Connection) -> Vec<PlayerOwner> {
             return Vec::new();
         }
     };
-    ask_each(players, |player| pause_if_playing(session, player)).await
+    ask_each(players, |player| pause_if_playing(session, player, since)).await
 }
 
 /// The first `PLAYERS_MAX` names under the MPRIS prefix, with one line when there are more.
@@ -238,13 +228,21 @@ async fn ask_each<P, T, F: Future<Output = Option<T>>>(
 }
 
 /// Any error from the bus or the player means it did not take the pause; every call goes to the owner, which cannot change hands.
-async fn pause_if_playing(session: &Connection, name: String) -> Option<PlayerOwner> {
+async fn pause_if_playing(
+    session: &Connection,
+    name: String,
+    since: &Since<'_>,
+) -> Option<PlayerOwner> {
     let owner = within(owner_of(session, name)).await??;
+    // A link that left up stops the work before a call to the player; a pause already sent is awaited and reported.
+    if since.lost() {
+        return None;
+    }
     let status = (PLAYER_INTERFACE, "PlaybackStatus");
     let reply = within(call(session, &owner, PROPERTIES, "Get", &status))
         .await?
         .ok()?;
-    if !reads_playing(&reply) {
+    if !reads_playing(&reply) || since.lost() {
         return None;
     }
     // A pause sent but answered late can still land, so the resume asks that player too.
