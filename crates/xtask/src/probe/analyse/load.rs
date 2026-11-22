@@ -1,5 +1,7 @@
 //! Sorts a stretch of the log into the packets each analysis reads, and cuts the log at the marks.
 
+use std::ops::Range;
+
 use pods_proto::battery::BatteryReport;
 use pods_proto::error::{HEADER_LEN, ParseError};
 use pods_proto::sdulog::{Direction, Record};
@@ -295,13 +297,18 @@ pub(crate) fn tails(marks: &[Mark], bounds: Bounds) -> Vec<Option<Window>> {
     found
 }
 
-/// The records stamped inside `window`: a run of neighbours, because a log is in stamp order.
-pub(crate) fn segment(records: &[Record], window: Window) -> &[Record] {
+/// The places in `records` of those stamped inside `window`: a run of neighbours, because a log is in stamp order.
+pub(crate) fn span(records: &[Record], window: Window) -> Range<usize> {
     let from = records.partition_point(|record| record.at_ns < window.start_ns);
     let until = window.end_ns.map_or(records.len(), |end_ns| {
         records.partition_point(|record| record.at_ns < end_ns)
     });
-    records.get(from..until).unwrap_or(&[])
+    from..until
+}
+
+/// The records stamped inside `window`.
+pub(crate) fn segment(records: &[Record], window: Window) -> &[Record] {
+    records.get(span(records, window)).unwrap_or(&[])
 }
 
 #[cfg(test)]

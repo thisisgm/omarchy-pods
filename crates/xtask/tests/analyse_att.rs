@@ -31,15 +31,13 @@ mod tests {
     use pods_proto::sdulog::{Direction, Record};
     use tempfile::TempDir;
 
-    use super::att_run::{Analysed, FRAMES_HEADER, analyse, marks_of};
+    use super::att_run::{Analysed, FRAMES_HEADER, START_NS, analyse, marks_of};
     use super::att_synth::{
         AUDIO_AFTER_MS, FLAGGED, FRAME_BYTES, NS_PER_MS, NS_PER_SECOND, Plan, REPLY_AFTER_MS,
         SAMPLES_PER_FRAME, STOP_AFTER_MS, STOP_REPLY_AFTER_MS, Session, synth,
     };
     use super::support::{log_text, names_in, row};
 
-    /// Where the first session of every run starts.
-    const START_NS: u64 = 2 * NS_PER_SECOND;
     /// The frames of the three sessions a Mac was seen to record, 2963 in all.
     const SEEN_FRAMES: [u32; 3] = [987, 988, 988];
     /// The idle time between two generated sessions.
@@ -551,6 +549,9 @@ mod tests {
         assert!((burst_ms - 250.0).abs() < 0.001, "{burst_ms}");
         let (_, note) = row(&found.table, "lead_ms");
         assert!(note.contains("20 ms a frame"), "{note}");
+        let formula =
+            "of the arrival of a packet minus 20 ms for every frame delivered by the end of it";
+        assert!(note.contains(formula), "{note}");
 
         let steady = analyse_plan(&home, "no-burst", Plan::seen(START_NS, 987).without_burst());
         assert!((steady.number("lead_ms") - 0.0).abs() < 1.0);
@@ -695,8 +696,11 @@ mod tests {
         };
         let found = analyse_plan(&home, "late", plan);
         assert_eq!(found.value("audio_after_stop_reply"), "3");
-        assert_eq!(found.value("audio_outside_a_session"), "5");
-        assert_eq!(found.value("session_frames"), "200");
+        // All five count on from the last frame within the tail, so the session takes them, the three after the reply too.
+        assert_eq!(found.value("audio_outside_a_session"), "0");
+        assert_eq!(found.value("session_frames"), "205");
+        assert_eq!(found.value("session_frames_after_stop"), "5");
+        assert_eq!(found.value("frames_after_stop_outside"), "0");
         assert_eq!(found.value("audio_frames"), "205");
         let frame_ns = u64::from(SAMPLES_PER_FRAME) * NS_PER_SECOND / u64::from(plan.clock_hz);
         // The second late packet ends two frames after the last of the session, which the stop write follows by `STOP_AFTER_MS`.
@@ -704,6 +708,14 @@ mod tests {
         let reply = format!("{reply_ms}.000");
         assert_eq!(found.value("stop_to_reply_ms"), reply);
         assert_eq!(found.value("frame_counter_skips"), "0");
+
+        // The session now runs on past the stop reply, which is no reply to its start write.
+        let mut unanswered = synth(plan);
+        let started = pods_proto::dictation::STARTED;
+        unanswered.records.retain(|record| record.sdu != started);
+        let unanswered = analyse_sessions(&home, "unanswered", &[unanswered]);
+        assert_eq!(unanswered.value("session_frames_after_stop"), "5");
+        assert_eq!(unanswered.value("start_to_reply_ms"), "refused");
     }
 
     #[test]

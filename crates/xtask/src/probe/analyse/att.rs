@@ -42,15 +42,18 @@ pub(crate) struct Report {
 pub(crate) fn analyse(records: &[Record], marks: &[Mark], cut: bool) -> Report {
     let whole = load(records);
     let windows = windows(marks, DICTATION);
-    let session_of = |at_ns: u64| windows.iter().position(|window| window.holds(at_ns));
-    let outside = whole
-        .audio
-        .iter()
-        .filter(|packet| session_of(packet.at_ns).is_none());
     let cuts = windows.iter().zip(tails(marks, DICTATION));
     let sessions: Vec<Session> = cuts
         .map(|(window, tail)| Session::cut(records, *window, tail))
         .collect();
+    let session_of = |record: usize| {
+        let holds = |session: &Session| session.records.contains(&record);
+        sessions.iter().position(holds)
+    };
+    let outside = whole
+        .audio
+        .iter()
+        .filter(|packet| session_of(packet.record).is_none());
     let mut rows = rows::log_rows(&whole, &sessions, outside.count(), cut);
     for (ordinal, session) in (1_usize..).zip(&sessions) {
         rows.extend(rows::session_rows(ordinal, session));
@@ -62,15 +65,15 @@ pub(crate) fn analyse(records: &[Record], marks: &[Mark], cut: bool) -> Report {
     }
 }
 
-/// The frames table: every whole frame under the log line it came in and the session that line falls in, counted from 1 and empty outside one.
-fn frames_table(whole: &LoadedAtt, session_of: impl Fn(u64) -> Option<usize>) -> String {
+/// The frames table: every whole frame under the log line it came in and the session that takes that line, counted from 1 and empty outside one.
+fn frames_table(whole: &LoadedAtt, session_of: impl Fn(usize) -> Option<usize>) -> String {
     let mut lines = vec![format!("{FRAMES_HEADER}\n")];
     let mut index = 0_usize;
     for packet in &whole.audio {
         // A log line is counted from 1 and a record from 0, as a session is and a window is.
         let line = packet.record.saturating_add(1);
-        let session = session_of(packet.at_ns)
-            .map_or_else(String::new, |window| window.saturating_add(1).to_string());
+        let session = session_of(packet.record)
+            .map_or_else(String::new, |session| session.saturating_add(1).to_string());
         for frame in &packet.frames {
             let toc = frame
                 .toc

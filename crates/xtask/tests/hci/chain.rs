@@ -252,7 +252,7 @@ fn assert_decodes_and_measures(home: &TempDir, run: &Path) {
         assert_eq!(row(&table, &format!("{key}_samples")).0, len, "{table}");
         let near = near_zero(stretch);
         assert_eq!(row(&table, &format!("{key}_near_zero")).0, near, "{table}");
-        for measure in ["speech_rms", "floor", "cutoff", "reach"] {
+        for measure in ["speech_rms", "floor", "band_edge", "reach"] {
             assert_eq!(
                 rows(&table, &format!("{key}_{measure}")).len(),
                 1,
@@ -301,6 +301,49 @@ fn a_trace_of_the_dictation_alone_runs_the_whole_chain_on_an_empty_accessory_log
         return;
     }
     assert_decodes_and_measures(&home, &run);
+}
+
+#[test]
+fn frames_sent_after_the_stop_write_reach_the_audio_of_their_session() {
+    if !opus_oracles_installed() {
+        return;
+    }
+    // The pods send two more frames of the first session after its stop write, then a second session follows.
+    let first = synth(Plan {
+        late: (2, 0),
+        ..Plan::seen(START_NS, FRAMES[1])
+    });
+    let second = synth(Plan {
+        first_packet: first.next_packet,
+        ..Plan::seen(first.stop_ns.saturating_add(BETWEEN_NS), FRAMES[1])
+    });
+    let (home, run, table) = analysed(&trace_of_sessions(&[first, second]));
+    let taken = [FRAMES[1] + 2, FRAMES[1]];
+    let planted = taken.map(|frames| frames.to_string());
+    assert_eq!(per_session(&table, "session_frames"), planted, "{table}");
+    for key in ["audio_outside_a_session", "frames_after_stop_outside"] {
+        assert_eq!(row(&table, key).0, "0", "{key}\n{table}");
+    }
+    let listed = fs::read_to_string(run.join("frames.tsv")).unwrap();
+    for (session, planted) in (1..).zip(taken) {
+        let found = u32::try_from(listed_in(&listed, session)).unwrap();
+        assert_eq!(found, planted, "session {session}");
+    }
+
+    printed(
+        "decode-opus",
+        &probe(&home, "decode-opus", &run).output().unwrap(),
+    );
+    let measured = probe(&home, "audio", &run)
+        .args(DICTATION)
+        .output()
+        .unwrap();
+    let table = printed("audio", &measured);
+    for (session, frames) in (1..).zip(taken) {
+        let held = usize::try_from(frames).unwrap().saturating_mul(FRAME);
+        let key = format!("session_{session}_samples");
+        assert_eq!(row(&table, &key).0, held.to_string(), "{table}");
+    }
 }
 
 /// Exports `trace` and checks that the run holds `exported` alone, that no line of the summary names an accessory log and that the analysis refuses the run for want of one.

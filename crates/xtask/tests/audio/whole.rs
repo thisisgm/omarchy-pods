@@ -15,13 +15,13 @@ use super::{
 };
 
 /// The rate the recording of another microphone is converted to, and the rate the dictation audio is decoded at.
-const RATE: u32 = 48_000;
+pub(super) const RATE: u32 = 48_000;
 /// The rate the recording is generated at before FFmpeg converts it.
 const SOURCE_RATE: u32 = 44_100;
 /// Each sine of the generated voice, which sums to about -24 dBFS under an 8 kHz wall.
 const VOICE: f32 = 0.01;
 /// The generated recording: a voice over a room, then the room alone, then the voice again.
-const LENGTH_MS: u32 = 10_000;
+pub(super) const LENGTH_MS: u32 = 10_000;
 const ROOM_FROM_MS: u32 = 5_500;
 const ROOM_MS: u32 = 3_500;
 /// One gate: a stretch the recorder wrote as exact zeros.
@@ -37,6 +37,9 @@ const SESSION_FRAMES: usize = 200;
 const BETWEEN_FRAMES: usize = 10;
 const TABLE: &str = "audio-whole.tsv";
 const DICTATION_TABLE: &str = "audio-dictation.tsv";
+/// What `probe audio` is asked of a run and the table it then writes: the uplink audio, and the dictation audio.
+pub(super) const UPLINK: (&[&str], &str) = (&["--whole"], TABLE);
+pub(super) const DICTATED: (&[&str], &str) = (&DICTATION, DICTATION_TABLE);
 
 /// A voice walled at `wall_hz` over a room, a stretch of the room alone, and exact zeros in each of `gates_ms`.
 fn recording(rate: u32, wall_hz: f32, gates_ms: &[u32]) -> Vec<f32> {
@@ -54,14 +57,14 @@ fn recording(rate: u32, wall_hz: f32, gates_ms: &[u32]) -> Vec<f32> {
 }
 
 /// A run that holds nothing but `wav` under the name a decode of the uplink gives it.
-fn run_of(home: &TempDir, wav: &[u8]) -> PathBuf {
+pub(super) fn run_of(home: &TempDir, wav: &[u8]) -> PathBuf {
     run_holding(home, "mac", &[("pods.f32.wav", wav)])
 }
 
-fn whole(home: &TempDir, run: &Path) -> String {
-    let measured = probe(home, "audio", run).arg("--whole").output().unwrap();
+pub(super) fn whole(home: &TempDir, run: &Path, (asked, table): (&[&str], &str)) -> String {
+    let measured = probe(home, "audio", run).args(asked).output().unwrap();
     assert_eq!(String::from_utf8(measured.stderr.clone()).unwrap(), "");
-    table_in(&measured, run, TABLE)
+    table_in(&measured, run, table)
 }
 
 // Sample output: the header, then `0\t0\t0\t1\t0\t0x80\t200\t1\t0xb8`: one line a frame, its session in the fourth field or nothing there.
@@ -75,18 +78,18 @@ fn frames_table(sessions: &[Option<u32>]) -> String {
 }
 
 /// A run that holds a frames table of `sessions` and `wav` as the dictation audio decoded from it.
-fn dictation_run(home: &TempDir, sessions: &[Option<u32>], wav: &[u8]) -> PathBuf {
+pub(super) fn dictation_run(home: &TempDir, sessions: &[Option<u32>], wav: &[u8]) -> PathBuf {
     let table = frames_table(sessions);
     let files = [("frames.tsv", table.as_bytes()), ("dictation.f32.wav", wav)];
     run_holding(home, "dictation", &files)
 }
 
 #[test]
-fn whole_reports_the_planted_cutoff_and_the_planted_gate() {
+fn whole_reports_the_planted_band_edge_and_the_planted_gate() {
     let home = tempfile::tempdir().unwrap();
     let stream = recording(RATE, 8_000.0, &GATES_MS);
     let run = run_of(&home, &float_wav(RATE, &stream));
-    let table = whole(&home, &run);
+    let table = whole(&home, &run, UPLINK);
     assert_eq!(names_in(&run), [TABLE, "pods.f32.wav"]);
 
     assert_eq!(row(&table, "stream_rate").0, "48000");
@@ -108,7 +111,7 @@ fn whole_reports_the_planted_cutoff_and_the_planted_gate() {
         close(number(&table, "whole_floor"), ROOM_DBFS, 0.3),
         "{table}"
     );
-    for key in ["whole_cutoff", "whole_reach"] {
+    for key in ["whole_band_edge", "whole_reach"] {
         assert!(
             close(number(&table, key), 8_000.0, f64::from(BIN_HZ)),
             "{table}"
@@ -124,10 +127,14 @@ fn whole_reports_the_planted_cutoff_and_the_planted_gate() {
     // The control: the same recording with another wall and no gate moves both figures.
     let home = tempfile::tempdir().unwrap();
     let stream = recording(RATE, 6_000.0, &[]);
-    let table = whole(&home, &run_of(&home, &float_wav(RATE, &stream)));
+    let table = whole(&home, &run_of(&home, &float_wav(RATE, &stream)), UPLINK);
     assert!(number(&table, "whole_near_zero") < 2.5, "{table}");
     assert!(
-        close(number(&table, "whole_cutoff"), 6_000.0, f64::from(BIN_HZ)),
+        close(
+            number(&table, "whole_band_edge"),
+            6_000.0,
+            f64::from(BIN_HZ)
+        ),
         "{table}"
     );
 }
@@ -157,7 +164,7 @@ fn whole_measures_a_recording_converted_as_another_microphone_is() {
     assert!(converted.status.success(), "{converted:?}");
 
     let run = run_of(&home, &std::fs::read(&target).unwrap());
-    let table = whole(&home, &run);
+    let table = whole(&home, &run, UPLINK);
     assert_eq!(row(&table, "stream_rate").0, rate);
     assert!(
         close(number(&table, "stream_samples"), 480_000.0, 480.0),
@@ -176,7 +183,7 @@ fn whole_measures_a_recording_converted_as_another_microphone_is() {
         close(number(&table, "whole_floor"), ROOM_DBFS, 0.3),
         "{table}"
     );
-    for key in ["whole_cutoff", "whole_reach"] {
+    for key in ["whole_band_edge", "whole_reach"] {
         assert!(
             close(number(&table, key), 8_000.0, f64::from(BIN_HZ)),
             "{table}"
@@ -206,12 +213,7 @@ fn the_dictation_audio_is_measured_session_by_session() {
     .concat();
     let run = dictation_run(&home, &sessions, &float_wav(RATE, &stream));
 
-    let measured = probe(&home, "audio", &run)
-        .args(DICTATION)
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8(measured.stderr.clone()).unwrap(), "");
-    let table = table_in(&measured, &run, DICTATION_TABLE);
+    let table = whole(&home, &run, DICTATED);
     assert_eq!(
         names_in(&run),
         [DICTATION_TABLE, "dictation.f32.wav", "frames.tsv"]
@@ -244,7 +246,7 @@ fn the_dictation_audio_is_measured_session_by_session() {
         );
         assert!(
             close(
-                number(&table, &format!("{key}_cutoff")),
+                number(&table, &format!("{key}_band_edge")),
                 wall_hz,
                 f64::from(BIN_HZ)
             ),

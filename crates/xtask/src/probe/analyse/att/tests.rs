@@ -9,7 +9,7 @@ use super::super::load::Window;
 use super::super::stats::to_f64;
 use super::super::support::{close, mark};
 use super::session::{
-    AfterStop, FLOOR, FRAME_MS, Heard, after_burst, bitrate, frame_clock, lead_of,
+    AfterStop, FLOOR, FRAME_MS, Heard, Tail, after_burst, bitrate, frame_clock, lead_of,
 };
 use super::synth::{
     AUDIO_AFTER_MS, FLAGGED, NS_PER_MS, NS_PER_SECOND, Plan, REPLY_AFTER_MS, STOP_AFTER_MS,
@@ -76,13 +76,15 @@ fn a_generated_session_is_cut_and_timed_as_its_plan_says() {
     let session = Session::cut(&made.records, window, Some(tail));
     assert_eq!(session.reply_after_ns(), Some(REPLY_AFTER_MS * NS_PER_MS));
     assert_eq!(session.audio_after_ns(), Some(AUDIO_AFTER_MS * NS_PER_MS));
-    assert_eq!(session.stream.frames().count(), 400);
+    // The three late packets of the plan count on from the last frame, so the session takes them.
+    assert_eq!(session.stream.frames().count(), 403);
+    assert_eq!(session.tail, Tail { taken: 3, left: 0 });
     assert_eq!(
         (session.packet_skips(), session.frame_skips()),
         (vec![], vec![])
     );
-    // The counter is one byte, and the three late packets of the plan come after the session.
-    let packets = u8::try_from((session.stream.audio.len() + 3) % 256).unwrap();
+    // The counter is one byte.
+    let packets = u8::try_from(session.stream.audio.len() % 256).unwrap();
     assert_eq!(made.next_packet, plan.first_packet.wrapping_add(packets));
     let flagged = session
         .stream

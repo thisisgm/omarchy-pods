@@ -5,9 +5,11 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 
-use super::att_synth::Session;
+use super::att_synth::{NS_PER_SECOND, Session};
 use super::support::{make_run_of, probe, row};
 
+/// Where the first session of every generated run starts.
+pub(crate) const START_NS: u64 = 2 * NS_PER_SECOND;
 /// The header of the frames table.
 pub(crate) const FRAMES_HEADER: &str =
     "index\tpacket\tarrival_ns\tsession\tcounter\tflag\tlevel\tlen\ttoc";

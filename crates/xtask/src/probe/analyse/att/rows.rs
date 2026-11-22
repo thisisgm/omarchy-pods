@@ -14,8 +14,8 @@ use super::super::report::{
 use super::super::stats::{millis, seconds};
 use super::load::LoadedAtt;
 use super::session::{
-    AfterStop, FLOOR, FRAME_MS, Heard, REFERENCE_HZ, SAMPLES_PER_FRAME, Session, Skip, after_burst,
-    bitrate, frame_clock, lead_of,
+    AfterStop, FLOOR, FRAME_MS, Heard, REFERENCE_HZ, SAMPLES_PER_FRAME, Session, Skip, TAIL_MS,
+    after_burst, bitrate, frame_clock, lead_of,
 };
 
 /// The flag byte of a frame the pods mark, and of one they do not.
@@ -95,12 +95,7 @@ pub(super) fn log_rows(
     ];
     rows.extend(flag_rows(whole));
     rows.extend(skip_rows(sessions));
-    rows.push(Row::new(
-        "audio_outside_a_session",
-        &outside,
-        PACKETS,
-        "audio notifications not between a dictation-start mark and the mark that ends it; in no rate and no skip count",
-    ));
+    rows.extend(outside_rows(sessions, outside));
     rows.push(Row::new(
         "handles_listed",
         &whole.handles.len(),
@@ -126,6 +121,27 @@ pub(super) fn log_rows(
         )
     }));
     rows
+}
+
+/// The audio no session takes: the notifications of the whole log, and the frames left after a stop mark.
+fn outside_rows(sessions: &[Session], outside: usize) -> [Row; 2] {
+    let left = sessions.iter().map(|session| session.tail.left);
+    [
+        Row::new(
+            "audio_outside_a_session",
+            &outside,
+            PACKETS,
+            "audio notifications no session takes: not between a dictation-start mark and the mark that ends it, and not among those session_frames_after_stop counts; in no rate and no skip count",
+        ),
+        Row::new(
+            "frames_after_stop_outside",
+            &left.fold(0_usize, usize::saturating_add),
+            FRAMES,
+            &format!(
+                "whole frames after a dictation-stop mark and before the next dictation-start mark that the session does not take: all of them where the session holds no frame before the mark, else those from the first audio notification that comes {TAIL_MS} ms or more after the mark, holds no whole frame, or holds a frame whose counter is not one on from the frame before"
+            ),
+        ),
+    ]
 }
 
 /// A row whose figure may not be formed: the figure with `note`, or `refused` with the reason.
@@ -332,18 +348,28 @@ impl Told<'_> {
             } => Ok((reply_after_ns, audio_after_reply)),
         };
         let stopped = stopped.as_ref().map_err(String::as_str);
+        let with_tail = "with what session_frames_after_stop counts";
+        let after_stop = format!(
+            "frames of the session that came after its dictation-stop mark: every audio notification under {TAIL_MS} ms after the mark and before the next dictation-start mark, up to the first that holds no whole frame or holds a frame that does not count one on from the frame before, and none where the session holds no frame before the mark; taken as in flight when the stop was written"
+        );
         vec![
             Row::new(
                 "session_audio_notifications",
                 &session.stream.audio.len(),
                 PACKETS,
-                &labelled(&self.label, &[]),
+                &labelled(&self.label, &[with_tail]),
             ),
             Row::new(
                 "session_frames",
                 &session.stream.frames().count(),
                 FRAMES,
-                &labelled(&self.label, &[]),
+                &labelled(&self.label, &[with_tail]),
+            ),
+            Row::new(
+                "session_frames_after_stop",
+                &session.tail.taken,
+                FRAMES,
+                &labelled(&self.label, &[&after_stop]),
             ),
             figure(
                 "start_to_reply_ms",
@@ -389,6 +415,10 @@ impl Told<'_> {
     fn lead_rows(&self) -> [Row; 4] {
         let frame = format!("{FRAME_MS} ms a frame, from the table of contents byte, not measured");
         let said = |what: &str| labelled(&self.label, &[what, &frame, self.skip]);
+        let window_s = seconds(LEAD_WINDOW_NS);
+        let formula = format!(
+            "the least the stream holds from before the dictation-start mark: the mark minus the least, over the packets of the first {window_s:.0} s, of the arrival of a packet minus {FRAME_MS} ms for every frame delivered by the end of it; a frame cannot arrive before its last sample, so the stream began no later than that, and dating a frame by its first sample would give {FRAME_MS} ms less"
+        );
         let refused = labelled(&self.label, &[&Self::no_line()]);
         let lead = self.lead.as_ref().ok_or(refused.as_str());
         [
@@ -396,7 +426,7 @@ impl Told<'_> {
                 "lead_ms",
                 MS,
                 lead.map(|lead| format!("{:.3}", lead.lead_ms)),
-                &said("dictation-start mark minus the earliest arrival line"),
+                &said(&formula),
             ),
             figure(
                 "burst_packets",
