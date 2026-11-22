@@ -14,7 +14,8 @@ use super::super::super::dictate::{HandleCheck, HandleWalk};
 use super::super::super::script::{Event, Route, rescue};
 use super::super::*;
 use super::att_pods::{BURST_PACKETS, TABLE_END};
-use super::pods::{BOTH_CHANNELS, Case, PATIENT_MS, Report, TAIL_NS, pair, queued};
+use super::case::{BOTH_CHANNELS, Case, PATIENT_MS, Report, TAIL_NS};
+use super::pods::{pair, queued};
 use super::steps::engine_in;
 use super::table::{
     CUT_NOTIFICATION, INDICATION, MTU_REQUEST, PAGE, READ_REQUEST, SHORT_WALK_MS, WALK_SLACK_NS,

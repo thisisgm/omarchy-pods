@@ -8,8 +8,8 @@ use super::super::super::dictate::{HandleCheck, HandleWalk};
 use super::super::guard::TAIL_MAX_PACKETS;
 use super::super::*;
 use super::att_pods::{FIND_INFORMATION, TABLE_END};
+use super::case::{Case, PATIENT_NS, Report};
 use super::dictation::{HANDSHAKE_REQUESTS, OPEN_STREAM, STREAM, dictation_case};
-use super::pods::{Case, PATIENT_NS, Report};
 use super::table::SHORT_WALK_MS;
 
 /// The opcodes of what the loop asks or writes of its own accord: Find Information, Read By Type and the Write Command of the stream.

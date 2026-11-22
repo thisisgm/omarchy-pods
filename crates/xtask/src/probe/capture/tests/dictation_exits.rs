@@ -10,10 +10,10 @@ use super::super::super::script::Route;
 use super::super::super::summary;
 use super::super::wires::wake_of;
 use super::super::*;
+use super::case::{Case, LogFault, PATIENT_MS, Report, TAIL_NS};
 use super::dictation::{
     OPEN_STREAM, STREAM, bench_script, dictation_case, on_two_channels, stream_kinds,
 };
-use super::pods::{Case, LogFault, PATIENT_MS, Report, TAIL_NS};
 use super::{SHORT_NS, at};
 
 /// The exits a run with the stream running can take, each with the reason it must report; `None` is a panic.

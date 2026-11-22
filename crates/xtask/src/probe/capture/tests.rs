@@ -4,6 +4,7 @@ mod air_command;
 mod att;
 mod att_command;
 mod att_pods;
+mod case;
 mod command;
 mod dictation;
 mod dictation_exits;
@@ -27,10 +28,8 @@ use tempfile::TempDir;
 use super::super::script::{Event, Route, rescue};
 use super::super::summary;
 use super::*;
-use pods::{
-    Case, EAR_PACKET, Heard, LogFault, PATIENT_MS, PATIENT_NS, Report, TAIL_NS, ack, audio_sdu,
-    noise,
-};
+use case::{Case, LogFault, PATIENT_MS, PATIENT_NS, Report, TAIL_NS};
+use pods::{EAR_PACKET, Heard, ack, audio_sdu, noise};
 
 /// A wait short enough for a test that expects it to run out.
 const SHORT_NS: u64 = 50_000_000;

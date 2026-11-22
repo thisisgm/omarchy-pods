@@ -6,7 +6,8 @@ use pods_proto::sdulog::Direction;
 use pods_proto::uplink::START;
 
 use super::super::*;
-use super::pods::{ATT_ONLY, BOTH_CHANNELS, Case, pair, queued};
+use super::case::{ATT_ONLY, BOTH_CHANNELS, Case};
+use super::pods::{pair, queued};
 use super::steps::engine_in;
 use super::{OVERSIZED_LEN, PATIENT_MS, at};
 

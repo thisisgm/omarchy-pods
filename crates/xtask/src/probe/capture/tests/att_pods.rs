@@ -35,7 +35,7 @@ const FRAME_NOISE_LEN: usize = 9;
 /// The flag and the level every frame here carries; the loop logs them and reads neither.
 const FRAME_PREFIX: (u8, u8) = (0x80, 0xd5);
 /// Stands in for the 16 bit type of every attribute and declaration here; the walk reads handles and no types.
-const MADE_UP_TYPE: [u8; 2] = [0x2a, 0x2b];
+pub(super) const MADE_UP_TYPE: [u8; 2] = [0x2a, 0x2b];
 /// The property byte of a declared value the host writes with no response.
 const WRITES: u8 = att::PROPERTY_WRITE_WITHOUT_RESPONSE;
 /// The property byte of a declared value the pods notify.
@@ -47,6 +47,11 @@ pub(super) const DECLARED: [(u16, u8); 4] = [
     (AUDIO_HANDLE, NOTIFIES),
     (STATUS_HANDLE, NOTIFIES),
 ];
+
+/// The handle of the declaration of the value at `value`, the one just before it.
+pub(super) fn declared_at(value: u16) -> u16 {
+    value.saturating_sub(1)
+}
 
 /// Their part on the attribute channel; `AttPods::default()` lists a table that holds the four handles and streams from the start write to the stop write.
 #[derive(Clone)]
@@ -123,7 +128,7 @@ fn declarations(table: &[u16], start: u16) -> Vec<u8> {
     }
     let mut reply = vec![READ_BY_TYPE_RESPONSE, DECLARATION_LEN];
     for (value, properties) in held {
-        reply.extend(value.saturating_sub(1).to_le_bytes());
+        reply.extend(declared_at(value).to_le_bytes());
         reply.push(properties);
         reply.extend(value.to_le_bytes());
         reply.extend(MADE_UP_TYPE);
