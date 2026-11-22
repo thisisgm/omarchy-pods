@@ -247,13 +247,17 @@ fn forget_is_never_called() {
     let bench = Bench::new();
     let (output, sets) = bench.run_attended();
     assert_eq!(output.status.code(), Some(0));
+    let root = bench.path("");
+    let root = root.to_str().unwrap();
     for call in bench
         .calls()
         .iter()
         .chain(&sets.before_prompt)
         .chain(&sets.after_prompt)
     {
-        let lower = call.to_lowercase();
+        // A path under the bench root holds random directory names, which can spell any of these words.
+        let named: Vec<&str> = call.split(' ').filter(|arg| !arg.contains(root)).collect();
+        let lower = named.join(" ").to_lowercase();
         for word in ["forget", "remove", "pair", "trust", "untrust", "connect 02"] {
             assert!(!lower.contains(word), "{call}");
         }
