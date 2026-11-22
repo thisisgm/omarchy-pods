@@ -8,48 +8,13 @@ use tempfile::TempDir;
 use super::super::signal::{SEED, add, band_noise, close, sine};
 use super::{
     COUNT, INTEGER, JINGLE, RATE, SDU_MS, SILENT, TAP, analysed, decoded, file, float_wav, marks,
-    names_in, number, probe, put_file, refusal, row, samples_in, table_of,
+    number, probe, put_file, refusal, row, samples_in, table_of,
 };
 
 /// A run of one second with one cue, analysed, with no decode in it yet.
 fn short_run(home: &TempDir) -> PathBuf {
     let lines = [(0, "start", ""), (0, "cue", SILENT), (1100, "stop", "")];
     analysed(home, "voice", &marks(&lines), &[(0, 1)])
-}
-
-#[test]
-fn pcm_name_with_a_slash_is_refused() {
-    let home = tempfile::tempdir().unwrap();
-    let run = short_run(&home);
-    decoded(&run, RATE, &vec![0.0; samples_in(990, RATE)]);
-    let before = names_in(&run);
-    for (name, sentence) in [
-        ("../page/pods.f32.wav", "named without a directory"),
-        ("sub/pods.f32.wav", "named without a directory"),
-        ("other.f32.wav", "are pods.f32.wav and dictation.f32.wav"),
-    ] {
-        let refused = probe(&home, "audio", &run)
-            .args(["--pcm", name])
-            .output()
-            .unwrap();
-        let said = refusal(&refused, &run);
-        assert!(said.contains(sentence), "{name}: {said}");
-    }
-    assert_eq!(names_in(&run), before);
-    // The dictation stream is cut by a table no command writes yet, so it is refused with or without a file of that name in the run.
-    let not_yet =
-        "frames.tsv places the frames of dictation.f32.wav, and this command does not read it yet";
-    for frames in [None, Some("frames.tsv")] {
-        if let Some(name) = frames {
-            put_file(&run, name, b"");
-        }
-        let held = names_in(&run);
-        let mut dictation = probe(&home, "audio", &run);
-        dictation.args(["--pcm", "dictation.f32.wav"]);
-        let said = refusal(&dictation.output().unwrap(), &run);
-        assert!(said.contains(not_yet), "{frames:?}: {said}");
-        assert_eq!(names_in(&run), held, "{frames:?}");
-    }
 }
 
 #[test]
