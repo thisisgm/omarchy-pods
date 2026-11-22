@@ -28,6 +28,8 @@ pub(crate) const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 pub(crate) const STATUS_PROPERTY: &str = "PlaybackStatus";
 /// The error the bus gives for a method nobody serves, which a real player gives for one it lacks.
 pub(crate) const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
+/// The daemon's bound on one player's answers, from `PLAYER_CALL_TIMEOUT_MS` in `src/daemon/media.rs`.
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 const NAME_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const CHANGED_SIGNAL: &str = "PropertiesChanged";
 const THREAD_NAME: &str = "fake-player";
