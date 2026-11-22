@@ -1,0 +1,475 @@
+//! Support tests: the fake audio server, driven by a client built from the same protocol crate; no user path yet.
+
+// Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "these tests drive the fake audio server alone, so the daemon helpers the other suites share go unused"
+)]
+mod support;
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    use pulseaudio::protocol::{
+        AuthParams, AuthReply, ChannelVolume, Command, CommandReply, CommandTag, DEFAULT_SINK,
+        DESCRIPTOR_SIZE, GetSinkInfo, MAX_VERSION, Prop, Props, ProtocolError, PulseError,
+        ServerInfo, SetClientNameReply, SetDeviceVolumeParams, SinkInfo, SubscriptionEvent,
+        SubscriptionEventFacility, SubscriptionEventType, SubscriptionMask, Volume,
+        read_ack_message, read_command_message, read_descriptor, read_reply_message,
+        write_command_message,
+    };
+
+    use super::support::Session;
+    use super::support::audio::wire::{
+        OVERSIZED_LENGTH, command, header, percent_of, read_frame, sink_of, volume_of,
+    };
+    use super::support::audio::{Asked, FakeAudio, Volumes};
+    use super::support::rig::Rig;
+
+    /// A reply or an event later than this is lost; the fake answers in microseconds.
+    const ANSWER_WITHIN: Duration = Duration::from_secs(2);
+    /// How long a held reply must stay unsent before the test releases it.
+    const QUIET: Duration = Duration::from_millis(200);
+    const ADDED_PERCENT: u8 = 40;
+    const FIRST: &str = "02:00:00:00:00:01";
+    const SECOND: &str = "02:00:00:00:00:02";
+    const SINK_CHANNELS: usize = 2;
+    /// The native protocol's authorisation cookie, which the fake does not check.
+    const COOKIE_LENGTH: usize = 256;
+    /// Bytes of a 20 byte descriptor sent before the close.
+    const DESCRIPTOR_KEPT: usize = 5;
+    /// One byte short of the 10 byte `GetServerInfo` payload.
+    const PAYLOAD_KEPT: usize = 9;
+    /// Longer than any command the fake answers, so every reader is driven past its last field.
+    const ARBITRARY_MAX: usize = 96;
+
+    /// One connection to the fake, speaking only through the crate's own messages.
+    struct Client {
+        stream: UnixStream,
+        seq: u32,
+    }
+
+    impl Client {
+        fn connect(socket: &Path) -> Self {
+            let stream = UnixStream::connect(socket).unwrap();
+            stream.set_read_timeout(Some(ANSWER_WITHIN)).unwrap();
+            Self { stream, seq: 0 }
+        }
+
+        /// Connected, authorised and named, as every client of the audio server opens.
+        fn open(socket: &Path) -> Self {
+            let mut client = Self::connect(socket);
+            let auth = Command::Auth(AuthParams {
+                version: MAX_VERSION,
+                cookie: vec![0; COOKIE_LENGTH],
+                ..AuthParams::default()
+            });
+            let reply: AuthReply = client.ask(&auth);
+            assert_eq!(reply.version, MAX_VERSION);
+            let mut props = Props::new();
+            props.set(Prop::ApplicationName, c"fake audio test");
+            let _: SetClientNameReply = client.ask(&Command::SetClientName(props));
+            client
+        }
+
+        fn send(&mut self, command: &Command) {
+            self.seq = self.seq.wrapping_add(1);
+            let mut bytes = Vec::new();
+            write_command_message(&mut bytes, self.seq, command, MAX_VERSION).unwrap();
+            self.stream.write_all(&bytes).unwrap();
+        }
+
+        fn frame(&mut self) -> Vec<u8> {
+            read_frame(&mut self.stream).unwrap()
+        }
+
+        fn reply<R: CommandReply>(&mut self) -> R {
+            let (seq, reply) =
+                read_reply_message(&mut self.frame().as_slice(), MAX_VERSION).unwrap();
+            assert_eq!(seq, self.seq, "a reply to another command");
+            reply
+        }
+
+        fn ask<R: CommandReply>(&mut self, command: &Command) -> R {
+            self.send(command);
+            self.reply()
+        }
+
+        fn ack(&mut self, command: &Command) {
+            self.send(command);
+            let seq = read_ack_message(&mut self.frame().as_slice()).unwrap();
+            assert_eq!(seq, self.seq, "an ack of another command");
+        }
+
+        fn refused(&mut self, command: &Command) -> PulseError {
+            self.send(command);
+            match read_ack_message(&mut self.frame().as_slice()) {
+                Err(ProtocolError::ServerError(error)) => error,
+                other => panic!("an error reply expected, got {other:?}"),
+            }
+        }
+
+        fn subscribe(&mut self, mask: SubscriptionMask) {
+            self.ack(&Command::Subscribe(mask));
+        }
+
+        fn event(&mut self) -> SubscriptionEvent {
+            match read_command_message(&mut self.frame().as_slice(), MAX_VERSION).unwrap() {
+                (u32::MAX, Command::SubscribeEvent(event)) => event,
+                other => panic!("an event expected, got {other:?}"),
+            }
+        }
+
+        fn nothing_for(&mut self, quiet: Duration) {
+            self.stream.set_read_timeout(Some(quiet)).unwrap();
+            let mut byte = [0];
+            match self.stream.read(&mut byte) {
+                Ok(0) => panic!("the fake closed the connection during a quiet wait"),
+                Ok(_) => panic!("a frame arrived during a quiet wait"),
+                Err(error) => assert!(
+                    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+                    "{error}"
+                ),
+            }
+            self.stream.set_read_timeout(Some(ANSWER_WITHIN)).unwrap();
+        }
+
+        fn closed(&mut self) -> bool {
+            let mut byte = [0];
+            matches!(self.stream.read(&mut byte), Ok(0))
+        }
+    }
+
+    fn c_name(name: &str) -> CString {
+        CString::new(name).unwrap()
+    }
+
+    fn sink_info(name: &CString) -> Command {
+        Command::GetSinkInfo(GetSinkInfo {
+            index: None,
+            name: Some(name.clone()),
+        })
+    }
+
+    fn volume_write(name: &str, volume: ChannelVolume) -> Command {
+        Command::SetSinkVolume(SetDeviceVolumeParams {
+            device_index: None,
+            device_name: Some(c_name(name)),
+            volume,
+        })
+    }
+
+    fn stereo(volume: Volume) -> ChannelVolume {
+        let mut channels = ChannelVolume::empty();
+        for _ in 0..SINK_CHANNELS {
+            channels.push(volume);
+        }
+        channels
+    }
+
+    fn event(facility: SubscriptionEventFacility, index: Option<u32>) -> SubscriptionEvent {
+        SubscriptionEvent {
+            event_facility: facility,
+            event_type: SubscriptionEventType::Changed,
+            index,
+        }
+    }
+
+    /// The fake with one sink at `ADDED_PERCENT`, made the default.
+    fn one_sink(session: &Session) -> (FakeAudio, String) {
+        let audio = FakeAudio::start(&session.runtime_dir());
+        let name = sink_of(FIRST);
+        audio.add_sink(&name, ADDED_PERCENT);
+        audio.set_default_sink(&name);
+        (audio, name)
+    }
+
+    #[test]
+    fn the_default_sink_and_its_volume_are_read() {
+        let mut rig = Rig::before_system_bus();
+        let audio = rig.start_audio();
+        let name = sink_of(FIRST);
+        assert_eq!(name, "bluez_output.02_00_00_00_00_01.1");
+        audio.add_sink(&name, ADDED_PERCENT);
+        audio.set_default_sink(&name);
+        let mut client = Client::open(audio.socket());
+
+        let server: ServerInfo = client.ask(&Command::GetServerInfo);
+        assert_eq!(server.default_sink_name, Some(c_name(&name)));
+        let by_name: SinkInfo = client.ask(&sink_info(&c_name(&name)));
+        let by_default: SinkInfo = client.ask(&sink_info(&DEFAULT_SINK.to_owned()));
+        assert_eq!(by_name, by_default);
+        assert_eq!(by_name.name, c_name(&name));
+        assert_eq!(by_name.cvolume, stereo(volume_of(ADDED_PERCENT)));
+        let absent = client.refused(&sink_info(&c_name(&sink_of(SECOND))));
+        assert_eq!(absent, PulseError::NoEntity);
+
+        let expected = [
+            Asked::Auth {
+                version: MAX_VERSION,
+            },
+            Asked::ClientName,
+            Asked::ServerInfo,
+            Asked::SinkInfo { name: name.clone() },
+            Asked::SinkInfo {
+                name: DEFAULT_SINK.to_str().unwrap().to_owned(),
+            },
+            Asked::SinkInfo {
+                name: sink_of(SECOND),
+            },
+        ];
+        assert_eq!(audio.requests(), expected);
+        drop(client);
+        drop(audio);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_volume_write_is_stored_and_announced() {
+        let session = Session::new();
+        let (audio, name) = one_sink(&session);
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::SINK);
+        let mut writer = Client::open(audio.socket());
+        let index = writer.ask::<SinkInfo>(&sink_info(&c_name(&name))).index;
+
+        let changed = event(SubscriptionEventFacility::Sink, Some(index));
+        writer.ack(&volume_write(&name, stereo(volume_of(70))));
+        audio.wait_volume(&name, 70, ANSWER_WITHIN);
+        assert_eq!(watcher.event(), changed);
+        watcher.nothing_for(QUIET);
+        let stored: SinkInfo = writer.ask(&sink_info(&c_name(&name)));
+        assert_eq!(stored.cvolume, stereo(volume_of(70)));
+        assert!(audio.requests().contains(&Asked::Volume {
+            name: name.clone(),
+            percent: 70
+        }));
+
+        audio.set_volume(&name, 30);
+        assert_eq!(audio.volume(&name), 30);
+        assert_eq!(watcher.event(), changed);
+        watcher.nothing_for(QUIET);
+
+        let mut mono = ChannelVolume::empty();
+        mono.push(volume_of(50));
+        writer.ack(&volume_write(&name, mono));
+        audio.wait_volume(&name, 50, ANSWER_WITHIN);
+        assert_eq!(watcher.event(), changed);
+        let spread: SinkInfo = writer.ask(&sink_info(&c_name(&name)));
+        assert_eq!(spread.cvolume, stereo(volume_of(50)));
+
+        let three_channels = volume_write(&name, ChannelVolume::norm(3));
+        assert_eq!(writer.refused(&three_channels), PulseError::Invalid);
+        assert_eq!(audio.volume(&name), 50);
+        watcher.nothing_for(QUIET);
+    }
+
+    #[test]
+    fn a_subscriber_hears_a_default_sink_change() {
+        let session = Session::new();
+        let (audio, first) = one_sink(&session);
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::SERVER);
+        let second = sink_of(SECOND);
+        let changed = event(SubscriptionEventFacility::Server, None);
+
+        audio.add_sink(&second, ADDED_PERCENT);
+        audio.set_default_sink(&second);
+        assert_eq!(watcher.event(), changed);
+        watcher.nothing_for(QUIET);
+        let server: ServerInfo = watcher.ask(&Command::GetServerInfo);
+        assert_eq!(server.default_sink_name, Some(c_name(&second)));
+
+        audio.remove_sink(&second);
+        assert_eq!(watcher.event(), changed);
+        watcher.nothing_for(QUIET);
+        let server: ServerInfo = watcher.ask(&Command::GetServerInfo);
+        assert_eq!(server.default_sink_name, Some(c_name(&first)));
+
+        audio.remove_sink(&first);
+        assert_eq!(watcher.event(), changed);
+        watcher.nothing_for(QUIET);
+        let server: ServerInfo = watcher.ask(&Command::GetServerInfo);
+        assert_eq!(server.default_sink_name, None);
+        assert!(audio.requests().contains(&Asked::Subscribe {
+            mask: SubscriptionMask::SERVER
+        }));
+    }
+
+    #[test]
+    fn stop_closes_every_client_and_restart_accepts_again() {
+        let session = Session::new();
+        let (audio, name) = one_sink(&session);
+        let mut first = Client::open(audio.socket());
+        let mut second = Client::open(audio.socket());
+        audio.wait_clients(2, ANSWER_WITHIN);
+        audio.set_volume(&name, 60);
+
+        audio.stop();
+        assert!(first.closed(), "the first client is still open");
+        assert!(second.closed(), "the second client is still open");
+        assert_eq!(audio.clients(), 0);
+        assert!(!audio.socket().exists(), "the socket outlived stop");
+
+        audio.restart(Volumes::Kept);
+        let mut client = Client::open(audio.socket());
+        let kept: SinkInfo = client.ask(&sink_info(&c_name(&name)));
+        assert_eq!(kept.cvolume, stereo(volume_of(60)));
+
+        audio.restart(Volumes::Forgotten);
+        assert!(client.closed(), "restart left a client open");
+        let mut client = Client::open(audio.socket());
+        let forgotten: SinkInfo = client.ask(&sink_info(&c_name(&name)));
+        assert_eq!(forgotten.cvolume, stereo(volume_of(ADDED_PERCENT)));
+    }
+
+    #[test]
+    fn held_replies_arrive_after_release() {
+        let session = Session::new();
+        let (audio, name) = one_sink(&session);
+        let mut client = Client::open(audio.socket());
+        let before = audio.requests().len();
+
+        audio.hold_replies(true);
+        client.send(&Command::GetServerInfo);
+        let asked = audio.wait_requests(before + 1, ANSWER_WITHIN);
+        assert_eq!(asked.last(), Some(&Asked::ServerInfo));
+        client.nothing_for(QUIET);
+
+        audio.hold_replies(false);
+        let server: ServerInfo = client.reply();
+        assert_eq!(server.default_sink_name, Some(c_name(&name)));
+    }
+
+    #[test]
+    #[expect(
+        clippy::as_conversions,
+        reason = "the discriminant of a fieldless enum is the protocol's command number"
+    )]
+    fn an_unknown_command_gets_an_error_reply() {
+        let session = Session::new();
+        let (audio, name) = one_sink(&session);
+        let mut client = Client::open(audio.socket());
+
+        let error = client.refused(&Command::GetCardInfoList);
+        assert_eq!(error, PulseError::Command);
+        assert_eq!(
+            audio.requests().last(),
+            Some(&Asked::Unknown {
+                command: u32::from(CommandTag::GetCardInfoList as u8)
+            })
+        );
+        let server: ServerInfo = client.ask(&Command::GetServerInfo);
+        assert_eq!(server.default_sink_name, Some(c_name(&name)));
+    }
+
+    #[test]
+    fn an_oversized_frame_arrives_with_its_declared_length() {
+        let session = Session::new();
+        let (audio, _) = one_sink(&session);
+        let mut client = Client::open(audio.socket());
+
+        audio.send_oversized_frame();
+        let mut header = [0; DESCRIPTOR_SIZE];
+        client.stream.read_exact(&mut header).unwrap();
+        let descriptor = read_descriptor(&mut header.as_slice()).unwrap();
+        assert_eq!(descriptor.length, OVERSIZED_LENGTH);
+    }
+
+    #[test]
+    fn a_stop_during_a_half_sent_frame_is_not_a_fault() {
+        let session = Session::new();
+        let (audio, _) = one_sink(&session);
+        let mut client = Client::open(audio.socket());
+        let mut bytes = Vec::new();
+        write_command_message(&mut bytes, 1, &Command::GetServerInfo, MAX_VERSION).unwrap();
+        let half = DESCRIPTOR_SIZE.saturating_add(PAYLOAD_KEPT);
+        client.stream.write_all(&bytes[..half]).unwrap();
+
+        audio.stop();
+        assert!(client.closed(), "stop left the client open");
+    }
+
+    /// Sends the first `kept` bytes of a command frame, closes the client's write half, and waits for the fake to drop it.
+    fn cut_frame(kept: usize) {
+        let session = Session::new();
+        let (audio, _) = one_sink(&session);
+        let mut client = Client::open(audio.socket());
+        let mut bytes = Vec::new();
+        write_command_message(&mut bytes, 1, &Command::GetServerInfo, MAX_VERSION).unwrap();
+        client.stream.write_all(&bytes[..kept]).unwrap();
+        client.stream.shutdown(Shutdown::Write).unwrap();
+        audio.wait_clients(0, ANSWER_WITHIN);
+    }
+
+    #[test]
+    #[should_panic(expected = "a frame cut short")]
+    fn a_frame_cut_short_in_its_descriptor_is_a_fault() {
+        cut_frame(DESCRIPTOR_KEPT);
+    }
+
+    #[test]
+    #[should_panic(expected = "a frame cut short")]
+    fn a_frame_cut_short_in_its_payload_is_a_fault() {
+        cut_frame(DESCRIPTOR_SIZE.saturating_add(PAYLOAD_KEPT));
+    }
+
+    #[test]
+    fn percent_and_protocol_volume_convert_both_ways() {
+        let norm = Volume::NORM.as_u32();
+        for (percent, raw) in [
+            (0, 0),
+            (1, 655),
+            (50, norm / 2),
+            (99, 64_881),
+            (100, norm),
+            (150, norm + norm / 2),
+        ] {
+            assert_eq!(volume_of(percent).as_u32(), raw, "{percent} %");
+            assert_eq!(percent_of(Volume::from_u32_clamped(raw)), percent, "{raw}");
+        }
+    }
+
+    /// A descriptor that declares `payload` whole on the control channel, then the payload.
+    fn framed(payload: &[u8]) -> Vec<u8> {
+        let mut frame = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+        frame.extend([u8::MAX; 4]);
+        frame.resize(DESCRIPTOR_SIZE, 0);
+        frame.extend(payload);
+        frame
+    }
+
+    /// Reads `bytes` as the fake does: a frame first, then its header and its command.
+    fn read_as_the_fake_does(bytes: &[u8]) {
+        if let Ok(frame) = read_frame(&mut &bytes[..]) {
+            drop(header(&frame));
+            drop(command(&frame, MAX_VERSION));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_bytes_never_panic_the_readers(bytes in vec(any::<u8>(), 0..ARBITRARY_MAX)) {
+            read_as_the_fake_does(&bytes);
+        }
+
+        #[test]
+        fn an_arbitrary_payload_in_a_whole_frame_never_panics_the_readers(
+            payload in vec(any::<u8>(), 0..ARBITRARY_MAX),
+        ) {
+            let frame = framed(&payload);
+            prop_assert_eq!(read_frame(&mut frame.as_slice()).ok(), Some(frame.clone()));
+            read_as_the_fake_does(&frame);
+        }
+    }
+}
