@@ -10,7 +10,13 @@ mod tests {
     use serde_json::Value;
 
     /// Crates that exist only for tests and must never reach a binary.
-    const TEST_CRATES: [&str; 4] = ["pods-samples", "pods-fake", "pods-trap", "cpp-source"];
+    const TEST_CRATES: [&str; 5] = [
+        "pods-samples",
+        "pods-fake",
+        "pods-trap",
+        "pods-pwrig",
+        "cpp-source",
+    ];
 
     /// Every package of the workspace with the dependencies its manifest names.
     fn packages() -> Vec<Value> {

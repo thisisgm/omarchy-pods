@@ -1,0 +1,21 @@
+[package]
+name = "pods-pwrig"
+description = "Test support: a private PipeWire server a test starts in its own directory, with stock recorders and a WAV reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# A dev-dependency only: never a normal dependency of any crate.
+
+[dependencies]
+rustix = { workspace = true, features = ["process"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
