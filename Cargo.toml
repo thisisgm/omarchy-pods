@@ -11,7 +11,9 @@ version = "0.0.0"
 publish = false
 
 [workspace.dependencies]
+allocation-counter = "0.8"
 clap = { version = "4.6", features = ["derive"] }
+opuscule = "0.2"
 pods-proto = { path = "crates/proto" }
 pods-sys = { path = "crates/sys" }
 proptest = { version = "1.12", default-features = false, features = ["std"] }

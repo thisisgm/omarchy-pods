@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+opuscule.workspace = true
 pods-core = { path = "../core" }
 pods-proto.workspace = true
 pods-sys.workspace = true
@@ -20,6 +21,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+allocation-counter.workspace = true
 pods-fake = { path = "../fake" }
 pods-samples = { path = "../samples" }
 pods-trap = { path = "../trap" }

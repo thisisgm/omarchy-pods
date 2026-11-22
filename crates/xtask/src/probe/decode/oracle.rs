@@ -10,8 +10,9 @@ use super::compare::SEARCH_UNITS;
 
 /// The oracle, found on the path.
 pub(crate) const FFMPEG: &str = "ffmpeg";
-/// Before the media file: never read the terminal, print errors only, and stop at the first one.
-const BEFORE_INPUT: [&str; 6] = ["-nostdin", "-hide_banner", "-v", "error", "-xerror", "-i"];
+/// Before the decoder and the media file: never read the terminal, print errors only, and stop at the first one.
+const BEFORE_INPUT: [&str; 5] = ["-nostdin", "-hide_banner", "-v", "error", "-xerror"];
+const INPUT: &str = "-i";
 /// After it: the first audio stream as raw little endian floats on the standard output, which is a file of the run.
 const AFTER_INPUT: [&str; 7] = [
     "-map",
@@ -72,7 +73,7 @@ pub(crate) struct OracleRun<'run> {
 /// Why the oracle gave no verdict at all.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OracleError {
-    #[error("could not write the units as an ISO media file: {0}")]
+    #[error("could not write the media file the oracle reads: {0}")]
     Media(io::Error),
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -116,15 +117,63 @@ fn samples_of(bytes: &[u8]) -> Result<Vec<f32>, OracleError> {
         .collect())
 }
 
+/// What one run of the oracle reads, which decoder it is told to use, and the files of the run it writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Job<'job, 'run> {
+    pub(crate) media: &'job Unnamed<'run>,
+    /// The options that name the decoder of the media file and say how it decodes; none leaves both to FFmpeg.
+    pub(crate) decoder: &'static [&'static str],
+    pub(crate) pcm_file: &'run str,
+    pub(crate) stderr_file: &'run str,
+    /// The most bytes of samples that are read back.
+    pub(crate) pcm_limit: u64,
+}
+
+/// What the oracle made of one media file, and the two files it wrote, neither named yet.
+#[derive(Debug)]
+pub(crate) struct Heard<'run> {
+    /// The samples, or how the oracle refused the stream.
+    pub(crate) decoded: Result<Vec<f32>, Refusal>,
+    pub(crate) pcm: Unnamed<'run>,
+    pub(crate) stderr: Unnamed<'run>,
+}
+
 /// The most bytes a decode of `units` may be: a decoder may add up to the units an offset can explain.
-fn pcm_limit(units: usize, samples_per_unit: u16) -> u64 {
+pub(crate) fn pcm_limit(units: usize, samples_per_unit: u16) -> u64 {
     let frames = u64::try_from(units.saturating_add(SEARCH_UNITS)).unwrap_or(u64::MAX);
     frames
         .saturating_mul(u64::from(samples_per_unit))
         .saturating_mul(u64::try_from(SAMPLE_BYTES).unwrap_or(u64::MAX))
 }
 
-/// Runs the oracle over `units` through files of `run` that have no name yet, and reads its exit status from the child itself.
+/// Runs the oracle over one media file of `run`, and reads its exit status from the child itself.
+pub(crate) fn hear<'run>(run: &'run Run, job: Job<'_, 'run>) -> Result<Heard<'run>, OracleError> {
+    let pcm = run.write_unnamed(job.pcm_file, &[])?;
+    let stderr = run.write_unnamed(job.stderr_file, &[])?;
+    let status = Command::new(FFMPEG)
+        .args(BEFORE_INPUT)
+        .args(job.decoder)
+        .arg(INPUT)
+        .arg(job.media.path_for_child())
+        .args(AFTER_INPUT)
+        .stdin(Stdio::null())
+        .stdout(pcm.handle()?)
+        .stderr(stderr.handle()?)
+        .status()
+        .map_err(OracleError::Start)?;
+    let said = stderr.contents(MAX_STDERR_BYTES)?;
+    let decoded = match judge(status, &said) {
+        Ok(()) => Ok(samples_of(&pcm.contents(job.pcm_limit)?)?),
+        Err(refusal) => Err(refusal),
+    };
+    Ok(Heard {
+        decoded,
+        pcm,
+        stderr,
+    })
+}
+
+/// Runs the oracle over `units` through files of `run` that have no name yet.
 pub(crate) fn oracle<'run>(
     run: &'run Run,
     config: [u8; 4],
@@ -135,24 +184,18 @@ pub(crate) fn oracle<'run>(
     eldfile::write(&mut media, config, units, u32::from(samples_per_unit))
         .map_err(OracleError::Media)?;
     let media = run.write_unnamed(MEDIA_FILE, &media)?;
-    let pcm = run.write_unnamed(PCM_FILE, &[])?;
-    let stderr = run.write_unnamed(STDERR_FILE, &[])?;
-    let status = Command::new(FFMPEG)
-        .args(BEFORE_INPUT)
-        .arg(media.path_for_child())
-        .args(AFTER_INPUT)
-        .stdin(Stdio::null())
-        .stdout(pcm.handle()?)
-        .stderr(stderr.handle()?)
-        .status()
-        .map_err(OracleError::Start)?;
-    let said = stderr.contents(MAX_STDERR_BYTES)?;
-    let decoded = match judge(status, &said) {
-        Ok(()) => Ok(samples_of(
-            &pcm.contents(pcm_limit(units.len(), samples_per_unit))?,
-        )?),
-        Err(refusal) => Err(refusal),
+    let job = Job {
+        media: &media,
+        decoder: &[],
+        pcm_file: PCM_FILE,
+        stderr_file: STDERR_FILE,
+        pcm_limit: pcm_limit(units.len(), samples_per_unit),
     };
+    let Heard {
+        decoded,
+        pcm,
+        stderr,
+    } = hear(run, job)?;
     Ok(OracleRun {
         decoded,
         media,

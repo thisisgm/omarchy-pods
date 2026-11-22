@@ -1,12 +1,22 @@
 //! The built binary's `probe capture` and `probe stop` commands against the fake pods, every L2CAP connect of the command taken by the socket trap, and `probe analyse` on the dictation runs they leave.
 
 #[cfg(test)]
+#[path = "capture/analysed.rs"]
+mod analysed;
+#[cfg(test)]
 #[expect(
     dead_code,
     reason = "the parts of the fake pods only the unit tests of the capture loop read go unused here"
 )]
 #[path = "../src/probe/capture/tests/att_pods.rs"]
 mod att_pods;
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the home of an analysed run is read only where the run is decoded as well"
+)]
+#[path = "support/capture.rs"]
+mod capture;
 #[cfg(test)]
 #[expect(
     dead_code,
@@ -17,19 +27,12 @@ mod pods;
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
-mod capture {
-    mod analysed;
-
-    use std::fs::{self, OpenOptions};
-    use std::io::{Read, Write};
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
 
     use pods_proto::att::{self, CHARACTERISTIC_DECLARATION};
     use pods_proto::dictation::{self, DictationPacket, SESSION_ACTIVE, SESSION_IDLE};
@@ -38,35 +41,18 @@ mod capture {
     };
     use pods_proto::sdulog::{self, Direction};
     use pods_proto::uplink::{START, STOP};
-    use pods_sys::l2cap::Channel;
-    use pods_trap::{Answer, Outcome, Route, Trap};
+    use pods_trap::{Answer, Outcome};
     use rustix::io::Errno;
-    use rustix::process::{Pid, Signal, kill_process};
-    use tempfile::TempDir;
 
     use super::att_pods::{
         BURST_PACKETS, DECLARED, FIND_INFORMATION, MADE_UP_TYPE, TABLE_END, declared_at,
     };
-    use super::pods::{self, DEADLINE, Pods, Transcript};
+    use super::capture::{
+        FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, capture, far_end, files_of, hand_over,
+        hand_over_after, home_with_device, probe, read, route, run_path, transcript,
+    };
+    use super::pods::{self, Pods, Transcript};
 
-    /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
-    const STAMP: &str = "20261121T120000Z";
-    /// The synthetic device of the device file, which no output of the command may name.
-    const DEVICE: &str = "02:00:00:00:00:01";
-    /// The store under the temporary home.
-    const ROOT_NAME: &str = "omapods-captures";
-    /// The mode the store gives a run directory.
-    const OWNER_DIR: u32 = 0o700;
-    /// The mode the store gives every file.
-    const OWNER_FILE: u32 = 0o600;
-    /// The permission bits of a mode, without the file type.
-    const PERMISSION_BITS: u32 = 0o777;
-    /// The status a command exits with when the script did not run to its end.
-    const FAILED: Option<i32> = Some(1);
-    /// A command still running this long after the test began to wait has hung, and the test fails.
-    const HANG_LIMIT: Duration = Duration::from_secs(30);
-    /// How often a wait checks its condition again.
-    const POLL: Duration = Duration::from_millis(5);
     /// The cue every soak prints when its stream starts.
     const SOAK_CUE: &str = "cue Stay as you are. Nothing to do.\n";
     /// How long the scripts let the active marker lead the dictation start write.
@@ -80,196 +66,11 @@ mod capture {
     /// The last handle of that range, the highest an attribute can have.
     const LAST_HANDLE: u16 = 0xffff;
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "std has no timed wait for a child process or a flag, and this is the test, not the core"
-    )]
-    fn pause() {
-        thread::sleep(POLL);
-    }
-
-    /// Waits for `ready` to give a value, failing the test once `limit` passes.
-    fn wait_within<T>(limit: Duration, what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
-        let started = Instant::now();
-        loop {
-            if let Some(value) = ready() {
-                return value;
-            }
-            assert!(started.elapsed() < limit, "no {what} after {limit:?}");
-            pause();
-        }
-    }
-
-    /// One probe command of the built binary, with `HOME` set to `home`, never the real one.
-    fn probe(home: &Path, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
-        command.arg("probe").args(args).env("HOME", home);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        command
-    }
-
-    /// A temporary home whose store, made by the built `probe init`, holds the session and the device file.
-    fn home_with_device() -> TempDir {
-        let home = tempfile::tempdir().unwrap();
-        let init = probe(home.path(), &["init", "--stamp", STAMP])
-            .output()
-            .unwrap();
-        assert!(init.status.success(), "{init:?}");
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(OWNER_FILE)
-            .open(home.path().join(ROOT_NAME).join("device"))
-            .unwrap()
-            .write_all(format!("{DEVICE}\n").as_bytes())
-            .unwrap();
-        home
-    }
-
-    fn run_path(home: &TempDir, name: &str) -> PathBuf {
-        home.path().join(ROOT_NAME).join(STAMP).join(name)
-    }
-
-    /// The capture command for the run `name`, then the route and script arguments.
-    fn capture(home: &TempDir, name: &str, script: &[&str]) -> Command {
-        let run = ["capture", "--stamp", STAMP, "--run", name];
-        probe(home.path(), &[&run[..], script].concat())
-    }
-
-    /// Answers a dial by handing its far end to the receiver it returns.
-    fn hand_over() -> (Answer, mpsc::Receiver<Channel>) {
-        hand_over_after(Duration::ZERO)
-    }
-
-    /// The same answer, given only once the dial has waited `after`.
-    fn hand_over_after(after: Duration) -> (Answer, mpsc::Receiver<Channel>) {
-        let (handed, far) = mpsc::channel();
-        let serve = move |channel| {
-            // The receiver is gone only when the test already failed.
-            drop(handed.send(channel));
-        };
-        let answer = Answer::Accept {
-            after,
-            serve: Arc::new(serve),
-        };
-        (answer, far)
-    }
-
     fn refuse(errno: Errno) -> Answer {
         Answer::Refuse {
             after: Duration::ZERO,
             errno,
         }
-    }
-
-    fn route(psm: u16, answer: Answer) -> Route {
-        Route {
-            device: DEVICE.parse().unwrap(),
-            psm,
-            answer,
-        }
-    }
-
-    /// The far end of a dial the trap answered.
-    fn far_end(handed: &mpsc::Receiver<Channel>) -> Channel {
-        handed
-            .recv_timeout(HANG_LIMIT)
-            .expect("the dial never came")
-    }
-
-    /// What a finished command did: its exit code, what it printed, and every dial with its PSM and outcome.
-    struct Ran {
-        code: Option<i32>,
-        stdout: String,
-        stderr: String,
-        dials: Vec<(u16, Outcome)>,
-    }
-
-    /// The built command under the trap; dropping it kills and reaps the command, so a failed assertion leaves no process behind.
-    struct Running {
-        child: Child,
-        trap: Option<Trap>,
-    }
-
-    impl Running {
-        fn start(command: Command, routes: Vec<Route>) -> Self {
-            let (child, trap) =
-                pods_trap::spawn(command, routes).unwrap_or_else(|error| panic!("{error}"));
-            Self {
-                child,
-                trap: Some(trap),
-            }
-        }
-
-        /// Sends SIGINT once the fake pods raise `flag`, as the owner pressing Ctrl+C mid stream; the test fails once `limit` passes.
-        fn interrupt_within(&self, limit: Duration, flag: &AtomicBool) {
-            let raised = || flag.load(Ordering::SeqCst).then_some(());
-            wait_within(limit, "raised flag", raised);
-            kill_process(Pid::from_child(&self.child), Signal::INT).unwrap();
-        }
-
-        fn finish(mut self) -> Ran {
-            let status = wait_within(HANG_LIMIT, "exit", || self.child.try_wait().unwrap());
-            let stdout = text_of(self.child.stdout.take());
-            let stderr = text_of(self.child.stderr.take());
-            let trap = self.trap.take().unwrap();
-            let dials = trap.finish().unwrap_or_else(|error| panic!("{error}"));
-            let dials = dials.into_iter().map(|dial| (dial.psm, dial.outcome));
-            assert!(!stdout.contains(DEVICE) && !stderr.contains(DEVICE));
-            Ran {
-                code: status.code(),
-                stdout,
-                stderr,
-                dials: dials.collect(),
-            }
-        }
-    }
-
-    impl Drop for Running {
-        fn drop(&mut self) {
-            // A command that already exited refuses the kill, and the wait then reaps nothing.
-            drop(self.child.kill());
-            drop(self.child.wait());
-        }
-    }
-
-    /// The transcript of fake pods that ended with the command.
-    fn transcript(played: &mpsc::Receiver<Transcript>) -> Transcript {
-        played
-            .recv_timeout(DEADLINE)
-            .expect("the fake pods did not finish before the deadline")
-    }
-
-    /// The names of the files of a run, sorted, after checking the run and each file are the owner's alone and no file names the device.
-    fn files_of(run: &Path) -> Vec<String> {
-        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & PERMISSION_BITS;
-        assert_eq!(mode(run), OWNER_DIR, "{}", run.display());
-        let mut names: Vec<String> = fs::read_dir(run)
-            .unwrap()
-            .map(|entry| {
-                let path = entry.unwrap().path();
-                assert_eq!(mode(&path), OWNER_FILE, "{}", path.display());
-                let text = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
-                assert!(!text.contains(DEVICE), "{}", path.display());
-                path.file_name().unwrap().to_str().unwrap().to_owned()
-            })
-            .collect();
-        names.sort();
-        names
-    }
-
-    /// Everything a piped stream of a finished command holds.
-    fn text_of(stream: Option<impl Read>) -> String {
-        let mut text = String::new();
-        stream.unwrap().read_to_string(&mut text).unwrap();
-        text
-    }
-
-    fn read(run: &Path, name: &str) -> String {
-        fs::read_to_string(run.join(name)).unwrap()
     }
 
     /// The packets of a channel log that went one way, in order.
