@@ -1,4 +1,4 @@
-//! C6: each setting command ten times over protocol 1, originals put back, then one with no bud in.
+//! C6, the command census: each setting command ten times over protocol 1 and shown in the status at once, the originals put back and read back, then one with no bud in.
 
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -15,15 +15,15 @@ use super::report::{Check, Gate};
 use super::unit::pause;
 use super::{Interrupted, stopped};
 
-/// The reply word of a command that took effect and shows in the state.
+/// The reply word of a command carried out with no write, which no census command answers.
 const CONFIRMED: &str = "confirmed";
-/// The reply word of a command that went to the `AirPods` with no answer yet.
+/// The reply word of a setting command whose write is on the link.
 const SENT: &str = "sent";
 /// The error code of a command that needs a bud in an ear.
 const NOT_WORN: &str = "not_worn";
 /// How long the person has to answer a prompt.
 const PROMPT_WAIT: Duration = Duration::from_secs(300);
-/// Longer than the daemon's own confirm timeout.
+/// How long a `set` over the socket may wait for its reply, far past the write it answers.
 const SET_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest reply line read from the daemon, as the command line client bounds it.
 const MAX_REPLY_BYTES: usize = 65536;
@@ -35,65 +35,53 @@ const CENSUS_TRIALS: usize = 10;
 /// How often the prompt wait wakes to notice a stop signal, in nanoseconds.
 const PROMPT_POLL_NANOS: i64 = 250_000_000;
 
-/// One census command, the word a working link answers it with, and whether it needs adaptive mode first.
+/// One census command, and whether it needs adaptive mode first.
 struct CensusCommand {
     key: &'static str,
     value: &'static str,
-    /// A second value sent on every other trial, for a setting the daemon confirms without a write when it is unchanged.
-    alternate: Option<&'static str>,
-    expected: &'static str,
     in_adaptive: bool,
 }
 
-/// A hardware run may correct the expected words.
-const CENSUS: [CensusCommand; 7] = [
+/// The census of commands C6 sends, each answered `sent`; each key's rows alternate, so a status stuck at one value fails the other row.
+const CENSUS: [CensusCommand; 8] = [
     CensusCommand {
         key: "noise",
         value: "transparency",
-        alternate: None,
-        expected: CONFIRMED,
         in_adaptive: false,
     },
     CensusCommand {
         key: "noise",
         value: "anc",
-        alternate: None,
-        expected: CONFIRMED,
         in_adaptive: false,
     },
     CensusCommand {
         key: "conversational_awareness",
         value: "true",
-        alternate: None,
-        expected: CONFIRMED,
         in_adaptive: false,
     },
     CensusCommand {
         key: "conversational_awareness",
         value: "false",
-        alternate: None,
-        expected: CONFIRMED,
         in_adaptive: false,
     },
     CensusCommand {
         key: "one_bud_anc",
         value: "true",
-        alternate: None,
-        expected: CONFIRMED,
         in_adaptive: false,
     },
     CensusCommand {
         key: "one_bud_anc",
         value: "false",
-        alternate: None,
-        expected: CONFIRMED,
         in_adaptive: false,
     },
     CensusCommand {
         key: "adaptive_level",
         value: "40",
-        alternate: Some("60"),
-        expected: SENT,
+        in_adaptive: true,
+    },
+    CensusCommand {
+        key: "adaptive_level",
+        value: "60",
         in_adaptive: true,
     },
 ];
@@ -267,16 +255,24 @@ fn reply_word(line: &str) -> Option<String> {
     word.as_str().map(str::to_owned)
 }
 
-/// The settings C6 changes, as the status document held them before it began.
-struct Originals {
+/// The `set` keys of the settings C6 changes.
+const SETTING_KEYS: [&str; 4] = [
+    "noise",
+    "conversational_awareness",
+    "one_bud_anc",
+    "adaptive_level",
+];
+
+/// The settings C6 changes, as a status document holds them.
+struct Settings {
     noise: &'static str,
     conversational_awareness: bool,
     one_bud_anc: bool,
     adaptive_level: u64,
 }
 
-impl Originals {
-    /// The `set` value of `key` as it was before C6 began.
+impl Settings {
+    /// The `set` value of `key`.
     fn value_of(&self, key: &str) -> Option<String> {
         match key {
             "noise" => Some(self.noise.to_owned()),
@@ -288,20 +284,7 @@ impl Originals {
     }
 }
 
-/// The value sent once before row `index`'s first trial when it is its key's first row and asks for the value already set: the key's other row value, so that trial is a write too.
-fn lead_in(index: usize, originals: &Originals) -> Option<&'static str> {
-    let command = CENSUS.get(index)?;
-    let first_of_key = CENSUS.iter().position(|row| row.key == command.key) == Some(index);
-    if !first_of_key || originals.value_of(command.key).as_deref() != Some(command.value) {
-        return None;
-    }
-    CENSUS
-        .iter()
-        .find(|row| row.key == command.key && row.value != command.value)
-        .map(|row| row.value)
-}
-
-/// Sample input `{"supports_adaptive":true,"supports_one_bud_anc":false}` among other keys.
+/// The capability keys in `NEEDED_FEATURES` not true in the status line; sample input `{"supports_adaptive":true,"supports_one_bud_anc":false}` among its other keys.
 fn missing_features(state: &Map<String, Value>) -> Vec<&'static str> {
     NEEDED_FEATURES
         .into_iter()
@@ -310,7 +293,7 @@ fn missing_features(state: &Map<String, Value>) -> Vec<&'static str> {
 }
 
 /// The settings in the status line; sample input `{"adaptive_noise_level":50,"conversational_awareness":false,"noise_mode":0,"one_bud_anc_mode":false}` among its other keys.
-fn originals(state: &Map<String, Value>) -> Result<Originals, String> {
+fn settings(state: &Map<String, Value>) -> Result<Settings, String> {
     let missing = |key: &str| format!("the state has no usable {key}");
     let noise = state
         .get("noise_mode")
@@ -324,7 +307,7 @@ fn originals(state: &Map<String, Value>) -> Result<Originals, String> {
             .and_then(Value::as_bool)
             .ok_or_else(|| missing(key))
     };
-    Ok(Originals {
+    Ok(Settings {
         noise,
         conversational_awareness: flag("conversational_awareness")?,
         one_bud_anc: flag("one_bud_anc_mode")?,
@@ -335,7 +318,7 @@ fn originals(state: &Map<String, Value>) -> Result<Originals, String> {
     })
 }
 
-/// C6: each census command ten times, the originals put back on every way out, then `not_worn` with both buds out.
+/// C6: each census command ten times, the originals put back on every way out and read back, then `not_worn` with both buds out.
 pub(crate) fn commands(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     let mut check = Check::new("C6 commands");
     let state = match lab.status() {
@@ -353,15 +336,18 @@ pub(crate) fn commands(lab: &Lab<'_>) -> Result<Check, Interrupted> {
         ));
         return Ok(check);
     }
-    let originals = match originals(&state) {
+    let originals = match settings(&state) {
         Ok(originals) => originals,
         Err(error) => {
             check.fail(error);
             return Ok(check);
         }
     };
-    let rounds = census(&lab.socket(), &mut check, SET_REPLY_TIMEOUT, &originals);
-    let restored = restore_settings(lab, &originals);
+    let rounds = census(&lab.socket(), &mut check, SET_REPLY_TIMEOUT, &|| {
+        lab.status()
+    });
+    let restored =
+        restore_settings(lab, &originals).and_then(|()| read_back(&|| lab.status(), &originals));
     check.note(format!("settings put back: {}", restored.is_ok()));
     if let Err(error) = restored {
         // A stop signal below drops this check, so a setting left changed is reported now.
@@ -403,7 +389,7 @@ pub(crate) fn commands(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     if word != NOT_WORN {
         check.fail(format!("expected {NOT_WORN} with no bud in"));
         let put_back = set_over_socket(&lab.socket(), "noise", originals.noise, SET_REPLY_TIMEOUT);
-        let put_back = put_back.is_ok_and(|word| took_effect(&word));
+        let put_back = put_back.is_ok_and(|word| word == SENT);
         check.note(format!("noise put back: {put_back}"));
         if !put_back {
             check.fail("could not put back noise");
@@ -437,100 +423,89 @@ fn census_set(
     }
 }
 
-impl CensusCommand {
-    /// An alternating row starts on the value that differs from `original`, so every trial is a write.
-    fn value_at(&self, trial: usize, original: &str) -> &'static str {
-        let Some(alternate) = self.alternate else {
-            return self.value;
-        };
-        let starts_on_alternate = original == self.value;
-        if (trial % 2 == 1) == starts_on_alternate {
-            self.value
-        } else {
-            alternate
-        }
-    }
+/// Reads the status document the daemon serves.
+type StatusReader<'a> = &'a dyn Fn() -> Result<Map<String, Value>, String>;
 
-    fn label(&self) -> String {
-        match self.alternate {
-            Some(alternate) => format!("{} {} and {alternate} in turn", self.key, self.value),
-            None => format!("{} {}", self.key, self.value),
-        }
-    }
+/// Whether the status `status` reads shows `key` at the `set` value `value`.
+fn shown(status: StatusReader<'_>, key: &str, value: &str) -> Result<bool, String> {
+    let shows = status().and_then(|state| settings(&state))?;
+    Ok(shows.value_of(key).as_deref() == Some(value))
 }
 
 fn census(
     socket: &Path,
     check: &mut Check,
     reply_timeout: Duration,
-    originals: &Originals,
+    status: StatusReader<'_>,
 ) -> Result<Rounds, Interrupted> {
-    let original_level = originals.adaptive_level.to_string();
     let mut words: Vec<Vec<String>> = CENSUS.iter().map(|_| Vec::new()).collect();
     let mut times: Vec<Vec<u64>> = CENSUS.iter().map(|_| Vec::new()).collect();
-    let mut setups_unconfirmed = 0_usize;
-    for trial in 0..CENSUS_TRIALS {
+    let mut shown_at_once = vec![0_usize; CENSUS.len()];
+    let mut setups_unsent = 0_usize;
+    let mut unread_status = None;
+    for _ in 0..CENSUS_TRIALS {
         for (index, command) in CENSUS.iter().enumerate() {
             if stopped() {
                 return Err(Interrupted);
-            }
-            if trial == 0
-                && let Some(other) = lead_in(index, originals)
-            {
-                let Some(reply) = census_set(socket, (command.key, other), reply_timeout, check)
-                else {
-                    return Ok(Rounds::Unanswered);
-                };
-                if reply.as_deref() != Ok(CONFIRMED) {
-                    check.fail(format!(
-                        "set {} {other} before the first trial was not {CONFIRMED}",
-                        command.key
-                    ));
-                }
             }
             if command.in_adaptive {
                 let Some(setup) = census_set(socket, ("noise", "adaptive"), reply_timeout, check)
                 else {
                     return Ok(Rounds::Unanswered);
                 };
-                if setup.as_deref() != Ok(CONFIRMED) {
-                    setups_unconfirmed = setups_unconfirmed.saturating_add(1);
+                if setup.as_deref() != Ok(SENT) {
+                    setups_unsent = setups_unsent.saturating_add(1);
                 }
             }
-            let value = command.value_at(trial, &original_level);
             let began = Instant::now();
-            let Some(reply) = census_set(socket, (command.key, value), reply_timeout, check) else {
+            let Some(reply) =
+                census_set(socket, (command.key, command.value), reply_timeout, check)
+            else {
                 return Ok(Rounds::Unanswered);
             };
-            let word = reply.unwrap_or_default();
+            let elapsed = millis(began.elapsed());
+            match shown(status, command.key, command.value) {
+                Ok(true) => {
+                    if let Some(count) = shown_at_once.get_mut(index) {
+                        *count = count.saturating_add(1);
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    unread_status.get_or_insert(error);
+                }
+            }
             if let (Some(words), Some(times)) = (words.get_mut(index), times.get_mut(index)) {
-                times.push(millis(began.elapsed()));
-                words.push(word);
+                times.push(elapsed);
+                words.push(reply.unwrap_or_default());
             }
         }
     }
-    if setups_unconfirmed > 0 {
+    if let Some(error) = unread_status {
+        check.fail(format!("the status could not be read after a set: {error}"));
+    }
+    if setups_unsent > 0 {
+        let setups =
+            CENSUS_TRIALS.saturating_mul(CENSUS.iter().filter(|row| row.in_adaptive).count());
         check.fail(format!(
-            "set noise adaptive was not {CONFIRMED} before adaptive_level in {setups_unconfirmed} of {CENSUS_TRIALS}"
+            "set noise adaptive was not {SENT} before adaptive_level in {setups_unsent} of {setups}"
         ));
     }
-    let mut confirmable_ms = Vec::new();
-    for ((command, words), times) in CENSUS.iter().zip(&words).zip(&times) {
-        let expected = words
-            .iter()
-            .filter(|word| word.as_str() == command.expected)
-            .count();
+    let mut all_ms = Vec::new();
+    for (((command, words), times), shown) in
+        CENSUS.iter().zip(&words).zip(&times).zip(shown_at_once)
+    {
+        let sent = words.iter().filter(|word| word.as_str() == SENT).count();
         let others: Vec<&str> = words
             .iter()
             .map(|word| printable(word))
-            .filter(|word| *word != command.expected)
+            .filter(|word| *word != SENT)
             .collect();
+        let label = format!("{} {}", command.key, command.value);
         check.note(format!(
-            "set {}: {} {expected} of {}, only {} counts, {}{}",
-            command.label(),
-            command.expected,
+            "set {label}: {SENT} {sent} of {}, shown at once {shown} of {}, {}{}",
             words.len(),
-            command.expected,
+            words.len(),
             super::report::range_text(times),
             if others.is_empty() {
                 String::new()
@@ -538,21 +513,21 @@ fn census(
                 format!(", also {}", others.join(" "))
             }
         ));
-        if command.expected == CONFIRMED {
-            confirmable_ms.extend_from_slice(times);
-        }
-        if expected != CENSUS_TRIALS {
+        all_ms.extend_from_slice(times);
+        if sent != CENSUS_TRIALS {
             check.fail(format!(
-                "set {} was not {} {CENSUS_TRIALS} of {CENSUS_TRIALS}",
-                command.label(),
-                command.expected
+                "set {label} was not {SENT} {CENSUS_TRIALS} of {CENSUS_TRIALS}"
+            ));
+        }
+        if shown != CENSUS_TRIALS {
+            check.fail(format!(
+                "set {label} was not shown at once {CENSUS_TRIALS} of {CENSUS_TRIALS}"
             ));
         }
     }
-    check.note("G2b is held by the counts above: a trial past the daemon's confirm timeout answers timeout");
     check.gates.push(Gate {
         name: "G2b",
-        samples_ms: confirmable_ms,
+        samples_ms: all_ms,
         bound: None,
     });
     Ok(Rounds::Answered)
@@ -576,7 +551,7 @@ fn printable(word: &str) -> &str {
         .unwrap_or("error")
 }
 
-fn restore_settings(lab: &Lab<'_>, originals: &Originals) -> Result<(), String> {
+fn restore_settings(lab: &Lab<'_>, originals: &Settings) -> Result<(), String> {
     let level = originals.adaptive_level.to_string();
     let settings = [
         ("noise", "adaptive"),
@@ -603,7 +578,7 @@ fn restore_settings(lab: &Lab<'_>, originals: &Originals) -> Result<(), String> 
     let mut unanswered = None;
     for (index, (key, value)) in settings.iter().enumerate() {
         match set_over_socket(&lab.socket(), key, value, SET_REPLY_TIMEOUT) {
-            Ok(word) if took_effect(&word) => {}
+            Ok(word) if word == SENT => {}
             // A daemon that gave no reply would make each later set wait as long, so they are not sent.
             Err(NoWord::Unanswered(reason)) => {
                 failed.extend(settings.iter().skip(index).map(|(key, _)| *key));
@@ -623,9 +598,18 @@ fn restore_settings(lab: &Lab<'_>, originals: &Originals) -> Result<(), String> 
     }
 }
 
-/// True for a reply word that means the setting went to the `AirPods`.
-fn took_effect(word: &str) -> bool {
-    word == CONFIRMED || word == SENT
+/// Reads the status back and compares its settings with the originals.
+fn read_back(status: StatusReader<'_>, originals: &Settings) -> Result<(), String> {
+    let back = status().and_then(|state| settings(&state))?;
+    let changed: Vec<&str> = SETTING_KEYS
+        .into_iter()
+        .filter(|key| back.value_of(key) != originals.value_of(key))
+        .collect();
+    if changed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} read back changed", changed.join(", ")))
+    }
 }
 
 /// Writes a prompt for the person at the machine.
