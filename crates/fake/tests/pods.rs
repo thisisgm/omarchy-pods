@@ -11,8 +11,9 @@ mod tests {
         burst_others, burst_settings, ear, ear_of, features_ack, first_burst, handshake_ack, host,
         metadata_of, setting,
     };
-    use pods_sys::l2cap::{Channel, Received};
+    use pods_sys::l2cap::{Channel, ChannelError, Received};
     use proptest::prelude::*;
+    use rustix::io::Errno;
 
     /// Longer than any loaded host takes to hand over a packet already queued.
     const RECV_TIMEOUT: Duration = Duration::from_secs(5);
@@ -383,6 +384,22 @@ mod tests {
         assert!(recv_many(&host, BURST_LEN).contains(&setting(NOISE, 1)));
         pods.set_setting(CONVERSATION_AWARENESS, 2);
         assert_eq!(recv(&host), setting(CONVERSATION_AWARENESS, 2));
+        finish(pods, host);
+    }
+
+    #[test]
+    fn a_channel_that_stopped_reading_fails_the_host_write() {
+        /// Far more frames than an `AF_UNIX` send buffer holds.
+        const WRITES_MAX: usize = 100_000;
+        let pods = Pods::new(Profile::default());
+        let host = open(&pods);
+        opening(&host);
+        pods.stop_reading();
+        let frame = setting(NOISE, 2);
+        let failed = (0..WRITES_MAX).find_map(|_| host.try_send(&frame).err());
+        assert_eq!(failed, Some(ChannelError::Send(Errno::AGAIN)));
+        // At most the one frame a receive already waiting took; a reading fake drains the whole buffer.
+        assert!(pods.wait_heard(&frame, 2, QUIET).is_err());
         finish(pods, host);
     }
 

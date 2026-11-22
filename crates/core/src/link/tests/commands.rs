@@ -1,4 +1,4 @@
-//! Commands to bytes: one test per row and column of the table, and every way a waiting command ends.
+//! Commands to bytes: one test per row and column of the table, the answer at the write, and the hold against late reports.
 
 use pods_proto::control::ControlId;
 use pods_proto::model::Model;
@@ -8,16 +8,13 @@ use super::reports::report;
 use super::sim::{Answer, Input, Sim, ms};
 use crate::command::tests::level;
 use crate::command::{self, Command, CommandError, NoiseTarget, Outcome};
-use crate::link::Phase;
-use crate::link::ladder::PENDING_MAX;
-use crate::state::{Counters, EarDetectionBehavior};
+use crate::link::{Phase, REPORT_HOLD_MS};
+use crate::state::{Counters, EarDetectionBehavior, State};
 
-const NO_ACTIONS: [&str; 0] = [];
 const OFF_FRAME: &str = "Send([04, 00, 04, 00, 09, 00, 0d, 01, 00, 00, 00])";
 const ANC_FRAME: &str = "Send([04, 00, 04, 00, 09, 00, 0d, 02, 00, 00, 00])";
 const TRANSPARENCY_FRAME: &str = "Send([04, 00, 04, 00, 09, 00, 0d, 03, 00, 00, 00])";
 const ADAPTIVE_FRAME: &str = "Send([04, 00, 04, 00, 09, 00, 0d, 04, 00, 00, 00])";
-const TIMEOUT: Outcome = Outcome::Refused(CommandError::Timeout);
 const NOT_SUPPORTED: Outcome = Outcome::Refused(CommandError::NotSupported);
 const NOT_CONNECTED: Outcome = Outcome::Refused(CommandError::NotConnected);
 
@@ -62,6 +59,15 @@ fn up_unknown() -> Sim {
     sim
 }
 
+/// Fails unless the last two steps wrote `frame` and answered ticket `ticket` as sent.
+fn written_and_sent(sim: &Sim, frame: &str, ticket: u64) {
+    assert_eq!(
+        sim.since(2),
+        [frame.to_owned(), format!("Resolve({ticket})")]
+    );
+    assert_eq!(sim.outcome(ticket), [Outcome::Sent]);
+}
+
 /// A link up to AirPods Pro 3 (no Off), both buds in an ear, in `mode`.
 fn up_pro3(mode: NoiseMode) -> Sim {
     let mut sim = up_unknown();
@@ -73,35 +79,24 @@ fn up_pro3(mode: NoiseMode) -> Sim {
 }
 
 #[test]
-fn noise_anc_writes_the_frame_and_is_confirmed_by_the_report() {
+fn noise_anc_is_written_then_sent_and_shown() {
     let mut sim = up_unknown();
     sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    assert_eq!(sim.last(), [ANC_FRAME]);
-    assert_eq!(sim.outcomes(), []);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Off);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
-    assert_eq!(sim.last(), NO_ACTIONS);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Transparency);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last(), ["Resolve(0)"]);
-    assert_eq!(sim.outcomes(), [Outcome::Confirmed]);
+    written_and_sent(&sim, ANC_FRAME, 0);
+    assert_eq!(sim.steps.last().unwrap().event, "Tick");
     assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
     sim.check_all_tickets_resolved_once();
 }
 
 #[test]
-fn a_mode_already_set_is_confirmed_without_bytes() {
+fn a_mode_already_shown_is_written_again() {
     let mut sim = up_unknown();
     sim.feed(Input::Packet(NoiseMode::Off.command().encode()));
-    let counters = sim.state.counters;
     sim.feed(Input::Command(noise(NoiseMode::Off)));
-    assert_eq!(sim.last(), ["Resolve(0)"]);
+    written_and_sent(&sim, OFF_FRAME, 0);
     let mut sim3 = up_pro3(NoiseMode::Adaptive);
     sim3.feed(Input::Command(noise(NoiseMode::Adaptive)));
-    assert_eq!(sim3.last(), ["Resolve(0)"]);
-    assert_eq!(sim.outcomes(), [Outcome::Confirmed]);
-    assert_eq!(sim3.outcomes(), [Outcome::Confirmed]);
-    assert_eq!(sim.state.counters, counters);
+    written_and_sent(&sim3, ADAPTIVE_FRAME, 0);
     sim.check_all_tickets_resolved_once();
     sim3.check_all_tickets_resolved_once();
 }
@@ -138,84 +133,204 @@ fn adaptive_on_a_model_without_it_and_noise_on_a_model_without_noise_control_are
 }
 
 #[test]
-fn noise_set_without_a_report_is_timeout_after_700_ms() {
-    let mut sim = up_unknown();
-    sim.run_until(ms(100));
+fn a_late_report_of_another_value_is_dropped_until_the_written_one() {
+    let mut sim = up_pro3(NoiseMode::Transparency);
     sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    assert_eq!(sim.machine.deadline(), Some(ms(800)));
-    sim.run_until(ms(799));
-    assert_eq!(sim.outcomes(), []);
-    sim.run_until(ms(800));
-    assert_eq!(sim.times_of("Resolve(0)"), [800]);
-    assert_eq!(sim.outcomes(), [TIMEOUT]);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Off);
-    // A late report still lands in the state, and answers nothing.
+    sim.feed(Input::Command(noise(NoiseMode::Adaptive)));
+    // The written value under another identifier does not end the hold.
+    sim.feed(Input::Packet(report(ControlId::MIC_SIDE, 0x04)));
     sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last(), NO_ACTIONS);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
-
-    sim.feed(Input::Command(Command::SetNoise(NoiseTarget::Cycle)));
-    assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
-    sim.run_until(ms(1500));
-    assert_eq!(sim.times_of("Resolve(1)"), [1500]);
-    assert_eq!(sim.outcomes(), [TIMEOUT, TIMEOUT]);
+    assert_eq!(sim.state.noise_mode, NoiseMode::Adaptive);
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x04)));
+    // The written value ended the hold, so the pods' own change is taken at once.
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Transparency);
+    sim.run_until(ms(REPORT_HOLD_MS + 1));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Transparency);
+    assert_eq!(sim.outcomes(), [Outcome::Sent; 2]);
     sim.check_all_tickets_resolved_once();
 }
 
 #[test]
-fn noise_set_without_a_report_is_not_worn_when_no_bud_is_in_an_ear() {
+fn a_report_of_another_value_held_back_is_taken_when_the_hold_passes() {
+    let mut sim = up_pro3(NoiseMode::Transparency);
+    sim.run_until(ms(100));
+    sim.feed(Input::Command(Command::SetConversationalAwareness(true)));
+    sim.run_until(ms(100 + REPORT_HOLD_MS - 2));
+    let off = report(ControlId::CONVERSATIONAL_AWARENESS, 0x02);
+    sim.feed(Input::Packet(off));
+    sim.run_until(ms(100 + REPORT_HOLD_MS - 1));
+    assert!(sim.state.conversational_awareness);
+    sim.run_until(ms(100 + REPORT_HOLD_MS));
+    assert!(!sim.state.conversational_awareness);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn the_last_of_several_reports_held_back_is_taken_when_the_hold_passes() {
+    let mut sim = up_pro3(NoiseMode::Transparency);
+    sim.feed(Input::Command(noise(NoiseMode::Anc)));
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x04)));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
+    sim.run_until(ms(REPORT_HOLD_MS));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Adaptive);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_report_held_back_survives_a_later_write_and_is_taken_when_the_last_hold_passes() {
+    let mut sim = up_pro3(NoiseMode::Transparency);
+    sim.feed(Input::Command(noise(NoiseMode::Anc)));
+    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
+    let second_write_at = REPORT_HOLD_MS / 2;
+    sim.run_until(ms(second_write_at));
+    sim.feed(Input::Command(noise(NoiseMode::Adaptive)));
+    sim.run_until(ms(second_write_at + REPORT_HOLD_MS - 1));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Adaptive);
+    sim.run_until(ms(second_write_at + REPORT_HOLD_MS));
+    assert_eq!(sim.state.noise_mode, NoiseMode::Transparency);
+    sim.check_all_tickets_resolved_once();
+}
+
+/// One held setting: the command that writes it, its identifier, the written, a valid other and an invalid wire value, and the value shown.
+struct HeldRow {
+    write: Command,
+    id: ControlId,
+    written: u8,
+    valid: u8,
+    invalid: u8,
+    shown: fn(&State) -> u8,
+}
+
+/// The wire value of a switch setting: 01 enabled, 02 disabled.
+fn switch_value(enabled: bool) -> u8 {
+    if enabled { 0x01 } else { 0x02 }
+}
+
+/// Each of the four held settings, with an invalid value past its valid range.
+fn held_rows() -> [HeldRow; 4] {
+    [
+        HeldRow {
+            write: noise(NoiseMode::Anc),
+            id: ControlId::NOISE_CONTROL,
+            written: 0x02,
+            valid: 0x03,
+            invalid: 0xff,
+            shown: |state| state.noise_mode.command().value[0],
+        },
+        HeldRow {
+            write: Command::SetConversationalAwareness(true),
+            id: ControlId::CONVERSATIONAL_AWARENESS,
+            written: 0x01,
+            valid: 0x02,
+            invalid: 0x03,
+            shown: |state| switch_value(state.conversational_awareness),
+        },
+        HeldRow {
+            write: Command::SetOneBudAnc(true),
+            id: ControlId::ONE_BUD_ANC,
+            written: 0x01,
+            valid: 0x02,
+            invalid: 0x03,
+            shown: |state| switch_value(state.one_bud_anc_mode),
+        },
+        HeldRow {
+            write: Command::SetAdaptiveLevel(level(30)),
+            id: ControlId::ADAPTIVE_NOISE_LEVEL,
+            written: 30,
+            valid: 70,
+            invalid: 0xff,
+            shown: |state| state.adaptive_noise_level.percent(),
+        },
+    ]
+}
+
+#[test]
+fn an_invalid_report_held_back_never_replaces_the_valid_one_before_it() {
+    for row in held_rows() {
+        let mut sim = up_pro3(NoiseMode::Adaptive);
+        sim.feed(Input::Command(row.write));
+        sim.feed(Input::Packet(report(row.id, row.valid)));
+        sim.feed(Input::Packet(report(row.id, row.invalid)));
+        sim.run_until(ms(REPORT_HOLD_MS - 1));
+        assert_eq!((row.shown)(&sim.state), row.written, "{:?}", row.id);
+        sim.run_until(ms(REPORT_HOLD_MS));
+        assert_eq!((row.shown)(&sim.state), row.valid, "{:?}", row.id);
+        sim.check_all_tickets_resolved_once();
+    }
+}
+
+#[test]
+fn an_invalid_report_inside_a_hold_leaves_the_written_value() {
+    for row in held_rows() {
+        let mut sim = up_pro3(NoiseMode::Adaptive);
+        sim.feed(Input::Command(row.write));
+        sim.feed(Input::Packet(report(row.id, row.invalid)));
+        sim.run_until(ms(REPORT_HOLD_MS + 1));
+        assert_eq!((row.shown)(&sim.state), row.written, "{:?}", row.id);
+        sim.check_all_tickets_resolved_once();
+    }
+}
+
+#[test]
+fn an_invalid_report_with_no_hold_changes_nothing() {
+    for row in held_rows() {
+        let mut sim = up_pro3(NoiseMode::Adaptive);
+        let before = sim.state.clone();
+        sim.feed(Input::Packet(report(row.id, row.invalid)));
+        assert_eq!(sim.state, before, "{:?}", row.id);
+    }
+}
+
+#[test]
+fn a_report_with_no_write_of_its_setting_is_taken_at_once() {
+    let mut sim = up_pro3(NoiseMode::Transparency);
+    sim.feed(Input::Command(noise(NoiseMode::Anc)));
+    sim.feed(Input::Packet(report(ControlId::ONE_BUD_ANC, 0x01)));
+    assert!(sim.state.one_bud_anc_mode);
+    sim.feed(Input::Packet(report(
+        ControlId::CONVERSATIONAL_AWARENESS,
+        0x01,
+    )));
+    assert!(sim.state.conversational_awareness);
+    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn noise_with_no_bud_in_an_ear_is_not_worn_and_never_written() {
     let not_worn = Outcome::Refused(CommandError::NotWorn);
     for placement in [OUT_OF_EAR, IN_CASE] {
         let mut sim = up_unknown();
         sim.feed(Input::Packet(placement.to_vec()));
         sim.feed(Input::Command(noise(NoiseMode::Anc)));
-        assert_eq!(sim.last(), [ANC_FRAME]);
+        assert_eq!(sim.last(), ["Resolve(0)"]);
         sim.feed(Input::Command(Command::SetNoise(NoiseTarget::Cycle)));
-        assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
-        sim.run_until(ms(700));
-        assert_eq!(sim.times_of("Resolve(0)"), [700]);
+        assert_eq!(sim.last(), ["Resolve(1)"]);
+        let no_step: [u64; 0] = [];
+        assert_eq!(sim.times_of(ANC_FRAME), no_step);
+        assert_eq!(sim.times_of(TRANSPARENCY_FRAME), no_step);
         assert_eq!(sim.outcomes(), [not_worn, not_worn]);
+        assert_eq!(sim.state.noise_mode, NoiseMode::Off);
         sim.check_all_tickets_resolved_once();
     }
-
-    // One bud in an ear is worn, so the command times out.
+    // One bud in an ear is worn, and a headset has no ear placement to ask about.
+    let mut worn = Vec::new();
     for placement in [PRIMARY_IN_EAR, SECONDARY_IN_EAR] {
         let mut sim = up_unknown();
         sim.feed(Input::Packet(placement.to_vec()));
-        assert_ne!(
-            sim.state.ear.primary_in_ear(),
-            sim.state.ear.secondary_in_ear()
-        );
+        worn.push(sim);
+    }
+    let mut headset = up_unknown();
+    headset.feed(Input::Packet(OUT_OF_EAR.to_vec()));
+    headset.state.model = Model::AirPodsMaxUSBC;
+    worn.push(headset);
+    for mut sim in worn {
         sim.feed(Input::Command(noise(NoiseMode::Anc)));
-        sim.run_until(ms(700));
-        assert_eq!(sim.outcomes(), [TIMEOUT]);
+        written_and_sent(&sim, ANC_FRAME, 0);
         sim.check_all_tickets_resolved_once();
     }
-
-    // A headset has no ear placement to ask about, so it times out.
-    let mut sim = up_unknown();
-    sim.feed(Input::Packet(OUT_OF_EAR.to_vec()));
-    sim.state.model = Model::AirPodsMaxUSBC;
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    sim.run_until(ms(700));
-    assert_eq!(sim.outcomes(), [TIMEOUT]);
-    sim.check_all_tickets_resolved_once();
-
-    // The placement at the deadline decides, not the one at the send.
-    let mut sim = up_unknown();
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    sim.feed(Input::Packet(OUT_OF_EAR.to_vec()));
-    sim.run_until(ms(700));
-    assert_eq!(sim.outcomes(), [not_worn]);
-    sim.check_all_tickets_resolved_once();
-
-    let mut sim = up_unknown();
-    sim.feed(Input::Packet(OUT_OF_EAR.to_vec()));
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    sim.feed(Input::Packet(pods_samples::ear()));
-    sim.run_until(ms(700));
-    assert_eq!(sim.outcomes(), [TIMEOUT]);
-    sim.check_all_tickets_resolved_once();
 }
 
 #[test]
@@ -228,7 +343,7 @@ fn cycle_skips_modes_the_model_lacks() {
     ] {
         let mut sim = up_pro3(mode);
         sim.feed(Input::Command(cycle));
-        assert_eq!(sim.last(), [frame], "Pro 3 from {mode:?}");
+        assert_eq!(sim.since(2)[0], frame, "Pro 3 from {mode:?}");
         sim.check();
     }
     for (mode, frame) in [
@@ -239,75 +354,63 @@ fn cycle_skips_modes_the_model_lacks() {
         let mut sim = up_unknown();
         sim.feed(Input::Packet(mode.command().encode()));
         sim.feed(Input::Command(cycle));
-        assert_eq!(sim.last(), [frame], "unknown model from {mode:?}");
+        assert_eq!(sim.since(2)[0], frame, "unknown model from {mode:?}");
         sim.check();
     }
     // A model with both Off and Adaptive goes from Adaptive to Off.
     let mut sim = up_pro3(NoiseMode::Adaptive);
     sim.state.model = Model::AirPodsPro2USBC;
     sim.feed(Input::Command(cycle));
-    assert_eq!(sim.last(), [OFF_FRAME]);
+    assert_eq!(sim.since(2)[0], OFF_FRAME);
     sim.check();
 
-    let mut sim = up_pro3(NoiseMode::Adaptive);
-    sim.feed(Input::Command(cycle));
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.outcomes(), [Outcome::Confirmed]);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
+    // A second cycle steps from the mode the first one wrote.
+    let mut sim = up_pro3(NoiseMode::Anc);
+    for frame in [TRANSPARENCY_FRAME, ADAPTIVE_FRAME, ANC_FRAME] {
+        sim.feed(Input::Command(cycle));
+        assert_eq!(sim.since(2)[0], frame);
+    }
+    assert_eq!(sim.outcomes(), [Outcome::Sent; 3]);
     sim.check_all_tickets_resolved_once();
 }
 
 #[test]
-fn conversational_awareness_and_one_bud_follow_the_same_rule() {
+fn conversational_awareness_and_one_bud_are_written_on_every_ask() {
     let mut sim = up_pro3(NoiseMode::Anc);
-    sim.feed(Input::Command(Command::SetConversationalAwareness(true)));
-    assert_eq!(
-        sim.last(),
-        ["Send([04, 00, 04, 00, 09, 00, 28, 01, 00, 00, 00])"]
-    );
-    assert!(!sim.state.conversational_awareness);
-    sim.feed(Input::Packet(report(
-        ControlId::CONVERSATIONAL_AWARENESS,
-        0x02,
-    )));
-    assert_eq!(sim.last(), NO_ACTIONS);
-    // The same value under another identifier is not this setting's report.
-    sim.feed(Input::Packet(report(ControlId::MIC_SIDE, 0x01)));
-    assert_eq!(sim.last(), NO_ACTIONS);
-    sim.feed(Input::Packet(pods_samples::control()));
-    assert_eq!(sim.last(), ["Resolve(0)"]);
-    assert!(sim.state.conversational_awareness);
-    sim.feed(Input::Command(Command::SetConversationalAwareness(true)));
-    assert_eq!(sim.last(), ["Resolve(1)"]);
-
-    sim.feed(Input::Packet(report(ControlId::ONE_BUD_ANC, 0x02)));
-    sim.feed(Input::Command(Command::SetOneBudAnc(false)));
-    assert_eq!(sim.last(), ["Resolve(2)"]);
-    sim.feed(Input::Command(Command::SetOneBudAnc(true)));
-    assert_eq!(
-        sim.last(),
-        ["Send([04, 00, 04, 00, 09, 00, 1b, 01, 00, 00, 00])"]
-    );
-    sim.feed(Input::Command(Command::SetConversationalAwareness(false)));
-    assert_eq!(
-        sim.last(),
-        ["Send([04, 00, 04, 00, 09, 00, 28, 02, 00, 00, 00])"]
-    );
-    // Only a noise change asks where the buds are; these two time out.
-    sim.feed(Input::Packet(OUT_OF_EAR.to_vec()));
-    sim.run_until(sim.now.saturating_add(ms(700)));
-    assert_eq!(
-        sim.outcomes(),
-        [
-            Outcome::Confirmed,
-            Outcome::Confirmed,
-            Outcome::Confirmed,
-            TIMEOUT,
-            TIMEOUT
-        ]
-    );
-    assert!(!sim.state.one_bud_anc_mode);
-    assert!(sim.state.conversational_awareness);
+    let ca_on = "Send([04, 00, 04, 00, 09, 00, 28, 01, 00, 00, 00])";
+    let ca_off = "Send([04, 00, 04, 00, 09, 00, 28, 02, 00, 00, 00])";
+    let one_bud_on = "Send([04, 00, 04, 00, 09, 00, 1b, 01, 00, 00, 00])";
+    let one_bud_off = "Send([04, 00, 04, 00, 09, 00, 1b, 02, 00, 00, 00])";
+    for (ticket, command, frame, shown) in [
+        (
+            0,
+            Command::SetConversationalAwareness(true),
+            ca_on,
+            (true, false),
+        ),
+        (
+            1,
+            Command::SetConversationalAwareness(true),
+            ca_on,
+            (true, false),
+        ),
+        (2, Command::SetOneBudAnc(true), one_bud_on, (true, true)),
+        (3, Command::SetOneBudAnc(false), one_bud_off, (true, false)),
+        (
+            4,
+            Command::SetConversationalAwareness(false),
+            ca_off,
+            (false, false),
+        ),
+    ] {
+        sim.feed(Input::Command(command));
+        written_and_sent(&sim, frame, ticket);
+        let state = (
+            sim.state.conversational_awareness,
+            sim.state.one_bud_anc_mode,
+        );
+        assert_eq!(state, shown, "{command:?}");
+    }
     sim.check_all_tickets_resolved_once();
 
     let mut sim = up_unknown();
@@ -339,47 +442,37 @@ fn adaptive_level_is_stored_and_sent_in_the_step_after_its_write() {
     assert_eq!(sim.outcomes(), [Outcome::Sent]);
     assert_eq!(sim.state.adaptive_noise_level, level(30));
     assert_eq!(sim.state.counters.adaptive_level_changes, 1);
-    assert_eq!(sim.machine.pending.len(), 0);
 
     sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
-    assert_eq!(sim.last(), ["Resolve(1)"]);
-    assert_eq!(sim.outcome(1), [Outcome::Confirmed]);
-    assert_eq!(sim.state.counters.adaptive_level_changes, 1);
+    written_and_sent(
+        &sim,
+        "Send([04, 00, 04, 00, 09, 00, 2e, 1e, 00, 00, 00])",
+        1,
+    );
+    assert_eq!(sim.state.counters.adaptive_level_changes, 2);
 
     sim.check_all_tickets_resolved_once();
 }
 
 #[test]
-fn a_level_whose_write_fails_is_refused_and_never_stored() {
-    let mut sim = up_pro3(NoiseMode::Adaptive);
-    let before = sim.state.adaptive_noise_level;
-    sim.feed(Input::NextWriteFails);
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
-    let failed = sim.step_of("SendFailed");
-    assert_eq!(failed.actions, ["Resolve(0)", "Close"]);
-    assert_eq!(sim.outcome(0), [NOT_CONNECTED]);
-    assert_eq!(sim.state.adaptive_noise_level, before);
-    assert_eq!(sim.state.counters.adaptive_level_changes, 0);
-    assert!(!sim.machine.known_settings.adaptive_level);
-
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
-    assert_eq!(sim.outcome(1), [NOT_CONNECTED]);
-    sim.check_all_tickets_resolved_once();
-}
-
-#[test]
-fn a_setting_whose_write_fails_is_refused_and_its_report_ignored() {
-    let mut sim = up_pro3(NoiseMode::Anc);
-    sim.feed(Input::NextWriteFails);
-    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
-    assert_eq!(sim.step_of("SendFailed").actions, ["Close", "Resolve(0)"]);
-    assert_eq!(sim.outcome(0), [NOT_CONNECTED]);
-    sim.feed(Input::Packet(NoiseMode::Transparency.command().encode()));
-    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
-
-    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
-    assert_eq!(sim.outcome(1), [NOT_CONNECTED]);
-    sim.check_all_tickets_resolved_once();
+fn a_setting_whose_write_fails_is_refused_and_never_stored() {
+    for command in [
+        noise(NoiseMode::Transparency),
+        Command::SetAdaptiveLevel(level(30)),
+    ] {
+        let mut sim = up_pro3(NoiseMode::Adaptive);
+        let before = sim.state.clone();
+        sim.feed(Input::NextWriteFails);
+        sim.feed(Input::Command(command));
+        assert_eq!(sim.step_of("SendFailed").actions, ["Resolve(0)", "Close"]);
+        assert_eq!(sim.outcome(0), [NOT_CONNECTED], "{command:?}");
+        assert_eq!(sim.state.noise_mode, before.noise_mode, "{command:?}");
+        assert_eq!(sim.state.adaptive_noise_level, before.adaptive_noise_level);
+        assert_eq!(sim.state.counters, before.counters, "{command:?}");
+        sim.feed(Input::Command(command));
+        assert_eq!(sim.outcome(1), [NOT_CONNECTED], "{command:?}");
+        sim.check_all_tickets_resolved_once();
+    }
 }
 
 #[test]
@@ -413,160 +506,6 @@ fn adaptive_level_outside_adaptive_mode_is_not_supported() {
     assert_eq!(sim.state.counters.adaptive_level_changes, 0);
     sim.check_all_tickets_resolved_once();
     unknown.check_all_tickets_resolved_once();
-}
-
-#[test]
-fn two_commands_for_one_setting_each_get_their_own_answer() {
-    let mut sim = up_unknown();
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    assert_eq!(sim.times_of(ANC_FRAME), [0, 0]);
-    assert_eq!(sim.times_of(TRANSPARENCY_FRAME), [0]);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
-    assert_eq!(sim.last(), ["Resolve(1)"]);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last(), ["Resolve(0)", "Resolve(2)"]);
-    assert_eq!(sim.outcomes(), [Outcome::Confirmed; 3]);
-    // With nothing pending the deadline is the notification re-request again.
-    assert_eq!(sim.machine.deadline(), Some(ms(2000)));
-    sim.check_all_tickets_resolved_once();
-}
-
-#[test]
-fn a_setting_asked_back_before_its_report_is_written_and_waits() {
-    let mut sim = up_unknown();
-    sim.feed(Input::Command(noise(NoiseMode::Anc)));
-    sim.feed(Input::Command(noise(NoiseMode::Off)));
-    assert_eq!(sim.last(), [OFF_FRAME]);
-    assert_eq!(sim.outcomes(), []);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last(), ["Resolve(0)"]);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x01)));
-    assert_eq!(sim.last(), ["Resolve(1)"]);
-    assert_eq!(sim.outcomes(), [Outcome::Confirmed; 2]);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Off);
-    sim.check_all_tickets_resolved_once();
-
-    let mut sim = up_pro3(NoiseMode::Anc);
-    sim.feed(Input::Command(Command::SetConversationalAwareness(true)));
-    sim.feed(Input::Command(Command::SetConversationalAwareness(false)));
-    assert_eq!(
-        sim.last(),
-        ["Send([04, 00, 04, 00, 09, 00, 28, 02, 00, 00, 00])"]
-    );
-    assert_eq!(sim.outcomes(), []);
-    sim.run_until(ms(700));
-    assert_eq!(sim.outcomes(), [TIMEOUT; 2]);
-    sim.check_all_tickets_resolved_once();
-}
-
-#[test]
-fn a_second_cycle_before_the_report_steps_from_the_mode_on_its_way() {
-    let cycle = Command::SetNoise(NoiseTarget::Cycle);
-    let mut sim = up_pro3(NoiseMode::Anc);
-    sim.feed(Input::Command(cycle));
-    assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
-    sim.feed(Input::Command(cycle));
-    assert_eq!(sim.last(), [ADAPTIVE_FRAME]);
-    sim.feed(Input::Command(cycle));
-    assert_eq!(sim.last(), [ANC_FRAME]);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x03)));
-    assert_eq!(sim.last(), ["Resolve(0)"]);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x04)));
-    assert_eq!(sim.last(), ["Resolve(1)"]);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last(), ["Resolve(2)"]);
-    assert_eq!(sim.state.noise_mode, NoiseMode::Anc);
-    sim.check_all_tickets_resolved_once();
-}
-
-#[test]
-fn a_seventeenth_pending_command_is_refused_with_timeout() {
-    let mut sim = up_unknown();
-    for _ in 0..PENDING_MAX {
-        sim.feed(Input::Command(noise(NoiseMode::Anc)));
-        assert_eq!(sim.last(), [ANC_FRAME]);
-    }
-    let written = sim.state.counters;
-    let refused = u64::try_from(PENDING_MAX).unwrap();
-    assert_eq!(written.noise_control_changes, refused);
-    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
-    assert_eq!(sim.last(), [format!("Resolve({PENDING_MAX})")]);
-    assert_eq!(sim.outcome(refused), [TIMEOUT]);
-    assert_eq!(sim.state.counters, written);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last().len(), PENDING_MAX);
-    sim.feed(Input::Command(noise(NoiseMode::Transparency)));
-    assert_eq!(sim.last(), [TRANSPARENCY_FRAME]);
-    assert!((0..refused).all(|ticket| sim.outcome(ticket) == [Outcome::Confirmed]));
-    sim.check();
-}
-
-/// A link up with three commands waiting for their reports.
-fn three_pending() -> Sim {
-    let mut sim = up_unknown();
-    for mode in [NoiseMode::Anc, NoiseMode::Transparency, NoiseMode::Anc] {
-        sim.feed(Input::Command(noise(mode)));
-    }
-    assert_eq!(sim.machine.pending.len(), 3);
-    sim
-}
-
-const THREE_REFUSED: [&str; 3] = ["Resolve(0)", "Resolve(1)", "Resolve(2)"];
-
-#[test]
-fn a_pending_set_resolves_when_the_channel_closes() {
-    let mut sim = three_pending();
-    sim.feed(Input::PeerCloses);
-    assert_eq!(sim.step_of("Ended(Closed)").actions, THREE_REFUSED);
-    assert_eq!(sim.outcomes(), [NOT_CONNECTED; 3]);
-    assert!(matches!(sim.machine.phase(), Phase::Backoff { .. }));
-    sim.check_all_tickets_resolved_once();
-}
-
-#[test]
-fn every_way_out_of_up_resolves_the_pending_commands_in_that_step() {
-    let mut sim = three_pending();
-    sim.feed(Input::Down(0));
-    assert_eq!(
-        sim.step_of("Down(0)").actions,
-        ["Close", "Resolve(0)", "Resolve(1)", "Resolve(2)"]
-    );
-    assert_eq!(sim.step_of("Ended(Closed)").actions, NO_ACTIONS);
-    assert_eq!(sim.outcomes(), [NOT_CONNECTED; 3]);
-    sim.check_all_tickets_resolved_once();
-
-    let mut sim = three_pending();
-    sim.feed(Input::Gone(0));
-    assert_eq!(
-        sim.step_of("Gone(0)").actions,
-        ["Close", "Sweep", "Resolve(0)", "Resolve(1)", "Resolve(2)"]
-    );
-    assert_eq!(sim.outcomes(), [NOT_CONNECTED; 3]);
-    sim.check_all_tickets_resolved_once();
-
-    let mut sim = three_pending();
-    sim.feed(Input::Shutdown);
-    assert_eq!(
-        sim.step_of("Shutdown").actions,
-        ["Close", "Resolve(0)", "Resolve(1)", "Resolve(2)"]
-    );
-    assert_eq!(sim.outcomes(), [NOT_CONNECTED; 3]);
-    sim.check_all_tickets_resolved_once();
-
-    // A lost BlueZ keeps the link, so the commands keep waiting for their reports.
-    let mut sim = three_pending();
-    sim.feed(Input::BluezLost);
-    assert_eq!(sim.last(), NO_ACTIONS);
-    sim.feed(Input::Packet(report(ControlId::NOISE_CONTROL, 0x02)));
-    assert_eq!(sim.last(), ["Resolve(0)", "Resolve(2)"]);
-    sim.run_until(ms(700));
-    assert_eq!(
-        sim.outcomes(),
-        [Outcome::Confirmed, TIMEOUT, Outcome::Confirmed]
-    );
-    sim.check_all_tickets_resolved_once();
 }
 
 /// A sim in each phase outside `Up` that a command can meet, with a state that varies what `apply` reads.
@@ -649,37 +588,25 @@ fn commands_that_are_not_pod_settings_answer_in_up_as_without_a_link() {
 }
 
 #[test]
-fn counters_rise_when_bytes_are_written() {
+fn counters_rise_with_each_write_and_never_with_a_refusal() {
     let mut sim = up_pro3(NoiseMode::Anc);
-    sim.feed(Input::Packet(report(
-        ControlId::CONVERSATIONAL_AWARENESS,
-        0x02,
-    )));
-    sim.feed(Input::Packet(report(ControlId::ONE_BUD_ANC, 0x02)));
     let before = sim.state.counters;
-    for answered_at_once in [
-        noise(NoiseMode::Off),
+    for refused in [noise(NoiseMode::Off), Command::SetAdaptiveLevel(level(30))] {
+        sim.feed(Input::Command(refused));
+        assert_eq!(sim.last().len(), 1, "{refused:?}");
+    }
+    assert_eq!(sim.state.counters, before);
+    for written in [
         noise(NoiseMode::Anc),
+        noise(NoiseMode::Adaptive),
         Command::SetConversationalAwareness(false),
         Command::SetOneBudAnc(false),
         Command::SetAdaptiveLevel(level(30)),
     ] {
-        sim.feed(Input::Command(answered_at_once));
-        assert_eq!(sim.last().len(), 1, "{answered_at_once:?}");
-    }
-    assert_eq!(sim.state.counters, before);
-
-    for written in [
-        noise(NoiseMode::Transparency),
-        Command::SetConversationalAwareness(true),
-        Command::SetOneBudAnc(true),
-    ] {
         sim.feed(Input::Command(written));
     }
-    sim.feed(Input::Packet(NoiseMode::Adaptive.command().encode()));
-    sim.feed(Input::Command(Command::SetAdaptiveLevel(level(30))));
     let expected = Counters {
-        noise_control_changes: 1,
+        noise_control_changes: 2,
         conversational_awareness_changes: 1,
         one_bud_anc_changes: 1,
         adaptive_level_changes: 1,

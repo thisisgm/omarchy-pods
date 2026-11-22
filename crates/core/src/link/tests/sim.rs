@@ -9,7 +9,6 @@ use pods_proto::packets::{
 };
 
 use crate::command::{Command, Outcome};
-use crate::link::ladder::PENDING_MAX;
 use crate::link::{
     Action, Call, DeviceAction, End, Event, Machine, Phase, Session, Signal, Ticket,
 };
@@ -20,8 +19,8 @@ pub(super) const NO_ACTIONS: [&str; 0] = [];
 
 /// Synthetic device addresses, never a real one.
 pub(super) const DEVICES: [&str; 2] = ["02:00:00:00:00:01", "02:00:00:00:00:02"];
-/// Actions one step may return: every pending command resolved, plus the lifecycle's own.
-const ACTIONS_MAX: usize = PENDING_MAX + 4;
+/// Actions one step may return: the answer to the last step's write, plus the lifecycle's own four.
+const ACTIONS_MAX: usize = 5;
 /// Steps one input may cause before the simulation calls it a livelock.
 const CASCADE_MAX: usize = 64;
 /// Ticks one `run_until` may send before it calls the deadline stuck.
@@ -479,19 +478,10 @@ impl Sim {
             self.violations
                 .push(format!("{label}: Idle with an active device"));
         }
-        let pending = self.machine.pending.len();
-        if pending > 0 && !up {
-            self.violations
-                .push(format!("{label}: {pending} commands pending in {phase:?}"));
-        }
-        if pending > 0 && self.machine.deadline().is_none() {
+        if self.machine.written.is_some() && !(up && self.machine.deadline().is_some()) {
             self.violations.push(format!(
-                "{label}: {pending} commands pending and no deadline"
+                "{label}: a write unanswered in {phase:?} with no deadline"
             ));
-        }
-        if pending > PENDING_MAX {
-            self.violations
-                .push(format!("{label}: {pending} commands pending"));
         }
     }
 }

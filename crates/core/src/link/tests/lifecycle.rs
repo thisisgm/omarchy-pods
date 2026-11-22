@@ -382,7 +382,7 @@ fn phase_scripts() -> [(Answer, Vec<Input>, Phase); 9] {
 }
 
 #[test]
-fn commands_are_answered_in_every_phase_and_a_setting_in_up_waits_for_its_report() {
+fn commands_are_answered_in_every_phase_and_noise_in_up_with_no_bud_worn_is_not_worn() {
     for (answer, script, phase) in phase_scripts() {
         let mut sim = Sim::answering(answer);
         for input in script {
@@ -401,12 +401,10 @@ fn commands_are_answered_in_every_phase_and_a_setting_in_up_waits_for_its_report
         );
         sim.feed(Input::Command(Command::SetNoise(NoiseTarget::Cycle)));
         if up {
-            // Off cycles to Anc: the frame goes out and the ticket stays open for the pods' report.
-            assert_eq!(
-                sim.last(),
-                ["Send([04, 00, 04, 00, 09, 00, 0d, 02, 00, 00, 00])"]
-            );
-            assert_eq!(sim.outcomes(), [Outcome::Confirmed]);
+            // No bud is reported in an ear, so the cycle is refused before any write.
+            assert_eq!(sim.last(), ["Resolve(1)"]);
+            let not_worn = Outcome::Refused(CommandError::NotWorn);
+            assert_eq!(sim.outcomes(), [Outcome::Confirmed, not_worn]);
         } else {
             assert_eq!(sim.last(), ["Resolve(1)"], "{phase:?}");
             let refused = Outcome::Refused(CommandError::NotConnected);
@@ -416,16 +414,6 @@ fn commands_are_answered_in_every_phase_and_a_setting_in_up_waits_for_its_report
         assert_eq!(sim.last(), NO_ACTIONS, "{phase:?}");
         assert_eq!(sim.machine.phase(), phase);
         assert_eq!(sim.state.connected, connected);
-        if up {
-            // No report and no bud reported in an ear, so the deadline 700 ms on answers `not_worn`.
-            sim.run_until(ms(699));
-            assert_eq!(sim.outcomes(), [Outcome::Confirmed]);
-            sim.run_until(ms(700));
-            assert_eq!(sim.times_of("Resolve(1)"), [700]);
-            let not_worn = Outcome::Refused(CommandError::NotWorn);
-            assert_eq!(sim.outcomes(), [Outcome::Confirmed, not_worn]);
-            assert_eq!(sim.machine.phase(), phase);
-        }
         sim.check_all_tickets_resolved_once();
     }
 }

@@ -186,7 +186,7 @@ struct Driver {
     connector: Connector,
     /// The open channel, from its `Opened` until its close or its `Ended`.
     channel: Option<Arc<Channel>>,
-    /// At most `PENDING_MAX` outlive their turn: the machine resolves every other ticket at once.
+    /// At most one outlives its turn, a written setting the machine answers in the next step.
     replies: HashMap<Ticket, oneshot::Sender<Outcome>>,
     next_ticket: u64,
     /// At most one per action of a step, taken before the queue.

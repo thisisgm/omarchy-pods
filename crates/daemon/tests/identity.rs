@@ -13,11 +13,11 @@ mod tests {
     use pods_core::state::State;
     use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT, to_status_object};
     use pods_fake::Profile;
-    use pods_samples::ALLOW_OFF_OPTION;
+    use pods_samples::{ALLOW_OFF_OPTION, NOISE, setting};
     use serde_json::{Value, json};
     use zbus::{OwnedVariant, Str};
 
-    use super::support::rig::{ANC, CONFIRM_TIMEOUT, DIAL_WAIT, Device, Rig, connected};
+    use super::support::rig::{ANC, DIAL_WAIT, Device, OFF, Rig, TRANSPARENCY, connected};
     use super::support::{HANG_LIMIT, Proto1, outcome, set_request, wait_for};
 
     /// Powerbeats Pro, product `0x200B`, as BlueZ prints it.
@@ -35,7 +35,6 @@ mod tests {
     const UNKNOWN_MODEL: &str = "A0000";
     const OFFERED: u8 = 1;
     const NOT_OFFERED: u8 = 2;
-    const OFF_STATUS: u8 = 0;
     /// Pods of `model_number` in noise cancelling, so a change to Off is a real write.
     fn pods(model_number: &str) -> Profile {
         Profile {
@@ -85,8 +84,8 @@ mod tests {
         assert_eq!(rig.wait_filled()["supports_noise_off"], false);
         device.pods.set_setting(ALLOW_OFF_OPTION, OFFERED);
         wait_offers_off(&rig, true);
-        assert_eq!(ask_off(&rig), "confirmed");
-        assert_eq!(rig.status()["noise_mode"], OFF_STATUS);
+        assert_eq!(ask_off(&rig), "sent");
+        assert_eq!(rig.status()["noise_mode"], OFF.status);
         rig.finish();
     }
 
@@ -97,9 +96,17 @@ mod tests {
         device.pods.set_setting(ALLOW_OFF_OPTION, NOT_OFFERED);
         wait_offers_off(&rig, false);
         assert_eq!(ask_off(&rig), "not_supported");
-        rig.holds_for(CONFIRM_TIMEOUT, "noise cancelling kept", |status| {
-            status["noise_mode"] == ANC.status
-        });
+        assert_eq!(rig.status()["noise_mode"], ANC.status);
+        let reply = Proto1::connect(rig.session()).ask(&set_request(2, "noise", "transparency"));
+        assert_eq!(outcome(&reply), "sent", "{reply}");
+        // The channel keeps order, so once the later write is heard a refused Off frame would be too.
+        let transparency = setting(NOISE, TRANSPARENCY.wire);
+        device
+            .pods
+            .wait_heard(&transparency, 1, HANG_LIMIT)
+            .unwrap();
+        let off = setting(NOISE, OFF.wire);
+        assert!(device.pods.heard().iter().all(|heard| heard.sdu != off));
         rig.finish();
     }
 
@@ -107,7 +114,7 @@ mod tests {
     fn without_the_report_the_model_table_decides() {
         for (model_number, offered, answer) in [
             (TABLE_WITHOUT_OFF, false, "not_supported"),
-            (TABLE_WITH_OFF, true, "confirmed"),
+            (TABLE_WITH_OFF, true, "sent"),
         ] {
             let (rig, _device) = started(pods(model_number), None);
             assert_eq!(

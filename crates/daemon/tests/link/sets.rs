@@ -7,7 +7,7 @@ use pods_samples::{NOISE, setting};
 use proptest::prelude::RngExt;
 use proptest::test_runner::{RngAlgorithm, TestRng};
 
-use crate::support::rig::{ANC, CONFIRM_TIMEOUT, Rig, TRANSPARENCY, assert_gap, connected};
+use crate::support::rig::{ANC, Rig, TRANSPARENCY, assert_gap, connected};
 use crate::support::{HANG_LIMIT, Proto1, outcome, pause, set_request};
 
 const RACE_ROUNDS: usize = 20;
@@ -34,7 +34,7 @@ fn set_racing_a_hang_up_always_gets_an_answer() {
     let mut rng = TestRng::deterministic_rng(RngAlgorithm::ChaCha);
     let mut rig = Rig::new();
     let device = rig.add_pods(Profile::default());
-    // Pods that never report a setting back, so every set is still waiting when the hang up comes.
+    // Pods that never report a setting back, so only the write and the end of the link answer a set.
     device.pods.fault(Fault::NeverConfirm);
     rig.start();
     rig.link_up(&device);
@@ -47,21 +47,16 @@ fn set_racing_a_hang_up_always_gets_an_answer() {
             device.pods.hang_up();
             pause(apart);
         }
-        let asked = Instant::now();
         client.send(&set_request(round, "noise", alternate(round)));
         if offset >= 0 {
             pause(apart);
             device.pods.hang_up();
         }
         let reply = client.reply();
-        // Before the confirmation wait could end, so the end of the link answered it.
-        assert_gap(
-            &format!("round {round}, hang up at {offset} ms: the reply"),
-            asked,
-            Instant::now(),
-            &(Duration::ZERO..=CONFIRM_TIMEOUT),
+        assert!(
+            ["sent", "not_connected"].contains(&outcome(&reply)),
+            "round {round}, hang up at {offset} ms: {reply}"
         );
-        assert_eq!(outcome(&reply), "not_connected", "round {round}: {reply}");
         rig.wait_dials(round + 2, HANG_LIMIT);
         rig.wait_status("connected again", connected);
     }
@@ -80,9 +75,12 @@ fn a_set_reaches_the_pods_within_20_ms() {
     for request in 0..SETS {
         written.push(Instant::now());
         let reply = client.ask(&set_request(request, "noise", alternate(request)));
-        assert_eq!(outcome(&reply), "confirmed", "request {request}: {reply}");
+        assert_eq!(outcome(&reply), "sent", "request {request}: {reply}");
     }
     let frames = [setting(NOISE, TRANSPARENCY.wire), setting(NOISE, ANC.wire)];
+    for frame in &frames {
+        device.pods.wait_heard(frame, SETS / 2, HANG_LIMIT).unwrap();
+    }
     let heard: Vec<Instant> = device
         .pods
         .heard()
