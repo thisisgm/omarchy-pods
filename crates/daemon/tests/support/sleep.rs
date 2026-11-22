@@ -26,16 +26,6 @@ pub(crate) fn wake(rig: &mut Rig) -> Instant {
     edge(rig, false, WOKE)
 }
 
-/// Waits for the grace of a lost link, entered from `closing` or from `backoff` by which of BlueZ's word and the hang up came first.
-pub(crate) fn wait_grace(rig: &mut Rig) {
-    let daemon = rig.daemon();
-    wait_for("the link to enter its grace", || {
-        let log = daemon.log();
-        let mut steps = log.lines().filter(|line| line.starts_with("link: "));
-        steps.any(|line| line.ends_with(" to grace")).then_some(())
-    });
-}
-
 /// How many lines of the daemon's log equal `line`.
 pub(crate) fn logged(rig: &mut Rig, line: &str) -> usize {
     rig.daemon()

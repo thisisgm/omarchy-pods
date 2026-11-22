@@ -22,7 +22,7 @@ mod tests {
         ABSENT_GRACE, HELD_LADDER, REAL_TIME_SLACK, Rig, assert_gap, not_before,
     };
     use super::support::sleep::{
-        RESUME_SETTLE, SLEEPING, SYSTEM_BUS_RETRY, WATCHING, WOKE, logged, sleep, wait_grace, wake,
+        RESUME_SETTLE, SLEEPING, SYSTEM_BUS_RETRY, WATCHING, WOKE, logged, sleep, wake,
     };
     use super::support::{HANG_LIMIT, pause, wait_within};
 
@@ -75,7 +75,7 @@ mod tests {
         sleep(&mut rig);
         let down = Instant::now();
         rig.link_down(&device);
-        wait_grace(&mut rig);
+        rig.wait_entered("grace");
         wake(&mut rig);
         assert_grace_outlasts_settle(down);
         wait_long_logged(&mut rig, "link: grace to idle");
@@ -185,7 +185,7 @@ mod tests {
         let (mut rig, device) = Rig::with_linked_pods();
         sleep(&mut rig);
         rig.link_down(&device);
-        wait_grace(&mut rig);
+        rig.wait_entered("grace");
         let count = rig.bluez().sweeps().len();
         let woke = wake(&mut rig);
         wait_wake_sweep(&rig, count, woke);
@@ -211,7 +211,7 @@ mod tests {
         wait_wake_sweep(&rig, count, woke);
         let down = Instant::now();
         rig.link_down(&device);
-        wait_grace(&mut rig);
+        rig.wait_entered("grace");
         sleep(&mut rig);
         let calls = rig
             .omarchy()
@@ -278,7 +278,7 @@ mod tests {
         sleep(&mut rig);
         let down = Instant::now();
         rig.link_down(&device);
-        wait_grace(&mut rig);
+        rig.wait_entered("grace");
         sleep(&mut rig);
         let count = rig.bluez().sweeps().len();
         let woke = wake(&mut rig);

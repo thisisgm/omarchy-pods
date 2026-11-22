@@ -82,7 +82,7 @@ mod tests {
         rig.link_up(&device);
         rig.wait_logged("link: opening to handshake");
         rig.link_down(&device);
-        rig.wait_logged("link: closing to idle");
+        rig.wait_entered("idle");
         rig.omarchy().never_ran(RECORDED_WITHIN);
         rig.finish();
     }

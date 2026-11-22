@@ -509,6 +509,17 @@ impl Rig {
         });
     }
 
+    /// Waits for the link to enter `phase`, from whichever phase the racing words of BlueZ and of the channel took it through.
+    pub(crate) fn wait_entered(&mut self, phase: &str) {
+        let entered = format!(" to {phase}");
+        let daemon = self.daemon();
+        wait_for(&format!("the link to enter `{phase}`"), || {
+            let log = daemon.log();
+            let mut steps = log.lines().filter(|line| line.starts_with("link: "));
+            steps.any(|line| line.ends_with(&entered)).then_some(())
+        });
+    }
+
     fn trap(&self) -> &Trap {
         self.trap.as_ref().expect("a daemon started under the trap")
     }
