@@ -20,6 +20,7 @@ use rustix::process::{Signal, kill_process};
 use serde_json::Value;
 
 use super::audio::FakeAudio;
+use super::audio::wire::sink_named;
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, bus_socket, start_bus};
 use super::logind::{FakeLogind, Impostor};
@@ -185,6 +186,32 @@ impl Rig {
         let audio = Rc::new(FakeAudio::start(&self.session.runtime_dir()));
         self.audio = Some(Rc::clone(&audio));
         audio
+    }
+
+    /// The fake audio server holding the first pods' sink as its default at `percent`, then those pods linked and the server read.
+    pub(crate) fn with_audio(percent: u8) -> (Self, Device, Rc<FakeAudio>) {
+        let mut rig = Self::new();
+        let audio = rig.start_audio();
+        let device = rig.add_pods(Profile::default());
+        let sink = sink_named(device.address);
+        audio.add_sink(&sink, percent);
+        audio.set_default_sink(&sink);
+        rig.start();
+        rig.link_up(&device);
+        rig.wait_filled();
+        rig.wait_audio_server("up");
+        (rig, device, audio)
+    }
+
+    /// The fake audio server holding every answer, with the first pods' sink, and the daemon started with those pods not yet linked.
+    pub(crate) fn with_audio_holding(percent: u8) -> (Self, Device, Rc<FakeAudio>) {
+        let mut rig = Self::new();
+        let audio = rig.start_audio();
+        let device = rig.add_pods(Profile::default());
+        audio.add_sink(&sink_named(device.address), percent);
+        audio.hold_replies(true);
+        rig.start();
+        (rig, device, audio)
     }
 
     pub(crate) fn system_bus_address(&self) -> String {
@@ -457,6 +484,13 @@ impl Rig {
         wait_for(what, || {
             let status = self.status();
             ready(&status).then_some(status)
+        })
+    }
+
+    /// Asks `librepods status` until `audio_server` reads `word`.
+    pub(crate) fn wait_audio_server(&self, word: &str) -> Value {
+        self.wait_status(&format!("audio_server {word}"), |status| {
+            status["audio_server"] == word
         })
     }
 

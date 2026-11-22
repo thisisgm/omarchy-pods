@@ -79,7 +79,7 @@ const NOISE_MODE: &str = "the noise mode";
 fn group(key: &str) -> &'static str {
     let (object, field) = key.split_once('.').unwrap_or(("", key));
     match (object, field) {
-        ("", "connected") => LINK,
+        ("", "connected" | "audio_server") => LINK,
         ("left" | "right", "in_ear") => EARS,
         ("left" | "right" | "case" | "headset", _) => BATTERIES,
         (

@@ -32,6 +32,7 @@ pub struct State {
     pub counters: Counters,
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
+    pub audio_server: AudioServer,
 }
 
 impl Default for State {
@@ -54,6 +55,7 @@ impl Default for State {
             counters: Counters::default(),
             // The C++ `Notifier` starts enabled.
             notifications: true,
+            audio_server: AudioServer::Idle,
         }
     }
 }
@@ -136,6 +138,25 @@ impl LidState {
             Self::Open => 0,
             Self::Closed => 1,
             Self::Unknown => 2,
+        }
+    }
+}
+
+/// The daemon's connection to the desktop's audio server, which it holds only while a device's link is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioServer {
+    Idle,
+    Up,
+    Down,
+}
+
+impl AudioServer {
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Up => "up",
+            Self::Down => "down",
         }
     }
 }

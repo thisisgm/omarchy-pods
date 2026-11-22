@@ -14,6 +14,7 @@ use pods_core::command::{Command, Outcome};
 use pods_core::link::{
     Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket, phase_change_line,
 };
+use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
 use pods_core::policy::{Effect, Fact, Policy, SleepEdge};
 use pods_core::prefs::Prefs;
@@ -26,7 +27,7 @@ use tokio::task::{self, JoinHandle};
 use tokio::time::{Instant, timeout, timeout_at};
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, log, notify};
+use super::{MAX_CONNECTIONS, audio, log, notify};
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,6 +66,7 @@ pub(super) enum Input {
     },
     Sleep(SleepEdge),
     Shutdown(oneshot::Sender<()>),
+    Audio(AudioFact),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,11 +75,12 @@ pub(super) enum Request {
     Call { device: BdAddr, call: Call },
 }
 
-/// Where the policy's notices go, one queue per adapter.
+/// Where the policy's notices and audio requests go, one queue per adapter.
 #[derive(Debug)]
 pub(super) struct Outlets {
     pub(super) notices: mpsc::Sender<Notice>,
     pub(super) prefs: watch::Sender<Prefs>,
+    pub(super) audio: mpsc::Sender<AudioRequest>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -228,11 +231,12 @@ impl Driver {
                 done.send(()).ok();
                 return ControlFlow::Break(());
             }
+            Input::Audio(fact) => self.observe(Fact::Audio(fact)),
         }
         ControlFlow::Continue(())
     }
 
-    /// The link machine, then the policy on its signals, a changed state and the clock, then one publish, then the effects.
+    /// The link machine, then the server reading and the policy on its signals, a changed state and the clock, then one publish, then the effects.
     fn step(&mut self, event: Event<'_>) {
         let before = self.machine.phase();
         let last = self.hub.state();
@@ -252,6 +256,9 @@ impl Driver {
         if event == Event::Tick {
             facts.push(Fact::Tick);
         }
+        for fact in &facts {
+            next.audio_server = server_after(next.audio_server, *fact);
+        }
         let effects: Vec<Effect> = facts
             .into_iter()
             .flat_map(|fact| self.policy.step(&next, fact, now))
@@ -269,10 +276,13 @@ impl Driver {
         }
     }
 
-    /// The policy on a fact from outside the link machine, against the state as published.
+    /// A fact from outside the link machine: the server reading folds it in, then the policy steps on that state.
     fn observe(&mut self, fact: Fact) {
-        let state = self.hub.state();
-        for effect in self.policy.step(&state, fact, self.started.elapsed()) {
+        let mut next = self.hub.state();
+        next.audio_server = server_after(next.audio_server, fact);
+        let effects = self.policy.step(&next, fact, self.started.elapsed());
+        self.hub.publish(next);
+        for effect in effects {
             self.route(effect);
         }
     }
@@ -282,6 +292,7 @@ impl Driver {
         match effect {
             Effect::Notify(notice) => notify::offer(&self.outlets.notices, notice),
             Effect::Wake => self.step(Event::Resumed),
+            Effect::Audio(request) => audio::offer(&self.outlets.audio, request),
         }
     }
 

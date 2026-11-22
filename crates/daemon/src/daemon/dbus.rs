@@ -153,6 +153,7 @@ struct Properties {
     in_ear: BTreeMap<&'static str, bool>,
     capabilities: Vec<String>,
     status_json: String,
+    audio_server: &'static str,
 }
 
 impl Properties {
@@ -189,10 +190,11 @@ impl Properties {
             ]),
             capabilities,
             status_json: status.to_string(),
+            audio_server: state.audio_server.word(),
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 12] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 13] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -209,6 +211,7 @@ impl Properties {
             ("InEar", Variant::from(self.in_ear.clone())),
             ("Capabilities", Variant::from(self.capabilities.clone())),
             ("StatusJson", Variant::from(self.status_json.as_str())),
+            ("AudioServer", Variant::from(self.audio_server)),
         ]
     }
 
@@ -316,6 +319,11 @@ impl Omapods {
     #[zbus(property)]
     fn status_json(&self) -> String {
         self.now().status_json
+    }
+
+    #[zbus(property)]
+    fn audio_server(&self) -> &'static str {
+        self.now().audio_server
     }
 
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {

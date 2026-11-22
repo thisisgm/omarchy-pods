@@ -6,12 +6,16 @@ use cpp_source::{LOW_BATTERY, MAIN, NOTIFIER};
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
 
+use super::audio::AudioRequest;
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
 use super::notices::{Notice, Part, disconnected};
 use super::sleep::{RESUME_SETTLE_MS, Suspend};
 use super::{Effect, Fact, Policy, SleepEdge};
 use crate::link::Signal;
 use crate::state::State;
+
+/// What every lost link asks of the audio adapter, whatever the notices do.
+const UNFOLLOW: Effect = Effect::Audio(AudioRequest::Follow(None));
 
 /// A synthetic address, never a real one.
 const DEVICE: &str = "02:00:00:00:00:01";
@@ -162,7 +166,7 @@ fn the_policy_answers_a_lost_link_and_a_low_case_and_keeps_the_latch_past_the_lo
     };
     assert_eq!(
         policy.step(&state, Fact::Link(lost), Duration::ZERO),
-        [Effect::Notify(Notice::Disconnected)]
+        [Effect::Notify(Notice::Disconnected), UNFOLLOW]
     );
     assert_eq!(policy.step(&state, Fact::Changed, Duration::ZERO), []);
     state.batteries.case = low_case;
@@ -194,14 +198,14 @@ fn a_loss_that_began_in_a_suspend_is_silent_and_the_wake_comes_once_at_the_settl
     assert_eq!(policy.step(&state, Fact::Tick, at(closes)), [Effect::Wake]);
     assert_eq!(policy.step(&state, Fact::Tick, at(closes)), []);
     assert_eq!(policy.deadline(), None);
-    assert_eq!(policy.step(&state, lost(200), at(20_000)), []);
+    assert_eq!(policy.step(&state, lost(200), at(20_000)), [UNFOLLOW]);
     assert_eq!(
         policy.step(&state, lost(closes + 1), at(20_000)),
-        [Effect::Notify(Notice::Disconnected)]
+        [Effect::Notify(Notice::Disconnected), UNFOLLOW]
     );
     assert_eq!(
         policy.step(&state, lost(99), at(20_000)),
-        [Effect::Notify(Notice::Disconnected)]
+        [Effect::Notify(Notice::Disconnected), UNFOLLOW]
     );
 }
 
@@ -242,7 +246,10 @@ fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_ba
         policy.step(&down, Fact::Sleep(SleepEdge::Sleeping), at(closes + 1_000)),
         []
     );
-    assert_eq!(policy.step(&down, lost(200), at(closes + 7_750)), []);
+    assert_eq!(
+        policy.step(&down, lost(200), at(closes + 7_750)),
+        [UNFOLLOW]
+    );
     // The link back after the first window, then lost before the second sleep: announced.
     let mut policy = suspended_once(&down);
     assert_eq!(policy.step(&up, Fact::Changed, at(closes + 50)), []);
@@ -253,7 +260,7 @@ fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_ba
     );
     assert_eq!(
         policy.step(&down, lost(closes + 100), at(closes + 7_850)),
-        [Effect::Notify(Notice::Disconnected)]
+        [Effect::Notify(Notice::Disconnected), UNFOLLOW]
     );
     // The link up through the first window, hours of it, then lost just before a sleep: announced.
     let hours = 8 * 60 * 60 * 1_000;
@@ -265,7 +272,7 @@ fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_ba
     );
     assert_eq!(
         policy.step(&down, lost(hours), at(hours + 7_750)),
-        [Effect::Notify(Notice::Disconnected)]
+        [Effect::Notify(Notice::Disconnected), UNFOLLOW]
     );
 }
 
@@ -309,5 +316,5 @@ fn the_notices_and_the_latches_are_the_same_with_notices_off() {
     });
     assert_eq!(on[0], [case_notice]);
     assert_eq!(on[2], [case_notice]);
-    assert_eq!(on[3], [Effect::Notify(Notice::Disconnected)]);
+    assert_eq!(on[3], [Effect::Notify(Notice::Disconnected), UNFOLLOW]);
 }

@@ -9,8 +9,8 @@ use pulseaudio::protocol::{
     write_descriptor, write_error, write_reply_message,
 };
 
-/// The largest frame the fake or its test client reads; a sink list is a few kilobytes.
-const FRAME_MAX: u32 = 262_144;
+/// The largest frame the daemon, the fake or its test client reads; a sink list is a few kilobytes.
+pub(crate) const FRAME_MAX: u32 = 262_144;
 
 /// Declared by `send_oversized_frame`, past any bound a reader may set.
 pub(crate) const OVERSIZED_LENGTH: u32 = u32::MAX;
@@ -23,11 +23,19 @@ const EVENT_SEQ: u32 = u32::MAX;
 
 /// What `PipeWire` names the output node of a Bluetooth device: `02:00:00:00:00:01` gives `bluez_output.02_00_00_00_00_01.1`.
 pub(crate) fn sink_of(address: &str) -> String {
-    let octets = address
+    let address = address
         .parse::<BdAddr>()
-        .unwrap_or_else(|error| panic!("a sink for a bad address: {error}"))
-        .octets();
-    let groups: Vec<String> = octets.iter().map(|octet| format!("{octet:02X}")).collect();
+        .unwrap_or_else(|error| panic!("a sink for a bad address: {error}"));
+    sink_named(address)
+}
+
+/// As `sink_of`, for an address already parsed.
+pub(crate) fn sink_named(address: BdAddr) -> String {
+    let groups: Vec<String> = address
+        .octets()
+        .iter()
+        .map(|octet| format!("{octet:02X}"))
+        .collect();
     format!("bluez_output.{}.1", groups.join("_"))
 }
 

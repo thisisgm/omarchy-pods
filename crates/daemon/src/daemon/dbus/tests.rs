@@ -101,6 +101,7 @@ const INTROSPECTED: &str = r#"
   <property name="ApiVersion" type="u" access="read">
     <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
   </property>
+  <property name="AudioServer" type="s" access="read"/>
   <property name="Batteries" type="a{s(bby)}" access="read"/>
   <property name="Capabilities" type="as" access="read"/>
   <property name="Connected" type="b" access="read"/>

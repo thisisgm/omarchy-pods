@@ -9,7 +9,7 @@ mod protocol;
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cli::Invocation;
@@ -53,7 +53,11 @@ fn run_client(command: impl FnOnce(&Path, &mut dyn Write, &mut dyn Write) -> Exi
 }
 
 fn run_daemon() -> ExitCode {
-    let Some(socket) = ipc_path::socket_path(env::var_os(RUNTIME_DIR_VAR).as_deref()) else {
+    let runtime_dir = env::var_os(RUNTIME_DIR_VAR);
+    let (Some(socket), Some(runtime_dir)) = (
+        ipc_path::socket_path(runtime_dir.as_deref()),
+        runtime_dir.clone().map(PathBuf::from),
+    ) else {
         daemon::log(daemon::NO_RUNTIME_DIR);
         return ExitCode::FAILURE;
     };
@@ -69,6 +73,7 @@ fn run_daemon() -> ExitCode {
         socket,
         state_file,
         old_conf,
+        runtime_dir,
     })
 }
 

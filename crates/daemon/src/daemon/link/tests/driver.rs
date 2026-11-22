@@ -561,7 +561,8 @@ fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<Stri
                 | Input::SendFailed
                 | Input::Command { .. }
                 | Input::Sleep(_)
-                | Input::Shutdown(_) => {
+                | Input::Shutdown(_)
+                | Input::Audio(_) => {
                     format!("unexpected {input:?}")
                 }
             });
