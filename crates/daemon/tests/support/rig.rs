@@ -22,6 +22,7 @@ use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath,
 use super::bus::{Bus, bus_address, start_bus};
 use super::logind::{FakeLogind, Impostor};
 use super::omarchy::{Mood, Omarchy};
+use super::players::{FakePlayer, Playback};
 use super::{
     BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, do_request, outcome, wait_for,
     wait_within,
@@ -307,6 +308,10 @@ impl Rig {
     /// The address of the session bus the daemon serves its D-Bus interface on.
     pub(crate) fn session_bus(&self) -> &str {
         &self.session_bus.address
+    }
+
+    pub(crate) fn player(&self, name: &str, playback: Playback) -> FakePlayer {
+        FakePlayer::start(&self.session_bus, name, playback)
     }
 
     /// Replaces the device's route, for the next dials.

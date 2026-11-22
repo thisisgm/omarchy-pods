@@ -1,15 +1,21 @@
 //! A private `dbus-daemon` per bus a test needs, everything it reads or writes inside the session.
 
 use std::fs::{self, File};
+use std::future::poll_fn;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 use tokio::time::timeout;
-use zbus::Connection;
 use zbus::connection::Builder;
+use zbus::export::futures_core::Stream;
+use zbus::export::serde::Serialize;
+use zbus::export::serde::de::DeserializeOwned;
+use zbus::zvariant::{DynamicType, Type};
+use zbus::{Connection, Message, MessageStream};
 
 use super::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
 
@@ -30,6 +36,13 @@ pub(crate) const CONVERSATION_LIMIT: Duration = Duration::from_secs(30);
 
 /// How often the async wait for the bus name asks again; the harness wait is blocking and cannot run here.
 const BUS_POLL: Duration = Duration::from_millis(10);
+
+/// A client of a private bus whose match rule the bus confirmed before `subscribe` returns.
+pub(crate) struct Listener {
+    runtime: Runtime,
+    client: Connection,
+    signals: MessageStream,
+}
 
 /// A running private bus, ended with the guard.
 pub(crate) struct Bus {
@@ -82,6 +95,61 @@ pub(crate) fn start_bus(session: &Session, name: &str) -> Bus {
 pub(crate) fn in_time<T>(runtime: &Runtime, work: impl Future<Output = T>) -> T {
     let finished = runtime.block_on(async { timeout(HANG_LIMIT, work).await });
     finished.unwrap_or_else(|_| panic!("the bus client still waiting after {HANG_LIMIT:?}"))
+}
+
+impl Listener {
+    pub(crate) fn subscribe(address: &str, rule: &str) -> Self {
+        let runtime = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (client, signals) = in_time(&runtime, async {
+            let client = Builder::address(address).build().await.unwrap();
+            // The stream is returned only once the bus answered `AddMatch`.
+            let signals = MessageStream::for_match_rule(rule, &client, None)
+                .await
+                .unwrap();
+            (client, signals)
+        });
+        Self {
+            runtime,
+            client,
+            signals,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> Message {
+        let signals = &mut self.signals;
+        let next = poll_fn(|context| Pin::new(&mut *signals).poll_next(context));
+        in_time(&self.runtime, next)
+            .expect("the listener's stream ended")
+            .unwrap()
+    }
+
+    /// The reply to `member` of `interface` at `path` on `destination`, or the error the call got.
+    pub(crate) fn call(
+        &self,
+        destination: &str,
+        path: &str,
+        interface: &str,
+        member: &str,
+        body: &(impl Serialize + DynamicType),
+    ) -> zbus::Result<Message> {
+        let call = self
+            .client
+            .call_method(Some(destination), path, Some(interface), member, body);
+        in_time(&self.runtime, call)
+    }
+
+    /// Asks the bus daemon itself `method`.
+    pub(crate) fn ask_bus<T: DeserializeOwned + Type>(
+        &self,
+        method: &str,
+        body: &(impl Serialize + DynamicType),
+    ) -> T {
+        let reply = self.call(DRIVER_NAME, DRIVER_PATH, DRIVER_NAME, method, body);
+        reply.unwrap().body().deserialize().unwrap()
+    }
 }
 
 /// Starts a daemon whose session bus is `bus_address`, and waits until its socket accepts.
