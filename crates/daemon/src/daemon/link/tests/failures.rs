@@ -18,6 +18,7 @@ use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::sleep;
+use zeroize::Zeroizing;
 
 use super::super::reader::RECV_BUFFER_LEN;
 use super::super::{Connector, Input, REQUEST_QUEUE, drive, queue};
@@ -89,7 +90,7 @@ fn packets_never_hold_back_a_passed_deadline() {
         for _ in 0..FLOODERS {
             scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {
-                    let sdu = Input::Sdu(flood.clone().into_boxed_slice());
+                    let sdu = Input::Sdu(Zeroizing::new(flood.clone().into_boxed_slice()));
                     match inputs.try_send(sdu) {
                         Ok(()) => {}
                         // Never blocks, so the stop ends a flooder whatever the driver does.

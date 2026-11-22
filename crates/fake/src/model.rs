@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use pods_samples::{
     Cell, NOISE, Placed, battery_of, burst_others, burst_settings, ear_of, features_ack,
-    handshake_ack, host, metadata_of, setting,
+    handshake_ack, host, keys_of, metadata_of, setting,
 };
 
 use crate::{Fault, Profile};
@@ -54,6 +54,7 @@ pub(crate) fn closes(fault: Fault, sent: usize) -> bool {
 #[derive(Debug)]
 pub(crate) struct Model {
     metadata: Vec<u8>,
+    keys: Option<Vec<u8>>,
     left: Cell,
     right: Cell,
     case: Cell,
@@ -73,9 +74,11 @@ impl Model {
             primary,
             secondary,
             noise,
+            keys,
         } = profile;
         Self {
             metadata: metadata_of(&name, &model_number),
+            keys: keys.map(|(identity, payload)| keys_of(identity, payload)),
             left,
             right,
             case,
@@ -120,6 +123,9 @@ impl Model {
             vec![features_ack()]
         } else if sdu == host::request_notifications() {
             self.burst(fault)
+        } else if sdu == host::request_proximity_keys() {
+            // corner: assumed until measured on hardware, the reply comes alone and at once
+            self.keys.clone().into_iter().collect()
         } else if let Some((identifier, value)) = host_setting(sdu) {
             self.on_host_setting(fault, identifier, value)
         } else {
@@ -201,7 +207,11 @@ fn host_setting(sdu: &[u8]) -> Option<(u8, u8)> {
 
 #[cfg(test)]
 mod tests {
-    use pods_samples::{CONVERSATION_AWARENESS, ONE_BUD_ANC, battery, ear, first_burst};
+    use std::slice;
+
+    use pods_samples::{
+        CONVERSATION_AWARENESS, IDENTITY_KEY, ONE_BUD_ANC, PAYLOAD_KEY, battery, ear, first_burst,
+    };
 
     use super::*;
 
@@ -274,6 +284,7 @@ mod tests {
             primary: Placed::OutOfEar,
             secondary: Placed::InCase,
             noise: 3,
+            keys: None,
         });
         let mut expected = vec![
             battery_of(left, right, case),
@@ -359,6 +370,26 @@ mod tests {
             assert_eq!(model.on_host(Fault::None, &frame), empty, "{frame:02x?}");
         }
         assert_eq!(noise_in_burst(&model), setting(NOISE, 1));
+    }
+
+    #[test]
+    fn the_keys_request_is_answered_only_by_pods_with_keys() {
+        let request = host::request_proximity_keys();
+        assert_eq!(
+            model().on_host(Fault::None, &request),
+            Vec::<Vec<u8>>::new()
+        );
+        let mut keyed = Model::new(Profile {
+            keys: Some((IDENTITY_KEY, PAYLOAD_KEY)),
+            ..Profile::default()
+        });
+        let reply = keys_of(IDENTITY_KEY, PAYLOAD_KEY);
+        for _ in 0..2 {
+            assert_eq!(
+                keyed.on_host(Fault::None, &request),
+                slice::from_ref(&reply)
+            );
+        }
     }
 
     #[test]

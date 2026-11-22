@@ -11,6 +11,7 @@ pub mod error;
 #[cfg(test)]
 mod fixture;
 pub mod handshake;
+pub mod keys;
 pub mod metadata;
 pub mod model;
 pub mod noise;

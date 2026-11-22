@@ -117,6 +117,8 @@ pub(crate) struct Rig {
     /// Shared with the fake BlueZ's reaction to calls.
     devices: Arc<Mutex<Vec<Device>>>,
     prepare: Vec<Prepare>,
+    /// The next start goes through `Session::unmasked_daemon`.
+    unmasked: bool,
     omarchy: Omarchy,
     session: Session,
 }
@@ -160,6 +162,7 @@ impl Rig {
             session_bus,
             devices: Arc::default(),
             prepare: Vec::new(),
+            unmasked: false,
             omarchy,
             session,
         }
@@ -318,6 +321,11 @@ impl Rig {
         self.relay.as_ref().expect("a relayed system bus").cut();
     }
 
+    /// Starts the daemon under umask 0 from the next start on, so the modes it sets are its own.
+    pub(crate) fn unmask(&mut self) {
+        self.unmasked = true;
+    }
+
     /// Starts the built daemon under the trap and returns once its socket accepts.
     pub(crate) fn start(&mut self) {
         let routes = lock(&self.devices)
@@ -350,7 +358,11 @@ impl Rig {
             .append(true)
             .open(self.session.dir.path().join(DAEMON_LOG))
             .unwrap();
-        let mut command = self.session.command(Path::new(BINARY), &["daemon"]);
+        let mut command = if self.unmasked {
+            self.session.unmasked_daemon()
+        } else {
+            self.session.command(Path::new(BINARY), &["daemon"])
+        };
         command
             .env(
                 "DBUS_SYSTEM_BUS_ADDRESS",

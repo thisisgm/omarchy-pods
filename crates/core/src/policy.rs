@@ -7,6 +7,8 @@ mod sleep;
 
 use std::time::Duration;
 
+use pods_proto::keys::ProximityKeys;
+
 use crate::link::Signal;
 use crate::state::State;
 use audio::{AudioFact, AudioRequest};
@@ -16,7 +18,7 @@ pub use sleep::SleepEdge;
 use sleep::Suspend;
 
 /// What the driver saw in one step of the link machine, from logind or from the audio adapter.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Fact {
     Link(Signal),
     /// The step changed the state.
@@ -27,12 +29,14 @@ pub enum Fact {
     Audio(AudioFact),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Notify(Notice),
     /// The suspend window closed; the driver answers by stepping the link machine with `Event::Resumed`.
     Wake,
     Audio(AudioRequest),
+    /// A pair the pods answered with; the driver hands it to the writer of `keys.json`.
+    StoreKeys(ProximityKeys),
 }
 
 /// Lives as long as the driver, so a latch outlives the link that set it.
@@ -47,9 +51,10 @@ impl Policy {
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
         let effects = match fact {
+            Fact::Link(Signal::Keys(keys)) => vec![Effect::StoreKeys(keys)],
             Fact::Link(signal) => {
-                let mut effects = notify(notices::disconnected(signal, self.suspend));
-                effects.push(Effect::Audio(audio::follow(signal)));
+                let mut effects = notify(notices::disconnected(&signal, self.suspend));
+                effects.extend(audio::follow(&signal).map(Effect::Audio));
                 effects
             }
             Fact::Changed => notify(self.low_battery.due(state.batteries)),

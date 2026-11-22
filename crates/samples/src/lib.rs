@@ -95,6 +95,18 @@ pub const METADATA_SERIAL: &str = "SERIAL0001";
 /// The length of the metadata packet measured on a real device, reached with zero bytes.
 const METADATA_LEN: usize = 247;
 
+/// Each entry of the proximity keys reply: its tag, big endian length 16 and a reserved byte.
+const IDENTITY_ENTRY: [u8; 4] = [0x01, 0x00, 0x10, 0x00];
+const PAYLOAD_ENTRY: [u8; 4] = [0x04, 0x00, 0x10, 0x00];
+
+/// Synthetic proximity keys, never a device's.
+pub const IDENTITY_KEY: [u8; 16] = [
+    0x5a, 0xc3, 0x0f, 0x96, 0x21, 0xe8, 0x7b, 0x44, 0xd0, 0x19, 0xa6, 0x3e, 0x82, 0xf5, 0x6c, 0xb7,
+];
+pub const PAYLOAD_KEY: [u8; 16] = [
+    0x9d, 0x04, 0x71, 0xea, 0x38, 0xcf, 0x56, 0x8b, 0x12, 0xfe, 0x67, 0xa0, 0x2d, 0xb9, 0x43, 0xc8,
+];
+
 /// Opcodes of the first burst that no parser reads, each as often as it was measured.
 const BURST_OTHER_OPCODES: [u16; 11] = [
     0x02, 0x08, 0x0c, 0x0c, 0x0c, 0x0e, 0x2e, 0x2e, 0x4e, 0x53, 0x63,
@@ -182,6 +194,20 @@ pub fn metadata_of(name: &str, model_number: &str) -> Vec<u8> {
     let mut sdu = packet(OPCODE_METADATA, &body);
     sdu.resize(sdu.len().max(METADATA_LEN), 0);
     sdu
+}
+
+/// `04 00 04 00 31 00 02 01 00 10 00 <identity> 04 00 10 00 <payload>`, 47 bytes.
+#[must_use]
+pub fn keys_of(identity: [u8; 16], payload: [u8; 16]) -> Vec<u8> {
+    let header = cpp_source::PACKETS.hex(host::MAGIC_PAIRING, "MAGIC_CLOUD_KEYS_HEADER");
+    [
+        &header[..],
+        &IDENTITY_ENTRY,
+        &identity,
+        &PAYLOAD_ENTRY,
+        &payload,
+    ]
+    .concat()
 }
 
 /// Identifiers 1 to 22 in order, each with value 1 unless `overrides` names it.
@@ -300,6 +326,12 @@ mod tests {
         ] {
             assert_ne!(opcode(&frame), Some(OPCODE_CONTROL));
         }
+    }
+
+    #[test]
+    fn the_keys_reply_is_47_bytes_and_the_request_its_opcode() {
+        assert_eq!(keys_of(IDENTITY_KEY, PAYLOAD_KEY).len(), 47);
+        assert_eq!(opcode(&host::request_proximity_keys()), Some(0x30));
     }
 
     #[test]

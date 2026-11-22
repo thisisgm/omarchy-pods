@@ -171,9 +171,9 @@ fn write_opens_the_directory_to_sync_it_after_the_rename() {
     write(&path, b"{\"a\":1}\n").unwrap();
     let parent = path.parent().unwrap();
     // Search and write but no read: the rename works and only opening the directory to sync it fails.
-    fs::set_permissions(parent, fs::Permissions::from_mode(WRITE_AND_SEARCH)).unwrap();
+    fs::set_permissions(parent, Permissions::from_mode(WRITE_AND_SEARCH)).unwrap();
     let result = write(&path, b"{\"a\":2}\n");
-    fs::set_permissions(parent, fs::Permissions::from_mode(DIR_MODE)).unwrap();
+    fs::set_permissions(parent, Permissions::from_mode(DIR_MODE)).unwrap();
     let error = result.unwrap_err();
     assert!(matches!(error, WriteError::SyncDirectory(..)), "{error}");
     assert_eq!(fs::read_to_string(&path).unwrap(), "{\"a\":2}\n");

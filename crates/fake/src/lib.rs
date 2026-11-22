@@ -26,6 +26,8 @@ pub struct Profile {
     pub secondary: Placed,
     /// The wire value of `pods_samples::NOISE`.
     pub noise: u8,
+    /// The identity and payload keys of the proximity keys reply; `None` never answers the request.
+    pub keys: Option<([u8; 16], [u8; 16])>,
 }
 
 impl Default for Profile {
@@ -40,6 +42,7 @@ impl Default for Profile {
             primary: Placed::InEar,
             secondary: Placed::InEar,
             noise: NOISE_OFF,
+            keys: None,
         }
     }
 }

@@ -27,6 +27,17 @@ use tempfile::TempDir;
 
 pub(crate) const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
 
+const SHELL: &str = "/bin/sh";
+
+/// Clears the mask the test runner passes on, then becomes the daemon named by `$0`.
+const UNMASKED: &str = "umask 0; exec \"$0\" daemon";
+
+/// The mode of a file the daemon keeps owner only.
+pub(crate) const FILE_MODE: u32 = 0o600;
+
+/// The mode of the directory holding the daemon's owner only files.
+pub(crate) const DIR_MODE: u32 = 0o700;
+
 /// The log of a daemon that `Session::start` or the rig starts, in the session directory.
 pub(crate) const DAEMON_LOG: &str = "daemon.log";
 
@@ -127,6 +138,11 @@ impl Session {
         self.state_home().join("librepods").join("settings.json")
     }
 
+    /// The proximity keys the daemon keeps, beside the status document.
+    pub(crate) fn keys_file(&self) -> PathBuf {
+        self.state_home().join("librepods").join("keys.json")
+    }
+
     /// The binary with this session's environment and nothing of the real one's XDG, home or path.
     pub(crate) fn command(&self, program: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(program);
@@ -144,6 +160,11 @@ impl Session {
                 bus::bus_address(self, NO_SYSTEM_BUS),
             );
         command
+    }
+
+    /// The daemon under umask 0, so the modes it sets are its own and not the runner's mask.
+    pub(crate) fn unmasked_daemon(&self) -> Command {
+        self.command(Path::new(SHELL), &["-c", UNMASKED, BINARY])
     }
 
     /// Starts a daemon with `args`, its stderr going to a log file in the session.

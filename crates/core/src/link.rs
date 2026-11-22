@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
 use pods_proto::handshake::Handshake;
+use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS};
 
 use crate::command::{self, Command, CommandError, Outcome};
@@ -104,7 +105,7 @@ pub enum Action {
 }
 
 /// A moment of the link that other parts of the daemon act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
     /// The link entered `Up`.
     Up { device: BdAddr },
@@ -113,6 +114,8 @@ pub enum Signal {
         device: BdAddr,
         down_at: Option<Duration>,
     },
+    /// The pods answered the proximity keys request.
+    Keys(ProximityKeys),
 }
 
 /// Where the session is, with the data each state needs.

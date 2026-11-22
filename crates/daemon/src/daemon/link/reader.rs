@@ -6,6 +6,7 @@ use pods_core::link::End;
 use pods_proto::addr::BdAddr;
 use pods_sys::l2cap::{Channel, Received};
 use tokio::sync::mpsc;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{Connector, Input};
 use crate::daemon::log;
@@ -45,12 +46,15 @@ fn forward(channel: &Arc<Channel>, feedback: &mpsc::Sender<Input>) {
     loop {
         match channel.recv(&mut buf) {
             Ok(Received::Sdu(len)) => {
-                let sdu = buf.get(..len).unwrap_or_default();
-                if feedback.blocking_send(Input::Sdu(sdu.into())).is_err() {
+                let used = buf.get_mut(..len).unwrap_or_default();
+                let sdu = Zeroizing::new(Box::from(&*used));
+                used.zeroize();
+                if feedback.blocking_send(Input::Sdu(sdu)).is_err() {
                     return;
                 }
             }
             Ok(Received::Truncated { full_len }) => {
+                buf.as_mut_slice().zeroize();
                 if !truncation_logged {
                     log(&format!(
                         "link: dropped a {full_len} byte SDU, longer than the {RECV_BUFFER_LEN} byte buffer; later ones are dropped unlogged"

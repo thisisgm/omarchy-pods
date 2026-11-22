@@ -4,6 +4,7 @@ use crate::battery::BatteryReport;
 use crate::control::ControlCommand;
 use crate::ear::EarReport;
 use crate::error::{HEADER_LEN, ParseError, Parser};
+use crate::keys::ProximityKeys;
 use crate::metadata::Metadata;
 
 /// Starts every packet the pods send after the handshake; the opcode follows.
@@ -14,6 +15,7 @@ const OPCODE_BATTERY: u16 = 0x0004;
 const OPCODE_EAR: u16 = 0x0006;
 const OPCODE_CONTROL: u16 = 0x0009;
 const OPCODE_METADATA: u16 = 0x001d;
+const OPCODE_PROXIMITY_KEYS: u16 = 0x0031;
 const OPCODE_UPLINK: u16 = 0x0058;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,6 +24,7 @@ pub enum Incoming<'a> {
     Ear(EarReport),
     Control(ControlCommand),
     Metadata(Metadata),
+    Keys(ProximityKeys),
     /// The whole packet, for `UplinkPacket::parse`.
     Uplink(&'a [u8]),
     Other {
@@ -48,6 +51,7 @@ pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
         OPCODE_EAR => Incoming::Ear(EarReport::parse(sdu)?),
         OPCODE_CONTROL => Incoming::Control(ControlCommand::parse(sdu)?),
         OPCODE_METADATA => Incoming::Metadata(Metadata::parse(sdu)?),
+        OPCODE_PROXIMITY_KEYS => Incoming::Keys(ProximityKeys::parse(sdu)?),
         OPCODE_UPLINK => Incoming::Uplink(sdu),
         opcode => Incoming::Other { opcode },
     })
@@ -69,6 +73,7 @@ mod tests {
     use crate::ear::EarReport;
     use crate::error::Parser;
     use crate::fixture::hex;
+    use crate::keys::ProximityKeys;
     use crate::metadata::Metadata;
 
     #[test]
@@ -85,6 +90,9 @@ mod tests {
         let metadata = pods_samples::metadata();
         let expected = Incoming::Metadata(Metadata::parse(&metadata).unwrap());
         assert_eq!(classify(&metadata), Ok(expected));
+        let keys = pods_samples::keys_of(pods_samples::IDENTITY_KEY, pods_samples::PAYLOAD_KEY);
+        let expected = Incoming::Keys(ProximityKeys::parse(&keys).unwrap());
+        assert_eq!(classify(&keys), Ok(expected));
     }
 
     #[test]
@@ -121,6 +129,7 @@ mod tests {
             ("04 00 04 00 06 00", Parser::Ear, 8),
             ("04 00 04 00 09 00", Parser::Control, 8),
             ("04 00 04 00 1d 00", Parser::Metadata, 11),
+            ("04 00 04 00 31 00", Parser::ProximityKeys, 47),
         ] {
             let too_short = ParseError::TooShort {
                 parser,
@@ -192,6 +201,7 @@ mod tests {
                 Incoming::Foreign => counts[4] += 1,
                 Incoming::Other { opcode } => others.push(opcode),
                 Incoming::Uplink(_) => panic!("the first burst carries no uplink packet"),
+                Incoming::Keys(_) => panic!("the first burst carries no proximity keys"),
             }
         }
         assert_eq!(counts, [1, 1, 22, 1, 1]);

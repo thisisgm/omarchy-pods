@@ -1,6 +1,6 @@
 //! Fixed requests the host sends to open the control channel, and the replies that pace them.
 
-// Request bytes are Connection in daemon/airpods_packets.h, reply prefixes are Parse.
+// Request bytes are Connection and MagicPairing in daemon/airpods_packets.h, reply prefixes are Parse.
 
 /// The first packet on a new control channel.
 pub const HANDSHAKE: [u8; 16] = [
@@ -16,6 +16,9 @@ pub const SET_SPECIFIC_FEATURES: [u8; 14] = [
 pub const REQUEST_NOTIFICATIONS: [u8; 11] = [
     0x04, 0x00, 0x04, 0x00, 0x0f, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
 ];
+
+/// Sent once per link when the metadata arrives; answered by the proximity keys reply.
+pub const REQUEST_PROXIMITY_KEYS: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x30, 0x00, 0x05, 0x00];
 
 /// A packet starting with these bytes acknowledges `HANDSHAKE`.
 pub const HANDSHAKE_ACK_PREFIX: [u8; 4] = [0x01, 0x00, 0x04, 0x00];
@@ -47,6 +50,13 @@ mod tests {
         assert_eq!(
             REQUEST_NOTIFICATIONS.to_vec(),
             PACKETS.hex(CONNECTION, "REQUEST_NOTIFICATIONS")
+        );
+        assert_eq!(
+            REQUEST_PROXIMITY_KEYS.to_vec(),
+            PACKETS.hex(
+                pods_samples::host::MAGIC_PAIRING,
+                "REQUEST_MAGIC_CLOUD_KEYS"
+            )
         );
     }
 
