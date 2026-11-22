@@ -1,6 +1,6 @@
 //! The capture and stop commands, run with a temporary home and a connect that the test supplies.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
@@ -11,44 +11,77 @@ use std::thread;
 
 use pods_proto::addr::BdAddr;
 use pods_proto::handshake::Step;
-use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
+use pods_proto::packets::{CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
 use pods_proto::sdulog::{self, Direction};
 use pods_proto::uplink::{START, STOP};
 use pods_sys::l2cap::{Channel, ChannelError};
 use rustix::io::Errno;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
-use super::super::super::script::ScriptName;
+use super::super::super::dictate::HandleCheck;
+use super::super::super::script::{Route, ScriptName};
 use super::super::super::{CaptureArgs, Host, capture, exit_code, stop, summary, watch_signals};
-use super::super::{EndReason, IoFailure, Outcome};
+use super::super::{Bearer, EndReason, IoFailure, Outcome};
 use super::pods::{self, DEADLINE, EAR_PACKET, Pods};
-use super::{DEVICE_LINE, ROOT_NAME, home_with_device};
+use super::{DEVICE_LINE, ROOT_NAME, counted_nothing, home_with_device};
 
 /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
-const STAMP: &str = "20261120T120000Z";
+pub(super) const STAMP: &str = "20261120T120000Z";
 /// The octets of the address in the device file.
-const DEVICE_OCTETS: [u8; 6] = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
+pub(super) const DEVICE_OCTETS: [u8; 6] = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff];
 /// How many octets in a row count as the address: half of it, which already names the maker or the device.
 const TRACE_OCTETS: usize = 3;
 
-/// How a command exited and what it left on its two streams.
-struct Ran {
-    code: String,
-    stdout: String,
-    stderr: String,
+/// A packet of the accessory header and an opcode the loop does not know, which the fake pods send here once STOP has reached them.
+const PARTING: [u8; 7] = [0x04, 0x00, 0x04, 0x00, 0x7f, 0x00, 0x01];
+
+/// How a command exited, what it left on its two streams, and the PSM of every connect it asked for, in order.
+pub(super) struct Ran {
+    pub(super) code: String,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+    pub(super) dialled: Vec<u16>,
 }
 
-/// Runs `command` on a thread with a connect that hands over `near` once, and waits for it no longer than the deadline.
+/// Runs `command` on a thread with a connect that hands over `near` once for the control PSM, and waits for it no longer than the deadline.
 fn run_command(
     home: &Path,
     near: Channel,
     command: impl FnOnce(&mut Host<'_>) -> ExitCode + Send + 'static,
 ) -> Ran {
+    run_dialled(home, vec![(CONTROL_PSM, near)], command)
+}
+
+/// Runs `command` on a thread with a connect that hands over each of `lines` once to the PSM it is listed under and refuses every other PSM.
+pub(super) fn run_dialled(
+    home: &Path,
+    lines: Vec<(u16, Channel)>,
+    command: impl FnOnce(&mut Host<'_>) -> ExitCode + Send + 'static,
+) -> Ran {
+    let lines = RefCell::new(lines);
+    let answer = move |psm| {
+        let mut lines = lines.borrow_mut();
+        let line = lines.iter().position(|(listed, _)| *listed == psm);
+        let line = line.ok_or(ChannelError::Connect(Errno::CONNREFUSED))?;
+        Ok(lines.remove(line).1)
+    };
+    run_answered(home, answer, command)
+}
+
+/// Runs `command` on a thread with a connect that `answer` decides for each PSM, and waits for it no longer than the deadline.
+pub(super) fn run_answered(
+    home: &Path,
+    answer: impl Fn(u16) -> Result<Channel, ChannelError> + Send + 'static,
+    command: impl FnOnce(&mut Host<'_>) -> ExitCode + Send + 'static,
+) -> Ran {
     let home = home.to_str().unwrap().to_owned();
     let (done, result) = mpsc::channel();
     thread::spawn(move || {
-        let near = Cell::new(Some(near));
-        let connect = |_peer: BdAddr| near.take().ok_or(ChannelError::Connect(Errno::ALREADY));
+        let dialled = RefCell::new(Vec::new());
+        let connect = |_peer: BdAddr, psm: u16| {
+            dialled.borrow_mut().push(psm);
+            answer(psm)
+        };
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
         let code = command(&mut Host {
             home: &home,
@@ -61,14 +94,14 @@ fn run_command(
             code: format!("{code:?}"),
             stdout: String::from_utf8(stdout).unwrap(),
             stderr: String::from_utf8(stderr).unwrap(),
+            dialled: dialled.into_inner(),
         })
     });
     let ran = result.recv_timeout(DEADLINE);
     ran.expect("the command did not return before the deadline")
 }
 
-/// Part of the device address that `text` holds: octets in a row, in either order, as hex or as decimal numbers.
-// Sample input: "AA:BB:CC", "ccbbaa", "[170, 187, 204]" and "0xdd 0xee 0xff" each hold a part; "aa bb" and "170" hold none.
+/// Part of the device address that `text` holds: octets in a row, in either order, as hex or as decimal numbers, so `AA:BB:CC`, `ccbbaa`, `[170, 187, 204]` and `0xdd 0xee 0xff` each hold a part and `aa bb` and `170` hold none.
 fn address_trace(text: &str) -> Option<String> {
     let lowered = text.to_lowercase();
     let words: Vec<&str> = lowered
@@ -96,7 +129,7 @@ fn address_trace(text: &str) -> Option<String> {
 }
 
 /// Every entry under `root`, directories too, by its path from `root` and in order; a file comes with its bytes as text.
-fn entries_under(root: &Path) -> Vec<(String, Option<String>)> {
+pub(super) fn entries_under(root: &Path) -> Vec<(String, Option<String>)> {
     let mut pending = vec![root.to_path_buf()];
     let mut entries = Vec::new();
     while let Some(dir) = pending.pop() {
@@ -117,7 +150,7 @@ fn entries_under(root: &Path) -> Vec<(String, Option<String>)> {
 }
 
 /// Fails when a stream of a command, or the name or text of an entry under `run`, holds part of the device address.
-fn assert_no_address(stdout: &str, stderr: &str, run: Option<&Path>) {
+pub(super) fn assert_no_address(stdout: &str, stderr: &str, run: Option<&Path>) {
     let streams = [("stdout", stdout), ("stderr", stderr)].map(|(name, text)| {
         let text = Some(text.to_owned());
         (name.to_owned(), text)
@@ -167,8 +200,10 @@ fn the_summary_says_whether_stop_followed_start() {
         starts,
         stops,
         truncated: 7,
-        end,
+        att_pdus_in: 11,
+        ..counted_nothing(end)
     };
+    let summary = |outcome: &Outcome| summary(outcome, Route::Uplink);
     // Every count differs from the others, so one printed under another's name is seen.
     let done = summary(&outcome(3, 5, EndReason::ScriptDone));
     assert_eq!(
@@ -183,7 +218,7 @@ fn the_summary_says_whether_stop_followed_start() {
     let running = summary(&outcome(2, 1, EndReason::PeerClosed));
     assert!(running.contains("STOP was NOT sent"), "{running}");
     assert!(running.contains("cargo xtask probe stop"), "{running}");
-    let send = IoFailure::Channel(ChannelError::Send(Errno::PIPE));
+    let send = IoFailure::Channel(Bearer::Accessory, ChannelError::Send(Errno::PIPE));
     let failed = summary(&outcome(0, 0, EndReason::Io(send)));
     assert!(
         failed.contains("could not send on the L2CAP channel"),
@@ -196,12 +231,9 @@ fn the_summary_says_whether_stop_followed_start() {
 fn only_a_script_that_ran_to_its_end_exits_zero() {
     let exit = |end| {
         let outcome = Outcome {
-            sdus_in: 0,
-            audio_sdus: 0,
             starts: 1,
             stops: 1,
-            truncated: 0,
-            end,
+            ..counted_nothing(end)
         };
         format!("{:?}", exit_code(&outcome))
     };
@@ -209,15 +241,20 @@ fn only_a_script_that_ran_to_its_end_exits_zero() {
         exit(EndReason::ScriptDone),
         format!("{:?}", ExitCode::SUCCESS)
     );
-    let send = IoFailure::Channel(ChannelError::Send(Errno::PIPE));
+    let send = IoFailure::Channel(Bearer::Accessory, ChannelError::Send(Errno::PIPE));
     for end in [
         EndReason::Interrupted,
         EndReason::PeerClosed,
         EndReason::HandshakeTimeout(Step::AwaitFeaturesAck),
         EndReason::NoInitialSide,
+        EndReason::AttConnect(ChannelError::Connect(Errno::HOSTDOWN)),
+        EndReason::AttClosed,
+        EndReason::HandleCheck(HandleCheck::NoListing),
+        EndReason::HandleCheck(HandleCheck::Missing(vec![0x0007])),
         EndReason::Io(send),
     ] {
-        assert_eq!(exit(end), format!("{:?}", ExitCode::FAILURE), "{end:?}");
+        let code = exit(end.clone());
+        assert_eq!(code, format!("{:?}", ExitCode::FAILURE), "{end:?}");
     }
 }
 
@@ -241,8 +278,11 @@ fn the_knock_command_records_a_run_and_exits_zero() {
     let args = CaptureArgs {
         stamp: STAMP.to_owned(),
         run: "knock-1".to_owned(),
+        route: Route::Uplink,
         script: ScriptName::Knock,
         minutes: None,
+        no_marker: false,
+        unchecked: false,
     };
     let ran = run_command(home.path(), near, move |host| {
         capture(&args, host, &AtomicBool::new(false))
@@ -259,6 +299,7 @@ fn the_knock_command_records_a_run_and_exits_zero() {
         "xtask probe: capture complete: packets in 1, with audio 0, not logged 0, START sent 0, STOP sent 0\n"
     );
     assert_eq!(ran.stdout, "");
+    assert_eq!(ran.dialled, [CONTROL_PSM]);
     assert_eq!(pods::queued(&far), Vec::<Vec<u8>>::new());
     let run = home.path().join(ROOT_NAME).join(STAMP).join("knock-1");
     let log = fs::read_to_string(run.join("sdu.log")).unwrap();
@@ -290,14 +331,18 @@ fn an_interrupted_soak_shows_its_cue_on_stdout_and_says_stop_was_sent() {
     let interrupted = Arc::new(AtomicBool::new(false));
     let part = Pods {
         interrupt_after: Some(3),
+        parting: vec![PARTING.to_vec()],
         ..Pods::default()
     };
     let transcript = pods::spawn(far, part, Arc::clone(&interrupted));
     let args = CaptureArgs {
         stamp: STAMP.to_owned(),
         run: "soak-1".to_owned(),
+        route: Route::Uplink,
         script: ScriptName::Soak,
         minutes: Some(1),
+        no_marker: false,
+        unchecked: false,
     };
     let ran = run_command(home.path(), near, move |host| {
         capture(&args, host, &interrupted)
@@ -329,6 +374,15 @@ fn an_interrupted_soak_shows_its_cue_on_stdout_and_says_stop_was_sent() {
         marks.ends_with("\tend\tinterrupted by a signal\n"),
         "{marks}"
     );
+    // What the pods send once the stop of the way out has reached them is in the log, after that stop.
+    let log = fs::read_to_string(run.join("sdu.log")).unwrap();
+    let records: Vec<_> = log
+        .lines()
+        .map(|line| sdulog::parse_line(line).unwrap())
+        .collect();
+    let stop = records.iter().position(|record| record.sdu == STOP);
+    let parting = records.iter().position(|record| record.sdu == PARTING);
+    assert!(stop.is_some() && stop < parting, "{log}");
     assert_no_address(&ran.stdout, &ran.stderr, Some(&run));
 }
 
@@ -337,7 +391,7 @@ fn the_stop_command_sends_stop_and_keeps_nothing() {
     let home = home_with_device();
     let (near, far) = pods::pair();
     let transcript = pods::spawn(far, Pods::default(), Arc::new(AtomicBool::new(false)));
-    let ran = run_command(home.path(), near, stop);
+    let ran = run_command(home.path(), near, |host| stop(host, Route::Uplink));
 
     let pods = transcript.recv_timeout(DEADLINE);
     let pods = pods.expect("the fake pods did not finish before the deadline");
@@ -374,7 +428,7 @@ fn the_stop_command_says_when_stop_was_not_sent() {
         ..Pods::default()
     };
     let transcript = pods::spawn(far, part, Arc::new(AtomicBool::new(false)));
-    let ran = run_command(home.path(), near, stop);
+    let ran = run_command(home.path(), near, |host| stop(host, Route::Uplink));
 
     let pods = transcript.recv_timeout(DEADLINE);
     let pods = pods.expect("the fake pods did not finish before the deadline");
@@ -394,11 +448,14 @@ fn output_never_contains_the_device_address() {
     let args = CaptureArgs {
         stamp: STAMP.to_owned(),
         run: "page".to_owned(),
+        route: Route::Uplink,
         script: ScriptName::Listen,
         minutes: Some(1),
+        no_marker: false,
+        unchecked: false,
     };
     let dialled = Cell::new(None);
-    let connect = |peer: BdAddr| {
+    let connect = |peer: BdAddr, _psm: u16| {
         dialled.set(Some(peer.octets()));
         Err(ChannelError::Connect(Errno::HOSTDOWN))
     };
@@ -447,7 +504,7 @@ fn output_never_contains_the_device_address() {
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
-    let code = stop(&mut host);
+    let code = stop(&mut host, Route::Uplink);
     assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
     let stderr = String::from_utf8(stderr).unwrap();
     assert!(

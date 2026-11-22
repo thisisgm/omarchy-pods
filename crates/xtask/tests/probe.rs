@@ -119,7 +119,48 @@ fn capture_refuses_a_script_it_cannot_build_before_it_creates_anything() {
     for (script, sentence) in [
         (
             &["chat"][..],
-            "the scripts are knock, listen, soak, voice, side, trials, early and firstword",
+            "the scripts are knock, listen, soak, voice, side, trials, early, firstword, att-knock, att-map and both",
+        ),
+        (
+            &["att-knock"],
+            "script att-knock is not a script of the uplink route",
+        ),
+        (
+            &["knock", "--route", "dictation"],
+            "script knock is not a script of the dictation route, whose scripts are soak, voice, firstword, att-knock and att-map",
+        ),
+        (
+            &["knock", "--route", "both ways"],
+            "that is not a route; the routes are uplink, dictation and both",
+        ),
+        (
+            &["att-knock", "--route", "dictation", "--minutes", "1"],
+            "script att-knock has a fixed length",
+        ),
+        (&["both"], "script both is not a script of the uplink route"),
+        (
+            &["voice", "--route", "both"],
+            "script voice is not a script of the both route, whose scripts are both",
+        ),
+        (
+            &["soak", "--route", "dictation"],
+            "script soak runs for a set time",
+        ),
+        (
+            &["att-map", "--route", "dictation", "--minutes", "1"],
+            "script att-map has a fixed length",
+        ),
+        (
+            &["knock", "--no-marker"],
+            "--no-marker is refused on the uplink route",
+        ),
+        (
+            &["knock", "--unchecked"],
+            "--unchecked is refused on the uplink route",
+        ),
+        (
+            &["voice", "--unchecked", "--no-marker"],
+            "is refused on the uplink route",
         ),
         (&["listen"], "script listen runs for a set time"),
         (&["soak"], "pass --minutes 1 to 90"),
@@ -168,8 +209,28 @@ fn capture_and_stop_fail_at_the_device_file_before_any_connect() {
     // The run name is still free, because the device is read before the run is created.
     assert!(!root.join(STAMP).join("page").exists());
 
-    let refused = probe(home.path(), &["stop"]).output().unwrap();
+    for stop in [&["stop"][..], &["stop", "--route", "dictation"]] {
+        let refused = probe(home.path(), stop).output().unwrap();
+        assert!(!refused.status.success(), "{stop:?}: {refused:?}");
+        assert!(
+            error_of(&refused).contains(&device),
+            "{stop:?}: {refused:?}"
+        );
+        assert_eq!(refused.stdout, b"", "{stop:?}");
+    }
+}
+
+#[test]
+fn stop_refuses_both_routes_at_once_before_it_reads_anything() {
+    let home = tempfile::tempdir().unwrap();
+    let refused = probe(home.path(), &["stop", "--route", "both"])
+        .output()
+        .unwrap();
     assert!(!refused.status.success(), "{refused:?}");
-    assert!(error_of(&refused).contains(&device), "{refused:?}");
+    assert_eq!(
+        error_of(&refused),
+        "xtask probe: stop takes one route at a time: run it with --route uplink, then with --route dictation\n"
+    );
     assert_eq!(refused.stdout, b"");
+    assert!(!home.path().join(ROOT_NAME).exists());
 }

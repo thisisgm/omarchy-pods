@@ -1,13 +1,17 @@
 //! The scripts checked against their written description, and the two parsers against arbitrary input.
 
+mod routes;
+
 use proptest::prelude::*;
 
 use super::*;
 
 /// A run length inside the allowed range, for the two scripts that need one.
 const SOME_MINUTES: u32 = 2;
+/// The shortest and the longest run `--minutes` takes, each with its length in milliseconds.
+const EDGE_RUNS: [(u32, u32); 2] = [(1, 60_000), (90, 5_400_000)];
 /// The names `--script` takes, written out so a changed name is seen.
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 11] = [
     "knock",
     "listen",
     "soak",
@@ -16,7 +20,12 @@ const NAMES: [&str; 8] = [
     "trials",
     "early",
     "firstword",
+    "att-knock",
+    "att-map",
+    "both",
 ];
+/// How many of `NAMES`, counted from the first, are scripts of the uplink route.
+const UPLINK_SCRIPTS: usize = 8;
 /// Past twice the longest run, so about half of the draws up to it are allowed minutes and the rest are refused.
 const NEAR_RANGE_MINUTES: u32 = 200;
 
@@ -25,8 +34,14 @@ fn minutes_for(name: ScriptName) -> Option<u32> {
     matches!(name, ScriptName::Listen | ScriptName::Soak).then_some(SOME_MINUTES)
 }
 
+/// The scripts of the uplink route, in the order of `ScriptName::ALL`.
+fn uplink_names() -> Vec<ScriptName> {
+    ScriptName::ALL[..UPLINK_SCRIPTS].to_vec()
+}
+
+/// The uplink script `name`, which every test written before the routes means.
 fn built(name: ScriptName) -> Script {
-    build(name, minutes_for(name)).unwrap()
+    build(name, Route::Uplink, minutes_for(name), true).unwrap()
 }
 
 /// The offsets at which a script does `wanted`.
@@ -87,7 +102,7 @@ fn firstword_has_three_starts_and_no_cue_at_a_start() {
 
 #[test]
 fn every_script_that_starts_also_stops() {
-    for name in ScriptName::ALL {
+    for name in uplink_names() {
         let script = built(name);
         let mut running = script.opening == Opening::EarlyStart;
         let mut starts = u32::from(running);
@@ -113,6 +128,10 @@ fn every_script_that_starts_also_stops() {
                 }
                 Action::End => ended = true,
                 Action::Cue(_) | Action::SetSide(_) | Action::RestoreSide => {}
+                Action::MarkActive
+                | Action::MarkIdle
+                | Action::DictationStart
+                | Action::DictationStop => panic!("{name} touches the dictation stream"),
             }
         }
         assert!(ended, "{name} never ends");
@@ -124,7 +143,7 @@ fn every_script_that_starts_also_stops() {
 
 #[test]
 fn only_side_changes_the_microphone_side_and_it_puts_it_back() {
-    for name in ScriptName::ALL {
+    for name in uplink_names() {
         let script = built(name);
         let changes: Vec<&Event> = script
             .events
@@ -217,7 +236,7 @@ fn knock_and_early_open_as_their_names_say() {
         at(18_000, Action::End),
     ];
     assert_eq!(early.events, expected);
-    for name in ScriptName::ALL {
+    for name in uplink_names() {
         let plain = !matches!(name, ScriptName::Knock | ScriptName::Early);
         assert_eq!(built(name).opening == Opening::Handshake, plain, "{name}");
     }
@@ -225,18 +244,19 @@ fn knock_and_early_open_as_their_names_say() {
 
 #[test]
 fn the_rescue_stops_and_never_starts() {
-    let rescue = rescue();
+    let rescue = rescue(Route::Uplink).unwrap();
     assert_eq!(rescue.opening, Opening::Handshake);
     assert!(!rescue.needs_initial_side);
+    assert!(!rescue.walks());
     assert_eq!(rescue.events, [at(0, Action::Stop), at(0, Action::End)]);
 }
 
 #[test]
 fn minutes_are_required_for_listen_and_soak_and_refused_elsewhere() {
-    for name in ScriptName::ALL {
+    for name in uplink_names() {
         let timed = matches!(name, ScriptName::Listen | ScriptName::Soak);
-        let without = build(name, None);
-        let with = build(name, Some(SOME_MINUTES));
+        let without = build(name, Route::Uplink, None, true);
+        let with = build(name, Route::Uplink, Some(SOME_MINUTES), true);
         if timed {
             assert_eq!(without, Err(ScriptError::MinutesRequired { name }));
             assert!(with.is_ok(), "{name}");
@@ -245,9 +265,9 @@ fn minutes_are_required_for_listen_and_soak_and_refused_elsewhere() {
             assert_eq!(with, Err(ScriptError::MinutesRefused { name }));
         }
     }
-    let listen = build(ScriptName::Listen, Some(SOME_MINUTES)).unwrap();
+    let listen = build(ScriptName::Listen, Route::Uplink, Some(SOME_MINUTES), true).unwrap();
     assert_eq!(listen.events, [at(120_000, Action::End)]);
-    let soak = build(ScriptName::Soak, Some(SOME_MINUTES)).unwrap();
+    let soak = build(ScriptName::Soak, Route::Uplink, Some(SOME_MINUTES), true).unwrap();
     let expected = [
         at(0, Action::Start),
         at(0, Action::Cue("Stay as you are. Nothing to do.")),
@@ -262,10 +282,11 @@ fn minutes_outside_1_to_90_are_refused() {
     for name in [ScriptName::Listen, ScriptName::Soak] {
         for minutes in [0, 91, u32::MAX] {
             let refused = Err(ScriptError::MinutesOutOfRange { minutes });
-            assert_eq!(build(name, Some(minutes)), refused, "{name} {minutes}");
+            let built = build(name, Route::Uplink, Some(minutes), true);
+            assert_eq!(built, refused, "{name} {minutes}");
         }
-        for (minutes, run_ms) in [(1, 60_000), (90, 5_400_000)] {
-            let script = build(name, Some(minutes)).unwrap();
+        for (minutes, run_ms) in EDGE_RUNS {
+            let script = build(name, Route::Uplink, Some(minutes), true).unwrap();
             let end_ms = script.events.last().unwrap().at_ms;
             let tail_ms = if name == ScriptName::Soak { 5_000 } else { 0 };
             assert_eq!(end_ms, run_ms + tail_ms, "{name} {minutes}");
@@ -275,7 +296,10 @@ fn minutes_outside_1_to_90_are_refused() {
     let refused = Err(ScriptError::MinutesRefused {
         name: ScriptName::Voice,
     });
-    assert_eq!(build(ScriptName::Voice, Some(0)), refused);
+    assert_eq!(
+        build(ScriptName::Voice, Route::Uplink, Some(0), true),
+        refused
+    );
 }
 
 #[test]
@@ -286,10 +310,117 @@ fn every_name_reads_back_and_the_refusal_lists_them_all() {
         assert_eq!(name.to_string().parse(), Ok(name));
     }
     let listed = ScriptError::UnknownName.to_string();
-    let list = "knock, listen, soak, voice, side, trials, early and firstword";
+    let list =
+        "knock, listen, soak, voice, side, trials, early, firstword, att-knock, att-map and both";
     assert!(listed.ends_with(list), "{listed}");
     for text in ["", "Voice", "voice ", " voice", "voices", "stop"] {
         assert_eq!(text.parse::<ScriptName>(), Err(ScriptError::UnknownName));
+    }
+}
+
+#[test]
+fn the_uplink_route_builds_what_it_built_before_the_routes() {
+    // Offsets and counts only, written out so a change of timing or length on the uplink route is seen here.
+    let offsets_of = |name| -> Vec<u32> {
+        let events = built(name).events;
+        events.iter().map(|event| event.at_ms).collect()
+    };
+    assert_eq!(offsets_of(ScriptName::Knock), [3_000]);
+    assert_eq!(offsets_of(ScriptName::Listen), [120_000]);
+    assert_eq!(offsets_of(ScriptName::Soak), [0, 0, 120_000, 125_000]);
+    assert_eq!(
+        offsets_of(ScriptName::Early),
+        [5_000, 8_000, 13_000, 18_000]
+    );
+    assert_eq!(built(ScriptName::Trials).events.len(), 43);
+    assert_eq!(built(ScriptName::Firstword).events.len(), 9);
+    assert_eq!(uplink_names().len() + 3, ScriptName::ALL.len());
+}
+
+#[test]
+fn att_knock_opens_the_attribute_channel_alone_and_holds_it() {
+    let knock = build(ScriptName::AttKnock, Route::Dictation, None, true).unwrap();
+    assert_eq!(knock.opening, Opening::AttKnock);
+    assert!(!knock.needs_initial_side);
+    assert_eq!(knock.events, [at(3_000, Action::End)]);
+    let name = ScriptName::AttKnock;
+    let refused = Err(ScriptError::MinutesRefused { name });
+    assert_eq!(
+        build(name, Route::Dictation, Some(SOME_MINUTES), true),
+        refused
+    );
+}
+
+#[test]
+fn att_map_opens_the_attribute_channel_alone_and_asks_for_the_walk() {
+    let name = ScriptName::AttMap;
+    let map = build(name, Route::Dictation, None, true).unwrap();
+    assert_eq!(map.opening, Opening::AttMap);
+    assert!(map.walks());
+    assert_eq!(map.events, [at(0, Action::End)]);
+    let refused = Err(ScriptError::MinutesRefused { name });
+    assert_eq!(
+        build(name, Route::Dictation, Some(SOME_MINUTES), true),
+        refused
+    );
+    let knock = build(ScriptName::AttKnock, Route::Dictation, None, true).unwrap();
+    assert!(!knock.walks());
+}
+
+#[test]
+fn route_and_script_pairs_outside_the_table_are_refused() {
+    for route in Route::ALL {
+        let mut taken = Vec::new();
+        for name in ScriptName::ALL {
+            let without = build(name, route, None, true);
+            let with = build(name, route, Some(SOME_MINUTES), true);
+            if without.is_ok() || with.is_ok() {
+                taken.push(name.to_string());
+                continue;
+            }
+            // A script the route does not take is refused as that with and without minutes, never as a wrong length.
+            let off_route = ScriptError::NotOnRoute { name, route };
+            assert_eq!(without.unwrap_err(), off_route, "{name} {route}");
+            assert_eq!(with.unwrap_err(), off_route, "{name} {route}");
+        }
+        let (last, rest) = taken.split_last().unwrap();
+        let sentence = if rest.is_empty() {
+            last.clone()
+        } else {
+            format!("{} and {last}", rest.join(", "))
+        };
+        assert_eq!(route.scripts(), sentence, "{route}");
+    }
+    let refused = build(ScriptName::AttKnock, Route::Uplink, None, true).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "script att-knock is not a script of the uplink route, whose scripts are knock, listen, soak, voice, side, trials, early and firstword"
+    );
+    let refused = build(ScriptName::Knock, Route::Dictation, None, true).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "script knock is not a script of the dictation route, whose scripts are soak, voice, firstword, att-knock and att-map"
+    );
+    let refused = build(ScriptName::Soak, Route::Both, Some(SOME_MINUTES), true).unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "script soak is not a script of the both route, whose scripts are both"
+    );
+}
+
+#[test]
+fn every_route_reads_back_and_the_refusal_lists_them_all() {
+    assert_eq!(
+        Route::ALL.map(Route::as_str),
+        ["uplink", "dictation", "both"]
+    );
+    for route in Route::ALL {
+        assert_eq!(route.to_string().parse(), Ok(route));
+    }
+    let listed = ScriptError::UnknownRoute.to_string();
+    assert!(listed.ends_with("uplink, dictation and both"), "{listed}");
+    for text in ["", "Uplink", "uplink ", "att", "both "] {
+        assert_eq!(text.parse::<Route>(), Err(ScriptError::UnknownRoute));
     }
 }
 
@@ -311,7 +442,7 @@ fn any_minutes() -> impl Strategy<Value = Option<u32>> {
 
 proptest! {
     #[test]
-    fn name_parse_accepts_only_the_eight_names(text in near_names()) {
+    fn name_parse_accepts_only_the_script_names(text in near_names()) {
         match text.parse::<ScriptName>() {
             Ok(name) => prop_assert_eq!(name.as_str(), text),
             Err(error) => {
@@ -323,11 +454,11 @@ proptest! {
 
     #[test]
     fn build_obeys_the_minutes_rule_for_any_input(
-        name in proptest::sample::select(&ScriptName::ALL[..]),
+        name in proptest::sample::select(&ScriptName::ALL[..UPLINK_SCRIPTS]),
         minutes in any_minutes(),
     ) {
         let timed = matches!(name, ScriptName::Listen | ScriptName::Soak);
-        match (build(name, minutes), minutes) {
+        match (build(name, Route::Uplink, minutes, true), minutes) {
             (Ok(script), Some(minutes)) => {
                 prop_assert!(timed && (1..=90).contains(&minutes));
                 prop_assert_eq!(script.events.last().map(|event| event.action), Some(Action::End));

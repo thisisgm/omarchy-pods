@@ -1,31 +1,39 @@
-//! The capture loop: one thread reads the control channel, stamps and logs every packet, and follows a script.
+//! The capture loop: one thread reads the open channels, stamps and logs every packet, and follows a script.
 
+mod att;
 mod guard;
 mod record;
+mod wires;
 
+use std::cell::RefCell;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use pods_proto::control::{ControlCommand, ControlId};
+use pods_proto::dictation;
 use pods_proto::ear::EarReport;
 use pods_proto::handshake::{Handshake, Step};
+use pods_proto::packets::ATT_PSM;
 use pods_proto::uplink::{self, MicSide};
-use pods_sys::l2cap::{Channel, ChannelError, Received};
-use rustix::io::Errno;
+use pods_sys::l2cap::{Channel, ChannelError};
 
+use super::dictate::{HANDLE_WALK_TIMEOUT_MS, HandleCheck};
 use super::script::{Action, Opening, Script};
-use guard::{Dropped, SideChange, Tail, Uplink};
-pub(crate) use record::{IoFailure, LOG_NAME, MARKS_NAME, Mark, Outputs, write_mark};
-use record::{Recorder, Sent};
+use att::Asked;
+use guard::{Dictation, Dropped, Session, SideChange, Tail, Uplink};
+use record::Recorder;
+pub(crate) use record::{
+    ATT_LOG_NAME, Bearer, HANDLES_NAME, IoFailure, LOG_NAME, MARKS_NAME, Mark, Outputs, write_mark,
+};
+pub(crate) use wires::OpenAtt;
+use wires::{RECV_TIMEOUT_MS, Wake, Wires, receive};
 
 /// How long one handshake request may go unanswered: daemon/main.cpp asks again after 2 s, the probe fails naming the step.
 pub(crate) const HANDSHAKE_STEP_TIMEOUT_MS: u64 = 2_000;
 /// How long START waits for an ear detection packet: kEarReportWaitMs in pull request 85 of this repository.
 const EAR_REPORT_WAIT_MS: u64 = 3_000;
-/// Bounds how late a timed action fires and how late a signal is seen; chosen here.
-const RECV_TIMEOUT_MS: u64 = 10;
 /// The receive buffer of aacp.rs in librepods-org/librepods pull request 655.
 const RECV_BUFFER_LEN: usize = 4096;
 /// How long the channel stays open after STOP: pull request 85 of this repository flushes for up to 1 s before it closes.
@@ -41,6 +49,8 @@ struct Timing {
     handshake_step: u64,
     ear_report: u64,
     side_report: u64,
+    /// How long each request on the attribute channel may go unanswered, in the milliseconds its constant is written in.
+    handle_walk_ms: u32,
     stop_tail: u64,
 }
 
@@ -49,16 +59,30 @@ impl Timing {
         handshake_step: HANDSHAKE_STEP_TIMEOUT_MS * NS_PER_MS,
         ear_report: EAR_REPORT_WAIT_MS * NS_PER_MS,
         side_report: SIDE_REPORT_WAIT_MS * NS_PER_MS,
+        handle_walk_ms: HANDLE_WALK_TIMEOUT_MS,
         stop_tail: STOP_TAIL_MS * NS_PER_MS,
     };
 }
 
+/// What a run is given to reach the pods: the control channel, open, and the way to open the attribute channel, which a run given one takes when its script opens on that channel or, after a handshake, as soon as that ends.
+#[derive(Clone, Copy)]
+pub(crate) struct Links<'a> {
+    pub(crate) accessory: Option<&'a Channel>,
+    pub(crate) att: Option<OpenAtt<'a>>,
+}
+
 /// Why a run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EndReason {
     ScriptDone,
     Interrupted,
     PeerClosed,
+    AttConnect(ChannelError),
+    AttClosed,
+    /// The pods' own listing did not show the four handles of the stream, so the start write was not sent.
+    HandleCheck(HandleCheck),
+    /// The pods listed the four handles and the walk was cut before they ended their table.
+    WalkUnfinished,
     HandshakeTimeout(Step),
     NoInitialSide,
     Io(IoFailure),
@@ -70,6 +94,21 @@ impl fmt::Display for EndReason {
             Self::ScriptDone => f.write_str("the script ran to its end"),
             Self::Interrupted => f.write_str("interrupted by a signal"),
             Self::PeerClosed => f.write_str("the pods closed the channel"),
+            Self::AttConnect(error) => write!(
+                f,
+                "the attribute channel on PSM {ATT_PSM:#06x} did not open: {error}"
+            ),
+            Self::AttClosed => f.write_str("the pods closed the attribute channel"),
+            Self::HandleCheck(HandleCheck::NoListing) => {
+                f.write_str("the pods listed no attribute, so the start write was not sent")
+            }
+            Self::HandleCheck(check @ (HandleCheck::Missing(_) | HandleCheck::Present)) => write!(
+                f,
+                "the pods' listing of the handles the stream uses read {check}, so the start write was not sent"
+            ),
+            Self::WalkUnfinished => f.write_str(
+                "the walk of the pods' attribute table was cut before its end, so the start write was not sent",
+            ),
             Self::HandshakeTimeout(step) => {
                 write!(f, "the handshake timed out waiting for {step}")
             }
@@ -88,7 +127,7 @@ impl From<IoFailure> for EndReason {
 }
 
 /// What a run counted and why it ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Outcome {
     /// Packets from the pods that went into the log.
     pub(crate) sdus_in: u64,
@@ -100,64 +139,17 @@ pub(crate) struct Outcome {
     pub(crate) stops: u32,
     /// Packets marked and not logged: longer than the receive buffer, or refused by the log format.
     pub(crate) truncated: u32,
+    /// Packets of the attribute channel from the pods that went into its log.
+    pub(crate) att_pdus_in: u64,
+    /// Those of them that are audio notifications of the dictation stream.
+    pub(crate) audio_notifications: u64,
+    /// Dictation start writes that left.
+    pub(crate) dictation_starts: u32,
+    /// Dictation stop writes that left.
+    pub(crate) dictation_stops: u32,
+    /// Requests of the pods that were answered with a refusal.
+    pub(crate) att_requests_refused: u32,
     pub(crate) end: EndReason,
-}
-
-/// The channel and the clock, which every sender needs together.
-#[derive(Clone, Copy)]
-struct Link<'a> {
-    channel: &'a Channel,
-    now_ns: &'a dyn Fn() -> u64,
-}
-
-impl Link<'_> {
-    fn now(&self) -> u64 {
-        (self.now_ns)()
-    }
-
-    /// Sends one packet; the stamp is taken just before the send, so it is when the host asked.
-    fn send(&self, sdu: &[u8]) -> Sent {
-        let at_ns = self.now();
-        Sent {
-            at_ns,
-            result: self.channel.send(sdu),
-        }
-    }
-}
-
-/// What one wait on the channel ended with.
-#[derive(Clone, Copy)]
-enum Wake<'b> {
-    Sdu(&'b [u8]),
-    /// A packet of this many bytes that the buffer could not hold.
-    TooLong {
-        full_len: usize,
-    },
-    /// The receive timeout or a signal: nothing arrived.
-    Idle,
-    Closed,
-    Failed(ChannelError),
-}
-
-/// One wait on the channel; the stamp is the first statement after the wait returns.
-fn receive<'b>(link: Link<'_>, buf: &'b mut [u8]) -> (u64, Wake<'b>) {
-    let received = link.channel.recv(buf);
-    let at_ns = link.now();
-    (at_ns, wake_of(received, buf))
-}
-
-/// Reads what a wait returned; a timeout and a signal both mean that nothing arrived.
-fn wake_of(received: Result<Received, ChannelError>, buf: &[u8]) -> Wake<'_> {
-    match received {
-        Ok(Received::Sdu(len)) => match buf.get(..len) {
-            Some(sdu) => Wake::Sdu(sdu),
-            None => Wake::TooLong { full_len: len },
-        },
-        Ok(Received::Truncated { full_len }) => Wake::TooLong { full_len },
-        Ok(Received::TimedOut) | Err(ChannelError::Recv(Errno::INTR)) => Wake::Idle,
-        Ok(Received::Closed) => Wake::Closed,
-        Err(error) => Wake::Failed(error),
-    }
 }
 
 /// `Err` is why the run ends, which for a script that ran to its end is no failure.
@@ -176,9 +168,11 @@ enum Phase {
     Scripted { gate_ns: u64, next: usize },
 }
 
-/// One run: the loop's state and the two guards, which drop with it on every way out.
+/// One run: the loop's state and its guards, which drop with it on every way out.
 struct Engine<'a, 'o> {
-    link: Link<'a>,
+    wires: Wires<'a>,
+    /// How the run opens the attribute channel; `None` for a run that was given no way to.
+    open_att: Option<OpenAtt<'a>>,
     script: &'a Script,
     recorder: &'a mut Recorder<'o>,
     interrupted: &'a AtomicBool,
@@ -189,8 +183,18 @@ struct Engine<'a, 'o> {
     ear_seen: bool,
     /// The microphone side the pods reported before the gate.
     initial_side: Option<ControlCommand>,
-    // Fields drop in this order, so the STOP leaves before the side is put back.
+    /// The channel the last packet came from, which the next wait asks last.
+    last_read: Bearer,
+    /// What the attribute channel waits for.
+    asked: Asked,
+    /// The walk found the four handles, or the owner waived a listing the pods did not give.
+    checked: bool,
+    /// When the last dictation start write left, which the delay of the pods' reply counts from.
+    start_sent_ns: Option<u64>,
+    // Fields drop in this order: each stream is stopped, then the session is marked idle, then the side is put back.
     uplink: Option<Uplink<'a>>,
+    dictation: Option<Dictation<'a>>,
+    session: Option<Session<'a>>,
     side: Option<SideChange<'a>>,
 }
 
@@ -201,21 +205,27 @@ impl Engine<'_, '_> {
     }
 
     fn steps(&mut self) -> Result<Infallible, EndReason> {
-        let recv_timeout = Duration::from_millis(RECV_TIMEOUT_MS);
-        let timed = self.link.channel.set_recv_timeout(recv_timeout);
-        timed.map_err(IoFailure::Channel)?;
-        self.recorder
-            .mark(self.link.now(), Mark::Connect, &"channel open")?;
+        if let Some(channel) = self.wires.accessory {
+            let timed = channel.set_recv_timeout(Duration::from_millis(RECV_TIMEOUT_MS));
+            timed.map_err(|error| IoFailure::Channel(Bearer::Accessory, error))?;
+            let at_ns = self.wires.now();
+            self.recorder.mark(at_ns, Mark::Connect, &"channel open")?;
+        }
         // A signal that arrived during the connect ends the run before anything is sent.
         self.check_interrupted()?;
         self.open()?;
         let mut buf = [0_u8; RECV_BUFFER_LEN];
         loop {
-            let (at_ns, wake) = receive(self.link, &mut buf);
-            self.take(at_ns, wake)?;
-            self.check_interrupted()?;
-            self.advance(at_ns)?;
+            self.turn(&mut buf)?;
         }
+    }
+
+    /// One wait and what follows from it: the packet, the signal flag, then the clock.
+    fn turn(&mut self, buf: &mut [u8]) -> Flow {
+        let (at_ns, wake) = receive(&self.wires, self.last_read, buf);
+        self.take(at_ns, wake)?;
+        self.check_interrupted()?;
+        self.advance(at_ns)
     }
 
     fn check_interrupted(&self) -> Flow {
@@ -228,7 +238,17 @@ impl Engine<'_, '_> {
 
     fn open(&mut self) -> Flow {
         match self.script.opening {
-            Opening::Knock => self.open_gate(self.link.now(), "connect"),
+            Opening::Knock => self.open_gate(self.wires.now(), "connect"),
+            Opening::AttKnock => {
+                self.connect_att()?;
+                self.open_gate(self.wires.now(), "connect")
+            }
+            Opening::AttMap => {
+                self.connect_att()?;
+                let asked_at_ns = self.wires.now();
+                self.phase = Phase::Settling { asked_at_ns };
+                self.start_walk()
+            }
             Opening::Handshake => self.send_handshake(),
             Opening::EarlyStart => {
                 self.start()?;
@@ -239,7 +259,7 @@ impl Engine<'_, '_> {
 
     fn send_handshake(&mut self) -> Flow {
         let first = pods_proto::packets::HANDSHAKE.as_slice();
-        let sent = self.link.send(first);
+        let sent = self.wires.link(Bearer::Accessory)?.send(first);
         self.phase = Phase::Handshaking {
             handshake: Handshake::default(),
             asked_at_ns: sent.at_ns,
@@ -250,14 +270,22 @@ impl Engine<'_, '_> {
 
     fn take(&mut self, at_ns: u64, wake: Wake<'_>) -> Flow {
         match wake {
-            Wake::Sdu(sdu) => self.on_packet(at_ns, sdu),
-            Wake::TooLong { full_len } => {
-                let why = format_args!("longer than the {RECV_BUFFER_LEN} byte receive buffer");
-                Ok(self.recorder.unlogged(at_ns, full_len, &why)?)
+            Wake::Sdu(bearer, sdu) => {
+                self.last_read = bearer;
+                match bearer {
+                    Bearer::Accessory => self.on_packet(at_ns, sdu),
+                    Bearer::Att => self.on_pdu(at_ns, sdu),
+                }
+            }
+            Wake::TooLong { bearer, full_len } => {
+                self.last_read = bearer;
+                Ok(too_long(self.recorder, at_ns, bearer, full_len)?)
             }
             Wake::Idle => Ok(()),
-            Wake::Closed => Err(EndReason::PeerClosed),
-            Wake::Failed(error) => Err(EndReason::Io(IoFailure::Channel(error))),
+            Wake::Closed(Bearer::Accessory) => Err(EndReason::PeerClosed),
+            Wake::Closed(Bearer::Att) => Err(EndReason::AttClosed),
+            Wake::Failed(bearer, error) => Err(EndReason::Io(IoFailure::Channel(bearer, error))),
+            Wake::WaitFailed(error) => Err(EndReason::Io(IoFailure::Wait(error))),
         }
     }
 
@@ -277,7 +305,7 @@ impl Engine<'_, '_> {
             return Ok(());
         };
         let awaiting = handshake.step();
-        let sent = self.link.send(request);
+        let sent = self.wires.link(Bearer::Accessory)?.send(request);
         *asked_at_ns = sent.at_ns;
         self.recorder
             .sent(sent, request, Mark::Sent, &request_name(awaiting))?;
@@ -287,8 +315,35 @@ impl Engine<'_, '_> {
             self.phase = Phase::Settling {
                 asked_at_ns: sent.at_ns,
             };
+            // The attribute channel is opened only now: a Mac was seen to finish the handshake first.
+            if self.open_att.is_some() {
+                self.connect_att()?;
+                // Nothing was read while the connect lasted, so the wait for the reports counts from its end.
+                let asked_at_ns = self.wires.now();
+                self.phase = Phase::Settling { asked_at_ns };
+            }
+            if self.script.walks() {
+                self.start_walk()?;
+            }
         }
         Ok(())
+    }
+
+    /// Opens the attribute channel; no packet stamp is taken while the connect lasts, so the two marks bound the stamps that came late.
+    fn connect_att(&mut self) -> Flow {
+        let what = Bearer::Att.name();
+        let open = self.open_att.ok_or(IoFailure::NotGiven { what })?;
+        let at_ns = self.wires.now();
+        self.recorder.mark(at_ns, Mark::AttConnect, &"connecting")?;
+        let channel = open().map_err(EndReason::AttConnect)?;
+        let timed = channel.set_recv_timeout(Duration::from_millis(RECV_TIMEOUT_MS));
+        timed.map_err(|error| IoFailure::Channel(Bearer::Att, error))?;
+        self.wires.att.replace(Some(channel));
+        let at_ns = self.wires.now();
+        let text = "attribute channel open";
+        self.recorder.mark(at_ns, Mark::AttConnect, &text)?;
+        // A signal that arrived during the connect ends the run before anything is sent on the channel.
+        self.check_interrupted()
     }
 
     /// Before the gate, remembers an ear detection packet and the microphone side the pods report.
@@ -305,6 +360,7 @@ impl Engine<'_, '_> {
 
     /// Ends a wait that ran out, opens the gate when its conditions hold, and fires the events that are due.
     fn advance(&mut self, now_ns: u64) -> Flow {
+        self.end_overdue_wait(now_ns)?;
         match &self.phase {
             Phase::Handshaking {
                 handshake,
@@ -321,6 +377,13 @@ impl Engine<'_, '_> {
     }
 
     fn settle(&mut self, now_ns: u64, asked_at_ns: u64) -> Flow {
+        // The gate also waits for the walk of the table and, in a map, for the declarations.
+        if self.waits_on_the_table() {
+            return Ok(());
+        }
+        if self.script.opening == Opening::AttMap {
+            return self.open_gate(now_ns, "map");
+        }
         if self.script.needs_initial_side && self.initial_side.is_none() {
             if now_ns >= asked_at_ns.saturating_add(self.timing.side_report) {
                 return Err(EndReason::NoInitialSide);
@@ -364,7 +427,7 @@ impl Engine<'_, '_> {
             Action::Start => self.start(),
             Action::Stop => {
                 // A script may stop an uplink this run did not start, as the rescue does.
-                let (link, dropped) = (self.link, self.dropped);
+                let (link, dropped) = (self.wires.link(Bearer::Accessory)?, self.dropped);
                 drop(
                     self.uplink
                         .take()
@@ -372,12 +435,16 @@ impl Engine<'_, '_> {
                 );
                 Ok(record_dropped(self.recorder, self.dropped)?)
             }
-            Action::Cue(text) => Ok(self.recorder.cue(self.link.now(), text)?),
+            Action::Cue(text) => Ok(self.recorder.cue(self.wires.now(), text)?),
             Action::SetSide(side) => self.set_side(side),
             Action::RestoreSide => {
                 self.side = None;
                 Ok(record_dropped(self.recorder, self.dropped)?)
             }
+            Action::MarkActive => self.mark_active(),
+            Action::MarkIdle => self.mark_idle(),
+            Action::DictationStart => self.dictation_start(),
+            Action::DictationStop => self.dictation_stop(),
             Action::End => Err(EndReason::ScriptDone),
         }
     }
@@ -387,12 +454,13 @@ impl Engine<'_, '_> {
         if self.uplink.is_some() {
             return Ok(());
         }
+        let link = self.wires.link(Bearer::Accessory)?;
         // The guard exists before the send, so a START that failed half way still gets its STOP.
         self.uplink = Some(Uplink {
-            link: self.link,
+            link,
             dropped: self.dropped,
         });
-        let sent = self.link.send(&uplink::START);
+        let sent = link.send(&uplink::START);
         if sent.result.is_ok() {
             self.recorder.starts = self.recorder.starts.saturating_add(1);
         }
@@ -407,18 +475,31 @@ impl Engine<'_, '_> {
         let Some(original) = self.initial_side else {
             return Err(EndReason::NoInitialSide);
         };
+        let link = self.wires.link(Bearer::Accessory)?;
         if self.side.is_none() {
             self.side = Some(SideChange {
-                link: self.link,
+                link,
                 original,
                 dropped: self.dropped,
             });
         }
         let frame = side.command().encode();
-        let sent = self.link.send(&frame);
+        let sent = link.send(&frame);
         let text = format_args!("set {}", side_name(side));
         Ok(self.recorder.sent(sent, &frame, Mark::Side, &text)?)
     }
+}
+
+/// Marks and counts a packet the receive buffer could not hold.
+fn too_long(
+    recorder: &mut Recorder<'_>,
+    at_ns: u64,
+    bearer: Bearer,
+    full_len: usize,
+) -> Result<(), IoFailure> {
+    let on = bearer.suffix();
+    let why = format_args!("longer than the {RECV_BUFFER_LEN} byte receive buffer{on}");
+    recorder.unlogged(at_ns, full_len, &why)
 }
 
 /// The request that was sent when the handshake began to wait at `awaiting`.
@@ -438,7 +519,7 @@ fn side_name(side: MicSide) -> &'static str {
     }
 }
 
-/// Records what the guards sent as they dropped; the second is recorded even when the first failed.
+/// Records what the guards sent as they dropped, in the order they drop; each is recorded even when one before it failed.
 fn record_dropped(recorder: &mut Recorder<'_>, dropped: &Dropped) -> Result<(), IoFailure> {
     let stop = dropped.stop.take().map_or(Ok(()), |sent| {
         if sent.result.is_ok() {
@@ -446,10 +527,40 @@ fn record_dropped(recorder: &mut Recorder<'_>, dropped: &Dropped) -> Result<(), 
         }
         recorder.sent(sent, &uplink::STOP, Mark::Stop, &"uplink stop")
     });
+    let dictation_stop = dropped.dictation_stop.take().map_or(Ok(()), |sent| {
+        if sent.result.is_ok() {
+            recorder.dictation_stops = recorder.dictation_stops.saturating_add(1);
+        }
+        let stop = dictation::STOP;
+        recorder.sent(sent, &stop, Mark::DictationStop, &"dictation stop")
+    });
+    let idle = dropped.idle.take().map_or(Ok(()), |sent| {
+        let idle = dictation::SESSION_IDLE;
+        recorder.sent(sent, &idle, Mark::Idle, &"session idle")
+    });
     let restore = dropped.restore.take().map_or(Ok(()), |(original, sent)| {
         recorder.sent(sent, &original.encode(), Mark::Side, &"restored")
     });
-    stop.and(restore)
+    stop.and(dictation_stop).and(idle).and(restore)
+}
+
+/// Logs one packet of the tail, and marks a reply of the stream with its delay as the loop does.
+fn keep(
+    recorder: &mut Recorder<'_>,
+    at_ns: u64,
+    wake: Wake<'_>,
+    start_sent_ns: Option<u64>,
+    stop_sent_ns: Option<u64>,
+) -> Result<(), IoFailure> {
+    match wake {
+        Wake::Sdu(Bearer::Accessory, sdu) => recorder.received(at_ns, sdu),
+        Wake::Sdu(Bearer::Att, pdu) => {
+            recorder.received_pdu(at_ns, pdu)?;
+            att::mark_status(recorder, at_ns, pdu, start_sent_ns, stop_sent_ns)
+        }
+        Wake::TooLong { bearer, full_len } => too_long(recorder, at_ns, bearer, full_len),
+        Wake::Idle | Wake::Closed(_) | Wake::Failed(..) | Wake::WaitFailed(_) => Ok(()),
+    }
 }
 
 /// A run that reached its end still fails when a later write or send did; an earlier reason stands.
@@ -460,37 +571,43 @@ fn first_failure(end: EndReason, later: Result<(), IoFailure>) -> EndReason {
     }
 }
 
-/// Follows `script` on an open channel until it ends, the pods hang up, a signal raises `interrupted`, or a step fails.
+/// Follows `script` on the open channels until it ends, the pods hang up, a signal raises `interrupted`, or a step fails.
 pub(crate) fn run(
-    channel: &Channel,
+    links: &Links<'_>,
     script: &Script,
     out: &mut Outputs<'_>,
     interrupted: &AtomicBool,
     now_ns: &dyn Fn() -> u64,
 ) -> Outcome {
-    run_with(channel, script, out, interrupted, now_ns, &Timing::REAL)
+    run_with(links, script, out, interrupted, now_ns, &Timing::REAL)
 }
 
 fn run_with(
-    channel: &Channel,
+    links: &Links<'_>,
     script: &Script,
     out: &mut Outputs<'_>,
     interrupted: &AtomicBool,
     now_ns: &dyn Fn() -> u64,
     timing: &Timing,
 ) -> Outcome {
-    let link = Link { channel, now_ns };
+    let att = RefCell::new(None);
+    let wires = Wires {
+        accessory: links.accessory,
+        att: &att,
+        now_ns,
+    };
     let dropped = Dropped::default();
-    // Declared before the engine, so it drops after the engine's guards have sent what they send.
-    let _tail = Tail {
-        link,
+    // Declared before the engine, so a panic in the loop still keeps the channels open after the engine's guards have sent what they send.
+    let mut tail = Tail {
+        wires,
         length_ns: timing.stop_tail,
         dropped: &dropped,
     };
     let mut recorder = Recorder::new(out);
-    let end = {
+    let (end, start_sent_ns) = {
         let mut engine = Engine {
-            link,
+            wires,
+            open_att: links.att,
             script,
             recorder: &mut recorder,
             interrupted,
@@ -498,23 +615,45 @@ fn run_with(
             dropped: &dropped,
             phase: Phase::Handshaking {
                 handshake: Handshake::default(),
-                asked_at_ns: link.now(),
+                asked_at_ns: wires.now(),
             },
             ear_seen: false,
             initial_side: None,
+            last_read: Bearer::Att,
+            asked: Asked::Nothing,
+            checked: false,
+            start_sent_ns: None,
             uplink: None,
+            dictation: None,
+            session: None,
             side: None,
         };
-        engine.drive()
+        let end = engine.drive();
+        (end, engine.start_sent_ns)
     };
     let end = first_failure(end, record_dropped(&mut recorder, &dropped));
-    let end = first_failure(end, recorder.mark(link.now(), Mark::End, &end));
+    let stop_sent_ns = dropped.dictation_stop_ns.get();
+    let mut kept = Ok(());
+    tail.read(&mut |at_ns, wake| {
+        // A log that failed once is not written again, and the channels still stay open for the tail.
+        if kept.is_ok() {
+            kept = keep(&mut recorder, at_ns, wake, start_sent_ns, stop_sent_ns);
+        }
+    });
+    let end = first_failure(end, kept);
+    let marked = recorder.mark(wires.now(), Mark::End, &end);
+    let end = first_failure(end, marked);
     Outcome {
         sdus_in: recorder.sdus_in,
         audio_sdus: recorder.audio_sdus,
         starts: recorder.starts,
         stops: recorder.stops,
         truncated: recorder.truncated,
+        att_pdus_in: recorder.att_pdus_in,
+        audio_notifications: recorder.audio_notifications,
+        dictation_starts: recorder.dictation_starts,
+        dictation_stops: recorder.dictation_stops,
+        att_requests_refused: recorder.att_requests_refused,
         end,
     }
 }

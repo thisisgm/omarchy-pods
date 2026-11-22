@@ -1,8 +1,16 @@
 //! The capture loop driven against fake pods on the other end of a socket pair.
 
+mod air_command;
+mod att;
+mod att_command;
+mod att_pods;
 mod command;
+mod dictation;
+mod dictation_exits;
 mod pods;
 mod steps;
+mod table;
+mod walk_cut;
 
 use std::fs::{self, Permissions};
 use std::io;
@@ -16,13 +24,14 @@ use pods_proto::sdulog::Direction;
 use pods_proto::uplink::{START, STOP};
 use tempfile::TempDir;
 
-use super::super::script::{Event, rescue};
+use super::super::script::{Event, Route, rescue};
 use super::super::summary;
 use super::*;
-use pods::{Case, EAR_PACKET, Heard, LogFault, PATIENT_NS, Report, TAIL_NS, ack, audio_sdu, noise};
+use pods::{
+    Case, EAR_PACKET, Heard, LogFault, PATIENT_MS, PATIENT_NS, Report, TAIL_NS, ack, audio_sdu,
+    noise,
+};
 
-/// The same wait as a script offset.
-const PATIENT_MS: u32 = 20_000;
 /// A wait short enough for a test that expects it to run out.
 const SHORT_NS: u64 = 50_000_000;
 /// An SDU one receive buffer cannot hold.
@@ -38,6 +47,23 @@ const DEVICE_LINE: &str = "AA:BB:CC:DD:EE:FF\n";
 
 const fn at(at_ms: u32, action: Action) -> Event {
     Event { at_ms, action }
+}
+
+/// The outcome of a run that counted nothing, for a test that then sets the counts it reads.
+fn counted_nothing(end: EndReason) -> Outcome {
+    Outcome {
+        sdus_in: 0,
+        audio_sdus: 0,
+        starts: 0,
+        stops: 0,
+        truncated: 0,
+        att_pdus_in: 0,
+        audio_notifications: 0,
+        dictation_starts: 0,
+        dictation_stops: 0,
+        att_requests_refused: 0,
+        end,
+    }
 }
 
 /// A temporary home whose store holds the device file and nothing else.
@@ -94,16 +120,16 @@ fn exits_with_the_uplink_running() -> Vec<(&'static str, Case, Option<EndReason>
 }
 
 /// Checks one exit: the pods got STOP after START, the counts agree, and the channel stayed open for the tail.
-fn stop_failures(name: &str, report: &Report, end: Option<EndReason>) -> Vec<String> {
+fn stop_failures(name: &str, report: &Report, end: Option<&EndReason>) -> Vec<String> {
     let mut failures = Vec::new();
     if !report.stop_followed_start() {
         failures.push(format!("{name}: the pods got {:02x?}", report.pods.got()));
     }
-    if report.outcome.map(|outcome| outcome.end) != end {
+    if report.end().as_ref() != end {
         failures.push(format!("{name}: ended as {:?}", report.outcome));
     }
     // A panic unwinds past the marks, so its tail counts from the panic, which the STOP follows.
-    let stop_ns = match report.outcome {
+    let stop_ns = match &report.outcome {
         Some(outcome) => {
             if (outcome.starts, outcome.stops) != (1, 1) {
                 failures.push(format!("{name}: counted {outcome:?}"));
@@ -158,7 +184,7 @@ fn every_sdu_is_logged_in_order_with_non_decreasing_stamps() {
         stop.starts_with("uplink stop failed: could not send"),
         "{stop}"
     );
-    assert!(summary(&outcome).contains("STOP was NOT sent"));
+    assert!(summary(&outcome, Route::Uplink).contains("STOP was NOT sent"));
 }
 
 #[test]
@@ -205,7 +231,7 @@ fn stop_is_sent_on_every_exit_path() {
     let mut failures = Vec::new();
     for (name, case, end) in exits_with_the_uplink_running() {
         if end.is_some() {
-            failures.extend(stop_failures(name, &case.run(), end));
+            failures.extend(stop_failures(name, &case.run(), end.as_ref()));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
@@ -216,7 +242,7 @@ fn stop_is_sent_when_the_loop_panics() {
     let mut failures = Vec::new();
     for (name, case, end) in exits_with_the_uplink_running() {
         if end.is_none() {
-            failures.extend(stop_failures(name, &case.run(), end));
+            failures.extend(stop_failures(name, &case.run(), end.as_ref()));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
@@ -347,7 +373,7 @@ fn peer_hang_up_ends_the_run_as_peer_closed() {
     let outcome = report.outcome();
     assert_eq!(outcome.end, EndReason::PeerClosed);
     assert_eq!(report.mark("end"), "the pods closed the channel");
-    assert!(summary(&outcome).contains("the pods closed the channel"));
+    assert!(summary(&outcome, Route::Uplink).contains("the pods closed the channel"));
 }
 
 #[test]
@@ -364,7 +390,7 @@ fn handshake_timeout_names_the_step() {
         let outcome = report.outcome();
         assert_eq!(outcome.end, EndReason::HandshakeTimeout(step));
         assert!(report.mark("end").contains(named), "{}", report.mark("end"));
-        let sentence = summary(&outcome);
+        let sentence = summary(&outcome, Route::Uplink);
         assert!(sentence.contains(named), "{sentence}");
         assert!(!sentence.contains("STOP was"), "{sentence}");
         let waited_ns = report.marks("end")[0].0 - report.marks("sent").last().unwrap().0;
@@ -466,7 +492,7 @@ fn side_is_restored_on_every_exit_path() {
         if !report.stop_followed_start() {
             failures.push(format!("{name}: no STOP in {got:02x?}"));
         }
-        if report.outcome.map(|outcome| outcome.end) != end {
+        if report.end() != end {
             failures.push(format!("{name}: ended as {:?}", report.outcome));
         }
         let texts: Vec<&str> = report.marks("side").iter().map(|mark| mark.1).collect();
@@ -593,7 +619,7 @@ fn cues_reach_marks_and_the_cue_writer() {
 #[test]
 fn the_rescue_script_sends_stop_without_a_start() {
     let mut case = Case::new(Opening::Handshake, &[]);
-    case.script = rescue();
+    case.script = rescue(Route::Uplink).unwrap();
     let report = case.run();
 
     let sent = [
