@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use pods_core::command::{AdaptiveLevel, Command, CommandError, Outcome};
 use pods_core::link::ladder::HANDSHAKE_STEP_TIMEOUT_MS;
+use pods_core::state::State;
 use pods_fake::pair;
 use pods_proto::noise::NoiseMode;
 use pods_samples::{ADAPTIVE_LEVEL, NOISE, setting};
@@ -189,7 +190,7 @@ fn a_closed_queue_neither_ends_nor_spins_the_driver() {
         let (elsewhere, _unread_elsewhere) = queue();
         let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
         let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
-        let hub = Hub::new(elsewhere.clone());
+        let hub = Hub::new(elsewhere.clone(), State::default());
         let driver = tokio::spawn(drive(
             hub,
             inputs,

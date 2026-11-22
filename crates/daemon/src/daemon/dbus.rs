@@ -9,7 +9,8 @@ use std::task::Poll;
 
 use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
 use pods_core::settings::{
-    self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, NOISE, ONE_BUD_ANC,
+    self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, NOISE, NOTIFICATIONS,
+    ONE_BUD_ANC,
 };
 use pods_core::state::State;
 use pods_core::status::{battery_reading, in_ear, to_status_object};
@@ -336,6 +337,10 @@ impl Omapods {
 
     async fn set_adaptive_level(&self, level: u8) -> Result<&'static str, CallError> {
         self.set(ADAPTIVE_LEVEL, &level.to_string()).await
+    }
+
+    async fn set_notifications(&self, enabled: bool) -> Result<&'static str, CallError> {
+        self.set(NOTIFICATIONS, &enabled.to_string()).await
     }
 
     async fn connect(&self) -> Result<&'static str, CallError> {

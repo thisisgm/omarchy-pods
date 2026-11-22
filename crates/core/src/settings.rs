@@ -11,6 +11,8 @@ enum Family {
     /// The legacy family and the words it takes, as `noise` and `anc` for the verb `noise:anc`.
     Words(&'static str, &'static [&'static str]),
     Switch(&'static str),
+    /// A switch the daemon keeps itself, with no legacy verb.
+    DaemonSwitch(fn(bool) -> Command),
     Level,
 }
 
@@ -23,6 +25,8 @@ pub const CONVERSATIONAL_AWARENESS: &str = "conversational_awareness";
 pub const ONE_BUD_ANC: &str = "one_bud_anc";
 
 pub const ADAPTIVE_LEVEL: &str = "adaptive_level";
+
+pub const NOTIFICATIONS: &str = "notifications";
 
 const NOISE_WORDS: [&str; 5] = [
     NoiseTarget::Mode(NoiseMode::Off).word(),
@@ -38,12 +42,16 @@ const EAR_WORDS: [&str; 3] = [
     EarDetectionBehavior::PauseWhenBothRemoved.word(),
 ];
 
-const KEYS: [(&str, Family); 5] = [
+const KEYS: [(&str, Family); 6] = [
     (NOISE, Family::Words("noise", &NOISE_WORDS)),
     (EAR_DETECTION, Family::Words("ear", &EAR_WORDS)),
     (CONVERSATIONAL_AWARENESS, Family::Switch("ca")),
     (ONE_BUD_ANC, Family::Switch("onebud")),
     (ADAPTIVE_LEVEL, Family::Level),
+    (
+        NOTIFICATIONS,
+        Family::DaemonSwitch(Command::SetNotifications),
+    ),
 ];
 
 /// What a switch takes, each with the legacy word that sets it.
@@ -64,6 +72,12 @@ pub fn setting(key: &str, value: &str) -> Result<Command, CommandError> {
             .find_map(|&(word, legacy_word)| (word == value).then_some(legacy_word))
             .and_then(|legacy_word| legacy::family_command(prefix, legacy_word))
             .ok_or(CommandError::BadValue),
+        // `bool::from_str` takes exactly the words of `SWITCH_VALUES`.
+        Family::DaemonSwitch(command) => value
+            .parse::<bool>()
+            .ok()
+            .map(command)
+            .ok_or(CommandError::BadValue),
         Family::Level => legacy::adaptive_level(value).map(Command::SetAdaptiveLevel),
     }
 }
@@ -73,7 +87,7 @@ pub fn setting(key: &str, value: &str) -> Result<Command, CommandError> {
 pub fn values(key: &str) -> Option<&'static [&'static str]> {
     match family(key)? {
         Family::Words(_, words) => Some(words),
-        Family::Switch(_) => Some(&SWITCH_VALUES),
+        Family::Switch(_) | Family::DaemonSwitch(_) => Some(&SWITCH_VALUES),
         Family::Level => None,
     }
 }
@@ -93,6 +107,7 @@ pub fn action(name: &str) -> Result<Command, CommandError> {
             | Command::SetConversationalAwareness(_)
             | Command::SetOneBudAnc(_)
             | Command::SetAdaptiveLevel(_)
+            | Command::SetNotifications(_)
             | Command::Reopen,
         )
         | None => Err(CommandError::BadRequest),

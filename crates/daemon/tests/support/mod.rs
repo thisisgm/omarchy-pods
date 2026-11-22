@@ -81,7 +81,7 @@ pub(crate) fn wait_within<T>(
     }
 }
 
-/// The temp session one test runs in: runtime directory, state home, home and the directory on its path.
+/// The temp session one test runs in: runtime directory, state home, config home, home and the directory on its path.
 pub(crate) struct Session {
     pub(crate) dir: TempDir,
 }
@@ -89,7 +89,7 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for sub in ["run", "state", "home", "bin"] {
+        for sub in ["run", "state", "config", "home", "bin"] {
             fs::create_dir(dir.path().join(sub)).unwrap();
         }
         fs::set_permissions(dir.path().join("run"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -109,6 +109,10 @@ impl Session {
         self.dir.path().join("state")
     }
 
+    pub(crate) fn config_home(&self) -> PathBuf {
+        self.dir.path().join("config")
+    }
+
     pub(crate) fn socket(&self) -> PathBuf {
         self.runtime_dir().join("librepods.sock")
     }
@@ -118,6 +122,11 @@ impl Session {
         self.state_home().join("librepods").join("status.json")
     }
 
+    /// The preferences the daemon keeps across restarts, beside the status document.
+    pub(crate) fn settings_file(&self) -> PathBuf {
+        self.state_home().join("librepods").join("settings.json")
+    }
+
     /// The binary with this session's environment and nothing of the real one's XDG, home or path.
     pub(crate) fn command(&self, program: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(program);
@@ -125,6 +134,7 @@ impl Session {
             .args(args)
             .env("XDG_RUNTIME_DIR", self.runtime_dir())
             .env("XDG_STATE_HOME", self.state_home())
+            .env("XDG_CONFIG_HOME", self.config_home())
             .env("HOME", self.dir.path().join("home"))
             .env("PATH", self.bin())
             // With no address the daemon tries the bus under the temp runtime directory, which never exists.

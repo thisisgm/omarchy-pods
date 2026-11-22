@@ -19,9 +19,9 @@ pub(crate) struct Hub {
 }
 
 impl Hub {
-    pub(super) fn new(link: mpsc::Sender<Input>) -> Self {
+    pub(super) fn new(link: mpsc::Sender<Input>, state: State) -> Self {
         Self {
-            state: watch::Sender::new(State::default()),
+            state: watch::Sender::new(state),
             subscribers: Arc::default(),
             link,
         }

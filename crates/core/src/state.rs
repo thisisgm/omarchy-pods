@@ -6,6 +6,10 @@ use pods_proto::noise::NoiseMode;
 use crate::command::AdaptiveLevel;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is its own key of the status document, a JSON bool"
+)]
 pub struct State {
     /// The control channel link, not the daemon; battery keeps arriving over BLE while false.
     pub connected: bool,
@@ -26,6 +30,8 @@ pub struct State {
     pub ear_detection_behavior: EarDetectionBehavior,
     pub lid_state: LidState,
     pub counters: Counters,
+    /// Whether the policy sends desktop notices.
+    pub notifications: bool,
 }
 
 impl Default for State {
@@ -46,6 +52,8 @@ impl Default for State {
             ear_detection_behavior: EarDetectionBehavior::default(),
             lid_state: LidState::default(),
             counters: Counters::default(),
+            // The C++ `Notifier` starts enabled.
+            notifications: true,
         }
     }
 }
@@ -88,6 +96,12 @@ pub enum EarDetectionBehavior {
 }
 
 impl EarDetectionBehavior {
+    pub const ALL: [Self; 3] = [
+        Self::PauseWhenOneRemoved,
+        Self::PauseWhenBothRemoved,
+        Self::Disabled,
+    ];
+
     /// The word after `ear:` in a legacy verb, which `set ear_detection` takes and the `EarDetection` property shows.
     #[must_use]
     pub const fn word(self) -> &'static str {

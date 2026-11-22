@@ -4,6 +4,7 @@ mod reader;
 
 use std::collections::{HashMap, VecDeque};
 use std::future;
+use std::mem;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::thread;
@@ -15,11 +16,12 @@ use pods_core::link::{
 };
 use pods_core::policy::notices::Notice;
 use pods_core::policy::{Effect, Fact, Policy, SleepEdge};
+use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pods_proto::model::Model;
 use pods_sys::l2cap::{Channel, ChannelError};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{self, JoinHandle};
 use tokio::time::{Instant, timeout, timeout_at};
 
@@ -75,6 +77,7 @@ pub(super) enum Request {
 #[derive(Debug)]
 pub(super) struct Outlets {
     pub(super) notices: mpsc::Sender<Notice>,
+    pub(super) prefs: watch::Sender<Prefs>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -253,6 +256,10 @@ impl Driver {
             .into_iter()
             .flat_map(|fact| self.policy.step(&next, fact, now))
             .collect();
+        let prefs = Prefs::of(&next);
+        self.outlets
+            .prefs
+            .send_if_modified(|kept| mem::replace(kept, prefs) != prefs);
         self.hub.publish(next);
         for action in actions {
             self.execute(action);

@@ -214,6 +214,7 @@ fn handling(
         Command::SetAdaptiveLevel(level) => adaptive_level(state, known, features, level),
         // Never reached for connect, disconnect and forget, which `step` answers in every phase.
         Command::SetEarDetection(_)
+        | Command::SetNotifications(_)
         | Command::Reopen
         | Command::Connect
         | Command::Disconnect

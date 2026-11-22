@@ -10,6 +10,15 @@ use crate::state::State;
 /// Changes only when a key changes meaning or goes away.
 const SCHEMA_VERSION: u8 = 1;
 
+/// How many keys the C++ daemon writes, as its golden status line holds them.
+pub const CPP_KEY_COUNT: usize = 36;
+
+/// The keys this daemon adds to the `CPP_KEY_COUNT` the C++ daemon writes.
+#[rustfmt::skip]
+pub const ADDITIVE_KEYS: &[&str] = &[
+    "notifications_enabled",
+];
+
 /// Keys in ascending byte order, as the C++ `QJsonObject` writes them.
 #[must_use]
 pub fn to_status_line(state: &State) -> String {
@@ -113,6 +122,7 @@ pub fn to_status_object(state: &State) -> Value {
             Value::from(state.ear_detection_behavior.number()),
         ),
         ("lid_state", Value::from(state.lid_state.number())),
+        ("notifications_enabled", Value::from(state.notifications)),
     ]))
 }
 

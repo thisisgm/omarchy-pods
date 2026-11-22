@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use cpp_source::{LOW_BATTERY, MAIN};
+use cpp_source::{LOW_BATTERY, MAIN, NOTIFIER};
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
 
@@ -267,4 +267,47 @@ fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_ba
         policy.step(&down, lost(hours), at(hours + 7_750)),
         [Effect::Notify(Notice::Disconnected)]
     );
+}
+
+#[test]
+fn the_cpp_notifier_drops_a_notice_only_at_the_send() {
+    let send = NOTIFIER.body("void notify(");
+    assert!(send.trim_start().starts_with("if (!m_enabled)"), "{send}");
+    let check = MAIN.body("void checkLowBatteryThresholds()");
+    let evaluated = check.find("latch->evaluate(").unwrap();
+    assert!(
+        evaluated < check.find("m_notifier->notify(").unwrap(),
+        "{check}"
+    );
+}
+
+#[test]
+fn the_notices_and_the_latches_are_the_same_with_notices_off() {
+    let lost = Signal::Lost {
+        device: device(),
+        down_at: Some(Duration::ZERO),
+    };
+    let steps = |notifications: bool| {
+        let mut policy = Policy::default();
+        let mut state = State {
+            notifications,
+            ..State::default()
+        };
+        let mut effects = Vec::new();
+        for case in [LOW_BATTERY_TRIGGER, LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER] {
+            state.batteries.case = Some(draining(case));
+            effects.push(policy.step(&state, Fact::Changed, Duration::ZERO));
+        }
+        effects.push(policy.step(&state, Fact::Link(lost), Duration::ZERO));
+        effects
+    };
+    let on = steps(true);
+    assert_eq!(steps(false), on);
+    let case_notice = Effect::Notify(Notice::LowBattery {
+        part: Part::Case,
+        percent: LOW_BATTERY_TRIGGER,
+    });
+    assert_eq!(on[0], [case_notice]);
+    assert_eq!(on[2], [case_notice]);
+    assert_eq!(on[3], [Effect::Notify(Notice::Disconnected)]);
 }

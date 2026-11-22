@@ -41,6 +41,7 @@ pub enum Command {
     SetConversationalAwareness(bool),
     SetOneBudAnc(bool),
     SetAdaptiveLevel(AdaptiveLevel),
+    SetNotifications(bool),
     Connect,
     Disconnect,
     Forget,
@@ -169,6 +170,10 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
                 state.ear_detection_behavior = behavior;
                 raise(&mut counters.ear_detection_changes);
             }
+            Outcome::Confirmed
+        }
+        Command::SetNotifications(enabled) => {
+            state.notifications = enabled;
             Outcome::Confirmed
         }
         Command::SetConversationalAwareness(enabled) => {

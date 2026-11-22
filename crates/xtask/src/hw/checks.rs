@@ -280,10 +280,12 @@ pub(crate) fn reconnect(lab: &Lab<'_>) -> Result<Check, Interrupted> {
 
 #[cfg(test)]
 mod tests {
+    use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT};
+
     use super::document_keys;
 
     #[test]
-    fn the_status_document_has_36_keys() {
-        assert_eq!(document_keys().len(), 36);
+    fn the_status_document_has_the_cpp_keys_and_the_additive_ones() {
+        assert_eq!(document_keys().len(), CPP_KEY_COUNT + ADDITIVE_KEYS.len());
     }
 }

@@ -17,12 +17,20 @@ use zbus::export::serde::de::DeserializeOwned;
 use zbus::zvariant::{DynamicType, Type};
 use zbus::{Connection, Message, MessageStream};
 
+use super::players::PROPERTIES;
 use super::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
 
 /// The names the daemon serves on the session bus, from `src/daemon/dbus.rs`.
 pub(crate) const BUS_NAME: &str = "io.github.thisisgm.Omapods";
 pub(crate) const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
 pub(crate) const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+
+/// The match rule for the daemon object's `PropertiesChanged` signals.
+pub(crate) fn changes_rule() -> String {
+    format!(
+        "type='signal',interface='{PROPERTIES}',member='PropertiesChanged',path='{OBJECT_PATH}'"
+    )
+}
 
 const BUS_DAEMON: &str = "dbus-daemon";
 const SOCKET_NAME: &str = "bus.sock";
