@@ -17,9 +17,14 @@ use super::att_synth::{NS_PER_MS, NS_PER_SECOND, Session};
 use super::support::{log_text, make_run_of, probe, row};
 use super::xorshift::next_random;
 
-/// The samples of one frame at 48 kHz, and the bytes of one sample.
-pub(crate) const FRAME: usize = 960;
-pub(crate) const SAMPLE_BYTES: usize = 4;
+#[expect(
+    dead_code,
+    reason = "what only the tests of the whole measure read of the dictation audio goes unused here"
+)]
+#[path = "dictation.rs"]
+mod dictation;
+pub(crate) use dictation::{FRAME, SAMPLE_BYTES};
+
 /// The status the command exits with when it refuses; a panic would exit with 101.
 pub(crate) const REFUSED: i32 = 1;
 /// The bytes before the samples in the WAV file the command writes.

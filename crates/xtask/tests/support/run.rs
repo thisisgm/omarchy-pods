@@ -10,7 +10,7 @@ use pods_proto::sdulog::{Record, format_line};
 use tempfile::TempDir;
 
 /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
-const STAMP: &str = "20261120T120000Z";
+pub(crate) const STAMP: &str = "20261120T120000Z";
 /// The clock of the generated peer where a test needs only one.
 pub(crate) const RATE_HZ: u32 = 64_000;
 /// The samples one unit is assumed to hold, which is also the step of the generated stamps.

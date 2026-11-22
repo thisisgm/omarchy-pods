@@ -23,16 +23,19 @@ use super::oggfile;
 use super::store::{MAX_READ_BYTES, Run, StoreError, Unnamed};
 use super::wav;
 use candidate::{Candidate, OutputRate};
-use frames::FramesError;
+pub(crate) use frames::{FramesError, sessions};
 
 /// The table of figures, which is also what the command prints.
 const TABLE_FILE: &str = "decode-opus.tsv";
 /// What the candidate decoded at 48 kHz, as a WAV file of floats.
-const WAV_FILE: &str = "dictation.f32.wav";
+pub(crate) const WAV_FILE: &str = "dictation.f32.wav";
 /// The frames as one Ogg Opus stream, which is what both oracles read.
 const MEDIA_FILE: &str = "dictation.opus";
 /// The rate of the comparison: FFmpeg decodes Opus at 48 kHz, so no resampler stands between the decoders.
 const COMPARED: OutputRate = OutputRate::Hz48000;
+/// The rate `WAV_FILE` is labelled with and the samples each frame of the run takes in it.
+pub(crate) const WAV_RATE_HZ: u32 = COMPARED.hz();
+pub(crate) const WAV_FRAME: u16 = COMPARED.frame();
 /// Twenty minutes of frames at 50 a second: each decode of that many at 48 kHz is 220 MiB of samples, and four of those and one at 16 kHz are held at once.
 const MAX_FRAMES: u32 = 60_000;
 /// A packet of the table of contents byte alone, which a decoder conceals as a lost frame: it stands in the Ogg stream for a frame nobody decodes.

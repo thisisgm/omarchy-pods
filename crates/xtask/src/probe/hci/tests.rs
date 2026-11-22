@@ -43,7 +43,7 @@ const OPCODE_ACL_RX: u16 = 5;
 const HOST_CIDS: std::ops::Range<u16> = 0x0040..0x0044;
 const PODS_CID_OFFSET: u16 = 0x0010;
 /// The files every run holds, and how many more each pods' link adds: its two music tables.
-const TABLES: [&str; 2] = ["psm.tsv", "links.txt"];
+const TABLES: [&str; 4] = ["marks.tsv", "meta.txt", "psm.tsv", "links.txt"];
 const MUSIC_TABLES_OF_A_LINK: usize = 2;
 
 /// The stamp of a record written `ms` milliseconds into a synthetic trace.
@@ -482,7 +482,9 @@ proptest! {
         let music = outputs.iter().filter(|output| output.name.starts_with("a2dp") || output.name.starts_with("avdtp")).count();
         prop_assert_eq!(music, pods_links.len().saturating_mul(MUSIC_TABLES_OF_A_LINK), "two music tables for each link with a control channel");
         let logs = outputs.len().checked_sub(TABLES.len()).and_then(|rest| rest.checked_sub(music));
-        prop_assert_eq!(logs, Some(found.list.iter().filter(logged).count()), "one log for each basic channel on the two PSMs");
+        let first_attributes = found.list.iter().find(|channel| channel.psm == ATT_PSM);
+        let stand_in = usize::from(first_attributes.is_some_and(Channel::is_basic) && pods_links.is_empty());
+        prop_assert_eq!(logs, Some(found.list.iter().filter(logged).count().saturating_add(stand_in)), "one log for each basic channel on the two PSMs, and an empty accessory log beside the first attribute log when no control channel opened");
     }
 
     #[test]

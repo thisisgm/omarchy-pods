@@ -1,5 +1,7 @@
 //! Readers of the three text files of a run: the packet log, the marks and the meta lines.
 
+use std::fmt;
+
 use pods_proto::sdulog::{LogError, Record, parse_line};
 
 /// The packet log of a run, one line a packet.
@@ -253,6 +255,13 @@ fn is_name(text: &str, max: usize) -> bool {
         && text
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// The lines every meta file opens with, as `parse_meta` reads them: the script, the tool that wrote the run and the wall clock at its zero.
+pub(crate) fn meta_text(script: &dyn fmt::Display, tool: &str, realtime_at_zero_ns: u64) -> String {
+    format!(
+        "{SCRIPT_KEY}{META_SEPARATOR}{script}\ntool{META_SEPARATOR}{tool}\n{REALTIME_KEY}{META_SEPARATOR}{realtime_at_zero_ns}\n"
+    )
 }
 
 // Sample input: "script=soak\ntool=xtask 0.0.0\nrealtime_at_zero_ns=1763640000000000000\n"; the tool line is not used.

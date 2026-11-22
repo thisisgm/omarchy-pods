@@ -94,29 +94,29 @@ fn digital_silence_is_reported_as_zeros() {
 fn grid_finds_a_brick_wall_at_16_khz_within_one_bin() {
     let mut seed = SEED;
     let walled = band_noise(&mut seed, 16_000.0, RATE, 0.01, samples_in(500, RATE));
-    let found = cutoff(&grid(&walled, RATE)).unwrap();
+    let found = cutoff(&grid(&[&walled], RATE)).unwrap();
     assert!(found.abs_diff(16_000) <= BIN_HZ, "{found}");
     // The same samples labelled 48 kHz hold three quarters of every frequency.
-    let relabelled = cutoff(&grid(&walled, REFERENCE_RATE)).unwrap();
+    let relabelled = cutoff(&grid(&[&walled], REFERENCE_RATE)).unwrap();
     assert!(relabelled.abs_diff(12_000) <= BIN_HZ, "{relabelled}");
 
     let room = noise(&mut seed, ROOM, samples_in(500, RATE));
     let mut jingle = band_noise(&mut seed, 10_000.0, RATE, 0.01, samples_in(500, RATE));
     add(&mut jingle, 0, &room);
-    let reached = reach(&grid(&jingle, RATE), &grid(&room, RATE)).unwrap();
+    let reached = reach(&grid(&[&jingle], RATE), &grid(&[&room], RATE)).unwrap();
     assert!(reached.abs_diff(10_000) <= BIN_HZ, "{reached}");
-    let same = reach(&grid(&room, RATE), &grid(&room, RATE));
+    let same = reach(&grid(&[&room], RATE), &grid(&[&room], RATE));
     assert_eq!(same, Err(NoReach::Nowhere));
     // Over digital silence every point would lie, so there is no reach to read.
-    let zeros = grid(&[0.0; 4096], RATE);
-    let over_zeros = reach(&grid(&jingle[..4096], RATE), &zeros);
+    let zeros = grid(&[&[0.0; 4096]], RATE);
+    let over_zeros = reach(&grid(&[&jingle[..4096]], RATE), &zeros);
     assert_eq!(over_zeros, Err(NoReach::NothingUnder { hz: BIN_HZ }));
     assert_eq!(reach(&[], &[]), Err(NoReach::NoBlock));
 
-    let white = cutoff(&grid(&room, RATE));
+    let white = cutoff(&grid(&[&room], RATE));
     assert_eq!(white, Err(NoCutoff::ReachesTheTop));
     assert_eq!(cutoff(&zeros), Err(NoCutoff::NoReference));
-    assert_eq!(grid(&walled[..samples_in(10, RATE)], RATE), []);
+    assert_eq!(grid(&[&walled[..samples_in(10, RATE)]], RATE), []);
     assert_eq!(cutoff(&[]), Err(NoCutoff::NoBlock));
 }
 

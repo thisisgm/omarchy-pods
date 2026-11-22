@@ -161,10 +161,14 @@ pub(crate) fn floor_note() -> String {
     format!("the RMS of the quietest {FLOOR_MS} ms of the window")
 }
 
+/// The quietest three seconds of a window, which its floor is read from; a shorter window has none.
+pub(crate) fn floor_stretch(samples: &[f32], rate: u32) -> Option<&[f32]> {
+    samples.get(quietest(samples, rate, FLOOR_MS)?)
+}
+
 /// The RMS of the quietest three seconds of a window, in dB under full scale.
 pub(crate) fn floor_dbfs(samples: &[f32], rate: u32) -> Result<f64, NoLevel> {
-    let stretch = quietest(samples, rate, FLOOR_MS).ok_or(NoLevel::NoFloor)?;
-    let quiet = samples.get(stretch).ok_or(NoLevel::NoFloor)?;
+    let quiet = floor_stretch(samples, rate).ok_or(NoLevel::NoFloor)?;
     match level(quiet) {
         Ok(level) => Ok(level.rms_dbfs),
         Err(NoLevel::DigitalSilence) => Err(NoLevel::FloorOfZeros),

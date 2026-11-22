@@ -27,14 +27,20 @@ pub(crate) enum NoCutoff {
     ReachesTheTop,
 }
 
-/// Why a window reaches nowhere over the silent one.
+/// Why a window reaches nowhere over the quiet stretch it is set against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum NoReach {
-    #[error("this window or the silent one holds no whole {BLOCK_MS} ms block")]
+    #[error(
+        "this window or the quiet stretch it is set against holds no whole {BLOCK_MS} ms block"
+    )]
     NoBlock,
-    #[error("the silent window holds nothing at {hz} Hz to lie over, as digital silence does")]
+    #[error(
+        "the quiet stretch it is set against holds nothing at {hz} Hz to lie over, as digital silence does"
+    )]
     NothingUnder { hz: u32 },
-    #[error("the window lies {EXCEED_DB} dB over the silent one at no grid point")]
+    #[error(
+        "the window lies {EXCEED_DB} dB over the quiet stretch it is set against at no grid point"
+    )]
     Nowhere,
 }
 
@@ -54,14 +60,15 @@ fn goertzel(block: &[f64], hz: u32, rate: u32) -> f64 {
     last * last + before * before - coefficient * last * before
 }
 
-/// The mean power of `samples` at each grid frequency, lowest first, over whole Hann windowed blocks; a window shorter than one block has none.
-pub(crate) fn grid(samples: &[f32], rate: u32) -> Vec<(u32, f64)> {
+/// The mean power of `stretches` at each grid frequency, lowest first, over the whole Hann windowed blocks of each, so no block spans two; stretches shorter than one block have none.
+pub(crate) fn grid(stretches: &[&[f32]], rate: u32) -> Vec<(u32, f64)> {
     let block_len = samples_in(BLOCK_MS, rate).max(1);
     let hann: Vec<f64> = (0..block_len)
         .map(|index| 0.5 - 0.5 * (TAU * count(index) / count(block_len)).cos())
         .collect();
-    let windowed: Vec<f64> = samples
-        .chunks_exact(block_len)
+    let windowed: Vec<f64> = stretches
+        .iter()
+        .flat_map(|stretch| stretch.chunks_exact(block_len))
         .flat_map(|block| block.iter().zip(&hann))
         .map(|(&sample, weight)| f64::from(sample) * weight)
         .collect();
@@ -101,10 +108,10 @@ pub(crate) fn cutoff(grid: &[(u32, f64)]) -> Result<u32, NoCutoff> {
         .ok_or(NoCutoff::ReachesTheTop)
 }
 
-/// What a reach says of itself.
-pub(crate) fn reach_note() -> String {
+/// What a reach of `loud` over `quiet` says of itself.
+pub(crate) fn reach_note(loud: &str, quiet: &str) -> String {
     format!(
-        "the highest point of a {GRID_STEP_HZ} Hz grid where the window lies {EXCEED_DB} dB over the silent window"
+        "the highest point of a {GRID_STEP_HZ} Hz grid where {loud} lies {EXCEED_DB} dB over {quiet}"
     )
 }
 

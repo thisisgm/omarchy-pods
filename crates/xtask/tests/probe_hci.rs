@@ -2,8 +2,31 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[path = "support/dictation.rs"]
+mod dictation;
+#[cfg(test)]
 #[path = "../src/probe/hci/fixture.rs"]
 mod fixture;
+#[cfg(test)]
+#[path = "support/oracles.rs"]
+mod oracles;
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the builders of runs go unused where every run is made by the command"
+)]
+#[path = "support/run.rs"]
+mod run;
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "what only the tests of the analysis read of a generated session goes unused here"
+)]
+#[path = "../src/probe/analyse/att/synth.rs"]
+mod synth;
+#[cfg(test)]
+#[path = "../src/probe/xorshift.rs"]
+mod xorshift;
 
 #[cfg(test)]
 mod hci {
@@ -22,9 +45,8 @@ mod hci {
         KEYSTROKES, LINK_KEY, MEDIA_CIDS, PODS_ADDRESS, PODS_HANDLE, SET_CONFIGURATION,
         SIGNALLING_CIDS, Trace, att_packets, avdtp, control_packets, media_codec, rtp, session,
     };
+    use super::run::{STAMP, names_in, run_path as run_dir};
 
-    /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
-    const STAMP: &str = "20261120T120000Z";
     /// The run every test creates.
     const RUN: &str = "trace-1";
     /// The modes the store gives every file and every directory it creates.
@@ -62,11 +84,13 @@ mod hci {
     /// Where the included length sits in a record header: after the original length.
     const INCLUDED_LEN: std::ops::Range<usize> = 4..8;
     /// Every file a run of the session trace holds.
-    const SESSION_FILES: [&str; 6] = [
+    const SESSION_FILES: [&str; 8] = [
         "a2dp.tsv",
         "att.log",
         "avdtp.txt",
         "links.txt",
+        "marks.tsv",
+        "meta.txt",
         "psm.tsv",
         "sdu.log",
     ];
@@ -142,20 +166,6 @@ mod hci {
             .unwrap()
     }
 
-    fn run_dir(home: &TempDir, run: &str) -> PathBuf {
-        home.path().join("omapods-captures").join(STAMP).join(run)
-    }
-
-    /// Every name in a directory, sorted.
-    fn names_in(dir: &Path) -> Vec<String> {
-        let entries = fs::read_dir(dir).unwrap();
-        let mut names: Vec<String> = entries
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        names
-    }
-
     /// The name and contents of every file in a run, sorted by name.
     fn files(dir: &Path) -> Vec<(String, Vec<u8>)> {
         let mut files: Vec<(String, Vec<u8>)> = fs::read_dir(dir)
@@ -210,6 +220,12 @@ mod hci {
             .any(|window| window == needle)
     }
 
+    /// Whether a trace holds an address as the wire carries it, last byte first.
+    fn holds_address(trace: &[u8], address: [u8; 6]) -> bool {
+        let on_the_wire: Vec<u8> = address.iter().rev().copied().collect();
+        holds(trace, &on_the_wire)
+    }
+
     fn assert_holds_no_secret(what: &str, bytes: &[u8]) {
         for secret in secrets() {
             assert!(!holds(bytes, &secret), "{what} holds a private byte string");
@@ -231,8 +247,7 @@ mod hci {
     fn output_holds_no_address() {
         let trace = session().bytes();
         for address in [PODS_ADDRESS, HOST_ADDRESS] {
-            let on_the_wire: Vec<u8> = address.iter().rev().copied().collect();
-            assert!(holds(&trace, &on_the_wire), "the trace holds the address");
+            assert!(holds_address(&trace, address));
         }
         assert!(holds(&trace, DEVICE_NAME.as_bytes()));
         assert!(holds(&trace, &LINK_KEY));
@@ -352,7 +367,15 @@ mod hci {
         let names: Vec<&str> = written.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
-            ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv", "sdu.log"]
+            [
+                "a2dp.tsv",
+                "avdtp.txt",
+                "links.txt",
+                "marks.tsv",
+                "meta.txt",
+                "psm.tsv",
+                "sdu.log"
+            ]
         );
         let control = [(Direction::FromPods, vec![0x01])];
         assert_eq!(log(&run_dir(&home, RUN), "sdu.log"), control);
@@ -413,7 +436,7 @@ mod hci {
         ));
         let written = files(&run_dir(&home, RUN));
         let names: Vec<&str> = written.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["links.txt", "psm.tsv"]);
+        assert_eq!(names, ["links.txt", "marks.tsv", "meta.txt", "psm.tsv"]);
         let links = String::from_utf8(written[0].1.clone()).unwrap();
         assert!(
             links.starts_with("trace_cut_short record=0 offset=16\n"),
@@ -571,7 +594,10 @@ mod hci {
         let ran = hci(&home, &path, RUN);
         assert!(ran.status.success(), "{ran:?}");
         assert_eq!(ran.stderr, b"");
-        assert_eq!(names_in(&run_dir(&home, RUN)), ["links.txt", "psm.tsv"]);
+        assert_eq!(
+            names_in(&run_dir(&home, RUN)),
+            ["links.txt", "marks.tsv", "meta.txt", "psm.tsv"]
+        );
         let links = String::from_utf8(ran.stdout).unwrap();
         let said = "avdtp_channels_on_other_links 2\n\
             music_tables_not_written reason=no_link_opened_psm_0x1001\n";
@@ -600,6 +626,8 @@ mod hci {
                     "avdtp-2.txt",
                     "avdtp.txt",
                     "links.txt",
+                    "marks.tsv",
+                    "meta.txt",
                     "psm.tsv",
                     "sdu-2.log",
                     "sdu.log"
@@ -700,7 +728,14 @@ mod hci {
         let dir = run_dir(&home, RUN);
         assert_eq!(
             names_in(&dir),
-            ["a2dp.tsv", "avdtp.txt", "links.txt", "psm.tsv"]
+            [
+                "a2dp.tsv",
+                "avdtp.txt",
+                "links.txt",
+                "marks.tsv",
+                "meta.txt",
+                "psm.tsv"
+            ]
         );
         let seconds = fs::read_to_string(dir.join("a2dp.tsv")).unwrap();
         assert_eq!(seconds, STREAM_SECONDS);
@@ -737,5 +772,6 @@ mod hci {
         }
     }
 
+    mod chain;
     mod pklg;
 }

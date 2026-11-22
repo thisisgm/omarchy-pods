@@ -51,15 +51,18 @@ fn session_of(line: usize, text: &str) -> Result<Option<u32>, FramesError> {
     }
 }
 
+// Sample input: a header line that is skipped unread, then `7\t3\t2080000000\t1\t7\t0x80\t213\t81\t0xb8` for every frame; gives the session of each, in order.
+pub(crate) fn sessions(table: &str) -> Result<Vec<Option<u32>>, FramesError> {
+    let lines = (FIRST_FRAME_LINE..).zip(table.lines().skip(1));
+    lines.map(|(line, text)| session_of(line, text)).collect()
+}
+
 /// Every whole frame of every audio notification the pods sent, in log order, which is the order of the frames table.
 pub(crate) fn load<'log>(
     records: &'log [Record],
     table: &str,
 ) -> Result<Vec<Logged<'log>>, FramesError> {
-    let mut sessions = Vec::new();
-    for (line, text) in (FIRST_FRAME_LINE..).zip(table.lines().skip(1)) {
-        sessions.push(session_of(line, text)?);
-    }
+    let sessions = sessions(table)?;
     let from_pods = records
         .iter()
         .filter(|record| record.direction == Direction::FromPods);

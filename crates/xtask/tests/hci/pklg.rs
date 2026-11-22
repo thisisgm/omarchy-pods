@@ -13,12 +13,19 @@ use super::super::fixture::{
     VOICE_BYTES, audio_notification, mac_accessory_packets, mac_att_packets, mac_session, session,
 };
 use super::{
-    OWNER_FILE, PERMISSION_BITS, RUN, assert_holds_no_secret, files, hci, holds, home_with_trace,
-    log, names_in, run_dir, spellings,
+    OWNER_FILE, PERMISSION_BITS, RUN, assert_holds_no_secret, files, hci, holds, holds_address,
+    home_with_trace, log, names_in, run_dir, spellings,
 };
 
 /// Every file a run of the macOS trace holds: no music table, since no link opened PSM 0x1001.
-const MAC_FILES: [&str; 4] = ["att.log", "links.txt", "psm.tsv", "sdu.log"];
+pub(super) const MAC_FILES: [&str; 6] = [
+    "att.log",
+    "links.txt",
+    "marks.tsv",
+    "meta.txt",
+    "psm.tsv",
+    "sdu.log",
+];
 /// The whole of `links.txt` for the macOS trace.
 const MAC_LINKS: &str = "synchronous_packets_from_host 1\n\
     synchronous_packets_from_pods 2\n\
@@ -230,7 +237,7 @@ fn a_channel_that_matches_nothing_is_unmapped_not_guessed() {
             "unmapped_channel handle=0x000b cid=0x0042 sent_by=pods pdus=1",
         ]
     );
-    assert_eq!(names, ["links.txt", "psm.tsv"]);
+    assert_eq!(names, ["links.txt", "marks.tsv", "meta.txt", "psm.tsv"]);
 }
 
 #[test]
@@ -251,6 +258,8 @@ fn what_content_mapped_takes_the_log_number_after_what_a_request_opened() {
             "a2dp.tsv",
             "avdtp.txt",
             "links.txt",
+            "marks.tsv",
+            "meta.txt",
             "psm.tsv",
             "sdu-2.log",
             "sdu.log"
@@ -315,14 +324,13 @@ fn an_unmapped_identifier_is_listed_once_when_its_handle_is_given_out_again() {
             "unmapped_channel handle=0x000c cid=0x0050 sent_by=host pdus=1",
         ]
     );
-    assert_eq!(names, ["links.txt", "psm.tsv"]);
+    assert_eq!(names, ["links.txt", "marks.tsv", "meta.txt", "psm.tsv"]);
 }
 
 #[test]
 fn output_of_a_packet_logger_trace_holds_no_address() {
     let trace = mac_session().bytes();
-    let on_the_wire: Vec<u8> = PODS_ADDRESS.iter().rev().copied().collect();
-    assert!(holds(&trace, &on_the_wire), "the trace holds the address");
+    assert!(holds_address(&trace, PODS_ADDRESS));
     assert!(holds(&trace, VOICE_BYTES));
     let holds_none = |what: &str, bytes: &[u8]| {
         assert_holds_no_secret(what, bytes);

@@ -1,6 +1,7 @@
 //! The rows of the acoustic table: what each cue window and each start holds, and why a figure is missing where it is.
 
 mod against;
+mod whole;
 
 use std::fmt::Display;
 
@@ -16,6 +17,7 @@ use super::onsets::{RISE_OVER_MS, taps, taps_note};
 use super::reference::Reference;
 use super::spectrum::{cutoff, cutoff_note, grid, reach, reach_note};
 use super::timeline::{CueWindow, Timeline};
+pub(crate) use whole::whole_rows;
 
 const DBFS: &str = "dBFS";
 const DB: &str = "dB";
@@ -91,19 +93,20 @@ fn answer(yes: bool) -> &'static str {
     if yes { "yes" } else { "no" }
 }
 
+/// What the decoded file says of itself, which every table of it opens with.
+fn stream_rows(stream: &Wav) -> [Row; 2] {
+    let labelled = "the rate the decoded file is labelled with";
+    [
+        Row::new("stream_rate", &stream.rate, HZ, labelled),
+        Row::new("stream_samples", &stream.samples.len(), SAMPLES, ""),
+    ]
+}
+
 /// The whole table: the two recordings, each cue window, each start, then what only a reference gives.
 pub(crate) fn rows(recording: &Recording<'_>) -> Vec<Row> {
     let stream = recording.stream;
-    let mut rows = vec![
-        Row::new(
-            "stream_rate",
-            &stream.rate,
-            HZ,
-            "the rate the decoded file is labelled with",
-        ),
-        Row::new("stream_samples", &stream.samples.len(), SAMPLES, ""),
-        marks_cut_row(recording.marks_cut),
-    ];
+    let mut rows = Vec::from(stream_rows(stream));
+    rows.push(marks_cut_row(recording.marks_cut));
     if let Some(reference) = &recording.reference {
         let channels = format!("of {} channels, the first is read", reference.wav.channels);
         rows.extend([
@@ -165,6 +168,18 @@ pub(crate) fn rows(recording: &Recording<'_>) -> Vec<Row> {
     rows
 }
 
+/// The share of a stretch that lies near zero, which a gate that writes zeros raises.
+fn near_zero_row(key: &str, samples: &[f32]) -> Row {
+    let share = near_zero_share(samples).map(|share| share * 100.0);
+    figure(
+        &format!("{key}_near_zero"),
+        share.ok_or_else(|| NO_SAMPLE.to_owned()),
+        2,
+        "percent",
+        "samples within one 16 bit step of zero",
+    )
+}
+
 fn window_rows(key: &str, asked: Option<Asked>, samples: &[f32]) -> [Row; 3] {
     let task = match asked {
         Some(Asked::Taps) => "taps",
@@ -176,7 +191,6 @@ fn window_rows(key: &str, asked: Option<Asked>, samples: &[f32]) -> [Row; 3] {
     };
     let cut =
         "from one second after the cue to the next cue or stop mark, by the arrival of the units";
-    let share = near_zero_share(samples).map(|share| share * 100.0);
     [
         Row::new(
             &format!("{key}_task"),
@@ -185,14 +199,29 @@ fn window_rows(key: &str, asked: Option<Asked>, samples: &[f32]) -> [Row; 3] {
             "what the cue asked for",
         ),
         Row::new(&format!("{key}_samples"), &samples.len(), SAMPLES, cut),
-        figure(
-            &format!("{key}_near_zero"),
-            share.ok_or_else(|| NO_SAMPLE.to_owned()),
-            2,
-            "percent",
-            "samples within one 16 bit step of zero",
-        ),
+        near_zero_row(key, samples),
     ]
+}
+
+/// The RMS over the active frames of a stretch and its floor, each as a figure, then their rows with the peak between them.
+fn level_rows(key: &str, samples: &[f32], rate: u32) -> (Found<f64>, Found<f64>, [Row; 3]) {
+    let ours = said(speech(samples, rate));
+    let over = active_note(ours.as_ref().map_or(0, |&(_, frames)| frames));
+    let rms = ours.clone().map(|(level, _)| level.rms_dbfs);
+    let peak = ours.map(|(level, _)| level.peak_dbfs);
+    let floor = said(floor_dbfs(samples, rate));
+    let rows = [
+        figure(&format!("{key}_speech_rms"), rms.clone(), 2, DBFS, &over),
+        figure(&format!("{key}_speech_peak"), peak, 2, DBFS, &over),
+        figure(
+            &format!("{key}_floor"),
+            floor.clone(),
+            2,
+            DBFS,
+            &floor_note(),
+        ),
+    ];
+    (rms, floor, rows)
 }
 
 fn speech_rows(
@@ -203,44 +232,25 @@ fn speech_rows(
 ) -> Vec<Row> {
     let rate = recording.stream.rate;
     let samples = recording.stretch(window).1;
-    let ours = said(speech(samples, rate));
-    let frames = ours.as_ref().map_or(0, |&(_, frames)| frames);
-    let over = active_note(frames);
-    let floor = said(floor_dbfs(samples, rate));
+    let (ours, floor, levels) = level_rows(key, samples, rate);
     let silent_floor = silent.ok_or_else(|| NO_SILENT_WINDOW.to_owned());
     let silent_floor = silent_floor.and_then(|silent| said(floor_dbfs(silent, rate)));
-    let over_silent = floor.clone().and_then(|floor| Ok(floor - silent_floor?));
-    let mut rows = vec![
-        figure(
-            &format!("{key}_speech_rms"),
-            ours.clone().map(|(level, _)| level.rms_dbfs),
-            2,
-            DBFS,
-            &over,
-        ),
-        figure(
-            &format!("{key}_speech_peak"),
-            ours.clone().map(|(level, _)| level.peak_dbfs),
-            2,
-            DBFS,
-            &over,
-        ),
-        figure(&format!("{key}_floor"), floor, 2, DBFS, &floor_note()),
-        figure(
-            &format!("{key}_floor_minus_silent"),
-            over_silent,
-            2,
-            DB,
-            "that floor less the floor of the silent window; near 0 where the pauses of speech fall to the silence",
-        ),
-    ];
+    let over_silent = floor.and_then(|floor| Ok(floor - silent_floor?));
+    let mut rows = Vec::from(levels);
+    rows.push(figure(
+        &format!("{key}_floor_minus_silent"),
+        over_silent,
+        2,
+        DB,
+        "that floor less the floor of the silent window; near 0 where the pauses of speech fall to the silence",
+    ));
     if let Some(reference) = &recording.reference {
         let theirs = reference
             .stretch(window)
             .ok_or_else(|| against::NOT_HELD.to_owned());
         let theirs = theirs.and_then(|(_, samples)| said(speech(samples, reference.wav.rate)));
         let theirs = theirs.map(|(level, _)| level.rms_dbfs);
-        let apart = ours.and_then(|(level, _)| Ok(level.rms_dbfs - theirs.clone()?));
+        let apart = ours.and_then(|ours| Ok(ours - theirs.clone()?));
         let note = format!("active frames of the same window in the reference; {RECORDER_CLOCK}");
         rows.extend([
             figure(&format!("{key}_reference_rms"), theirs, 2, DBFS, &note),
@@ -281,16 +291,17 @@ fn silence_rows(key: &str, samples: &[f32], rate: u32) -> [Row; 2] {
 
 fn cutoff_row(key: &str, samples: &[f32], rate: u32) -> Row {
     let found =
-        cutoff(&grid(samples, rate)).map_err(|why| format!("the window has no cutoff: {why}"));
+        cutoff(&grid(&[samples], rate)).map_err(|why| format!("the window has no cutoff: {why}"));
     counted(&format!("{key}_cutoff"), found, HZ, &cutoff_note())
 }
 
 fn reach_row(key: &str, samples: &[f32], silent: Option<&[f32]>, rate: u32) -> Row {
     let silent = silent.ok_or_else(|| NO_SILENT_WINDOW.to_owned());
     let found = silent.and_then(|silent| {
-        reach(&grid(samples, rate), &grid(silent, rate)).map_err(|why| why.to_string())
+        reach(&grid(&[samples], rate), &grid(&[silent], rate)).map_err(|why| why.to_string())
     });
-    counted(&format!("{key}_reach"), found, HZ, &reach_note())
+    let note = reach_note("the window", "the silent window");
+    counted(&format!("{key}_reach"), found, HZ, &note)
 }
 
 fn tap_rows(key: &str, window_len: usize, onsets: &[usize], stream: &Wav) -> Vec<Row> {

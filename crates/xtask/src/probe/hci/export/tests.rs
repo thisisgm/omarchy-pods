@@ -93,6 +93,8 @@ fn the_psm_0x1001_channel_is_exported_in_both_directions() {
         [
             "sdu.log",
             "att.log",
+            "marks.tsv",
+            "meta.txt",
             "psm.tsv",
             "a2dp.tsv",
             "avdtp.txt",
@@ -113,7 +115,15 @@ fn the_psm_0x001f_channel_goes_to_att_log_and_is_absent_when_never_opened() {
     trace.send(PODS, ATT_CIDS, &NOTIFICATION);
     assert_eq!(
         names(&rendered(&trace)),
-        ["sdu.log", "psm.tsv", "a2dp.tsv", "avdtp.txt", "links.txt"]
+        [
+            "sdu.log",
+            "marks.tsv",
+            "meta.txt",
+            "psm.tsv",
+            "a2dp.tsv",
+            "avdtp.txt",
+            "links.txt"
+        ]
     );
 
     let mut trace = Trace::new();
@@ -121,7 +131,23 @@ fn the_psm_0x001f_channel_goes_to_att_log_and_is_absent_when_never_opened() {
     trace.open(HOST, AVDTP_PSM, CONTROL_CIDS);
     trace.send(PODS, CONTROL_CIDS, &[1]);
     let outputs = rendered(&trace);
-    assert_eq!(names(&outputs), ["att.log", "psm.tsv", "links.txt"]);
+    // The trace holds no accessory channel, so the log the analysis opens beside this one is written empty and one line says so.
+    assert_eq!(
+        names(&outputs),
+        [
+            "att.log",
+            "sdu.log",
+            "marks.tsv",
+            "meta.txt",
+            "psm.tsv",
+            "links.txt"
+        ]
+    );
+    assert_eq!(text(&outputs, "sdu.log"), "");
+    let naming = text(&outputs, "links.txt")
+        .lines()
+        .filter(|line| line.contains("sdu.log"));
+    assert_eq!(naming.count(), 1);
     assert_eq!(text(&outputs, "att.log"), "");
     assert!(
         text(&outputs, "links.txt")
@@ -150,6 +176,8 @@ fn two_channels_on_one_psm_get_a_log_each() {
             "sdu-2.log",
             "sdu-3.log",
             "att.log",
+            "marks.tsv",
+            "meta.txt",
             "psm.tsv",
             "a2dp.tsv",
             "avdtp.txt",
@@ -337,7 +365,10 @@ fn synchronous_connections_and_what_could_not_be_read_are_counted() {
     ] {
         assert!(links.contains(line), "{line} is not in {links}");
     }
-    assert_eq!(names(&outputs), ["psm.tsv", "links.txt"]);
+    assert_eq!(
+        names(&outputs),
+        ["marks.tsv", "meta.txt", "psm.tsv", "links.txt"]
+    );
 }
 
 #[test]
@@ -357,6 +388,8 @@ fn a_channel_not_in_basic_mode_is_listed_counted_and_not_exported() {
         [
             "sdu.log",
             "att-2.log",
+            "marks.tsv",
+            "meta.txt",
             "psm.tsv",
             "a2dp.tsv",
             "avdtp.txt",
@@ -478,7 +511,10 @@ fn a_trace_of_another_owner_is_refused_with_what_to_do_about_it() {
 #[test]
 fn an_empty_trace_renders_empty_tables() {
     let outputs = rendered(&Trace::new());
-    assert_eq!(names(&outputs), ["psm.tsv", "links.txt"]);
+    assert_eq!(
+        names(&outputs),
+        ["marks.tsv", "meta.txt", "psm.tsv", "links.txt"]
+    );
     let links = text(&outputs, "links.txt");
     assert!(links.starts_with("realtime_at_zero_ns 0\n"));
     assert!(links.ends_with("\nmusic_tables_not_written reason=no_link_opened_psm_0x1001\n"));
