@@ -23,7 +23,7 @@ fn signals_since(sim: &Sim, from: usize) -> Vec<Signal> {
     sim.signals
         .iter()
         .skip(from)
-        .map(|(_, signal)| *signal)
+        .map(|(_, signal)| signal.clone())
         .collect()
 }
 

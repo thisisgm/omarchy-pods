@@ -126,6 +126,7 @@ mod tests {
             primary: Placed::OutOfEar,
             secondary: Placed::InCase,
             noise: 3,
+            keys: None,
         });
         let host = open(&pods);
         let mut expected = vec![

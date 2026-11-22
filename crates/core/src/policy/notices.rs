@@ -48,12 +48,12 @@ impl Notice {
 
 /// A device reset after its link was up, unless the link went down inside a suspend window; one that never came up, a parked device among them, is silent.
 #[must_use]
-pub(super) fn disconnected(signal: Signal, suspend: Suspend) -> Option<Notice> {
+pub(super) fn disconnected(signal: &Signal, suspend: Suspend) -> Option<Notice> {
     match signal {
         Signal::Lost {
             down_at: Some(down_at),
             ..
-        } if !suspend.covers(down_at) => Some(Notice::Disconnected),
-        Signal::Lost { .. } | Signal::Up { .. } => None,
+        } if !suspend.covers(*down_at) => Some(Notice::Disconnected),
+        Signal::Lost { .. } | Signal::Up { .. } | Signal::Keys(_) => None,
     }
 }

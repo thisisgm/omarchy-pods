@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
-use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
+use pods_proto::packets::{
+    HANDSHAKE, REQUEST_NOTIFICATIONS, REQUEST_PROXIMITY_KEYS, SET_SPECIFIC_FEATURES,
+};
 
 use crate::command::{Command, Outcome};
 use crate::link::ladder::PENDING_MAX;
@@ -519,6 +521,7 @@ fn send_label(bytes: &[u8]) -> String {
         b if b == HANDSHAKE => "Send(handshake)".into(),
         b if b == SET_SPECIFIC_FEATURES => "Send(features)".into(),
         b if b == REQUEST_NOTIFICATIONS => "Send(notifications)".into(),
+        b if b == REQUEST_PROXIMITY_KEYS => "Send(keys)".into(),
         other => format!("Send({other:02x?})"),
     }
 }

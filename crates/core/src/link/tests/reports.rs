@@ -7,10 +7,12 @@ use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_proto::packet::{Incoming, classify};
 
+use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY, keys_of};
+
 use super::sim::{Input, NO_ACTIONS, Sim, ms};
 use crate::command::tests::level;
-use crate::link::Phase;
 use crate::link::ladder::Attempt;
+use crate::link::{Phase, Signal};
 use crate::state::State;
 
 /// The longest random packet, one receive buffer.
@@ -153,7 +155,7 @@ fn battery_ear_noise_and_metadata_reach_the_state() {
     assert_eq!(sim.state.device_name, "Test\u{2019}s AirPods Pro");
     assert_eq!(sim.state.model_number, "A3063");
     assert_eq!(sim.state.model, Model::AirPodsPro3);
-    assert_eq!(sim.last(), NO_ACTIONS);
+    assert_eq!(sim.last(), ["Send(keys)"]);
     sim.check();
 }
 
@@ -206,7 +208,7 @@ fn reports_before_the_acknowledgement_are_applied_and_do_not_advance_the_handsha
     sim.feed(Input::Packet(pods_samples::handshake_ack()));
     assert_eq!(sim.last(), ["Send(features)"]);
     sim.feed(Input::Packet(pods_samples::metadata()));
-    assert_eq!(sim.last(), NO_ACTIONS);
+    assert_eq!(sim.last(), ["Send(keys)"]);
     assert_eq!(sim.state.model, Model::AirPodsPro3);
     assert!(matches!(
         sim.machine.phase(),
@@ -348,5 +350,39 @@ fn an_adaptive_level_over_100_from_the_pods_is_ignored() {
     assert_eq!(sim.state.adaptive_noise_level, level(100));
     sim.feed(Input::Packet(report(ControlId::ADAPTIVE_NOISE_LEVEL, 0)));
     assert_eq!(sim.state.adaptive_noise_level, level(0));
+    sim.check();
+}
+
+#[test]
+fn the_keys_are_asked_on_each_metadata_and_a_reply_that_parses_is_signalled() {
+    let mut sim = Sim::new();
+    sim.bring_up(0);
+    sim.feed(Input::Packet(pods_samples::metadata()));
+    assert_eq!(sim.last(), ["Send(keys)"]);
+    sim.feed(Input::Packet(pods_samples::battery()));
+    assert_eq!(sim.last(), NO_ACTIONS);
+    let reply = keys_of(IDENTITY_KEY, PAYLOAD_KEY);
+    let Ok(Incoming::Keys(keys)) = classify(&reply) else {
+        panic!("the sample reply does not parse");
+    };
+    let up = sim.signals.len();
+    let mut cut = reply.clone();
+    cut.pop();
+    sim.feed(Input::Packet(cut));
+    sim.feed(Input::Packet(reply));
+    let signals: Vec<&Signal> = sim
+        .signals
+        .iter()
+        .skip(up)
+        .map(|(_, signal)| signal)
+        .collect();
+    assert_eq!(signals, [&Signal::Keys(keys)]);
+
+    sim.feed(Input::PeerCloses);
+    sim.feed(Input::Wait(ms(1000)));
+    sim.feed(Input::Packet(pods_samples::handshake_ack()));
+    sim.feed(Input::Packet(pods_samples::features_ack()));
+    sim.feed(Input::Packet(pods_samples::metadata()));
+    assert_eq!(sim.last(), ["Send(keys)"]);
     sim.check();
 }

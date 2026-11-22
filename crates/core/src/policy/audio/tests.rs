@@ -55,8 +55,8 @@ fn the_link_up_follows_its_device_and_the_loss_follows_none() {
 #[test]
 fn the_link_sets_down_then_idle_whatever_was_read() {
     for was in SERVERS {
-        assert_eq!(server_after(was, up()), AudioServer::Down, "{was:?}");
-        assert_eq!(server_after(was, lost()), AudioServer::Idle, "{was:?}");
+        assert_eq!(server_after(was, &up()), AudioServer::Down, "{was:?}");
+        assert_eq!(server_after(was, &lost()), AudioServer::Idle, "{was:?}");
     }
 }
 
@@ -67,9 +67,9 @@ fn the_adapter_is_heard_only_while_a_device_is_followed() {
         (AudioFact::Down, AudioServer::Down),
     ];
     for (fact, reads) in reported {
-        assert_eq!(server_after(AudioServer::Down, Fact::Audio(fact)), reads);
-        assert_eq!(server_after(AudioServer::Up, Fact::Audio(fact)), reads);
-        let late = server_after(AudioServer::Idle, Fact::Audio(fact));
+        assert_eq!(server_after(AudioServer::Down, &Fact::Audio(fact)), reads);
+        assert_eq!(server_after(AudioServer::Up, &Fact::Audio(fact)), reads);
+        let late = server_after(AudioServer::Idle, &Fact::Audio(fact));
         assert_eq!(late, AudioServer::Idle, "{fact:?}");
     }
 }
@@ -77,8 +77,8 @@ fn the_adapter_is_heard_only_while_a_device_is_followed() {
 #[test]
 fn a_sink_or_a_state_change_leaves_the_reading() {
     for was in SERVERS {
-        assert_eq!(server_after(was, sink()), was, "{was:?}");
-        assert_eq!(server_after(was, Fact::Changed), was, "{was:?}");
+        assert_eq!(server_after(was, &sink()), was, "{was:?}");
+        assert_eq!(server_after(was, &Fact::Changed), was, "{was:?}");
     }
 }
 
@@ -87,12 +87,12 @@ fn a_suspend_or_a_tick_leaves_the_reading() {
     for was in SERVERS {
         for edge in [SleepEdge::Sleeping, SleepEdge::Woke] {
             assert_eq!(
-                server_after(was, Fact::Sleep(edge)),
+                server_after(was, &Fact::Sleep(edge)),
                 was,
                 "{was:?} {edge:?}"
             );
         }
-        assert_eq!(server_after(was, Fact::Tick), was, "{was:?}");
+        assert_eq!(server_after(was, &Fact::Tick), was, "{was:?}");
     }
 }
 

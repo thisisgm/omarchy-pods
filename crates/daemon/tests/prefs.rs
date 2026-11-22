@@ -29,7 +29,8 @@ mod tests {
     use super::support::players::PROPERTIES;
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::{
-        BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, set_request, wait_for, wait_within,
+        BINARY, DAEMON_LOG, DIR_MODE, Daemon, FILE_MODE, HANG_LIMIT, Proto1, Session, set_request,
+        wait_for, wait_within,
     };
 
     const UNREADABLE: &str = "prefs: settings unreadable, defaults used";
@@ -67,15 +68,6 @@ mod tests {
     /// A bud level at the low battery trigger, so both buds at it queue two notices at once.
     const LOW: u8 = 10;
 
-    const FILE_MODE: u32 = 0o600;
-
-    const DIR_MODE: u32 = 0o700;
-
-    const SHELL: &str = "/bin/sh";
-
-    /// Clears the mask the test runner passes on, then becomes the daemon named by `$0`.
-    const UNMASKED: &str = "umask 0; exec \"$0\" daemon";
-
     fn old_conf(session: &Session) -> PathBuf {
         session
             .config_home()
@@ -107,9 +99,8 @@ mod tests {
         text
     }
 
-    /// The daemon under umask 0, so the modes it sets are its own and not the runner's mask.
     fn start_unmasked(session: &Session) -> Daemon {
-        let mut command = session.command(Path::new(SHELL), &["-c", UNMASKED, BINARY]);
+        let mut command = session.unmasked_daemon();
         let daemon = session.spawn_command(&mut command, DAEMON_LOG);
         session.wait_accepting();
         daemon

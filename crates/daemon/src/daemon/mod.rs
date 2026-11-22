@@ -4,6 +4,7 @@ mod audio;
 mod bluez;
 mod dbus;
 mod hub;
+mod keys;
 mod legacy_dialect;
 mod link;
 mod notify;
@@ -25,6 +26,7 @@ use std::task::Poll;
 
 use pods_core::prefs::Prefs;
 use pods_core::status::to_status_line;
+use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::CONTROL_PSM;
 use pods_sys::l2cap;
 use tokio::runtime::Builder;
@@ -58,8 +60,10 @@ pub(crate) struct Paths {
 pub(crate) fn run(paths: Paths) -> ExitCode {
     let settings = paths.state_file.with_file_name(prefs::FILE_NAME);
     let loaded = prefs::load(&settings, paths.old_conf.as_deref());
+    let keys_file = paths.state_file.with_file_name(keys::FILE_NAME);
+    let stored = keys::load(&keys_file);
     match Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime.block_on(serve(paths, settings, loaded)),
+        Ok(runtime) => runtime.block_on(serve(paths, settings, loaded, keys_file, stored)),
         Err(error) => {
             log(&format!("cannot start the daemon's async runtime: {error}"));
             ExitCode::FAILURE
@@ -67,7 +71,13 @@ pub(crate) fn run(paths: Paths) -> ExitCode {
     }
 }
 
-async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
+async fn serve(
+    paths: Paths,
+    settings: PathBuf,
+    loaded: Prefs,
+    keys_file: PathBuf,
+    stored: Option<ProximityKeys>,
+) -> ExitCode {
     let mut stop = match signals::listen() {
         Ok(stop) => stop,
         Err(error) => {
@@ -108,6 +118,7 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
     let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
     let (audio_requests, audio_queue) = audio::queue();
     let adapter = tokio::spawn(audio::run(link.clone(), audio_queue, paths.runtime_dir));
+    let (keys, pairs) = keys::queue();
     let driver = tokio::spawn(link::drive(
         hub.clone(),
         inputs,
@@ -118,6 +129,7 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
             notices,
             prefs,
             audio: audio_requests,
+            keys,
         },
     ));
     let file = StateFile::new(paths.state_file);
@@ -141,6 +153,7 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
     let accept = tokio::spawn(socket::accept_loop(listener, hub.clone()));
     let follow = tokio::spawn(state_file::follow(updates, file.clone(), failures));
     let prefs_writer = tokio::spawn(prefs::follow(prefs_changes, settings));
+    let keys_writer = tokio::spawn(keys::follow(pairs, keys_file, stored));
     // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(dbus::serve(hub.clone()));
     let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests));
@@ -166,6 +179,9 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
     // Last: it returns once the stopped driver's sender is gone and the final change is written.
     if let Err(error) = prefs_writer.await {
         log(&format!("prefs: the writer ended: {error}"));
+    }
+    if let Err(error) = keys_writer.await {
+        log(&format!("keys: the writer ended: {error}"));
     }
     code
 }

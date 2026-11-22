@@ -51,22 +51,27 @@ pub enum AudioRequest {
 }
 
 /// The connection follows a device from its link coming up to the device's reset, so a channel retry keeps it.
-pub(super) fn follow(signal: Signal) -> AudioRequest {
+pub(super) fn follow(signal: &Signal) -> Option<AudioRequest> {
     match signal {
-        Signal::Up { device } => AudioRequest::Follow(Some(device)),
-        Signal::Lost { .. } => AudioRequest::Follow(None),
+        Signal::Up { device } => Some(AudioRequest::Follow(Some(*device))),
+        Signal::Lost { .. } => Some(AudioRequest::Follow(None)),
+        Signal::Keys(_) => None,
     }
 }
 
 /// `down` from the link's up until the adapter reports the server, `idle` from its loss, when a late report is dropped.
 #[must_use]
-pub fn server_after(was: AudioServer, fact: Fact) -> AudioServer {
+pub fn server_after(was: AudioServer, fact: &Fact) -> AudioServer {
     match fact {
         Fact::Link(Signal::Up { .. }) => AudioServer::Down,
         Fact::Link(Signal::Lost { .. }) => AudioServer::Idle,
         Fact::Audio(AudioFact::Up) if was != AudioServer::Idle => AudioServer::Up,
         Fact::Audio(AudioFact::Down) if was != AudioServer::Idle => AudioServer::Down,
-        Fact::Audio(_) | Fact::Changed | Fact::Sleep(_) | Fact::Tick => was,
+        Fact::Link(Signal::Keys(_))
+        | Fact::Audio(_)
+        | Fact::Changed
+        | Fact::Sleep(_)
+        | Fact::Tick => was,
     }
 }
 

@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 cpp-source = { path = "../cpp-source" }

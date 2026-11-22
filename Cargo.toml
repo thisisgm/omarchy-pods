@@ -23,6 +23,7 @@ serde_json = "1.0"
 signal-hook = { version = "0.4", default-features = false }
 tempfile = "3"
 thiserror = "2.0"
+zeroize = "1.9.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

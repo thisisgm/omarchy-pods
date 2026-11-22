@@ -1,9 +1,9 @@
 //! A small file only its owner reads: replaced whole through a fresh copy, read back within a bound.
 
 use std::fmt;
-use std::fs::{self, DirBuilder, File};
+use std::fs::{self, DirBuilder, File, Permissions};
 use std::io::{self, ErrorKind, Read, Write};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use rustix::fs::{Mode, OFlags, fsync, open};
@@ -17,6 +17,8 @@ pub(super) const FILE_MAX: u64 = 65536;
 const TEMP_SUFFIX: &str = ".tmp";
 
 const FILE_MODE: u32 = 0o600;
+
+const MODE_BITS: u32 = 0o7777;
 
 const DIR_MODE: u32 = 0o700;
 
@@ -197,6 +199,21 @@ pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
 
 /// `None` when absent; a link, a directory, a pipe or a file over `FILE_MAX` is an error, and none of them is followed or waited on.
 pub(super) fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    open_regular(path)?.map(read_bounded).transpose()
+}
+
+/// As `read`, once the file's mode is the owner's alone.
+pub(super) fn read_private(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let Some(file) = open_regular(path)? else {
+        return Ok(None);
+    };
+    if file.metadata()?.permissions().mode() & MODE_BITS != FILE_MODE {
+        file.set_permissions(Permissions::from_mode(FILE_MODE))?;
+    }
+    read_bounded(file).map(Some)
+}
+
+fn open_regular(path: &Path) -> io::Result<Option<File>> {
     let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     let file = match open(path, flags, Mode::empty()) {
         Ok(file) => File::from(file),
@@ -206,13 +223,17 @@ pub(super) fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     if !file.metadata()?.is_file() {
         return Err(io::Error::other("it is not a regular file"));
     }
+    Ok(Some(file))
+}
+
+fn read_bounded(file: File) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(FILE_MAX.saturating_add(1))
         .read_to_end(&mut bytes)?;
     if u64::try_from(bytes.len()).map_or(true, |len| len > FILE_MAX) {
         return Err(io::Error::other(format!("it is over {FILE_MAX} bytes")));
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 #[cfg(test)]

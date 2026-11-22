@@ -20,14 +20,16 @@ use pods_core::policy::{Effect, Fact, Policy, SleepEdge};
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
+use pods_proto::keys::ProximityKeys;
 use pods_proto::model::Model;
 use pods_sys::l2cap::{Channel, ChannelError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{self, JoinHandle};
 use tokio::time::{Instant, timeout, timeout_at};
+use zeroize::Zeroizing;
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, audio, log, notify};
+use super::{MAX_CONNECTIONS, audio, keys, log, notify};
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,7 +58,7 @@ pub(super) enum DeviceEvent {
 pub(super) enum Input {
     Device(DeviceEvent),
     Opened(Arc<Channel>),
-    Sdu(Box<[u8]>),
+    Sdu(Zeroizing<Box<[u8]>>),
     Ended(End),
     /// Made by the driver itself when a write fails.
     SendFailed,
@@ -75,12 +77,13 @@ pub(super) enum Request {
     Call { device: BdAddr, call: Call },
 }
 
-/// Where the policy's notices and audio requests go, one queue per adapter.
+/// Where the policy's notices, choices, audio requests and keys go, one queue per adapter.
 #[derive(Debug)]
 pub(super) struct Outlets {
     pub(super) notices: mpsc::Sender<Notice>,
     pub(super) prefs: watch::Sender<Prefs>,
     pub(super) audio: mpsc::Sender<AudioRequest>,
+    pub(super) keys: mpsc::Sender<ProximityKeys>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -247,7 +250,7 @@ impl Driver {
         let mut facts = Vec::new();
         for action in &actions {
             if let Action::Signal(signal) = action {
-                facts.push(Fact::Link(*signal));
+                facts.push(Fact::Link(signal.clone()));
             }
         }
         if next != last {
@@ -257,7 +260,7 @@ impl Driver {
             facts.push(Fact::Tick);
         }
         for fact in &facts {
-            next.audio_server = server_after(next.audio_server, *fact);
+            next.audio_server = server_after(next.audio_server, fact);
         }
         let effects: Vec<Effect> = facts
             .into_iter()
@@ -279,7 +282,7 @@ impl Driver {
     /// A fact from outside the link machine: the server reading folds it in, then the policy steps on that state.
     fn observe(&mut self, fact: Fact) {
         let mut next = self.hub.state();
-        next.audio_server = server_after(next.audio_server, fact);
+        next.audio_server = server_after(next.audio_server, &fact);
         let effects = self.policy.step(&next, fact, self.started.elapsed());
         self.hub.publish(next);
         for effect in effects {
@@ -293,6 +296,7 @@ impl Driver {
             Effect::Notify(notice) => notify::offer(&self.outlets.notices, notice),
             Effect::Wake => self.step(Event::Resumed),
             Effect::Audio(request) => audio::offer(&self.outlets.audio, request),
+            Effect::StoreKeys(keys) => keys::offer(&self.outlets.keys, keys),
         }
     }
 

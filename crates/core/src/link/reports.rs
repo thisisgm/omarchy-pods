@@ -4,9 +4,10 @@ use pods_proto::control::{ControlCommand, ControlId};
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_proto::packet::{Incoming, classify};
+use pods_proto::packets::REQUEST_PROXIMITY_KEYS;
 
 use super::commands::KnownSettings;
-use super::{Action, Machine, Phase};
+use super::{Action, Machine, Phase, Signal};
 use crate::command::AdaptiveLevel;
 use crate::state::State;
 
@@ -42,8 +43,10 @@ impl Machine {
                 state.model = Model::from_number(&metadata.model_number);
                 state.model_number = metadata.model_number;
                 state.device_name = metadata.name;
-                Vec::new()
+                // As the C++ daemon asks, with no wait and no retry: pods that never answer cost nothing.
+                vec![Action::Send(REQUEST_PROXIMITY_KEYS.to_vec())]
             }
+            Incoming::Keys(keys) => vec![Action::Signal(Signal::Keys(keys))],
             Incoming::Uplink(_) | Incoming::Other { .. } | Incoming::Foreign => Vec::new(),
         }
     }

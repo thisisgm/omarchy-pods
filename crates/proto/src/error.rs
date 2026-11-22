@@ -27,6 +27,8 @@ pub enum Parser {
     AttIndication,
     DictationAudio,
     Metadata,
+    ProximityKeys,
+    ProximityKeyEntry,
     /// `classify` reading an SDU cut inside its opcode.
     Packet,
 }
@@ -51,6 +53,8 @@ impl fmt::Display for Parser {
             Self::AttIndication => "attribute protocol indication",
             Self::DictationAudio => "dictation audio notification",
             Self::Metadata => "metadata packet",
+            Self::ProximityKeys => "proximity keys reply",
+            Self::ProximityKeyEntry => "proximity key entry",
             Self::Packet => "control channel packet",
         })
     }
@@ -215,6 +219,8 @@ mod tests {
             (Parser::AttIndication, "attribute protocol indication"),
             (Parser::DictationAudio, "dictation audio notification"),
             (Parser::Metadata, "metadata packet"),
+            (Parser::ProximityKeys, "proximity keys reply"),
+            (Parser::ProximityKeyEntry, "proximity key entry"),
             (Parser::Packet, "control channel packet"),
         ] {
             assert_eq!(parser.to_string(), name);

@@ -197,6 +197,11 @@ fn adoption_fills_status_file_and_dbus_alike() {
         (dials[0].psm, &dials[0].outcome),
         (CONTROL_PSM, &Outcome::Accepted)
     );
+    // The key request leaves after the publish of the metadata, so it may come after the status filled.
+    device
+        .pods
+        .wait_heard(&host::request_proximity_keys(), 1, HANG_LIMIT)
+        .unwrap_or_else(|deadline| panic!("no key request heard: {deadline:?}"));
     let heard: Vec<Vec<u8>> = device
         .pods
         .heard()
@@ -208,7 +213,8 @@ fn adoption_fills_status_file_and_dbus_alike() {
         [
             host::handshake(),
             host::set_specific_features(),
-            host::request_notifications()
+            host::request_notifications(),
+            host::request_proximity_keys()
         ]
     );
     rig.finish();

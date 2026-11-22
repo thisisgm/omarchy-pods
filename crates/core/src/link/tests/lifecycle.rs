@@ -70,7 +70,12 @@ fn the_first_burst_brings_the_link_up_once() {
         .collect();
     assert_eq!(
         sends,
-        ["Send(handshake)", "Send(features)", "Send(notifications)"]
+        [
+            "Send(handshake)",
+            "Send(features)",
+            "Send(notifications)",
+            "Send(keys)"
+        ]
     );
     assert!(sim.state.connected);
     sim.check();

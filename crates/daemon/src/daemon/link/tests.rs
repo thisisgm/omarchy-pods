@@ -19,7 +19,7 @@ use tokio::time::timeout;
 
 use super::{Connector, DeviceEvent, Input, Outlets, REQUEST_QUEUE, drive, queue};
 use crate::daemon::hub::Hub;
-use crate::daemon::{audio, notify};
+use crate::daemon::{audio, keys, notify};
 
 /// A wait in a test still running after this long has hung, and the test fails.
 pub(in crate::daemon) const HANG_LIMIT: Duration = Duration::from_secs(10);
@@ -29,10 +29,12 @@ pub(in crate::daemon) fn unread_outlets() -> Outlets {
     let (notices, _unread) = notify::queue();
     let (prefs, _unwritten) = watch::channel(Prefs::default());
     let (audio, _unread) = audio::queue();
+    let (keys, _unstored) = keys::queue();
     Outlets {
         notices,
         prefs,
         audio,
+        keys,
     }
 }
 

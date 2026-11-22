@@ -5,6 +5,8 @@ use std::time::Duration;
 use cpp_source::{LOW_BATTERY, MAIN, NOTIFIER};
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
+use pods_proto::keys::{Key, ProximityKeys};
+use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
 
 use super::audio::AudioRequest;
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
@@ -58,7 +60,7 @@ fn a_device_lost_after_its_link_was_up_shows_the_disconnect_notice() {
         down_at: Some(Duration::ZERO),
     };
     assert_eq!(
-        disconnected(lost, Suspend::default()),
+        disconnected(&lost, Suspend::default()),
         Some(Notice::Disconnected)
     );
 }
@@ -69,13 +71,13 @@ fn a_device_lost_before_its_link_came_up_shows_nothing() {
         device: device(),
         down_at: None,
     };
-    assert_eq!(disconnected(lost, Suspend::default()), None);
+    assert_eq!(disconnected(&lost, Suspend::default()), None);
 }
 
 #[test]
 fn the_link_coming_up_shows_nothing() {
     let up = Signal::Up { device: device() };
-    assert_eq!(disconnected(up, Suspend::default()), None);
+    assert_eq!(disconnected(&up, Suspend::default()), None);
 }
 
 #[test]
@@ -305,7 +307,7 @@ fn the_notices_and_the_latches_are_the_same_with_notices_off() {
             state.batteries.case = Some(draining(case));
             effects.push(policy.step(&state, Fact::Changed, Duration::ZERO));
         }
-        effects.push(policy.step(&state, Fact::Link(lost), Duration::ZERO));
+        effects.push(policy.step(&state, Fact::Link(lost.clone()), Duration::ZERO));
         effects
     };
     let on = steps(true);
@@ -314,7 +316,21 @@ fn the_notices_and_the_latches_are_the_same_with_notices_off() {
         part: Part::Case,
         percent: LOW_BATTERY_TRIGGER,
     });
-    assert_eq!(on[0], [case_notice]);
+    assert_eq!(on[0], on[2]);
     assert_eq!(on[2], [case_notice]);
     assert_eq!(on[3], [Effect::Notify(Notice::Disconnected), UNFOLLOW]);
+}
+
+#[test]
+fn every_reply_goes_to_the_writer() {
+    let keys = ProximityKeys {
+        identity: Key::from_bytes(IDENTITY_KEY),
+        payload: Key::from_bytes(PAYLOAD_KEY),
+    };
+    let mut policy = Policy::default();
+    for _ in 0..2 {
+        let reply = Fact::Link(Signal::Keys(keys.clone()));
+        let effects = policy.step(&State::default(), reply, Duration::ZERO);
+        assert_eq!(effects, [Effect::StoreKeys(keys.clone())]);
+    }
 }
