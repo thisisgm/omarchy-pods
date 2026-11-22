@@ -4,6 +4,7 @@ pub(crate) mod bluez;
 pub(crate) mod bus;
 pub(crate) mod logind;
 pub(crate) mod omarchy;
+pub(crate) mod players;
 pub(crate) mod rig;
 
 use std::fs::{self, File};
