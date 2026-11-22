@@ -136,7 +136,9 @@ A reply carries the request's `id` and `ok`.
 
 - `get` and `subscribe` reply with `state`, the same object `librepods status`
   prints and the state file holds. Besides the keys the older daemon wrote, it
-  carries `notifications_enabled`, the `notifications` setting.
+  carries `notifications_enabled`, the `notifications` setting. Its
+  `audio_server` is `idle` while no AirPods link is up, `up` while the daemon
+  reads the desktop's audio server, and `down` while it cannot reach it.
 - `set` and `do` reply with `result`. `confirmed` means the state shows the
   change: either it already did, or the AirPods reported the change within
   700 ms of the command. `sent` means the command was handed on and the reply

@@ -1,0 +1,272 @@
+//! The audio server connection through the built daemon: the fake pods link, the fake audio server answers, and the status reads what the daemon found.
+
+// Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "each suite uses part of the shared support, so the rest goes unused here"
+)]
+mod support;
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    use pods_fake::Profile;
+    use pulseaudio::protocol::{MAX_VERSION, SubscriptionMask};
+    use serde_json::Value;
+    use zbus::OwnedVariant;
+
+    use super::support::audio::wire::{FRAME_MAX, OVERSIZED_LENGTH, sink_named};
+    use super::support::audio::{Asked, CALL_TIMEOUT, FakeAudio, LADDER_MS, PERCENT, Volumes};
+    use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
+    use super::support::players::PROPERTIES;
+    use super::support::rig::{ANSWERED_WITHIN, REAL_TIME_SLACK, Rig, assert_gap};
+    use super::support::{HANG_LIMIT, pause, wait_for};
+
+    /// Past the first two steps of the daemon's retry ladder, by the slack a real time check takes.
+    const PAST_TWO_RETRIES: Duration =
+        Duration::from_millis(LADDER_MS[0] + LADDER_MS[1]).saturating_add(REAL_TIME_SLACK);
+    /// The daemon's own stop wait for its tasks.
+    const STOP_LIMIT: Duration = Duration::from_millis(500);
+    const BURST: u8 = 50;
+
+    /// What the daemon sends on each connection, before any event.
+    fn opening() -> Vec<Asked> {
+        vec![
+            Asked::Auth {
+                version: MAX_VERSION,
+            },
+            Asked::ClientName,
+            Asked::Subscribe {
+                mask: SubscriptionMask::SINK | SubscriptionMask::SERVER,
+            },
+            Asked::ServerInfo,
+            Asked::SinkList,
+        ]
+    }
+
+    /// One refresh: the default sink's name, then every sink.
+    const REFRESH: [Asked; 2] = [Asked::ServerInfo, Asked::SinkList];
+
+    fn down_line(reason: &str) -> String {
+        format!("audio: the audio server is down: {reason}")
+    }
+
+    fn property(rig: &Rig, name: &str) -> String {
+        let bus = Listener::subscribe(rig.session_bus(), &changes_rule());
+        let reply = bus
+            .call(BUS_NAME, OBJECT_PATH, PROPERTIES, "Get", &(INTERFACE, name))
+            .unwrap();
+        let value: OwnedVariant = reply.body().deserialize().unwrap();
+        String::try_from(value).unwrap()
+    }
+
+    #[test]
+    fn audio_server_reads_idle_with_no_device_and_no_socket_is_open() {
+        let mut rig = Rig::new();
+        let audio = rig.start_audio();
+        rig.add_pods(Profile::default());
+        rig.start();
+        // Long enough for a socket opened by mistake at startup, or by a retry, to show.
+        pause(PAST_TWO_RETRIES);
+        assert_eq!(rig.status()["audio_server"], "idle");
+        assert_eq!(audio.clients(), 0);
+        assert_eq!(audio.requests(), []);
+        rig.finish();
+    }
+
+    #[test]
+    fn it_reads_up_with_the_link_up() {
+        let (rig, _device, audio) = Rig::with_audio(PERCENT);
+        assert_eq!(rig.status()["audio_server"], "up");
+        wait_for("the state file to read up", || {
+            let line = fs::read_to_string(rig.session().state_file()).unwrap();
+            let file: Value = serde_json::from_str(&line).unwrap();
+            (file["audio_server"] == "up").then_some(())
+        });
+        assert_eq!(property(&rig, "AudioServer"), "up");
+        let document: Value = serde_json::from_str(&property(&rig, "StatusJson")).unwrap();
+        assert_eq!(document["audio_server"], "up");
+        assert_eq!(audio.requests(), opening());
+        assert_eq!(audio.clients(), 1);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn it_reads_down_when_nothing_listens() {
+        let mut rig = Rig::new();
+        let device = rig.add_pods(Profile::default());
+        rig.start();
+        rig.link_up(&device);
+        rig.wait_filled();
+        rig.wait_logged(&down_line("No such file or directory (os error 2)"));
+        assert_eq!(rig.status()["audio_server"], "down");
+        assert_eq!(property(&rig, "AudioServer"), "down");
+        rig.finish();
+    }
+
+    #[test]
+    fn the_socket_closes_when_the_link_is_lost() {
+        let (rig, device, audio) = Rig::with_audio(PERCENT);
+        rig.link_down(&device);
+        rig.wait_audio_server("idle");
+        audio.wait_clients(0, HANG_LIMIT);
+        // Nothing is followed, so no retry may open it again.
+        pause(PAST_TWO_RETRIES);
+        assert_eq!(audio.clients(), 0);
+        assert_eq!(audio.requests(), opening());
+        rig.relink(&device);
+        rig.wait_audio_server("up");
+        assert_eq!(audio.requests(), [opening(), opening()].concat());
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_server_that_never_answers_does_not_block_status() {
+        let (mut rig, device, audio) = Rig::with_audio_holding(PERCENT);
+        let linked = Instant::now();
+        rig.link_up(&device);
+        let asked = audio.wait_requests(1, HANG_LIMIT);
+        let auth_seen = Instant::now();
+        assert_eq!(asked[..], opening()[..1]);
+        let started = Instant::now();
+        let status = rig.status();
+        assert_gap(
+            "status while the server holds its answer",
+            started,
+            Instant::now(),
+            &(Duration::ZERO..=ANSWERED_WITHIN),
+        );
+        assert_eq!(status["audio_server"], "down");
+        audio.wait_clients(0, CALL_TIMEOUT.saturating_add(HANG_LIMIT));
+        let closed = Instant::now();
+        assert_gap(
+            "the close after the link came up",
+            linked,
+            closed,
+            &(CALL_TIMEOUT..=Duration::MAX),
+        );
+        assert_gap(
+            "the close after the request",
+            auth_seen,
+            closed,
+            &(Duration::ZERO..=CALL_TIMEOUT.saturating_add(REAL_TIME_SLACK)),
+        );
+        rig.wait_logged(&down_line(&format!(
+            "no answer within {} ms",
+            CALL_TIMEOUT.as_millis()
+        )));
+        audio.hold_replies(false);
+        rig.wait_audio_server("up");
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_server_that_never_answers_does_not_delay_the_stop() {
+        let (mut rig, device, audio) = Rig::with_audio_holding(PERCENT);
+        rig.link_up(&device);
+        audio.wait_requests(1, HANG_LIMIT);
+        let asked = Instant::now();
+        let status = rig.stop(HANG_LIMIT);
+        assert!(status.success(), "{status:?}");
+        assert_gap(
+            "the stop while the server holds its answer",
+            asked,
+            Instant::now(),
+            &(Duration::ZERO..=STOP_LIMIT.saturating_add(REAL_TIME_SLACK)),
+        );
+        audio.wait_clients(0, HANG_LIMIT);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn an_oversized_frame_ends_the_connection_and_is_retried() {
+        let (mut rig, _device, audio) = Rig::with_audio(PERCENT);
+        audio.send_oversized_frame();
+        rig.wait_logged(&down_line(&format!(
+            "a frame of {OVERSIZED_LENGTH} bytes, past {FRAME_MAX}"
+        )));
+        audio.wait_requests(opening().len().saturating_mul(2), HANG_LIMIT);
+        rig.wait_audio_server("up");
+        assert_eq!(audio.requests(), [opening(), opening()].concat());
+        assert_eq!(audio.clients(), 1);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn an_event_burst_costs_two_refreshes_at_most() {
+        let (rig, device, audio) = Rig::with_audio(PERCENT);
+        let sink = sink_named(device.address);
+        let before = audio.requests().len();
+        // Held, so the whole burst reaches the daemon at once, behind no answer.
+        audio.hold_replies(true);
+        for step in 1..=BURST {
+            audio.set_volume(&sink, PERCENT.saturating_add(step));
+        }
+        audio.hold_replies(false);
+        let two = before.saturating_add(REFRESH.len().saturating_mul(2));
+        audio.wait_requests(two, HANG_LIMIT);
+        // A third refresh, were one coming, would follow the second answer within this.
+        pause(REAL_TIME_SLACK);
+        rig.link_down(&device);
+        audio.wait_clients(0, HANG_LIMIT);
+        assert_eq!(audio.requests()[before..], [REFRESH, REFRESH].concat());
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    /// Makes `change`, which sends `events` events, and waits for the refresh each one causes.
+    fn refreshed_after(
+        audio: &FakeAudio,
+        wanted: &mut Vec<Asked>,
+        events: usize,
+        change: impl FnOnce(&FakeAudio),
+    ) {
+        change(audio);
+        for _ in 0..events {
+            wanted.extend(REFRESH);
+        }
+        audio.wait_requests(wanted.len(), HANG_LIMIT);
+    }
+
+    #[test]
+    fn nothing_but_reads_is_ever_asked() {
+        let (rig, device, audio) = Rig::with_audio(PERCENT);
+        let sink = sink_named(device.address);
+        let other = "alsa_output.speakers";
+        let mut wanted = opening();
+        refreshed_after(&audio, &mut wanted, 1, |audio| {
+            audio.add_sink(other, PERCENT);
+        });
+        refreshed_after(&audio, &mut wanted, 1, |audio| {
+            audio.set_default_sink(other);
+        });
+        refreshed_after(&audio, &mut wanted, 1, |audio| {
+            audio.set_volume(&sink, PERCENT.saturating_add(1));
+        });
+        refreshed_after(&audio, &mut wanted, 1, |audio| {
+            audio.set_default_sink(&sink);
+        });
+        refreshed_after(&audio, &mut wanted, 1, |audio| audio.remove_sink(other));
+        audio.restart(Volumes::Kept);
+        wanted.extend(opening());
+        audio.wait_requests(wanted.len(), HANG_LIMIT);
+        // The default sink's removal also moves the default, and that second event lands inside the first refresh.
+        refreshed_after(&audio, &mut wanted, 2, |audio| audio.remove_sink(&sink));
+        refreshed_after(&audio, &mut wanted, 1, |audio| {
+            audio.add_sink(&sink, PERCENT);
+        });
+        rig.link_down(&device);
+        audio.wait_clients(0, HANG_LIMIT);
+        assert_eq!(audio.requests(), wanted);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+}

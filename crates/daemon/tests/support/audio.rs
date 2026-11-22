@@ -22,6 +22,13 @@ use wire::{percent_of, volume_of};
 const SOCKET_PATH_MAX: usize = 107;
 const SOCKET_DIR_MODE: u32 = 0o700;
 
+/// The daemon's wait for any one answer of the audio server.
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_millis(2000);
+/// The daemon's waits between attempts, the last one repeating.
+pub(crate) const LADDER_MS: [u64; 5] = [250, 500, 1000, 2000, 5000];
+/// The volume the pods' sink starts at.
+pub(crate) const PERCENT: u8 = 40;
+
 /// One command the fake received, in the terms a test asserts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Asked {
@@ -29,9 +36,24 @@ pub(crate) enum Asked {
     ClientName,
     ServerInfo,
     SinkInfo { name: String },
+    SinkList,
     Volume { name: String, percent: u8 },
     Subscribe { mask: SubscriptionMask },
     Unknown { command: u32 },
+}
+
+impl Asked {
+    fn only_reads(&self) -> bool {
+        match self {
+            Self::Auth { .. }
+            | Self::ClientName
+            | Self::ServerInfo
+            | Self::SinkInfo { .. }
+            | Self::SinkList
+            | Self::Subscribe { .. } => true,
+            Self::Volume { .. } | Self::Unknown { .. } => false,
+        }
+    }
 }
 
 /// Whether a restarted server keeps the volumes set before it, as a session manager that stored them does.
@@ -123,6 +145,17 @@ impl FakeAudio {
         self.wait(&what, within, |state| {
             (state.requests.len() >= count).then(|| state.requests.clone())
         })
+    }
+
+    /// Fails unless something was asked and every command received only reads: no volume, profile, stream or default sink write.
+    pub(crate) fn assert_only_reads(&self) {
+        let requests = self.requests();
+        assert!(!requests.is_empty(), "the daemon asked nothing");
+        let writes: Vec<&Asked> = requests
+            .iter()
+            .filter(|asked| !asked.only_reads())
+            .collect();
+        assert!(writes.is_empty(), "the daemon asked for {writes:?}");
     }
 
     /// Ends the listener and every client, joins their threads, and removes the socket.

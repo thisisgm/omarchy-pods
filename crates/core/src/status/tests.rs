@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::command::tests::level;
-use crate::state::{Counters, EarDetectionBehavior, LidState};
+use crate::state::{AudioServer, Counters, EarDetectionBehavior, LidState};
 
 fn status(state: &State) -> Value {
     serde_json::from_str(&to_status_line(state)).unwrap()
@@ -59,10 +59,12 @@ fn populated_state_lands_every_field_on_its_key() {
             reopen_calls: 13,
         },
         notifications: false,
+        audio_server: AudioServer::Up,
     };
     let expected = json!({
         "adaptive_level_changes_total": 11,
         "adaptive_noise_level": 37,
+        "audio_server": "up",
         "ca_changes_total": 6,
         "case": {"available": true, "charging": true, "level": 40},
         "connect_calls_total": 8,
@@ -204,5 +206,20 @@ fn the_document_has_the_cpp_keys_and_each_additive_key_once() {
     );
     for key in ADDITIVE_KEYS {
         assert!(keys.contains_key(*key), "{key}");
+    }
+}
+
+#[test]
+fn every_audio_server_word_lands_on_its_key() {
+    for (server, word) in [
+        (AudioServer::Idle, "idle"),
+        (AudioServer::Up, "up"),
+        (AudioServer::Down, "down"),
+    ] {
+        let line = status(&State {
+            audio_server: server,
+            ..State::default()
+        });
+        assert_eq!(line["audio_server"], Value::from(word), "{server:?}");
     }
 }

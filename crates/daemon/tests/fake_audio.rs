@@ -235,6 +235,30 @@ mod tests {
     }
 
     #[test]
+    fn every_sink_is_listed_in_the_order_added() {
+        let session = Session::new();
+        let (audio, first) = one_sink(&session);
+        // Named to sort before the first, so a list in name order is told apart from one in the order added.
+        let second = "alsa_output.speakers";
+        audio.add_sink(second, ADDED_PERCENT);
+        let mut client = Client::open(audio.socket());
+        let opened = audio.requests().len();
+
+        let sinks: Vec<SinkInfo> = client.ask(&Command::GetSinkInfoList);
+        let names: Vec<CString> = sinks.iter().map(|sink| sink.name.clone()).collect();
+        assert_eq!(names, [c_name(&first), c_name(second)]);
+        assert_eq!(sinks[1].cvolume, stereo(volume_of(ADDED_PERCENT)));
+        audio.remove_sink(&first);
+        audio.remove_sink(second);
+        let none: Vec<SinkInfo> = client.ask(&Command::GetSinkInfoList);
+        assert!(none.is_empty(), "{none:?}");
+        assert_eq!(
+            audio.requests()[opened..],
+            [Asked::SinkList, Asked::SinkList]
+        );
+    }
+
+    #[test]
     fn a_volume_write_is_stored_and_announced() {
         let session = Session::new();
         let (audio, name) = one_sink(&session);

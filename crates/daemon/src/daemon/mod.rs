@@ -1,5 +1,6 @@
 //! Owns the state; serves the control socket in both dialects, the state file and D-Bus.
 
+mod audio;
 mod bluez;
 mod dbus;
 mod hub;
@@ -51,6 +52,7 @@ pub(crate) struct Paths {
     pub(crate) state_file: PathBuf,
     /// The C++ daemon's settings, read once if `settings.json` is absent.
     pub(crate) old_conf: Option<PathBuf>,
+    pub(crate) runtime_dir: PathBuf,
 }
 
 pub(crate) fn run(paths: Paths) -> ExitCode {
@@ -104,13 +106,19 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
     let (stop_notifier, notifier_stops) = oneshot::channel();
     let (prefs, prefs_changes) = watch::channel(loaded);
     let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
+    let (audio_requests, audio_queue) = audio::queue();
+    let adapter = tokio::spawn(audio::run(link.clone(), audio_queue, paths.runtime_dir));
     let driver = tokio::spawn(link::drive(
         hub.clone(),
         inputs,
         link.clone(),
         requests,
         connector,
-        link::Outlets { notices, prefs },
+        link::Outlets {
+            notices,
+            prefs,
+            audio: audio_requests,
+        },
     ));
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
@@ -124,6 +132,7 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
             log(&error);
             link::stop(&link, driver).await;
             notify::stop(stop_notifier, notifier).await;
+            audio::stop(adapter).await;
             remove_state_file(&file).await;
             return ExitCode::FAILURE;
         }
@@ -142,6 +151,8 @@ async fn serve(paths: Paths, settings: PathBuf, loaded: Prefs) -> ExitCode {
     }
     // After the driver, so no notice comes in once the notifier is stopping.
     notify::stop(stop_notifier, notifier).await;
+    // After the driver, whose end closes the adapter's queue and so ends it.
+    audio::stop(adapter).await;
     suspends.abort();
     // Awaited so its system bus connection closes first; the result is only the cancellation.
     drop(suspends.await);

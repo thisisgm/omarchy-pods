@@ -48,6 +48,7 @@ nothing, and a command that changes nothing sends none.
 | `InEar` | `a{sb}` | Always the keys `left` and `right`. |
 | `Capabilities` | `as` | The names of the status object's true `supports_*` keys without the prefix, sorted, for example `adaptive`. |
 | `StatusJson` | `s` | The whole status object, the same JSON the state file holds, without the trailing newline. It changes whenever any key changes, counters included. No property of its own carries the `notifications` setting; it is this object's `notifications_enabled`. |
+| `AudioServer` | `s` | The daemon's connection to the desktop's audio server: `idle` while no AirPods link is up, `up` while it reads the server, `down` while it cannot reach it. |
 
 ## Methods
 

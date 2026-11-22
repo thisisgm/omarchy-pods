@@ -29,11 +29,12 @@ const WRITE_LIMIT: Duration = Duration::from_secs(2);
 /// Stereo, as `SinkInfo::new_dummy` describes every sink.
 const SINK_CHANNELS: usize = 2;
 /// The commands the fake answers; any other is refused with `PulseError::Command`.
-const UNDERSTOOD: [CommandTag; 6] = [
+const UNDERSTOOD: [CommandTag; 7] = [
     CommandTag::Auth,
     CommandTag::SetClientName,
     CommandTag::GetServerInfo,
     CommandTag::GetSinkInfo,
+    CommandTag::GetSinkInfoList,
     CommandTag::SetSinkVolume,
     CommandTag::Subscribe,
 ];
@@ -376,7 +377,7 @@ impl State {
     )]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "the fake answers six of the protocol's commands and refuses every other alike"
+        reason = "the fake answers seven of the protocol's commands and refuses every other alike"
     )]
     fn answer(&mut self, id: u32, frame: &[u8]) -> Result<(), String> {
         let (channel, command, seq) = wire::header(frame)?;
@@ -430,6 +431,10 @@ impl State {
                 Some(position) => wire::reply(seq, &self.sinks[position].info(), version),
                 None => wire::error(seq, PulseError::NoEntity),
             },
+            Command::GetSinkInfoList => {
+                let sinks: Vec<SinkInfo> = self.sinks.iter().map(Sink::info).collect();
+                wire::reply(seq, &sinks, version)
+            }
             Command::SetSinkVolume(SetDeviceVolumeParams {
                 device_index: None,
                 device_name: Some(name),
@@ -467,7 +472,7 @@ impl State {
 /// What the test sees of a command the fake understands; one addressed by index is not understood.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the fake names six of the protocol's commands and records every other by number"
+    reason = "the fake names seven of the protocol's commands and records every other by number"
 )]
 fn asked(command: u32, parsed: &Command) -> Asked {
     match parsed {
@@ -482,6 +487,7 @@ fn asked(command: u32, parsed: &Command) -> Asked {
         }) => Asked::SinkInfo {
             name: name.to_string_lossy().into_owned(),
         },
+        Command::GetSinkInfoList => Asked::SinkList,
         Command::SetSinkVolume(SetDeviceVolumeParams {
             device_index: None,
             device_name: Some(name),
