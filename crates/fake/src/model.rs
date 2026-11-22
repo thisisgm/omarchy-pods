@@ -9,6 +9,9 @@ use pods_samples::{
 
 use crate::{Fault, Profile};
 
+/// The four bytes of the accessory header and the first byte of an opcode.
+const FRAGMENT_LEN: usize = 5;
+
 /// A change made by the test, as the stem or another host would make it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Change {
@@ -23,9 +26,12 @@ impl Change {
         let withheld = match fault {
             Fault::NeverAcknowledge => true,
             Fault::WithholdBattery => matches!(self, Self::Battery { .. }),
-            Fault::None | Fault::CloseAfter(_) | Fault::ReportsBeforeAck | Fault::NeverConfirm => {
-                false
-            }
+            Fault::None
+            | Fault::CloseAfter(_)
+            | Fault::ReportsBeforeAck
+            | Fault::CutBattery
+            | Fault::TrailingFragment
+            | Fault::NeverConfirm => false,
         };
         (!withheld).then(|| self.packet())
     }
@@ -90,6 +96,8 @@ impl Model {
             | Fault::NeverAcknowledge
             | Fault::CloseAfter(_)
             | Fault::WithholdBattery
+            | Fault::CutBattery
+            | Fault::TrailingFragment
             | Fault::NeverConfirm => Vec::new(),
         }
     }
@@ -98,7 +106,12 @@ impl Model {
     pub(crate) fn on_host(&mut self, fault: Fault, sdu: &[u8]) -> Vec<Vec<u8>> {
         match fault {
             Fault::NeverAcknowledge | Fault::ReportsBeforeAck => return Vec::new(),
-            Fault::None | Fault::CloseAfter(_) | Fault::WithholdBattery | Fault::NeverConfirm => {}
+            Fault::None
+            | Fault::CloseAfter(_)
+            | Fault::WithholdBattery
+            | Fault::CutBattery
+            | Fault::TrailingFragment
+            | Fault::NeverConfirm => {}
         }
         // Measured: each opening frame is answered in turn, the notification request by the burst.
         if sdu == host::handshake() {
@@ -154,7 +167,11 @@ impl Model {
     fn burst(&self, fault: Fault) -> Vec<Vec<u8>> {
         let mut burst = Vec::new();
         if fault != Fault::WithholdBattery {
-            burst.push(battery_of(self.left, self.right, self.case));
+            let mut battery = battery_of(self.left, self.right, self.case);
+            if fault == Fault::CutBattery {
+                battery.pop();
+            }
+            burst.push(battery);
         }
         burst.push(ear_of(self.primary, self.secondary));
         burst.push(self.metadata.clone());
@@ -165,6 +182,11 @@ impl Model {
             .collect();
         burst.extend(burst_settings(&overrides));
         burst.extend(burst_others());
+        if fault == Fault::TrailingFragment {
+            let mut fragment = battery_of(self.left, self.right, self.case);
+            fragment.truncate(FRAGMENT_LEN);
+            burst.push(fragment);
+        }
         burst
     }
 }
@@ -183,12 +205,14 @@ mod tests {
 
     use super::*;
 
-    const ALL_FAULTS: [Fault; 6] = [
+    const ALL_FAULTS: [Fault; 8] = [
         Fault::None,
         Fault::NeverAcknowledge,
         Fault::CloseAfter(3),
         Fault::ReportsBeforeAck,
         Fault::WithholdBattery,
+        Fault::CutBattery,
+        Fault::TrailingFragment,
         Fault::NeverConfirm,
     ];
 

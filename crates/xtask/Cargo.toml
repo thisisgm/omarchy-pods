@@ -20,6 +20,9 @@ tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+pods-fake = { path = "../fake" }
+pods-samples = { path = "../samples" }
+pods-trap = { path = "../trap" }
 proptest.workspace = true
 
 [lints]

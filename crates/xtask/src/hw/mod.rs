@@ -1,6 +1,7 @@
 //! `hw link`: the daemon's hardware checks, run on the test machine with the installed service stopped and always restored.
 
 mod adapter;
+mod burst;
 mod census;
 mod checks;
 mod idle;
@@ -227,13 +228,8 @@ fn private_dir() -> Result<tempfile::TempDir, String> {
 
 /// Stops the installed service, starts the binary under test and runs the checks.
 fn stop_then_check(mut lab: Lab<'_>, link: &LinkArgs) -> Outcome {
-    if let Err(error) = unit::systemctl_ok(&["stop", INSTALLED]) {
+    if let Err(error) = unit::stop(INSTALLED) {
         return Outcome::Failed(error);
-    }
-    match unit::activity(INSTALLED) {
-        Ok(word) if !unit::is_running(&word) => {}
-        Ok(word) => return Outcome::Failed(format!("{INSTALLED} is still {word} after its stop")),
-        Err(error) => return Outcome::Failed(error),
     }
     if stopped() {
         return Outcome::Interrupted;
@@ -277,7 +273,8 @@ fn run_checks(lab: &Lab<'_>, link: &LinkArgs) -> Outcome {
     if link.adapter_cycle {
         plan.push(adapter::check);
     }
-    plan.extend::<[CheckFn; 3]>([checks::stop, checks::reconnect, idle::idle]);
+    // C8 stops the test unit, so it comes last.
+    plan.extend::<[CheckFn; 4]>([checks::stop, checks::reconnect, idle::idle, burst::run]);
     let mut done = Vec::new();
     for check in plan {
         let Ok(check) = check(lab) else {

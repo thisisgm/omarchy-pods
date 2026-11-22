@@ -88,7 +88,7 @@ const BURST_SETTING_VALUE: u8 = 0x01;
 const METADATA_SKIPPED: [u8; 5] = [0x01, 0x02, 0x03, 0x04, 0x05];
 const METADATA_MANUFACTURER: &str = "Apple Inc.";
 /// A synthetic serial number in the fourth string, where the real packet carries one.
-const METADATA_SERIAL: &str = "SERIAL0001";
+pub const METADATA_SERIAL: &str = "SERIAL0001";
 /// The length of the metadata packet measured on a real device, reached with zero bytes.
 const METADATA_LEN: usize = 247;
 

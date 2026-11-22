@@ -21,7 +21,7 @@ pub(crate) use record::{IoFailure, LOG_NAME, MARKS_NAME, Mark, Outputs, write_ma
 use record::{Recorder, Sent};
 
 /// How long one handshake request may go unanswered: daemon/main.cpp asks again after 2 s, the probe fails naming the step.
-const HANDSHAKE_STEP_TIMEOUT_MS: u64 = 2_000;
+pub(crate) const HANDSHAKE_STEP_TIMEOUT_MS: u64 = 2_000;
 /// How long START waits for an ear detection packet: kEarReportWaitMs in pull request 85 of this repository.
 const EAR_REPORT_WAIT_MS: u64 = 3_000;
 /// Bounds how late a timed action fires and how late a signal is seen; chosen here.

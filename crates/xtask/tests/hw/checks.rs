@@ -133,7 +133,7 @@ fn a_failed_activity_query_after_the_stop_is_named() {
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
-        stdout.contains("systemctl is-active librepods-hw.service gave no state"),
+        stdout.contains("systemctl is-active librepods-hw.service gave no state (exit status: 1)"),
         "{stdout}"
     );
     assert!(!stdout.contains("was not inactive within"), "{stdout}");

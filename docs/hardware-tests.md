@@ -54,8 +54,8 @@ off and on and every Bluetooth device on the machine drops once.
    runtime and state directories are a private temporary directory, so the
    run never touches the real socket or state file. It uses the real system
    bus and the real session bus.
-4. After the checks it stops `librepods-hw` and starts `librepods.service`
-   again if it was running before.
+4. After the checks it stops `librepods-hw`, runs C8 with no daemon
+   running, and starts `librepods.service` again if it was running before.
 
 Every program it runs is waited for before it exits, or killed at its
 timeout. SIGKILL cannot be caught, so after one nothing is restored: run
@@ -82,6 +82,22 @@ once more in the adapter check with `--adapter-cycle`.
 | C5 idle | 10 minutes with the link up, then 10 minutes after `do disconnect` | the daemon's wakeups stay within the bounds below and the adapter is never discovering |
 | C6 commands | each command of the census 10 times, then one with no bud in (`--attended`) | every command answers its expected word 10 of 10 (`confirmed`, or `sent` for the adaptive level, which alternates between 40 and 60 so each trial is a write), and the last answers `not_worn` |
 | C7 adapter | `bluetoothctl power off`, `power on`, `do connect` (`--adapter-cycle`) | `connected` is true before and false after power off, and the state is populated again |
+| C8 burst | opens the AirPods' control channel once, runs the opening exchange and reads for 3 s after the notification request | the distinct opcodes and the distinct setting identifiers equal those of the sample burst the test suite's fake AirPods play, and every packet parses |
+
+C8 runs on every invocation, last, after `librepods-hw` has stopped and
+before `librepods.service` is started again, so only one program holds a
+control channel to the AirPods at a time. It asks BlueZ for the AirPods it
+reports connected and opens the channel to that device only; with none it
+fails as `no connected AirPods` and opens no socket. It prints one line of
+counts, such as `36 packets; opcodes 04 x1, 06 x1, 09 x22, ...; settings 01
+to 16; unparsed none`, and on a failure the missing and extra opcodes and
+setting identifiers, the opcodes of packets that did not parse and the
+number of packets with no opcode, cut short or without the accessory
+header. A packet that arrived and did not parse counts under its opcode and
+under `unparsed`, so a missing opcode is one the AirPods never sent. It
+keeps no payload, so no name, serial number or address can reach its
+output. A difference is a fact about the AirPods: the sample is corrected to
+match it, never the check loosened.
 
 C6 sends each command over protocol 1 on the test socket rather than through
 `librepods set`, which prints nothing when a command succeeds and so cannot
