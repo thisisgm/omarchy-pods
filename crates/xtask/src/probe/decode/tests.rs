@@ -1,43 +1,9 @@
-//! The rate a decode is labelled with, and the units a log gives up.
+//! The units a log gives up, and the peak of a decode.
 
 use pods_proto::uplink::START;
 
 use super::super::analyse::support::{OPAQUE, audio, from_pods, to_pods};
 use super::*;
-
-#[test]
-fn the_label_is_the_rate_every_clock_is_within_one_percent_of() {
-    assert_eq!(label(&["63998.412"]).unwrap(), 64_000);
-    assert_eq!(label(&["64639.000", "63361.000"]).unwrap(), 64_000);
-    assert_eq!(label(&["48000.000"]).unwrap(), 48_000);
-    assert_eq!(label(&["47520.100"]).unwrap(), 48_000);
-}
-
-#[test]
-fn a_clock_that_is_neither_rate_or_was_not_measured_is_refused() {
-    for hz in [
-        "56000.000",
-        "64641.000",
-        "63359.000",
-        "47519.000",
-        "NaN",
-        "0",
-    ] {
-        let refused = label(&[hz]).unwrap_err();
-        assert!(
-            matches!(&refused, DecodeError::NeitherRate { hz: named } if named == hz),
-            "{refused}"
-        );
-    }
-    let refused = label(&["64000.000", "refused"]).unwrap_err();
-    assert!(
-        matches!(refused, DecodeError::ClockNotMeasured { .. }),
-        "{refused}"
-    );
-    let refused = label(&["64000.000", "48000.000"]).unwrap_err();
-    assert!(matches!(refused, DecodeError::ClocksDisagree), "{refused}");
-    assert!(matches!(label(&[]).unwrap_err(), DecodeError::NoClock));
-}
 
 #[test]
 fn the_units_are_those_of_every_audio_sdu_from_the_pods_in_order() {

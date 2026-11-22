@@ -7,6 +7,10 @@ use super::super::bands::{
     LAST_BAND, LINES_PER_CLOCK, TABLE_CLOCK_HZ, band_hz, band_line, bandwidth,
 };
 use super::super::census::{Trial, trials};
+use super::super::coarse::{
+    COARSE_MIN_SDUS, COARSE_MIN_SPAN_NS, COARSE_OPENING_NS, HALVES_WITHIN_PERCENT, NoCoarse,
+    coarse_clock,
+};
 use super::super::input::Mark;
 use super::super::lead::{Arrival, LEAD_MIN_PACKETS, LEAD_WINDOW_NS, lead};
 use super::super::load::{Loaded, Window, load, segment, tails, windows};
@@ -18,7 +22,7 @@ use super::super::shape::{
     length_agrees, opaque_fields, stamps,
 };
 use super::super::stats::{NS_PER_MS, NS_PER_SECOND, millis, seconds, share};
-use super::{BYTES, CLOCK_KEY, MS, NONE, NOTE_SEPARATOR, PACKETS, Row, UNITS};
+use super::{BYTES, CLOCK_KEY, COARSE_CLOCK_KEY, MS, NONE, NOTE_SEPARATOR, PACKETS, Row, UNITS};
 
 /// Samples in one unit, which turns the unit clock into a sample clock; no packet states it, so every row scaled by it says it is assumed.
 const SAMPLES_PER_UNIT: u32 = 480;
@@ -90,6 +94,7 @@ pub(super) fn start_rows(records: &[Record], marks: &[Mark], whole: &Loaded) -> 
         rows.extend(start.trial_rows(trial));
         rows.extend(start.cadence_rows());
         rows.extend(start.clock_rows());
+        rows.push(start.coarse_row());
         rows.extend(start.bitrate_rows());
         rows.extend(start.stamp_rows());
         rows.push(start.opaque_row());
@@ -102,18 +107,18 @@ pub(super) fn start_rows(records: &[Record], marks: &[Mark], whole: &Loaded) -> 
     rows
 }
 
-fn thin_note(thin: &Thin) -> String {
+/// What a stretch held against the `min_sdus` over `min_span_ns` a figure needs.
+fn thin_note(thin: &Thin, min_sdus: usize, min_span_ns: u64) -> String {
     format!(
-        "{} audio SDUs over {:.3} s; needs {THIN_MIN_SDUS} over {:.0} s",
+        "{} audio SDUs over {:.3} s; needs {min_sdus} over {:.0} s",
         thin.sdus,
         seconds(thin.span_ns),
-        seconds(THIN_MIN_SPAN_NS)
+        seconds(min_span_ns)
     )
 }
 
 /// What every figure scaled by the unit length says: the length is not read from the stream.
-fn assumed_unit(clock: &ClockEstimate) -> String {
-    let samples = clock.samples_per_unit;
+fn assumed_unit(samples: u32) -> String {
     format!("{samples} samples per unit assumed, not measured")
 }
 
@@ -142,6 +147,11 @@ impl Segment {
         all.join(NOTE_SEPARATOR)
     }
 
+    /// A lost SDU bends every rate of its segment, so each of them says the segment has one.
+    fn gap_flag(&self) -> &'static str {
+        if self.gaps.is_empty() { "" } else { "gap" }
+    }
+
     /// A row thin data refuses: the figure `show` gives with its derivation, or `refused` with what the segment held.
     fn rate<T>(
         &self,
@@ -153,11 +163,17 @@ impl Segment {
         match figure {
             Ok(figure) => {
                 let (value, derivation) = show(figure);
-                // A lost SDU bends every rate of its segment, so each of them says the segment has one.
-                let gap = if self.gaps.is_empty() { "" } else { "gap" };
-                Row::new(key, &value, unit, &self.note(&[&derivation, gap]))
+                Row::new(
+                    key,
+                    &value,
+                    unit,
+                    &self.note(&[&derivation, self.gap_flag()]),
+                )
             }
-            Err(thin) => Row::new(key, &REFUSED, unit, &self.note(&[&thin_note(thin)])),
+            Err(thin) => {
+                let held = thin_note(thin, THIN_MIN_SDUS, THIN_MIN_SPAN_NS);
+                Row::new(key, &REFUSED, unit, &self.note(&[&held]))
+            }
         }
     }
 
@@ -230,7 +246,7 @@ impl Segment {
             }
         };
         let scaled = |clock: &ClockEstimate, derivation: String| {
-            let assumed = assumed_unit(clock);
+            let assumed = assumed_unit(clock.samples_per_unit);
             flagged(clock, format!("{derivation}{NOTE_SEPARATOR}{assumed}"))
         };
         let mut rows = vec![
@@ -264,6 +280,54 @@ impl Segment {
             }));
         }
         rows
+    }
+
+    /// The clock a start too short for the slope still gives, or why it gives none.
+    fn coarse_row(&self) -> Row {
+        let opening = format!(
+            "counted from {:.0} s after the first audio SDU",
+            seconds(COARSE_OPENING_NS)
+        );
+        let allowed = format!("of {HALVES_WITHIN_PERCENT:.0} allowed");
+        let (value, items) = match coarse_clock(&Arrival::of(&self.loaded), SAMPLES_PER_UNIT) {
+            Ok(coarse) => {
+                let (sdus, span_s) = (coarse.sdus, seconds(coarse.span_ns));
+                let (samples, apart) = (coarse.samples_per_unit, coarse.halves_apart_percent);
+                let items = vec![
+                    format!("units over a span of {span_s:.3} s x {samples} samples per unit"),
+                    format!("{sdus} audio SDUs, {opening}"),
+                    format!("halves {apart:.2} percent apart, {allowed}"),
+                    "the pace of the arrivals, which is the clock only once the backlog is delivered"
+                        .to_owned(),
+                    assumed_unit(samples),
+                    self.gap_flag().to_owned(),
+                ];
+                (format!("{:.0}", coarse.hz()), items)
+            }
+            Err(NoCoarse::NoAudio) => (
+                NONE.to_owned(),
+                vec!["no audio SDU with a whole unit".to_owned()],
+            ),
+            Err(NoCoarse::Thin(thin)) => (
+                REFUSED.to_owned(),
+                vec![
+                    thin_note(&thin, COARSE_MIN_SDUS, COARSE_MIN_SPAN_NS),
+                    opening,
+                ],
+            ),
+            Err(NoCoarse::Unsteady {
+                halves_apart_percent,
+            }) => {
+                let apart = halves_apart_percent.map_or_else(
+                    || "a half of the span has no time in it".to_owned(),
+                    |apart| format!("halves of the span {apart:.2} percent apart, {allowed}"),
+                );
+                let why = format!("{apart}: the delay of the arrivals changes inside it");
+                (REFUSED.to_owned(), vec![why, opening])
+            }
+        };
+        let items: Vec<&str> = items.iter().map(String::as_str).collect();
+        Row::new(COARSE_CLOCK_KEY, &value, HZ, &self.note(&items))
     }
 
     fn bitrate_rows(&self) -> [Row; 4] {
@@ -424,7 +488,7 @@ impl Segment {
                         format!("line {line} x clock_hz / {LINES_PER_CLOCK}"),
                         format!("band table made for {TABLE_CLOCK_HZ} Hz"),
                         "a limit the coder declares, not a measured bandwidth".to_owned(),
-                        assumed_unit(clock),
+                        assumed_unit(clock.samples_per_unit),
                     ];
                     let hz = band_hz(line, clock.hz());
                     (format!("{hz:.3}"), items.join(NOTE_SEPARATOR))
@@ -461,27 +525,13 @@ impl Segment {
         ]
     }
 
-    /// Every audio SDU with a whole unit as an arrival: when it came and the units delivered by then; one with none brings no audio and cannot place its start.
-    fn arrivals(&self) -> Vec<Arrival> {
-        let mut frames_done = 0_u64;
-        let heard = self.loaded.audio.iter().filter(|sdu| !sdu.units.is_empty());
-        let arrivals = heard.map(|sdu| {
-            // No Rust target has a usize wider than 64 bits, so the fallback is never taken.
-            let frames = u64::try_from(sdu.units.len()).unwrap_or(u64::MAX);
-            frames_done = frames_done.saturating_add(frames);
-            let at_ns = sdu.at_ns;
-            Arrival { at_ns, frames_done }
-        });
-        arrivals.collect()
-    }
-
     fn lead_rows(&self) -> Vec<Row> {
         let own_frame_ns = |clock: &ClockEstimate| NS_PER_SECOND / clock.units_per_second;
         let usable = |frame_ns: f64| frame_ns.is_finite() && frame_ns > 0.0;
         let own = self.clock.as_ref().ok();
         let own = own.filter(|clock| usable(own_frame_ns(clock)));
         let frame_ns = own.map_or(NOMINAL_FRAME_NS, own_frame_ns);
-        let Some(found) = lead(&self.arrivals(), self.start_ns, frame_ns) else {
+        let Some(found) = lead(&Arrival::of(&self.loaded), self.start_ns, frame_ns) else {
             let window_s = seconds(LEAD_WINDOW_NS);
             let why = format!(
                 "fewer than {LEAD_MIN_PACKETS} packets with a whole unit in the first {window_s:.0} s"
@@ -505,10 +555,9 @@ impl Segment {
         };
         let disagree = own.is_some_and(ClockEstimate::disagree);
         let disagree = if disagree { "disagree" } else { "" };
-        let gap = if self.gaps.is_empty() { "" } else { "gap" };
         let line = "start mark minus the earliest arrival line";
         let span = "first to last packet of the burst";
-        let said = |what: &str| self.note(&[what, &frame, disagree, gap]);
+        let said = |what: &str| self.note(&[what, &frame, disagree, self.gap_flag()]);
         vec![
             Row::new("lead_ms", &format!("{:.3}", found.lead_ms), MS, &said(line)),
             Row::new("burst_packets", &found.burst_packets, PACKETS, &said("")),

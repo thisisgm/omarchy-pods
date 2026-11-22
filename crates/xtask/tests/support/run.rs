@@ -75,15 +75,20 @@ pub(crate) fn probe(home: &TempDir, command: &str, run: &Path) -> Command {
     probe
 }
 
-// Sample input: "key\tvalue\tunit\tnote\ncue_1_taps\t2\ttaps\trises of 20 dB\n", from which `cue_1_taps` gives `2` and its note.
-pub(crate) fn row<'a>(table: &'a str, key: &str) -> (&'a str, &'a str) {
-    let mut found = table.lines().filter_map(|line| {
+// Sample input: "key\tvalue\tunit\tnote\nclock_hz\trefused\tHz\tstart 1\n", from which `clock_hz` gives `refused` and its note for every start.
+pub(crate) fn rows<'a>(table: &'a str, key: &str) -> Vec<(&'a str, &'a str)> {
+    let found = table.lines().filter_map(|line| {
         let fields: Vec<&str> = line.split('\t').collect();
         (fields[0] == key).then(|| (fields[1], fields[3]))
     });
-    let row = found.next().unwrap();
-    assert_eq!(found.next(), None, "{key} has more than one row");
-    row
+    found.collect()
+}
+
+/// The one row `key` has: its value and its note.
+pub(crate) fn row<'a>(table: &'a str, key: &str) -> (&'a str, &'a str) {
+    let found = rows(table, key);
+    assert_eq!(found.len(), 1, "{key} has {} rows", found.len());
+    found[0]
 }
 
 pub(crate) fn names_in(run: &Path) -> Vec<String> {
