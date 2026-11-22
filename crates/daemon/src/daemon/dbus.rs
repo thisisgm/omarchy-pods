@@ -18,6 +18,7 @@ use pods_proto::battery::Component;
 use serde_json::Value;
 use tokio::sync::watch;
 use zbus::connection::Builder;
+use zbus::fdo::RequestNameFlags;
 use zbus::message::Header;
 use zbus::names::ErrorName;
 use zbus::object_server::{Interface, SignalEmitter};
@@ -47,26 +48,47 @@ const LOG_PREFIX: &str = "D-Bus interface off";
 /// The status document's prefix for the flags `Capabilities` lists.
 const CAPABILITY_KEY_PREFIX: &str = "supports_";
 
-pub(super) async fn serve(hub: Hub) {
+/// The one session bus connection, which the interface and the media adapter share.
+pub(super) async fn connect() -> zbus::Result<Connection> {
+    Builder::session()
+        .max_queued(MAX_QUEUED_MESSAGES)
+        .build()
+        .await
+}
+
+pub(super) async fn serve(connection: Connection, hub: Hub) {
     // A watch, not `follow`: a slow bus gets the net change, never a backlog or a drop.
     let updates = hub.subscribe();
     // Taken before serving, so a change while the name is requested is still announced.
     let shown = Properties::of(&updates.borrow());
-    // zbus would otherwise take the name from a running daemon and let the next one take it back.
-    let connection = Builder::session()
-        .name(BUS_NAME)
-        .replace_existing_names(false)
-        .allow_name_replacements(false)
-        .max_queued(MAX_QUEUED_MESSAGES)
-        .serve_at(OBJECT_PATH, Omapods { hub: hub.clone() })
-        .build()
-        .await;
-    match connection {
-        Ok(connection) => announce(connection, updates, shown).await,
-        Err(error) => log(&format!(
-            "{LOG_PREFIX}: cannot own {BUS_NAME} on the session bus: {error}"
-        )),
+    match own(&connection, hub).await {
+        Ok(()) => announce(connection, updates, shown).await,
+        Err(error) => {
+            // Removed so a peer cannot reach the interface at the unique name; an error is an object already gone.
+            drop(
+                connection
+                    .object_server()
+                    .remove::<Omapods, _>(OBJECT_PATH)
+                    .await,
+            );
+            log(&format!(
+                "{LOG_PREFIX}: cannot own {BUS_NAME} on the session bus: {error}"
+            ));
+        }
     }
+}
+
+/// Serves the object before the name, so no call to the name finds it missing.
+async fn own(connection: &Connection, hub: Hub) -> zbus::Result<()> {
+    connection
+        .object_server()
+        .at(OBJECT_PATH, Omapods { hub })
+        .await?;
+    // Without replacement flags, so no later daemon takes the name from a running one.
+    connection
+        .request_name_with_flags(BUS_NAME, RequestNameFlags::DO_NOT_QUEUE)
+        .await?;
+    Ok(())
 }
 
 /// Reads only the latest state and announces what differs from the last signal.

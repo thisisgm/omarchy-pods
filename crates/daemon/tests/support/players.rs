@@ -66,6 +66,7 @@ type Done = reply_channel::Sender<()>;
 enum Order {
     Set(Playback),
     Hold(bool),
+    HoldAsked(bool),
 }
 
 /// The state the serving thread changes and the test reads, and the signal of each recorded call.
@@ -80,7 +81,11 @@ struct State {
     /// One entry per call an earlier `wait_asked` returned on.
     waited: Vec<Asked>,
     refused: Vec<String>,
+    /// Status reads received, held ones included.
+    reads: usize,
     hold: bool,
+    /// Holds only `Pause` and `Play`, so status reads are still answered.
+    hold_asked: bool,
     held: Vec<(Message, Request)>,
 }
 
@@ -125,7 +130,9 @@ impl FakePlayer {
                 asked: Vec::new(),
                 waited: Vec::new(),
                 refused: Vec::new(),
+                reads: 0,
                 hold: false,
+                hold_asked: false,
                 held: Vec::new(),
             }),
             recorded: Condvar::new(),
@@ -192,6 +199,25 @@ impl FakePlayer {
         state.waited.push(call);
     }
 
+    pub(crate) fn reads(&self) -> usize {
+        self.shared.lock().reads
+    }
+
+    /// Waits until `count` status reads arrived in all, failing at `within`.
+    pub(crate) fn wait_reads(&self, count: usize, within: Duration) {
+        let (state, _) = self
+            .shared
+            .recorded
+            .wait_timeout_while(self.shared.lock(), within, |state| state.reads < count)
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            state.reads >= count,
+            "{} read {} times within {within:?}, not {count}",
+            self.bus_name,
+            state.reads
+        );
+    }
+
     /// Fails with the record if any call but a status read arrives within `quiet`.
     pub(crate) fn none_for(&self, quiet: Duration) {
         let before = self.shared.lock().calls();
@@ -212,6 +238,11 @@ impl FakePlayer {
     /// While set, calls are recorded and left unanswered; clearing it answers them in order.
     pub(crate) fn hold_replies(&self, hold: bool) {
         self.order(Order::Hold(hold));
+    }
+
+    /// As `hold_replies`, for `Pause` and `Play` alone.
+    pub(crate) fn hold_asked(&self, hold: bool) {
+        self.order(Order::HoldAsked(hold));
     }
 
     /// Releases the name and ends the serving thread, failing the test if that thread panicked.
@@ -259,10 +290,11 @@ impl Shared {
         match &request {
             Request::Asked(asked) => state.asked.push(*asked),
             Request::Refused(member) => state.refused.push(member.clone()),
-            Request::Status => {}
+            Request::Status => state.reads = state.reads.saturating_add(1),
         }
         self.recorded.notify_all();
-        if state.hold {
+        let asked = matches!(request, Request::Asked(_));
+        if state.hold || (state.hold_asked && asked) {
             assert!(
                 state.held.len() < HELD_MAX,
                 "more than {HELD_MAX} calls held"
@@ -284,18 +316,31 @@ impl Shared {
                 state.hold = true;
                 Vec::new()
             }
+            Order::HoldAsked(true) => {
+                state.hold_asked = true;
+                Vec::new()
+            }
             Order::Hold(false) => {
                 state.hold = false;
-                let held = mem::take(&mut state.held);
-                held.iter()
-                    .map(|(call, request)| state.answer(call, request))
-                    .collect()
+                state.release()
+            }
+            Order::HoldAsked(false) => {
+                state.hold_asked = false;
+                state.release()
             }
         }
     }
 }
 
 impl State {
+    /// Answers every held call in the order it arrived.
+    fn release(&mut self) -> Vec<Outcome> {
+        let held = mem::take(&mut self.held);
+        held.iter()
+            .map(|(call, request)| self.answer(call, request))
+            .collect()
+    }
+
     /// Whether more `call`s were asked than earlier waits returned on.
     fn unwaited(&self, call: Asked) -> bool {
         let count = |calls: &[Asked]| calls.iter().filter(|asked| **asked == call).count();

@@ -1,7 +1,8 @@
-//! What the daemon does about the link besides the link itself: link signals, state changes, suspends and audio facts in, the notices, wakes and audio requests due out.
+//! What the daemon does about the link besides the link itself: link signals, state changes, suspends, audio and media facts in, the notices, wakes, audio and media requests due out.
 
 pub mod audio;
 mod battery;
+mod ear;
 pub mod notices;
 mod sleep;
 
@@ -13,11 +14,13 @@ use crate::link::Signal;
 use crate::state::State;
 use audio::{AudioFact, AudioRequest};
 use battery::Latches;
+use ear::Ear;
+pub use ear::{BOTH_OUT_SETTLE_MS, MediaRequest, PAUSED_MAX, PlayerOwner};
 use notices::Notice;
 pub use sleep::SleepEdge;
 use sleep::Suspend;
 
-/// What the driver saw in one step of the link machine, from logind or from the audio adapter.
+/// What the driver saw in one step of the link machine, from logind or from the audio and media adapters.
 #[derive(Debug, Clone)]
 pub enum Fact {
     Link(Signal),
@@ -27,6 +30,8 @@ pub enum Fact {
     /// The clock reached `deadline()`.
     Tick,
     Audio(AudioFact),
+    /// The players the media adapter paused.
+    Paused(Vec<PlayerOwner>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +42,7 @@ pub enum Effect {
     Audio(AudioRequest),
     /// A pair the pods answered with; the driver hands it to the writer of `keys.json`.
     StoreKeys(ProximityKeys),
+    Media(MediaRequest),
 }
 
 /// Lives as long as the driver, so a latch outlives the link that set it.
@@ -44,6 +50,7 @@ pub enum Effect {
 pub struct Policy {
     low_battery: Latches,
     suspend: Suspend,
+    ear: Ear,
 }
 
 impl Policy {
@@ -55,15 +62,30 @@ impl Policy {
             Fact::Link(signal) => {
                 let mut effects = notify(notices::disconnected(&signal, self.suspend));
                 effects.extend(audio::follow(&signal).map(Effect::Audio));
+                self.ear.link(&signal, state);
                 effects
             }
-            Fact::Changed => notify(self.low_battery.due(state.batteries)),
+            Fact::Changed => {
+                let mut effects = notify(self.low_battery.due(state.batteries));
+                effects.extend(self.ear.changed(state, now).map(Effect::Media));
+                effects
+            }
             Fact::Sleep(edge) => {
                 self.suspend.edge(edge, now);
                 Vec::new()
             }
-            Fact::Tick => Vec::from_iter(self.suspend.close(now).then_some(Effect::Wake)),
-            Fact::Audio(_) => Vec::new(),
+            Fact::Tick => {
+                let mut effects = Vec::from_iter(self.suspend.close(now).then_some(Effect::Wake));
+                effects.extend(self.ear.tick(now).map(Effect::Media));
+                effects
+            }
+            Fact::Audio(fact) => {
+                self.ear.audio(fact);
+                Vec::new()
+            }
+            Fact::Paused(players) => {
+                Vec::from_iter(self.ear.paused(state, players).map(Effect::Media))
+            }
         };
         // After the fact, so a window that closes with the link up is forgotten in the same step.
         if state.connected {
@@ -75,7 +97,11 @@ impl Policy {
     /// When the driver must hand in `Fact::Tick` next, if the policy waits on the clock.
     #[must_use]
     pub fn deadline(&self) -> Option<Duration> {
-        self.suspend.deadline()
+        self.suspend
+            .deadline()
+            .into_iter()
+            .chain(self.ear.deadline())
+            .min()
     }
 }
 

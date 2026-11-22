@@ -12,11 +12,12 @@ use std::time::Duration;
 
 use pods_core::command::{Command, Outcome};
 use pods_core::link::{
-    Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket, phase_change_line,
+    Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Signal, Ticket,
+    phase_change_line,
 };
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
-use pods_core::policy::{Effect, Fact, Policy, SleepEdge};
+use pods_core::policy::{Effect, Fact, PlayerOwner, Policy, SleepEdge};
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -29,7 +30,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroizing;
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, audio, keys, log, notify};
+use super::{MAX_CONNECTIONS, audio, keys, log, media, notify};
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,6 +70,8 @@ pub(super) enum Input {
     Sleep(SleepEdge),
     Shutdown(oneshot::Sender<()>),
     Audio(AudioFact),
+    /// The players the media adapter paused.
+    Media(Vec<PlayerOwner>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,13 +80,14 @@ pub(super) enum Request {
     Call { device: BdAddr, call: Call },
 }
 
-/// Where the policy's notices, choices, audio requests and keys go, one queue per adapter.
+/// Where the policy's notices, choices, audio and media requests and keys go, one queue per adapter.
 #[derive(Debug)]
 pub(super) struct Outlets {
     pub(super) notices: mpsc::Sender<Notice>,
     pub(super) prefs: watch::Sender<Prefs>,
     pub(super) audio: mpsc::Sender<AudioRequest>,
     pub(super) keys: mpsc::Sender<ProximityKeys>,
+    pub(super) media: media::Outlet,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -235,6 +239,7 @@ impl Driver {
                 return ControlFlow::Break(());
             }
             Input::Audio(fact) => self.observe(Fact::Audio(fact)),
+            Input::Media(paused) => self.observe(Fact::Paused(paused)),
         }
         ControlFlow::Continue(())
     }
@@ -250,6 +255,9 @@ impl Driver {
         let mut facts = Vec::new();
         for action in &actions {
             if let Action::Signal(signal) = action {
+                if let Signal::Lost { .. } = signal {
+                    self.outlets.media.link_lost();
+                }
                 facts.push(Fact::Link(signal.clone()));
             }
         }
@@ -297,6 +305,7 @@ impl Driver {
             Effect::Wake => self.step(Event::Resumed),
             Effect::Audio(request) => audio::offer(&self.outlets.audio, request),
             Effect::StoreKeys(keys) => keys::offer(&self.outlets.keys, keys),
+            Effect::Media(request) => self.outlets.media.offer(request),
         }
     }
 

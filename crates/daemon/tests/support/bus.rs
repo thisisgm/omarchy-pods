@@ -24,6 +24,9 @@ use super::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
 pub(crate) const BUS_NAME: &str = "io.github.thisisgm.Omapods";
 pub(crate) const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
 pub(crate) const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+/// How the daemon's line about a missing session bus starts, from `NO_SESSION_BUS` in `src/daemon/mod.rs`.
+pub(crate) const NO_SESSION_LOG: &str =
+    "session bus unreachable, so the D-Bus interface is off and no player is paused:";
 
 /// The match rule for the daemon object's `PropertiesChanged` signals.
 pub(crate) fn changes_rule() -> String {

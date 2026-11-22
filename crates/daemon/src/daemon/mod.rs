@@ -7,6 +7,7 @@ mod hub;
 mod keys;
 mod legacy_dialect;
 mod link;
+mod media;
 mod notify;
 mod owner_file;
 pub(crate) mod prefs;
@@ -16,9 +17,10 @@ mod sleep;
 mod socket;
 pub(crate) mod state_file;
 
+use std::fs::File;
 use std::future::poll_fn;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::{Pin, pin};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -41,6 +43,10 @@ pub(crate) const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot place 
 
 pub(crate) const NO_STATE_HOME: &str =
     "XDG_STATE_HOME is not an absolute path and HOME is unset; cannot place the state file";
+
+/// Logged once, with the reason after it; nothing tries the session bus again until a restart.
+const NO_SESSION_BUS: &str =
+    "session bus unreachable, so the D-Bus interface is off and no player is paused";
 
 /// A client past this is closed as soon as it is accepted.
 const MAX_CONNECTIONS: usize = 64;
@@ -85,26 +91,9 @@ async fn serve(
             return ExitCode::FAILURE;
         }
     };
-    if socket::ask_running_daemon_to_reopen(&paths.socket).await {
-        log(&format!(
-            "a daemon already answers on {}; asked it to reopen, exiting",
-            paths.socket.display()
-        ));
-        return ExitCode::SUCCESS;
-    }
-    let _lock = match socket::lock(&paths.socket).await {
-        Ok(Some(lock)) => lock,
-        Ok(None) => {
-            log(&format!(
-                "another daemon is starting on {}; leaving the socket to it",
-                paths.socket.display()
-            ));
-            return ExitCode::SUCCESS;
-        }
-        Err(error) => {
-            log(&error);
-            return ExitCode::FAILURE;
-        }
+    let _lock = match claim(&paths.socket).await {
+        Ok(lock) => lock,
+        Err(code) => return code,
     };
 
     let (link, inputs) = link::queue();
@@ -117,6 +106,7 @@ async fn serve(
     let (prefs, prefs_changes) = watch::channel(loaded);
     let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
     let (audio_requests, audio_queue) = audio::queue();
+    let (media_requests, media_queue) = media::queue();
     let adapter = tokio::spawn(audio::run(link.clone(), audio_queue, paths.runtime_dir));
     let (keys, pairs) = keys::queue();
     let driver = tokio::spawn(link::drive(
@@ -130,6 +120,7 @@ async fn serve(
             prefs,
             audio: audio_requests,
             keys,
+            media: media_requests,
         },
     ));
     let file = StateFile::new(paths.state_file);
@@ -155,7 +146,7 @@ async fn serve(
     let prefs_writer = tokio::spawn(prefs::follow(prefs_changes, settings));
     let keys_writer = tokio::spawn(keys::follow(pairs, keys_file, stored));
     // After the bind, so a missing or slow bus never delays the socket or the state file.
-    let bus = tokio::spawn(dbus::serve(hub.clone()));
+    let bus = tokio::spawn(session_bus(hub.clone(), link.clone(), media_queue));
     let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests));
     let suspends = tokio::spawn(sleep::watch(link.clone()));
     let (code, driver) = until_stopped(stop.first(), accept, follow, driver, watcher).await;
@@ -170,7 +161,7 @@ async fn serve(
     // Awaited so its system bus connection closes first; the result is only the cancellation.
     drop(suspends.await);
     bus.abort();
-    // Awaited so the bus name is released first; the result is only the cancellation.
+    // Awaited so the bus name is released and every player call dropped first; the result is only the cancellation.
     drop(bus.await);
     if let Err(error) = socket::remove(&paths.socket).await {
         log(&error);
@@ -184,6 +175,62 @@ async fn serve(
         log(&format!("keys: the writer ended: {error}"));
     }
     code
+}
+
+/// The socket's lock, or the code to exit with when a daemon already serves or starts there.
+async fn claim(socket: &Path) -> Result<File, ExitCode> {
+    if socket::ask_running_daemon_to_reopen(socket).await {
+        log(&format!(
+            "a daemon already answers on {}; asked it to reopen, exiting",
+            socket.display()
+        ));
+        return Err(ExitCode::SUCCESS);
+    }
+    match socket::lock(socket).await {
+        Ok(Some(lock)) => Ok(lock),
+        Ok(None) => {
+            log(&format!(
+                "another daemon is starting on {}; leaving the socket to it",
+                socket.display()
+            ));
+            Err(ExitCode::SUCCESS)
+        }
+        Err(error) => {
+            log(&error);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// The interface and the media adapter on one session connection; with no session bus neither runs.
+async fn session_bus(hub: Hub, link: mpsc::Sender<link::Input>, mut media_queue: media::Queue) {
+    let connection = match dbus::connect().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            log(&format!("{NO_SESSION_BUS}: {error}"));
+            // Drained, so a request finds neither a full queue nor a closed one, and pauses nothing.
+            media_queue.drain().await;
+            return;
+        }
+    };
+    let interface = dbus::serve(connection.clone(), hub);
+    both(interface, media::run(connection, link, media_queue)).await;
+}
+
+/// Runs both to their ends inside this task, so an abort drops both, and the connection with them.
+async fn both(first: impl Future<Output = ()>, second: impl Future<Output = ()>) {
+    let (mut first, mut second) = (pin!(first), pin!(second));
+    let (mut first_ended, mut second_ended) = (false, false);
+    poll_fn(|context| {
+        first_ended = first_ended || first.as_mut().poll(context).is_ready();
+        second_ended = second_ended || second.as_mut().poll(context).is_ready();
+        if first_ended && second_ended {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
