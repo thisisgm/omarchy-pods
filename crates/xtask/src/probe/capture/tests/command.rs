@@ -18,6 +18,7 @@ use pods_sys::l2cap::{Channel, ChannelError};
 use rustix::io::Errno;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
+use super::super::super::analyse::input::parse_meta;
 use super::super::super::dictate::HandleCheck;
 use super::super::super::script::{Route, ScriptName};
 use super::super::super::{CaptureArgs, Host, capture, exit_code, stop, summary, watch_signals};
@@ -495,6 +496,9 @@ fn output_never_contains_the_device_address() {
         .map(|line| line.split('=').next().unwrap())
         .collect();
     assert_eq!(keys, ["script", "tool", "realtime_at_zero_ns"], "{meta}");
+    // The reader of a run finds the wall clock under the key the capture wrote it with.
+    let read = parse_meta(&meta).unwrap();
+    assert!(read.realtime_at_zero_ns.is_some(), "{meta}");
     assert!(meta.starts_with("script=listen\n"), "{meta}");
 
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());

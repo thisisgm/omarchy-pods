@@ -88,7 +88,7 @@ fn wrapping_deltas_follow_a_counter_through_its_wrap() {
 
 #[test]
 fn median_is_the_lower_middle_of_a_sorted_list() {
-    assert_eq!(median(&[]), None);
+    assert_eq!(median::<u64>(&[]), None);
     assert_eq!(median(&[5]), Some(5));
     assert_eq!(median(&[1, 3]), Some(1));
     assert_eq!(median(&[1, 2, 9]), Some(2));

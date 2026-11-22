@@ -4,11 +4,11 @@ mod bands;
 mod census;
 pub(crate) mod input;
 mod lead;
-mod load;
+pub(crate) mod load;
 mod rates;
 pub(crate) mod report;
 mod shape;
-mod stats;
+pub(crate) mod stats;
 #[cfg(test)]
 pub(crate) mod support;
 #[cfg(test)]
@@ -77,7 +77,7 @@ pub(crate) fn analyse_run(run_dir: &Path) -> Result<String, AnalyseError> {
 }
 
 /// Writes every file whole before any gets its name and gives all the names or none, so a failure leaves the run as it was.
-fn write_new(run: &Run, files: &[(&str, &str)]) -> Result<(), StoreError> {
+pub(crate) fn write_new(run: &Run, files: &[(&str, &str)]) -> Result<(), StoreError> {
     let mut whole = Vec::new();
     for &(file, contents) in files {
         whole.push(run.write_unnamed(file, contents.as_bytes())?);

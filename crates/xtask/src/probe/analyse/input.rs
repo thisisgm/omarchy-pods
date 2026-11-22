@@ -20,12 +20,16 @@ const KIND_START: &str = "start";
 const KIND_STOP: &str = "stop";
 /// The kind of the mark written for a receive the buffer cut, in two parts: a store test bans the whole word from this crate.
 const KIND_CUT: &str = concat!("trunc", "ated");
+/// The kind of the mark written for each line shown to the owner.
+const KIND_CUE: &str = "cue";
 /// The separator of a meta line.
 const META_SEPARATOR: char = '=';
 /// The key of the meta line that names the script.
 const SCRIPT_KEY: &str = "script";
 /// A script name is at most this many characters.
 const SCRIPT_MAX: usize = 32;
+/// The key of the meta line that holds the wall clock, in nanoseconds since 1970, at the zero of the stamps.
+const REALTIME_KEY: &str = "realtime_at_zero_ns";
 
 /// The kinds of mark the analysis reads; every other kind is `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +48,20 @@ pub(crate) struct Mark {
     pub(crate) kind: MarkKind,
 }
 
+/// One cue of the marks file: when it was shown and what it said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Cue<'a> {
+    pub(crate) at_ns: u64,
+    pub(crate) text: &'a str,
+}
+
 /// What the meta file says about the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Meta {
     /// The name of the capture script, 1 to `SCRIPT_MAX` characters of a-z, 0-9 and -.
     pub(crate) script: String,
+    /// `None` for a run whose meta file has no such line.
+    pub(crate) realtime_at_zero_ns: Option<u64>,
 }
 
 /// The rule a line broke; it never repeats the line, whose text can identify a device.
@@ -73,6 +86,8 @@ pub(crate) enum LineRule {
     MetaBadScript,
     #[error("the script is named a second time")]
     MetaScriptTwice,
+    #[error("{REALTIME_KEY} must be one decimal number of nanoseconds, given once")]
+    MetaBadRealtime,
     #[error("it is not UTF-8 text")]
     NotText,
 }
@@ -147,7 +162,20 @@ pub(crate) fn parse_log(text: &str) -> Result<Vec<Record>, InputError> {
 
 // Sample input: "0\tconnect\t\n1203456789\tstart\t\n6203456789\tstop\t\n", whole lines only, one mark a line; no line is a run with no mark.
 pub(crate) fn parse_marks(text: &str) -> Result<Vec<Mark>, InputError> {
-    let mut marks: Vec<Mark> = Vec::new();
+    let lines = mark_lines(text)?;
+    Ok(lines.into_iter().map(|(mark, _)| mark).collect())
+}
+
+// Sample input: "0\tconnect\t\n8000000000\tcue\tStay silent\n", read as one cue at 8 s that says `Stay silent`.
+pub(crate) fn parse_cues(text: &str) -> Result<Vec<Cue<'_>>, InputError> {
+    let lines = mark_lines(text)?.into_iter();
+    let cue = lines.filter_map(|(mark, text)| Some((mark.at_ns, text?)));
+    Ok(cue.map(|(at_ns, text)| Cue { at_ns, text }).collect())
+}
+
+// Sample input: "0\tconnect\t\n8000000000\tcue\tStay silent\n", whole lines in stamp order; each mark comes with its text where it is a cue.
+fn mark_lines(text: &str) -> Result<Vec<(Mark, Option<&str>)>, InputError> {
+    let mut marks: Vec<(Mark, Option<&str>)> = Vec::new();
     let mut last_ns = 0;
     for (index, line) in text.lines().enumerate() {
         let refused = |rule| InputError::Line {
@@ -155,26 +183,29 @@ pub(crate) fn parse_marks(text: &str) -> Result<Vec<Mark>, InputError> {
             line: index.saturating_add(1),
             rule,
         };
-        let mark = parse_mark(line).map_err(refused)?;
+        let (mark, cue) = parse_mark(line).map_err(refused)?;
         if mark.at_ns < last_ns {
             return Err(refused(LineRule::OutOfOrder));
         }
         last_ns = mark.at_ns;
-        marks.push(mark);
+        marks.push((mark, cue));
     }
     Ok(marks)
 }
 
 // Sample input: "1203456789\tcue\tSay left", nanoseconds, a kind, then a text that may be empty or hold tabs.
-fn parse_mark(line: &str) -> Result<Mark, LineRule> {
+fn parse_mark(line: &str) -> Result<(Mark, Option<&str>), LineRule> {
     let mut fields = line.splitn(MARK_FIELDS, MARK_SEPARATOR);
-    let (Some(stamp), Some(kind), Some(_text)) = (fields.next(), fields.next(), fields.next())
+    let (Some(stamp), Some(kind_name), Some(text)) = (fields.next(), fields.next(), fields.next())
     else {
         return Err(LineRule::MarkMissingField);
     };
     let at_ns = parse_stamp(stamp).ok_or(LineRule::MarkBadStamp)?;
-    let kind = parse_kind(kind).ok_or(LineRule::MarkBadKind)?;
-    Ok(Mark { at_ns, kind })
+    let kind = parse_kind(kind_name).ok_or(LineRule::MarkBadKind)?;
+    Ok((
+        Mark { at_ns, kind },
+        (kind_name == KIND_CUE).then_some(text),
+    ))
 }
 
 // Sample input: "1203456789", refused unless writing the number again gives the same text.
@@ -206,9 +237,10 @@ fn is_name(text: &str, max: usize) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-// Sample input: "script=soak\ntool=xtask 0.0.0\nrealtime_at_zero_ns=1763640000000000000\n"; only the script line is used.
+// Sample input: "script=soak\ntool=xtask 0.0.0\nrealtime_at_zero_ns=1763640000000000000\n"; the tool line is not used.
 pub(crate) fn parse_meta(text: &str) -> Result<Meta, InputError> {
     let mut script: Option<String> = None;
+    let mut realtime_at_zero_ns: Option<u64> = None;
     for (index, line) in text.lines().enumerate() {
         let refused = |rule| InputError::Line {
             file: META_FILE,
@@ -218,6 +250,10 @@ pub(crate) fn parse_meta(text: &str) -> Result<Meta, InputError> {
         let Some((key, value)) = line.split_once(META_SEPARATOR) else {
             return Err(refused(LineRule::MetaMissingEquals));
         };
+        if key == REALTIME_KEY {
+            let stamp = parse_stamp(value).filter(|_| realtime_at_zero_ns.is_none());
+            realtime_at_zero_ns = Some(stamp.ok_or(refused(LineRule::MetaBadRealtime))?);
+        }
         if key != SCRIPT_KEY {
             continue;
         }
@@ -229,9 +265,11 @@ pub(crate) fn parse_meta(text: &str) -> Result<Meta, InputError> {
         }
         script = Some(value.to_owned());
     }
-    script
-        .map(|script| Meta { script })
-        .ok_or(InputError::NoScript)
+    let script = script.ok_or(InputError::NoScript)?;
+    Ok(Meta {
+        script,
+        realtime_at_zero_ns,
+    })
 }
 
 #[cfg(test)]

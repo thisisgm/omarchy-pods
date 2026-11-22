@@ -80,7 +80,7 @@ pub(crate) fn wrapping_deltas(values: &[u32]) -> Vec<u32> {
 }
 
 /// The middle of a sorted list, the lower of the two middles when the count is even.
-pub(crate) fn median(sorted: &[u64]) -> Option<u64> {
+pub(crate) fn median<T: Copy>(sorted: &[T]) -> Option<T> {
     sorted.get(sorted.len().saturating_sub(1) / 2).copied()
 }
 

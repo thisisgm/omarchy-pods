@@ -59,7 +59,7 @@ fn init_prints_the_session_path_and_nothing_else() {
 }
 
 /// Every command, each with arguments that would otherwise get as far as the store.
-fn every_command() -> [Vec<&'static str>; 6] {
+fn every_command() -> [Vec<&'static str>; 7] {
     [
         vec!["init", "--stamp", STAMP],
         vec![
@@ -69,6 +69,7 @@ fn every_command() -> [Vec<&'static str>; 6] {
         vec!["hci", "trace.snoop", "--stamp", STAMP, "--run", "page"],
         vec!["analyse", "page"],
         vec!["decode", "page"],
+        vec!["audio", "page"],
     ]
 }
 

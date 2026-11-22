@@ -9,6 +9,7 @@ use pods_proto::uplink::{START, STOP};
 use pods_sys::l2cap::Received;
 use rustix::io::Errno;
 
+use super::super::super::analyse::input::parse_cues;
 use super::super::super::script::{Action, Event, Opening, Route, rescue};
 use super::super::wires::wake_of;
 use super::super::*;
@@ -477,4 +478,13 @@ fn a_packet_is_counted_only_once_its_line_or_mark_was_written() {
     assert_eq!(recorder.received(8, &[]), full(MARKS_NAME));
     let counts = (recorder.sdus_in, recorder.audio_sdus, recorder.truncated);
     assert_eq!(counts, (0, 0, 0));
+}
+
+#[test]
+fn a_cue_mark_is_a_cue_to_the_reader_of_the_marks() {
+    let mut marks = Vec::new();
+    write_mark(&mut marks, 8_000_000_000, Mark::Cue, &"Stay silent").unwrap();
+    let cues = parse_cues(str::from_utf8(&marks).unwrap()).unwrap();
+    let read: Vec<(u64, &str)> = cues.iter().map(|cue| (cue.at_ns, cue.text)).collect();
+    assert_eq!(read, [(8_000_000_000, "Stay silent")]);
 }
