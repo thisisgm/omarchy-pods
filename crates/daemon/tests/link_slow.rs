@@ -41,6 +41,9 @@ mod tests {
     /// The most a user disconnect may take to clear the state once the pods left, far inside the 7750 ms grace.
     const CLEARED_WITHIN: Duration = Duration::from_secs(1);
 
+    /// Keeps the second disconnect waiting for BlueZ long after the first one timed out.
+    const DISCONNECTS_APART: Duration = Duration::from_secs(5);
+
     /// Pods that refuse every dial, the daemon started and BlueZ not yet reporting them connected.
     fn refused_pods() -> (Rig, Device) {
         let mut rig = Rig::new();
@@ -227,11 +230,11 @@ mod tests {
         rig.start();
         rig.link_up(&device);
         rig.wait_filled();
-        let mut client = Proto1::connect(rig.session());
         let mut held = Vec::new();
         for id in 1..=2 {
             rig.bluez().hold_replies(true);
-            assert_eq!(outcome(&client.ask(&do_request(id, "disconnect"))), "sent");
+            let reply = Proto1::connect(rig.session()).ask(&do_request(id, "disconnect"));
+            assert_eq!(outcome(&reply), "sent");
             held.push(device.call(DeviceMethod::Disconnect));
             wait_for("the held disconnect at the fake BlueZ", || {
                 (rig.bluez().calls() == held).then_some(())
@@ -242,6 +245,7 @@ mod tests {
                 rig.wait_status("the name cleared", |status| status["device_name"] == "");
                 rig.link_up(&device);
                 rig.wait_filled();
+                pause(DISCONNECTS_APART);
             }
         }
         wait_within(
