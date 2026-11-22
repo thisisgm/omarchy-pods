@@ -2,6 +2,7 @@
 
 pub(crate) mod bluez;
 pub(crate) mod bus;
+pub(crate) mod omarchy;
 pub(crate) mod rig;
 
 use std::fs::{self, File};
@@ -73,7 +74,7 @@ pub(crate) fn wait_within<T>(
     }
 }
 
-/// The temp session one test runs in: runtime directory, state home and home.
+/// The temp session one test runs in: runtime directory, state home, home and the directory on its path.
 pub(crate) struct Session {
     pub(crate) dir: TempDir,
 }
@@ -81,7 +82,7 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for sub in ["run", "state", "home"] {
+        for sub in ["run", "state", "home", "bin"] {
             fs::create_dir(dir.path().join(sub)).unwrap();
         }
         fs::set_permissions(dir.path().join("run"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -90,6 +91,11 @@ impl Session {
 
     pub(crate) fn runtime_dir(&self) -> PathBuf {
         self.dir.path().join("run")
+    }
+
+    /// The only directory on the path of every program this session runs.
+    pub(crate) fn bin(&self) -> PathBuf {
+        self.dir.path().join("bin")
     }
 
     pub(crate) fn state_home(&self) -> PathBuf {
@@ -105,7 +111,7 @@ impl Session {
         self.state_home().join("librepods").join("status.json")
     }
 
-    /// The binary with this session's environment and nothing of the real one's XDG or home.
+    /// The binary with this session's environment and nothing of the real one's XDG, home or path.
     pub(crate) fn command(&self, program: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(program);
         command
@@ -113,6 +119,7 @@ impl Session {
             .env("XDG_RUNTIME_DIR", self.runtime_dir())
             .env("XDG_STATE_HOME", self.state_home())
             .env("HOME", self.dir.path().join("home"))
+            .env("PATH", self.bin())
             // With no address the daemon tries the bus under the temp runtime directory, which never exists.
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .env(
