@@ -44,10 +44,8 @@ const LSB: &str = "LSB";
 pub(crate) const VERDICT: &str = "verdict";
 /// What a row reads when its figure could not be taken; the note says why.
 pub(crate) const REFUSED: &str = "refused";
-/// Why a comparison names no offset.
 const NO_OFFSET: &str = "every frame the offsets are judged on meets a sample that is not a number at one of them, so no offset is named; the frames are compared at no offset";
 
-/// Why a run was not decoded.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DecodeError {
     #[error(transparent)]
@@ -284,7 +282,6 @@ fn compared_rows(compared: &Result<Comparison, String>) -> Vec<Row> {
     rows
 }
 
-/// Why a comparison that is not there is not there.
 pub(crate) fn why_not(compared: &Result<Comparison, String>) -> &str {
     compared.as_ref().err().map_or("", String::as_str)
 }

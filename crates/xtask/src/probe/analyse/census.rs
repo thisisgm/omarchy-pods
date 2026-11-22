@@ -8,7 +8,6 @@ use super::input::{Mark, MarkKind};
 use super::load::{Loaded, UPLINK, windows};
 use super::stats::millis;
 
-/// How many packets that are not uplink packets carry each opcode, by opcode.
 pub(crate) fn census(loaded: &Loaded) -> Vec<(u16, u32)> {
     let mut counts: BTreeMap<u16, u32> = BTreeMap::new();
     let others = loaded.seen.iter().filter(|packet| !packet.uplink);
@@ -19,7 +18,6 @@ pub(crate) fn census(loaded: &Loaded) -> Vec<(u16, u32)> {
     counts.into_iter().collect()
 }
 
-/// How many packets from the pods are too short to hold an opcode.
 pub(crate) fn without_opcode(loaded: &Loaded) -> usize {
     let short = loaded.seen.iter().filter(|packet| packet.opcode.is_none());
     short.count()
@@ -38,14 +36,12 @@ pub(crate) fn largest_packet(loaded: &Loaded) -> Option<(u16, usize)> {
     largest
 }
 
-/// The first and the last battery report.
 pub(crate) fn battery(loaded: &Loaded) -> Option<(BatteryReport, BatteryReport)> {
     let first = loaded.batteries.first()?;
     let last = loaded.batteries.last()?;
     Some((*first, *last))
 }
 
-/// How long one START took to be answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
     clippy::struct_field_names,
@@ -59,7 +55,6 @@ pub(crate) struct Trial {
     pub(crate) audio_after_ns: Option<u64>,
 }
 
-/// One trial for each start mark, in order.
 pub(crate) fn trials(loaded: &Loaded, marks: &[Mark]) -> Vec<Trial> {
     let controls = || loaded.controls.iter().map(|control| control.at_ns);
     let audio = || loaded.audio.iter().map(|sdu| sdu.at_ns);
@@ -76,7 +71,6 @@ pub(crate) fn trials(loaded: &Loaded, marks: &[Mark]) -> Vec<Trial> {
         .collect()
 }
 
-/// The start or stop mark closest in time to a packet.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Nearest {
     pub(crate) kind: MarkKind,
@@ -86,7 +80,6 @@ pub(crate) struct Nearest {
     pub(crate) offset_ms: f64,
 }
 
-/// One control packet from the pods, in full, with where it lies against the marks.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ControlReply {
     pub(crate) bytes: Vec<u8>,
@@ -129,7 +122,6 @@ fn nearest(marks: &[Mark], at_ns: u64) -> Option<Nearest> {
     closest.map(|(_, found)| found)
 }
 
-/// Every control packet from the pods, in log order.
 pub(crate) fn control_replies(loaded: &Loaded, marks: &[Mark]) -> Vec<ControlReply> {
     loaded
         .controls

@@ -1,4 +1,4 @@
-//! Microphone probe commands: `init` creates the private session directory, `capture` records one scripted run of a route into it, `stop` ends a stream a killed capture left running, and `hci` reads a btmon or `PacketLogger` trace into a run.
+//! Microphone probe commands: sessions, scripted captures, trace imports and their analysis.
 
 mod a2dp;
 mod analyse;
@@ -217,7 +217,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     }
 }
 
-/// The home every command builds its paths from; a lossy print of one would name a directory that does not exist, so only text passes.
+/// A lossy print of a home would name a directory that does not exist, so only text passes.
 fn checked_home(home: Option<OsString>) -> Result<String, ProbeError> {
     home.ok_or(ProbeError::NoHome)?
         .into_string()

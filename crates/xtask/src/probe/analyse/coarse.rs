@@ -6,7 +6,6 @@ use super::stats::{per_second, to_f64};
 
 /// The opening left out of the span: a backlog delivered there, faster than it was recorded, would raise the figure.
 pub(crate) const COARSE_OPENING_NS: u64 = 1_000_000_000;
-/// The span needs this long from its first audio SDU to its last.
 pub(crate) const COARSE_MIN_SPAN_NS: u64 = 3_000_000_000;
 /// The span needs this many audio SDUs: those three seconds at 25 a second, the slower of the two rates the figure tells apart.
 pub(crate) const COARSE_MIN_SDUS: usize = 75;
@@ -14,14 +13,12 @@ pub(crate) const COARSE_MIN_SDUS: usize = 75;
 pub(crate) const HALVES_WITHIN_PERCENT: f64 = 10.0;
 const PERCENT: f64 = 100.0;
 
-/// The rate of the peer's unit clock from the arrivals after the opening of a stretch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct CoarseClock {
     /// Units delivered after the first SDU of the span, over the span.
     pub(crate) units_per_second: f64,
     /// From the first audio SDU after the opening to the last.
     pub(crate) span_ns: u64,
-    /// Audio SDUs in the span.
     pub(crate) sdus: usize,
     /// How far apart the two halves of the span put the clock, in percent of the figure.
     pub(crate) halves_apart_percent: f64,
@@ -34,7 +31,6 @@ impl CoarseClock {
     }
 }
 
-/// Why a stretch has no coarse clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum NoCoarse {
     /// The stretch has no arrival: no SDU of it holds a whole unit.
@@ -45,14 +41,13 @@ pub(crate) enum NoCoarse {
     Unsteady { halves_apart_percent: Option<f64> },
 }
 
-/// Units delivered after the first of `arrivals`, over the time to the last of them.
 fn units_per_second(arrivals: &[Arrival]) -> Option<f64> {
     let (first, last) = (arrivals.first()?, arrivals.last()?);
     let units = last.frames_done.saturating_sub(first.frames_done);
     per_second(to_f64(units), last.at_ns.saturating_sub(first.at_ns))
 }
 
-/// The pace of the SDUs that arrive `COARSE_OPENING_NS` or more after the first, which is the unit clock while their delay does not change: the figure is off by the change of delay from the first to the last, over the span.
+/// Off by the change of delay from the first to the last arrival, over the span.
 pub(crate) fn coarse_clock(
     arrivals: &[Arrival],
     samples_per_unit: u32,

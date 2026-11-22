@@ -1,4 +1,4 @@
-//! The private store for probe captures: owner only, outside any git repository, never through a symbolic link.
+//! The private capture store: owner only, outside any git repository, never through a symbolic link.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -18,7 +18,7 @@ const ROOT_NAME: &str = "omapods-captures";
 const GIT_MARKER: &str = ".git";
 /// The device file's name inside the root.
 const DEVICE_NAME: &str = "device";
-/// The directory a file with no name is made in: the one the descriptor is open on.
+/// A file with no name is made in the directory the descriptor is open on.
 const HERE: &str = ".";
 /// Where the kernel lists the open descriptors of this process, each as a link to its file.
 const PROC_FD_DIR: &str = "/proc/self/fd";

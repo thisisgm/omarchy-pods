@@ -14,7 +14,6 @@ const COARSE_WITHIN_PERCENT: f64 = 5.0;
 const PERCENT: f64 = 100.0;
 const STARTS: &str = "starts";
 
-/// Why a run has no rate to be labelled with.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum LabelError {
     #[error(
@@ -66,7 +65,6 @@ impl Clock {
         }
     }
 
-    /// The rate `hz` stands for, if it stands for one.
     fn rate_of(self, hz: f64) -> Option<u32> {
         // The distance is scaled, not divided: 60800 / 64000 - 1 comes to over 5 percent in floating point.
         let near = |rate: &u32| {

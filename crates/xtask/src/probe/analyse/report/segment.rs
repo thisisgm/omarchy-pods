@@ -33,16 +33,12 @@ const SAMPLES_PER_UNIT: u32 = 480;
 const NOMINAL_FRAME_NS: f64 = 7_500_000.0;
 /// The sample clocks the measured one is set against.
 const REFERENCE_HZ: [u32; 2] = [64_000, 48_000];
-/// Only this many gaps of a segment get a row of their own.
 const GAPS_LISTED: usize = 20;
-/// The header byte the opaque bytes start at.
 const OPAQUE_AT: usize = AUDIO_HEADER_LEN - OPAQUE_LEN;
-/// The last header byte.
 const HEADER_END: usize = AUDIO_HEADER_LEN - 1;
 /// The opaque bytes checked as a little endian length, each with the bytes of the SDU it leaves out.
 const LENGTH_FIELDS: [(usize, usize); 2] = [(0, 10), (6, 16)];
 const STAMP_TICKS: &str = "stamp ticks";
-/// What the gaps row says when the stamps have no step a break could be judged against.
 const STAMPS_UNCHECKED: &str = "stamps not checked, no modal step from unit to unit";
 
 /// The audio of one start mark, cut at the mark that ends it.
@@ -74,7 +70,6 @@ fn tail_in(records: &[Record], after_stop: Window) -> Tail {
     }
 }
 
-/// The rows of every start mark, in the order of the marks.
 pub(super) fn start_rows(records: &[Record], marks: &[Mark], whole: &Loaded) -> Vec<Row> {
     let trials = trials(whole, marks);
     let starts = windows(marks, UPLINK).into_iter();
@@ -417,7 +412,6 @@ impl Segment {
         )
     }
 
-    /// One row for each header field checked as a length: how many SDUs it agrees with.
     fn length_rows(&self) -> [Row; 2] {
         let sdus = self.loaded.audio.len();
         LENGTH_FIELDS.map(|(at, less)| {

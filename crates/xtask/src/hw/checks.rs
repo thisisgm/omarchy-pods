@@ -26,19 +26,19 @@ const STOP_BOUND: Duration = Duration::from_secs(1);
 const ADOPTION_TRIALS: usize = 10;
 /// Disconnect and connect rounds in C4.
 const RECONNECT_TRIALS: usize = 5;
-/// G1a: daemon start to populated, at most 2 s in 10 of 10.
+/// G1a: daemon start to populated.
 const G1A: Bound = Bound {
     at_most_ms: 2000,
     needed: 10,
     of: 10,
 };
-/// G1b: `BlueZ` connected to populated, at most 500 ms in 4 of 5.
+/// G1b: `BlueZ` connected to populated.
 const G1B: Bound = Bound {
     at_most_ms: 500,
     needed: 4,
     of: 5,
 };
-/// G4b: `do connect` reply to populated, at most 15 s in 5 of 5.
+/// G4b: `do connect` reply to populated.
 const G4B: Bound = Bound {
     at_most_ms: 15000,
     needed: 5,
@@ -188,7 +188,7 @@ pub(crate) fn same_contract(lab: &Lab<'_>) -> Check {
     check
 }
 
-/// The keys of the status document, from the code that writes it, in its byte order.
+/// From the code that writes the status document, in its byte order.
 pub(crate) fn document_keys() -> Vec<String> {
     let document = pods_core::status::to_status_object(&pods_core::state::State::default());
     document

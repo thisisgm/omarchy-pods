@@ -11,7 +11,6 @@ pub(crate) const SLOW_CALL: Duration = Duration::from_millis(100);
 /// One call of a decoder: a unit in, its samples or the decoder's own error out.
 type Call = Box<dyn FnMut(&[u8]) -> Result<Vec<f32>, String>>;
 
-/// What one unit came to.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum UnitResult {
     Samples(Vec<f32>),
@@ -19,7 +18,6 @@ pub(crate) enum UnitResult {
     Panic,
 }
 
-/// The decoder candidate, configured once.
 pub(crate) struct Candidate {
     call: Call,
 }
@@ -40,7 +38,7 @@ impl Candidate {
         Ok(Self { call })
     }
 
-    /// Decodes one unit; a decoder that panicked is kept as it is, so what it does next is counted too.
+    /// A decoder that panicked is kept as it is, so what it does next is counted too.
     pub(crate) fn unit(&mut self, unit: &[u8]) -> UnitResult {
         match catch_unwind(AssertUnwindSafe(|| (self.call)(unit))) {
             Ok(Ok(samples)) => UnitResult::Samples(samples),
@@ -50,14 +48,12 @@ impl Candidate {
     }
 }
 
-/// What the candidate made of a stream of units.
 #[derive(Debug, Default)]
 pub(crate) struct Tally {
     /// Calls that gave samples: one frame of them wherever the caller names a frame.
     pub(crate) decoded: usize,
     pub(crate) errors: usize,
     pub(crate) panics: usize,
-    /// The samples of every decoded unit, in order.
     pub(crate) samples: Vec<f32>,
     pub(crate) first_error: Option<String>,
     /// The time inside the decoder over all calls, and the longest single call.

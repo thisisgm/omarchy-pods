@@ -64,7 +64,6 @@ mod tests {
     /// The seed of every run of seeded frames here, and the seed of a second session.
     const SEED: u64 = 0x5eed_0018;
     const OTHER_SEED: u64 = 0x5eed_0028;
-    /// The files a run holds once it is analysed.
     const ANALYSED: [&str; 9] = [
         "analysis-att.tsv",
         "analysis.tsv",
@@ -76,7 +75,6 @@ mod tests {
         "sdu.log",
         "units.tsv",
     ];
-    /// The files a decode adds.
     const DECODED: [&str; 7] = [
         "decode-opus.tsv",
         "dictation.f32.wav",

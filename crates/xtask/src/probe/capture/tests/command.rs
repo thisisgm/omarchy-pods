@@ -36,7 +36,6 @@ const TRACE_OCTETS: usize = 3;
 /// A packet of the accessory header and an opcode the loop does not know, which the fake pods send here once STOP has reached them.
 const PARTING: [u8; 7] = [0x04, 0x00, 0x04, 0x00, 0x7f, 0x00, 0x01];
 
-/// How a command exited, what it left on its two streams, and the PSM of every connect it asked for, in order.
 pub(super) struct Ran {
     pub(super) code: String,
     pub(super) stdout: String,
@@ -69,7 +68,6 @@ pub(super) fn run_dialled(
     run_answered(home, answer, command)
 }
 
-/// Runs `command` on a thread with a connect that `answer` decides for each PSM, and waits for it no longer than the deadline.
 pub(super) fn run_answered(
     home: &Path,
     answer: impl Fn(u16) -> Result<Channel, ChannelError> + Send + 'static,
@@ -150,7 +148,6 @@ pub(super) fn entries_under(root: &Path) -> Vec<(String, Option<String>)> {
     entries
 }
 
-/// Fails when a stream of a command, or the name or text of an entry under `run`, holds part of the device address.
 pub(super) fn assert_no_address(stdout: &str, stderr: &str, run: Option<&Path>) {
     let streams = [("stdout", stdout), ("stderr", stderr)].map(|(name, text)| {
         let text = Some(text.to_owned());

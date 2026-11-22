@@ -8,13 +8,10 @@ use super::super::analyse::stats::count;
 const FRAME_MS: u32 = 20;
 /// A frame is active within this much of the loudest frame of its window.
 const ACTIVE_WITHIN_DB: f64 = 10.0;
-/// The step the quietest stretch is searched in.
 const HOP_MS: u32 = 10;
-/// The stretch a noise floor is read from.
 const FLOOR_MS: u32 = 3000;
 /// A frame at or over this RMS counts as audible: 60 dB under full scale, below any speech a close microphone records.
 const AUDIBLE_DBFS: f64 = -60.0;
-/// One step of a 16 bit sample.
 const LSB_16: f32 = 1.0 / 32_768.0;
 /// The power of a signal one 16 bit step in size, under which no rise and no envelope is read.
 pub(crate) const LSB_POWER: f64 = 1.0 / (32_768.0 * 32_768.0);
@@ -27,7 +24,6 @@ pub(crate) struct Level {
     pub(crate) peak_dbfs: f64,
 }
 
-/// Why a stretch has no level in dB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum NoLevel {
     #[error("it holds no sample")]
@@ -44,13 +40,11 @@ pub(crate) enum NoLevel {
     NotAudible,
 }
 
-/// The samples `ms` milliseconds hold at `rate`.
 pub(crate) fn samples_in(ms: u32, rate: u32) -> usize {
     let samples = u64::from(ms).saturating_mul(u64::from(rate)) / MS_PER_SECOND;
     usize::try_from(samples).unwrap_or(usize::MAX)
 }
 
-/// How long `samples` samples last at `rate`, in seconds.
 pub(crate) fn seconds_of(samples: usize, rate: u32) -> f64 {
     count(samples) / f64::from(rate)
 }
@@ -66,7 +60,6 @@ fn energy(samples: &[f32]) -> f64 {
     squares.sum()
 }
 
-/// The mean power of a stretch that holds a sample.
 pub(crate) fn mean_power(samples: &[f32]) -> Option<f64> {
     (!samples.is_empty()).then(|| energy(samples) / count(samples.len()))
 }
@@ -89,7 +82,6 @@ pub(crate) fn level(samples: &[f32]) -> Result<Level, NoLevel> {
     }
 }
 
-/// What a level over the active frames says of itself.
 pub(crate) fn active_note(frames: usize) -> String {
     format!("over the {frames} frames of {FRAME_MS} ms within {ACTIVE_WITHIN_DB} dB of the loudest")
 }
@@ -156,17 +148,14 @@ pub(crate) fn quietest(samples: &[f32], rate: u32, ms: u32) -> Option<Range<usiz
     Some(start..start.saturating_add(hops.saturating_mul(hop)))
 }
 
-/// What a floor says of itself.
 pub(crate) fn floor_note() -> String {
     format!("the RMS of the quietest {FLOOR_MS} ms of the window")
 }
 
-/// The quietest three seconds of a window, which its floor is read from; a shorter window has none.
 pub(crate) fn floor_stretch(samples: &[f32], rate: u32) -> Option<&[f32]> {
     samples.get(quietest(samples, rate, FLOOR_MS)?)
 }
 
-/// The RMS of the quietest three seconds of a window, in dB under full scale.
 pub(crate) fn floor_dbfs(samples: &[f32], rate: u32) -> Result<f64, NoLevel> {
     let quiet = floor_stretch(samples, rate).ok_or(NoLevel::NoFloor)?;
     match level(quiet) {
@@ -182,14 +171,12 @@ pub(crate) fn near_zero_share(samples: &[f32]) -> Option<f64> {
     (!samples.is_empty()).then(|| count(near.count()) / count(samples.len()))
 }
 
-/// What a first audible frame says of itself, for a start of `samples` samples.
 pub(crate) fn audible_note(samples: usize) -> String {
     format!(
         "from the first sample of the start to the first {FRAME_MS} ms frame at {AUDIBLE_DBFS} dBFS or over, in the stream's own samples; of {samples} samples"
     )
 }
 
-/// Where the first 20 ms frame at or over `AUDIBLE_DBFS` starts.
 pub(crate) fn first_audible(samples: &[f32], rate: u32) -> Option<usize> {
     let frame = samples_in(FRAME_MS, rate).max(1);
     let audible = 10.0_f64.powf(AUDIBLE_DBFS / 10.0);

@@ -25,14 +25,12 @@ const BENCH_NOW_NS: u64 = 5;
 const TAIL_READINGS: u64 = 6;
 /// How far past the end of that tail its clock stands at most: the reading that finds the tail over, and the next one the clock already shows.
 const TAIL_OVERSHOOT_READINGS: u64 = 2;
-/// How long one wait of that tail lasts.
 const TAIL_POLL: Duration = Duration::from_millis(1);
 /// How long the run of the slow connect waits for the ear report.
 const EAR_WAIT_NS: u64 = 1_000;
 /// What its clock reads once the attribute channel is open: past the end of that wait, counted from the handshake.
 const SLOW_CONNECT_NS: u64 = 2_000;
 
-/// What a loop built by hand left behind.
 struct Bench<T> {
     result: T,
     /// Whether what the guards sent as they dropped was sent and recorded.
@@ -44,7 +42,6 @@ struct Bench<T> {
     marks: String,
 }
 
-/// The loop in `phase` with nothing started, on the wires and the recorder a test built.
 pub(super) fn engine_in<'a, 'o>(
     phase: Phase,
     wires: Wires<'a>,

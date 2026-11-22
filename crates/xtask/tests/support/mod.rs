@@ -23,7 +23,6 @@ const SEED: u64 = 0x5eed_0006;
 /// A run that starts at zero and stops after 601 seconds.
 const MARKS: &str =
     "0\tconnect\t\n0\tstart\t\n601000000000\tstop\t\n602000000000\tend\tscript done\n";
-/// The meta file of a soak.
 const META: &str = "script=soak\ntool=xtask 0.0.0\nrealtime_at_zero_ns=1763640000000000000\n";
 
 /// Silent audio SDUs of `seconds` from a peer clocked at `rate_hz`, four units of 480 samples in each.

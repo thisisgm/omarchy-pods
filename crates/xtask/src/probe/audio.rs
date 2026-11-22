@@ -1,4 +1,4 @@
-//! Acoustic measurements of the decoded audio of one run: levels, noise floor, bandwidth, taps and first audible frame, with a reference recording the same sound against it, and with no cue read one decoded file as a whole.
+//! Acoustic measurements of a run's decoded audio: alone, against a reference recording, or one file whole.
 
 mod alignment;
 mod levels;
@@ -75,7 +75,6 @@ pub(crate) struct AudioArgs {
     reference_start_ns: Option<u64>,
 }
 
-/// Why a run was not measured.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AudioError {
     #[error(transparent)]

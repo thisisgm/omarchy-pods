@@ -46,7 +46,6 @@ const PODS_CID_OFFSET: u16 = 0x0010;
 const TABLES: [&str; 4] = ["marks.tsv", "meta.txt", "psm.tsv", "links.txt"];
 const MUSIC_TABLES_OF_A_LINK: usize = 2;
 
-/// The stamp of a record written `ms` milliseconds into a synthetic trace.
 fn at_ns(ms: u64) -> u64 {
     START_UNIX_MICROS
         .saturating_add(ms.saturating_mul(1_000))

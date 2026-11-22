@@ -95,7 +95,6 @@ fn median_is_the_lower_middle_of_a_sorted_list() {
     assert_eq!(median(&[4, 4, 4, 4]), Some(4));
 }
 
-/// `points` points on the line y = 3x + 1.
 fn on_a_line(points: u32) -> Vec<(f64, f64)> {
     (0..points)
         .map(|k| (f64::from(k), 3.0 * f64::from(k) + 1.0))

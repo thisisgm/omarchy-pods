@@ -6,9 +6,7 @@ use super::stats::{count, least_squares, median, mode, per_second, ppm, seconds,
 
 /// A rate needs at least this long between the first and the last audio SDU: half a one minute soak, which ends just under 60 s.
 pub(crate) const THIN_MIN_SPAN_NS: u64 = 30_000_000_000;
-/// A rate needs at least this many audio SDUs.
 pub(crate) const THIN_MIN_SDUS: usize = 500;
-/// What a stretch of the uplink must hold before a rate is formed from it.
 const UPLINK_FLOOR: Floor = Floor {
     sdus: THIN_MIN_SDUS,
     span_ns: THIN_MIN_SPAN_NS,
@@ -17,7 +15,6 @@ const UPLINK_FLOOR: Floor = Floor {
 const DISAGREE_PPM: f64 = 50.0;
 const BITS_PER_BYTE: f64 = 8.0;
 
-/// A stretch of audio too thin to support a rate, with what it did hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Thin {
     pub(crate) sdus: usize,
@@ -25,7 +22,6 @@ pub(crate) struct Thin {
     pub(crate) span_ns: u64,
 }
 
-/// The least a stretch must hold before a rate is formed from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Floor {
     pub(crate) sdus: usize,
@@ -33,7 +29,6 @@ pub(crate) struct Floor {
 }
 
 impl Floor {
-    /// The time from the first of `sdus` packets to the last, or what the stretch held when that is under the floor.
     pub(crate) fn span(self, sdus: usize, first_ns: u64, last_ns: u64) -> Result<u64, Thin> {
         let span_ns = last_ns.saturating_sub(first_ns);
         if sdus < self.sdus || span_ns < self.span_ns {
@@ -43,7 +38,6 @@ impl Floor {
     }
 }
 
-/// How the audio SDUs arrive.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Cadence {
     /// Arrival intervals over the span.
@@ -90,13 +84,11 @@ impl ClockEstimate {
         ppm(self.hz(), reference_hz)
     }
 
-    /// Whether the slope and the ratio differ by more than `DISAGREE_PPM`.
     pub(crate) fn disagree(&self) -> bool {
         ppm(self.units_per_second, self.ratio).abs() > DISAGREE_PPM
     }
 }
 
-/// The bits the stream carries each second.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Bitrate {
     /// Coded unit bytes after the first SDU, times eight, over the span.
@@ -129,7 +121,6 @@ fn stretch(loaded: &Loaded) -> Result<Stretch<'_>, Thin> {
     })
 }
 
-/// The SDU rate, the units in an SDU and the spread of the arrival intervals.
 pub(crate) fn cadence(loaded: &Loaded) -> Result<Cadence, Thin> {
     let Stretch {
         rest,
@@ -156,7 +147,7 @@ pub(crate) fn cadence(loaded: &Loaded) -> Result<Cadence, Thin> {
     })
 }
 
-/// The unit clock of the uplink: every audio SDU counts, one with no unit too.
+/// Every audio SDU counts, one with no unit too.
 pub(crate) fn clock(loaded: &Loaded, samples_per_unit: u32) -> Result<ClockEstimate, Thin> {
     let mut frames_done = 0_u64;
     let arrivals: Vec<Arrival> = loaded
@@ -205,7 +196,6 @@ pub(crate) fn clock_of(
     })
 }
 
-/// The coded audio bits and the whole SDU bits a second, and the range of the unit lengths.
 pub(crate) fn bitrate(loaded: &Loaded) -> Result<Bitrate, Thin> {
     let Stretch {
         rest,

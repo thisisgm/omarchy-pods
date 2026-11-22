@@ -1,4 +1,4 @@
-//! C6, the command census: each setting command ten times over protocol 1, the originals put back, then one with no bud in.
+//! C6: each setting command ten times over protocol 1, originals put back, then one with no bud in.
 
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -23,11 +23,10 @@ const SENT: &str = "sent";
 const NOT_WORN: &str = "not_worn";
 /// How long the person has to answer a prompt.
 const PROMPT_WAIT: Duration = Duration::from_secs(300);
-/// How long a `set` over the socket may wait for its reply, longer than the daemon's own confirm timeout.
+/// Longer than the daemon's own confirm timeout.
 const SET_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// The longest reply line read from the daemon, as the command line client bounds it.
 const MAX_REPLY_BYTES: usize = 65536;
-/// The size of each read of a reply.
 const READ_CHUNK_BYTES: usize = 4096;
 /// How long a connect waits before it tries a full listen backlog again.
 const CONNECT_RETRY: Duration = Duration::from_millis(10);
@@ -46,7 +45,7 @@ struct CensusCommand {
     in_adaptive: bool,
 }
 
-/// The census of commands C6 sends; a hardware run may correct the expected words.
+/// A hardware run may correct the expected words.
 const CENSUS: [CensusCommand; 7] = [
     CensusCommand {
         key: "noise",
@@ -107,10 +106,9 @@ const NEEDED_FEATURES: [&str; 4] = [
     "supports_one_bud_anc",
 ];
 
-/// The `set` values of the status document's `noise_mode` numbers, in number order.
+/// Indexed by the status document's `noise_mode` number.
 const NOISE_WORDS: [&str; 4] = ["off", "anc", "transparency", "adaptive"];
 
-/// Why a `set` gave no reply word.
 #[derive(Debug, PartialEq)]
 enum NoWord {
     /// Nothing came back within the bound, or the socket failed; the text says which.
@@ -143,13 +141,12 @@ fn set_over_socket(
     })
 }
 
-/// Why `read_word` gave no word: the read failed, or what came back gave none.
 enum WordError {
     Io(io::Error),
     Word(NoWord),
 }
 
-/// Reads the reply line from `stream` before `deadline` and returns its word; sample input `{"id":1,"ok":false,"error":{"code":"not_worn","message":"m"}}`.
+/// Sample input `{"id":1,"ok":false,"error":{"code":"not_worn","message":"m"}}`.
 fn read_word(stream: &mut UnixStream, deadline: Option<Instant>) -> Result<String, WordError> {
     let Some(reply) = read_reply(stream, deadline).map_err(WordError::Io)? else {
         return Err(WordError::Word(NoWord::Unanswered(
@@ -162,7 +159,7 @@ fn read_word(stream: &mut UnixStream, deadline: Option<Instant>) -> Result<Strin
         .ok_or(WordError::Word(NoWord::Unreadable))
 }
 
-/// A non-blocking connect retried until `deadline`, since a full listen backlog answers `EAGAIN` rather than waiting.
+/// Retried because a full listen backlog answers `EAGAIN` rather than waiting.
 fn connect_by(socket: &Path, deadline: Option<Instant>) -> io::Result<UnixStream> {
     let flags = SocketFlags::CLOEXEC | SocketFlags::NONBLOCK;
     let fd = rustix::net::socket_with(AddressFamily::UNIX, SocketType::STREAM, flags, None)?;
@@ -304,7 +301,7 @@ fn lead_in(index: usize, originals: &Originals) -> Option<&'static str> {
         .map(|row| row.value)
 }
 
-/// The capability keys in `NEEDED_FEATURES` not true in the status line; sample input `{"supports_adaptive":true,"supports_one_bud_anc":false}` among its other keys.
+/// Sample input `{"supports_adaptive":true,"supports_one_bud_anc":false}` among other keys.
 fn missing_features(state: &Map<String, Value>) -> Vec<&'static str> {
     NEEDED_FEATURES
         .into_iter()
@@ -415,7 +412,6 @@ pub(crate) fn commands(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     Ok(check)
 }
 
-/// How the census rounds ended.
 #[derive(Debug, PartialEq)]
 enum Rounds {
     Answered,
@@ -442,7 +438,7 @@ fn census_set(
 }
 
 impl CensusCommand {
-    /// The value of trial `trial`; an alternating row starts on the value that differs from `original`, so every trial is a write.
+    /// An alternating row starts on the value that differs from `original`, so every trial is a write.
     fn value_at(&self, trial: usize, original: &str) -> &'static str {
         let Some(alternate) = self.alternate else {
             return self.value;
@@ -455,7 +451,6 @@ impl CensusCommand {
         }
     }
 
-    /// The row's name in the report: `key value`, or `key value and alternate in turn`.
     fn label(&self) -> String {
         match self.alternate {
             Some(alternate) => format!("{} {} and {alternate} in turn", self.key, self.value),
@@ -638,7 +633,7 @@ fn say(text: &str) {
     crate::report(text);
 }
 
-/// Waits for the person to press Enter, a byte at a time so a line left unfinished cannot hold up a stop signal.
+/// A byte at a time, so an unfinished line cannot hold up a stop signal.
 fn answered() -> Result<bool, Interrupted> {
     let stdin = io::stdin();
     let tick = Timespec {

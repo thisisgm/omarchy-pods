@@ -1,5 +1,3 @@
-//! What the header bytes, the stamps and the arrival times of one stretch of audio say about its shape.
-
 use pods_proto::sdulog::Record;
 use pods_proto::uplink::OPAQUE_LEN;
 
@@ -12,27 +10,20 @@ use super::*;
 
 /// SDUs in the hand built streams, enough for a one byte counter to wrap twice.
 const SDUS: u32 = 600;
-/// Two to the power 32, the modulus of a four byte counter.
 const U32_MODULUS: u64 = 1 << 32;
-/// The opaque byte the one byte counter tests count in.
 const COUNTER_AT: usize = 5;
-/// Steps from SDU to SDU in a hand built stream.
 const STEPS: usize = 599;
-/// The opaque byte a little endian millisecond clock is written from in the clock tests.
 const CLOCK_AT: usize = 10;
-/// The step of that clock from SDU to SDU when nothing disturbs it.
 const CLOCK_STEP_MS: u32 = 30;
 /// The stamp step from SDU to SDU of a stream whose units of one SDU share a stamp.
 const SHARED_STAMP_STEP: u32 = 1000;
 
-/// `OPAQUE` with `bytes` written from offset `at`.
 fn opaque_with(at: usize, bytes: &[u8]) -> [u8; OPAQUE_LEN] {
     let mut opaque = OPAQUE;
     opaque[at..][..bytes.len()].copy_from_slice(bytes);
     opaque
 }
 
-/// A stream whose opaque byte `COUNTER_AT` counts up by `step` from SDU to SDU.
 fn counted(step: u32) -> Vec<Record> {
     stream(SDUS, |k| {
         opaque_with(COUNTER_AT, &k.wrapping_mul(step).to_le_bytes()[..1])
@@ -43,7 +34,6 @@ fn constants() -> [FieldKind; OPAQUE_LEN] {
     OPAQUE.map(FieldKind::Constant)
 }
 
-/// A counter that never left its step in a hand built stream.
 fn steady_counter(step: u32, modulus: u64) -> FieldKind {
     FieldKind::Counter {
         step,
@@ -131,7 +121,6 @@ fn a_one_byte_counter_is_still_found_when_a_few_sdus_are_lost() {
 
 #[test]
 fn a_one_byte_counter_may_leave_its_step_once_in_twenty_steps_and_no_more() {
-    /// SDUs that make 600 steps.
     const SDUS_OF_600_STEPS: u32 = 601;
     /// The counter skips a count at every SDU this many apart: 30 of the 600 steps, the most a counter may miss.
     const SKIP_EVERY: u32 = 20;

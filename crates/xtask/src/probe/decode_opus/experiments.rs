@@ -15,7 +15,6 @@ use crate::probe::xorshift::next_random;
 
 /// The frame that is withheld and concealed, counted from 0 as the frames table counts.
 const CONCEALED_FRAME: usize = 500;
-/// The mutated frames the candidate is fed.
 const MUTATIONS: usize = 10_000;
 /// The seed of the mutations, so two runs over one log feed the same bytes.
 const MUTATION_SEED: u64 = 0x5eed_0017;
@@ -29,7 +28,6 @@ const DB_PER_DECADE_OF_POWER: f64 = 10.0;
 const FEWEST_FRAMES: usize = 50;
 const SHARE: &str = "share";
 
-/// Why the candidate's whole decode is not there to measure against.
 const NOT_WHOLE: &str = "the candidate did not decode every frame";
 
 /// A frame without its second byte; a frame of one byte or none stays as it is.

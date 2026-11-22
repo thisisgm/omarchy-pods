@@ -35,7 +35,6 @@ pub(crate) enum FieldKind {
     },
 }
 
-/// How many bytes a counter spans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Width {
     One,
@@ -60,7 +59,6 @@ impl Width {
         }
     }
 
-    /// The opaque bytes from `at` as one little endian number.
     fn read(self, opaque: &[u8; OPAQUE_LEN], at: usize) -> Option<u32> {
         let from = opaque.get(at..)?;
         match self {
@@ -72,7 +70,6 @@ impl Width {
         }
     }
 
-    /// The step from `before` to `after`, counted the way a counter this wide wraps.
     fn step(self, before: u32, after: u32) -> u32 {
         let step = after.wrapping_sub(before);
         match self {
@@ -95,13 +92,11 @@ impl Width {
 /// A run of opaque bytes that looks like a counter: an observation, never proof that a packet was lost.
 #[derive(Debug, Clone, Copy)]
 struct Counter {
-    /// The first opaque byte of the counter.
     at: usize,
     width: Width,
     step: u32,
     /// How many steps from SDU to SDU were `step`.
     on_step: usize,
-    /// How many steps from SDU to SDU there were.
     steps: usize,
 }
 
@@ -121,7 +116,6 @@ fn byte_varies(loaded: &Loaded, at: usize) -> bool {
     values.any(|value| Some(value) != first)
 }
 
-/// The counter `width` wide at `at`, when the bytes there count.
 fn counter_at(loaded: &Loaded, width: Width, at: usize) -> Option<Counter> {
     let read = |sdu: &AudioPacket| width.read(&sdu.opaque, at);
     let steps: Vec<u32> = loaded
@@ -191,7 +185,6 @@ fn field_at(loaded: &Loaded, counters: &[Counter], at: usize) -> FieldKind {
     }
 }
 
-/// The kind of each of the 14 opaque header bytes, in order.
 pub(crate) fn opaque_fields(loaded: &Loaded) -> [FieldKind; OPAQUE_LEN] {
     let counters = counters(loaded);
     std::array::from_fn(|at| field_at(loaded, &counters, at))
@@ -209,7 +202,6 @@ pub(crate) fn length_agrees(loaded: &Loaded, at: usize, less: usize) -> usize {
     loaded.audio.iter().filter(agrees).count()
 }
 
-/// The most common step between stamps and the fraction of steps that take it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ModalDelta {
     pub(crate) delta: u32,
@@ -225,7 +217,6 @@ pub(crate) enum StampUnit {
     Unknown(u32),
 }
 
-/// How the stamps step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct StampReport {
     /// From each unit to the next, across SDUs too; `None` under two units.
@@ -235,7 +226,6 @@ pub(crate) struct StampReport {
 }
 
 impl StampReport {
-    /// The unit the modal step from unit to unit implies.
     pub(crate) fn implied(&self) -> Option<StampUnit> {
         self.per_unit.map(|modal| implied_unit(modal.delta))
     }
@@ -278,7 +268,6 @@ pub(crate) fn stamps(loaded: &Loaded) -> StampReport {
     }
 }
 
-/// How the stamps show a gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StampBreak {
     /// The step is several modal steps: the stamps `first` to `last`, a modal step apart, never came.
@@ -287,12 +276,10 @@ pub(crate) enum StampBreak {
     Irregular { delta: u32 },
 }
 
-/// One place the stream is not continuous, with everything that shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Gap {
     /// The SDU the gap ends at, by its place among the loaded records, counted from 0.
     pub(crate) sdu: usize,
-    /// When that SDU arrived.
     pub(crate) at_ns: u64,
     /// The arrival interval before it, when over `LATE_ARRIVAL_NS`.
     pub(crate) late_ns: Option<u64>,

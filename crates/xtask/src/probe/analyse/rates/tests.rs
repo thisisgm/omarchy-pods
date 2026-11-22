@@ -1,5 +1,3 @@
-//! Cadence, clock and bitrate of one stretch of audio, and the refusal of a stretch too thin to support them.
-
 use super::super::load::load;
 use super::super::shape::gaps;
 use super::super::stats::ppm;
@@ -9,9 +7,7 @@ use super::super::support::{
 use super::super::synth::synth;
 use super::*;
 
-/// Samples in one unit of the generated streams.
 const SAMPLES_PER_UNIT: u32 = 480;
-/// Units in one SDU of the generated streams.
 const UNITS_PER_SDU: u32 = 4;
 /// Ten minutes, the length of a soak.
 const TEN_MINUTES_S: u32 = 600;

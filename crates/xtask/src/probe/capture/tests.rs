@@ -35,7 +35,6 @@ use pods::{EAR_PACKET, Heard, ack, audio_sdu, noise};
 const SHORT_NS: u64 = 50_000_000;
 /// An SDU one receive buffer cannot hold.
 const OVERSIZED_LEN: usize = 5000;
-/// The store under the temporary home.
 const ROOT_NAME: &str = "omapods-captures";
 /// The only mode the store accepts for its root.
 const ROOT_MODE: u32 = 0o700;
@@ -65,7 +64,6 @@ fn counted_nothing(end: EndReason) -> Outcome {
     }
 }
 
-/// A temporary home whose store holds the device file and nothing else.
 fn home_with_device() -> TempDir {
     let home = tempfile::tempdir().unwrap();
     let root = home.path().join(ROOT_NAME);

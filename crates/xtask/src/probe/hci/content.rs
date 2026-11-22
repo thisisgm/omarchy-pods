@@ -22,7 +22,6 @@ pub(crate) enum Carries {
 pub(crate) struct Half {
     /// The identifier in the PDUs, which is the receiving side's.
     pub cid: u16,
-    /// Who sent the PDUs.
     pub direction: Direction,
     pub pdus: u64,
 }

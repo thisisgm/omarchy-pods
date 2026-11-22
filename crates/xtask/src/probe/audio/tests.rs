@@ -18,10 +18,8 @@ use super::spectrum::{NoCutoff, NoReach, cutoff, grid, reach};
 const RATE: u32 = 64_000;
 /// The rate of a reference recorder.
 const REFERENCE_RATE: u32 = 48_000;
-/// The slots of a ten second burst train.
 const TEN_SECONDS_OF_SLOTS: usize = 500;
 
-/// Raises the start of `signal` from nothing to its full size by `step` a sample.
 fn fade_in(signal: &mut [f32], step: f32) {
     let mut gain = 0.0_f32;
     for sample in signal {
@@ -35,7 +33,6 @@ fn click(seed: &mut u64, rate: u32) -> Vec<f32> {
     noise(seed, 0.5, samples_in(1, rate))
 }
 
-/// A room of `ms` milliseconds with a click at each of `at_ms`.
 fn room_with_clicks(seed: &mut u64, rate: u32, ms: u32, at_ms: &[u32]) -> Vec<f32> {
     let mut room = noise(seed, ROOM, samples_in(ms, rate));
     for &at in at_ms {

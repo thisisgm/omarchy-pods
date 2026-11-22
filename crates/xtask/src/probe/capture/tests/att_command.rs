@@ -40,14 +40,12 @@ pub(super) fn soak_args(run: &str, no_marker: bool) -> CaptureArgs {
     }
 }
 
-/// Fake pods that raise the interrupted flag three packets into the dictation stream.
 pub(super) fn interrupting_pods() -> Pods {
     let mut part = Pods::default();
     part.att.interrupt_after = Some(3);
     part
 }
 
-/// Runs `command` against the fake pods `part` on both channels, and returns what both saw.
 fn run_against_pods(
     home: &std::path::Path,
     part: Pods,

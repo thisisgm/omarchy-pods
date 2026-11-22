@@ -13,19 +13,13 @@ use super::census::{
 use super::input::{CutLines, LOG_FILE, MARKS_FILE, Mark, MarkKind};
 use super::load::{Loaded, UPLINK, load, windows};
 
-/// The first line of the analysis table.
 const TABLE_HEADER: &str = "key\tvalue\tunit\tnote";
-/// The first line of the units table.
 const UNITS_HEADER: &str = "index\tsdu\tarrival_ns\tstamp\tlen\tmax_sfb";
-/// Joins the items of a note.
 pub(crate) const NOTE_SEPARATOR: &str = "; ";
-/// The key of the row that counts the units of a run.
 pub(crate) const UNITS_KEY: &str = "audio_units";
-/// The key of the rows that hold the sample clock of each start.
 pub(crate) const CLOCK_KEY: &str = "clock_hz";
 /// The key of the rows that hold the coarse clock of each start, which a short start still gives.
 pub(crate) const COARSE_CLOCK_KEY: &str = "clock_hz_coarse";
-/// What a row reads when there is nothing to measure.
 pub(crate) const NONE: &str = "none";
 /// What a row reads when its figure cannot be formed; the note says why.
 pub(crate) const REFUSED: &str = "refused";
@@ -37,7 +31,6 @@ pub(crate) const HZ: &str = "Hz";
 pub(crate) const BIT_PER_SECOND: &str = "bit/s";
 const PERCENT: &str = "percent";
 
-/// One line of the analysis table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Row {
     pub(crate) key: String,
@@ -58,24 +51,20 @@ impl Row {
     }
 }
 
-/// Everything the analysis of one run writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Report {
     pub(crate) rows: Vec<Row>,
-    /// The units table, whole, one line a unit after its header.
     pub(crate) units: String,
     /// The strings of the first device information packet; they can name the device, so no row holds them.
     pub(crate) device_strings: Option<Vec<String>>,
 }
 
-/// A note that opens with `label`, then every item that is not empty.
 pub(crate) fn labelled(label: &str, items: &[&str]) -> String {
     let said = items.iter().copied().filter(|item| !item.is_empty());
     let all: Vec<&str> = std::iter::once(label).chain(said).collect();
     all.join(NOTE_SEPARATOR)
 }
 
-/// A table of rows: a header, then one line a row, each ending in a newline.
 pub(crate) fn table(rows: &[Row]) -> String {
     let mut lines = vec![format!("{TABLE_HEADER}\n")];
     lines.extend(rows.iter().map(|row| {
@@ -132,7 +121,6 @@ pub(crate) fn marks_cut_row(cut: bool) -> Row {
     cut_row("marks_cut_lines", MARKS_FILE, cut)
 }
 
-/// One such row for each line file.
 fn cut_rows(cut: CutLines) -> [Row; 2] {
     [
         cut_row("sdu_log_cut_lines", LOG_FILE, cut.log),
@@ -273,7 +261,6 @@ fn control_row(reply: &ControlReply) -> Row {
     Row::new("control_packet", &hex.concat(), "hex", &note)
 }
 
-/// Reads the charge of one part out of a battery report.
 type ChargeOf = fn(&BatteryReport) -> Option<Charge>;
 
 fn battery_rows(whole: &Loaded) -> Vec<Row> {
@@ -322,7 +309,6 @@ fn device_info_row(whole: &Loaded) -> Row {
     Row::new("device_info_packets", &packets, PACKETS, note)
 }
 
-/// The units table: every whole unit of every audio SDU under the log line it came in.
 fn units_table(whole: &Loaded) -> String {
     let mut lines = vec![format!("{UNITS_HEADER}\n")];
     let mut index = 0_usize;

@@ -19,7 +19,6 @@ const OWNER_FILE: u32 = 0o600;
 /// The marks of a run that starts at zero and stops after 62 seconds.
 const MARKS: &str =
     "0\tconnect\t\n0\tstart\t\n62000000000\tstop\t\n63000000000\tend\tscript done\n";
-/// The meta file of a soak.
 const META: &str = "script=soak\ntool=xtask 0.0.0\nrealtime_at_zero_ns=1763640000000000000\n";
 /// The audio SDUs `synth` makes in 61 s at 64 kHz, four units of 480 samples each: 61 x 64000 / 1920, rounded down.
 const SOAK_SDUS: usize = 2033;

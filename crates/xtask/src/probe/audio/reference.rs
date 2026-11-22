@@ -54,7 +54,6 @@ impl<'a> Reference<'a> {
         usize::try_from(sample).ok()
     }
 
-    /// The reference samples of `window` when the reference holds all of it, and where they start.
     pub(crate) fn stretch(&self, window: Window) -> Option<(usize, &'a [f32])> {
         let range: Range<usize> =
             self.sample_at(window.start_ns)?..self.sample_at(window.end_ns?)?;

@@ -1,4 +1,4 @@
-//! The two user units the hardware run may touch, the program runner every external command goes through, and the restore guard.
+//! The units the hardware run touches, the runner every external command goes through, the restore guard.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -18,10 +18,10 @@ pub(crate) const UNDER_TEST: &str = "librepods-hw.service";
 /// The name `systemd-run --unit` takes for `UNDER_TEST`.
 const UNDER_TEST_NAME: &str = "librepods-hw";
 
-/// The installed unit file, read at build time so the run's hardening cannot drift from it.
+/// Read at build time so the run's hardening cannot drift from it.
 const SERVICE_FILE: &str = include_str!("../../../../daemon/librepods.service");
 
-/// The first directive of the hardening block that the test unit copies.
+/// Where the hardening block the test unit copies begins.
 const FIRST_HARDENING_DIRECTIVE: &str = "UMask";
 
 /// Directives the test unit leaves out: five name the installed daemon's real directories, and `PrivateTmp` would hide the run directory under `/tmp`.
@@ -49,7 +49,6 @@ const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// The most standard output kept from one program; journal reads are the largest.
 const MAX_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 
-/// What one external program did: its exit status and its standard output.
 pub(crate) struct Ran {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: String,
@@ -123,7 +122,7 @@ pub(crate) fn run(
     })
 }
 
-/// The first argument that is neither an option nor a `-p` property value, which names what the program was asked to act on.
+/// The first argument that is neither an option nor a `-p` value: what the program acts on.
 fn first_word(args: &[&OsStr]) -> String {
     args.iter()
         .find(|arg| {
@@ -218,7 +217,7 @@ pub(crate) fn test_unit_exists() -> Result<bool, String> {
     Ok(ran.stdout.trim() != "not-found")
 }
 
-/// The main process of the unit under test; sample input `4242\n`; `0\n` means no process.
+/// Sample input `4242\n`; `0\n` means no process.
 pub(crate) fn main_pid() -> Result<u32, String> {
     let ran = systemctl(&["show", "--property=MainPID", "--value", UNDER_TEST])?;
     if !ran.succeeded() {

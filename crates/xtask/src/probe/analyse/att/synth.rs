@@ -11,15 +11,12 @@ pub(crate) const NS_PER_MS: u64 = 1_000_000;
 pub(crate) const NS_PER_SECOND: u64 = 1_000_000_000;
 /// Samples in one 20 ms frame of a 16 kHz stream.
 pub(crate) const SAMPLES_PER_FRAME: u32 = 320;
-/// How long after the start write the generated reply follows.
 pub(crate) const REPLY_AFTER_MS: u64 = 60;
-/// How long after the start write the first packet of a burst follows.
 pub(crate) const AUDIO_AFTER_MS: u64 = 80;
 /// How long after the stop write, or after the last packet before it, the generated reply follows.
 pub(crate) const STOP_REPLY_AFTER_MS: u64 = 5;
-/// The stop write goes out this long after the last frame of the session, half a frame.
+/// Half a frame after the last frame of the session.
 pub(crate) const STOP_AFTER_MS: u64 = 10;
-/// Frames in the first packet of a burst.
 const BURST_HEAD_FRAMES: u32 = 4;
 /// Frames in every later packet of a burst but the last, which holds what is left.
 const BURST_PACKET_FRAMES: u32 = 5;
@@ -30,10 +27,8 @@ const LEVELS: (u64, u64) = (185, 222);
 /// The flag byte of about every second generated frame; the others carry zero.
 pub(crate) const FLAGGED: u8 = 0x80;
 
-/// One session to generate: a start write, its reply, a burst, a steady stream, a stop write and its reply.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Plan {
-    /// When the start write goes out.
     pub(crate) start_ns: u64,
     /// The sample clock of the peer, 320 samples a frame.
     pub(crate) clock_hz: u32,
@@ -115,7 +110,6 @@ impl Plan {
     }
 }
 
-/// A generated session and what a capture would have marked.
 #[derive(Debug, Clone)]
 pub(crate) struct Session {
     pub(crate) records: Vec<Record>,
@@ -125,7 +119,6 @@ pub(crate) struct Session {
     pub(crate) next_packet: u8,
 }
 
-/// The packets being built for one session.
 struct Stream {
     plan: Plan,
     random: u64,
@@ -201,7 +194,6 @@ impl Stream {
     }
 }
 
-/// The log of one session, in stamp order.
 pub(crate) fn synth(plan: Plan) -> Session {
     let mut stream = Stream {
         plan,

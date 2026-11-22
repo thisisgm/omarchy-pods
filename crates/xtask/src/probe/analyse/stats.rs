@@ -2,11 +2,8 @@
 
 use std::collections::BTreeMap;
 
-/// Nanoseconds in a second.
 pub(crate) const NS_PER_SECOND: f64 = 1e9;
-/// Nanoseconds in a millisecond.
 pub(crate) const NS_PER_MS: f64 = 1e6;
-/// Parts in a whole, for a difference in parts per million.
 const PARTS_PER_MILLION: f64 = 1e6;
 /// Two to the power 32, the weight of the high half of a `u64`.
 const HIGH_HALF_WEIGHT: f64 = 4_294_967_296.0;
@@ -25,7 +22,6 @@ pub(crate) fn to_f64(value: u64) -> f64 {
     f64::from(high) * HIGH_HALF_WEIGHT + f64::from(low)
 }
 
-/// A count of packets, units or bytes as an `f64`.
 pub(crate) fn count(len: usize) -> f64 {
     // No Rust target has a usize wider than 64 bits, so the fallback is never taken.
     to_f64(u64::try_from(len).unwrap_or(u64::MAX))
@@ -84,10 +80,8 @@ pub(crate) fn median<T: Copy>(sorted: &[T]) -> Option<T> {
     sorted.get(sorted.len().saturating_sub(1) / 2).copied()
 }
 
-/// A least squares line through points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Fit {
-    /// The change of y for one of x.
     pub(crate) slope: f64,
     /// Half the width of the 95 percent interval of the slope, from the residuals.
     pub(crate) half_width: f64,

@@ -19,22 +19,16 @@ use session::Session;
 
 /// The table of figures of the attribute channel, printed after the analysis table.
 pub(crate) const ANALYSIS_FILE: &str = "analysis-att.tsv";
-/// One line for every whole frame of every audio notification.
 pub(crate) const FRAMES_FILE: &str = "frames.tsv";
 /// What the log says of the pods' attribute table; the capture keeps its own list under another name.
 pub(crate) const HANDLES_FILE: &str = "att-handles.tsv";
-/// The first line of the frames table.
 const FRAMES_HEADER: &str = "index\tpacket\tarrival_ns\tsession\tcounter\tflag\tlevel\tlen\ttoc";
-/// The first line of the handles table.
 const HANDLES_HEADER: &str = "handle\tuuid\tproperties";
 
-/// Everything the analysis of one attribute log writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Report {
     pub(crate) rows: Vec<Row>,
-    /// The frames table, whole, one line a frame after its header.
     pub(crate) frames: String,
-    /// The handles table, whole, one line a handle after its header.
     pub(crate) handles: String,
 }
 
@@ -94,7 +88,6 @@ fn frames_table(whole: &LoadedAtt, session_of: impl Fn(usize) -> Option<usize>) 
     lines.concat()
 }
 
-/// The handles table: every handle a reply of the walk or a declaration names, in rising order.
 fn handles_table(whole: &LoadedAtt) -> String {
     let mut lines = vec![format!("{HANDLES_HEADER}\n")];
     lines.extend(whole.handles.iter().map(|(handle, listed)| {

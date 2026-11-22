@@ -1,4 +1,4 @@
-//! The test lab: the run's directory, the binary under test as a client of its socket, and the waits every check shares.
+//! The test lab: the run's directory, the binary under test as a socket client, the shared waits.
 
 use std::cell::Cell;
 use std::ffi::OsStr;
@@ -144,7 +144,7 @@ impl<'a> Lab<'a> {
         })
     }
 
-    /// Remembers the connected `AirPods`' `BlueZ` device and adapter, which C2, C5 and C7 read.
+    /// C2, C5 and C7 read the device and adapter it remembers.
     pub(crate) fn find_device(&mut self) -> Result<(), String> {
         let device = bluez()?
             .connected()
@@ -177,7 +177,7 @@ impl<'a> Lab<'a> {
     }
 }
 
-/// Polls `ready` until it is true or `timeout` passes, whatever signal arrives; the clean up after a stop uses it.
+/// Ignores stop signals: the clean up after a stop uses it.
 pub(super) fn settle(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now().checked_add(timeout);
     loop {
@@ -191,7 +191,7 @@ pub(super) fn settle(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool
     }
 }
 
-/// Polls `ready` until it is true or `timeout` passes; a stop signal ends the wait.
+/// A stop signal ends the wait.
 pub(super) fn wait_until(
     timeout: Duration,
     mut ready: impl FnMut() -> bool,
@@ -208,7 +208,7 @@ pub(super) fn wait_until(
     }
 }
 
-/// Waits `duration`, waking to notice a stop signal.
+/// Wakes to notice a stop signal.
 pub(super) fn wait_out(duration: Duration) -> Result<(), Interrupted> {
     wait_until(duration, || false).map(drop)
 }
@@ -217,7 +217,7 @@ pub(super) fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The first line of `text` as a JSON object; sample input `{"adaptive_noise_level":37,"connected":true,...}\n`.
+/// Sample input `{"adaptive_noise_level":37,"connected":true,...}\n`.
 pub(super) fn status_object(text: &str) -> Option<Map<String, Value>> {
     match serde_json::from_str(text.lines().next()?) {
         Ok(Value::Object(object)) => Some(object),

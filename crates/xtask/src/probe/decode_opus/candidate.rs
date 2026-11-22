@@ -65,7 +65,7 @@ impl Candidate {
         }
     }
 
-    /// Decodes one frame; a decoder that panicked is kept as it is, so what it does next is counted too.
+    /// A decoder that panicked is kept as it is, so what it does next is counted too.
     pub(crate) fn frame(&mut self, frame: &[u8]) -> FrameResult {
         self.fenced(Some(frame), MAX_PACKET_SAMPLES)
     }

@@ -124,7 +124,6 @@ fn the_adapter_is_powered_back_on_when_the_cycle_fails() {
     );
 }
 
-/// The `bluetoothctl` calls the run made.
 fn bluetoothctl_calls(bench: &Bench) -> Vec<String> {
     bench
         .calls()

@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use pods_proto::uplink::MicSide;
 
-/// Milliseconds in the minutes `--minutes` counts.
 const MS_PER_MINUTE: u32 = 60_000;
 /// The shortest run `--minutes` asks for.
 const MIN_MINUTES: u32 = 1;
@@ -304,7 +303,6 @@ pub(crate) enum Opening {
     AttMap,
 }
 
-/// One thing a script does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Action {
     Start,
@@ -392,7 +390,6 @@ pub(crate) fn build(
     })
 }
 
-/// How a script of the uplink route opens and what it does.
 fn uplink(name: ScriptName, minutes: Option<u32>) -> Result<(Opening, Vec<Event>), ScriptError> {
     let script = match (name, minutes) {
         (ScriptName::Listen, Some(minutes)) => {
@@ -426,7 +423,6 @@ fn uplink(name: ScriptName, minutes: Option<u32>) -> Result<(Opening, Vec<Event>
     Ok(script)
 }
 
-/// How a script of the dictation route opens and what it does.
 fn dictation(name: ScriptName, minutes: Option<u32>) -> Result<(Opening, Vec<Event>), ScriptError> {
     let script = match (name, minutes) {
         (ScriptName::AttKnock, None) => (Opening::AttKnock, vec![at(KNOCK_HOLD_MS, Action::End)]),

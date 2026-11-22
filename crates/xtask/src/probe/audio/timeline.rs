@@ -53,7 +53,6 @@ impl Timeline {
         })
     }
 
-    /// The samples every unit of the table holds together.
     pub(crate) fn samples(&self) -> usize {
         self.arrivals_ns.len().saturating_mul(self.samples_per_unit)
     }
@@ -69,7 +68,6 @@ impl Timeline {
         from.saturating_mul(self.samples_per_unit)..until.saturating_mul(self.samples_per_unit)
     }
 
-    /// When the unit that holds `sample` arrived.
     pub(crate) fn arrival_ns(&self, sample: usize) -> Option<u64> {
         let unit = sample.checked_div(self.samples_per_unit)?;
         self.arrivals_ns.get(unit).copied()

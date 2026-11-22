@@ -131,7 +131,6 @@ pub(crate) fn has_note(row: &Row, item: &str) -> bool {
     row.note.split("; ").any(|part| part == item)
 }
 
-/// The key, value, unit and note of one row, as the table prints them.
 pub(crate) fn shown(row: &Row) -> (&str, &str, &str, &str) {
     (&row.key, &row.value, row.unit, &row.note)
 }
@@ -416,7 +415,6 @@ pub(crate) fn mixed_run() -> (Vec<Record>, Vec<Mark>) {
     (records, marks)
 }
 
-/// The rows of the whole run that `mixed_run` gives, in order.
 const RUN_ROWS: &[(&str, &str, &str, &str)] = &[
     ("script", "voice", "name", "from meta.txt"),
     (

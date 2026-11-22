@@ -7,9 +7,7 @@ use super::super::super::fixture::TONE_UNIT;
 use super::super::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};
 use super::*;
 
-/// The units of each stream decoded here.
 const UNITS: usize = 200;
-/// The one sample every call of the stand-in decoder gives.
 const STAND_IN_FRAME: [f32; 1] = [0.25];
 
 /// A decoder call that gives one sample, except the second call, which panics, and the fourth, which is an error.

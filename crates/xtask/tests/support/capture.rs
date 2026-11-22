@@ -31,7 +31,6 @@ pub(crate) const ROOT_NAME: &str = "omapods-captures";
 const OWNER_DIR: u32 = 0o700;
 /// The mode the store gives every file.
 const OWNER_FILE: u32 = 0o600;
-/// The permission bits of a mode, without the file type.
 const PERMISSION_BITS: u32 = 0o777;
 /// The status a command exits with when the script did not run to its end.
 pub(crate) const FAILED: Option<i32> = Some(1);
@@ -39,7 +38,6 @@ pub(crate) const FAILED: Option<i32> = Some(1);
 pub(crate) const HANG_LIMIT: Duration = Duration::from_secs(30);
 /// The steady packets of a short capture, a fifth of a second of the unpaced stream.
 pub(crate) const A_FEW: u32 = 100;
-/// How often a wait checks its condition again.
 const POLL: Duration = Duration::from_millis(5);
 
 #[expect(
@@ -128,7 +126,6 @@ pub(crate) fn route(psm: u16, answer: Answer) -> Route {
     }
 }
 
-/// The far end of a dial the trap answered.
 pub(crate) fn far_end(handed: &mpsc::Receiver<Channel>) -> Channel {
     handed
         .recv_timeout(HANG_LIMIT)
@@ -216,7 +213,6 @@ pub(crate) fn files_of(run: &Path) -> Vec<String> {
     names
 }
 
-/// Everything a piped stream of a finished command holds.
 fn text_of(stream: Option<impl Read>) -> String {
     let mut text = String::new();
     stream.unwrap().read_to_string(&mut text).unwrap();
@@ -274,7 +270,6 @@ impl Analysed {
         }
     }
 
-    /// The value of the one row with `key`.
     pub(crate) fn value(&self, key: &str) -> &str {
         let mut found = self.rows.iter().filter(|row| row[0] == key);
         let row = found.next().unwrap_or_else(|| panic!("no row {key}"));

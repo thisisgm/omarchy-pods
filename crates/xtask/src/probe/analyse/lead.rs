@@ -10,7 +10,6 @@ pub(crate) const LEAD_MIN_PACKETS: usize = 50;
 /// A packet is part of the burst while it finds more audio than this owed: a steady uplink packet finds 30 ms and a steady dictation packet 20 ms.
 const BURST_OWED_NS: f64 = 52_500_000.0;
 
-/// When a packet arrived and how many frames the stream had delivered once it had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Arrival {
     pub(crate) at_ns: u64,
@@ -33,7 +32,6 @@ impl Arrival {
     }
 }
 
-/// Where a stream starts against its start command.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[expect(
     clippy::struct_field_names,
@@ -50,7 +48,6 @@ pub(crate) struct Lead {
     pub(crate) burst_ms: f64,
 }
 
-/// The lead of `arrivals` against the start at `start_ns`, each frame lasting `frame_ns`.
 pub(crate) fn lead(arrivals: &[Arrival], start_ns: u64, frame_ns: f64) -> Option<Lead> {
     if !(frame_ns.is_finite() && frame_ns > 0.0) {
         return None;

@@ -21,7 +21,6 @@ pub(crate) const UNITS_PER_SDU: u32 = 4;
 const OWNER_DIR: u32 = 0o700;
 /// The mode the store gives its files.
 pub(crate) const OWNER_FILE: u32 = 0o600;
-/// The permission bits of a mode, without the file type.
 pub(crate) const PERMISSION_BITS: u32 = 0o777;
 /// A device information packet with two made up strings.
 pub(crate) const DEVICE_INFO: &[u8] =
@@ -36,7 +35,6 @@ pub(crate) fn log_text(records: &[Record]) -> String {
         .collect()
 }
 
-/// Where the store under `home` keeps the run `name`.
 pub(crate) fn run_path(home: &TempDir, name: &str) -> PathBuf {
     home.path().join("omapods-captures").join(STAMP).join(name)
 }

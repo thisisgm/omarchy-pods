@@ -25,7 +25,6 @@ const TYPE_AT: usize = 12;
 /// The largest value of each stamp field, and the stamp both make together, written out so the test pins the number.
 const LAST_STAMP_NS: u64 = 4_294_971_589_967_295_000;
 
-/// The stamp of a record written `ms` milliseconds into a synthetic trace.
 fn at_ns(ms: u64) -> u64 {
     START_UNIX_MICROS
         .saturating_add(ms.saturating_mul(1_000))

@@ -1,4 +1,4 @@
-//! C7, the adapter cycle: the adapter off, on, then `do connect`, with the adapter powered back on on every way out.
+//! C7, the adapter cycle: off, on, then `do connect`, the adapter powered back on on every way out.
 
 use std::ffi::OsStr;
 use std::time::{Duration, Instant};

@@ -25,9 +25,7 @@ const AFTER_INPUT: [&str; 7] = [
 ];
 /// The units as an ISO media file, which is what the oracle reads.
 pub(crate) const MEDIA_FILE: &str = "eld.mp4";
-/// The samples as the oracle wrote them.
 pub(crate) const PCM_FILE: &str = "ffmpeg.f32";
-/// Everything the oracle said.
 pub(crate) const STDERR_FILE: &str = "ffmpeg.stderr";
 /// What the oracle says is read up to 1 MiB; a run that stops at its first error says about ten lines.
 pub(crate) const MAX_STDERR_BYTES: u64 = 1024 * 1024;
@@ -36,7 +34,6 @@ const SAMPLE_BYTES: usize = size_of::<f32>();
 /// The most of the oracle's first line a refusal carries.
 const FIRST_LINE_CHARS: usize = 200;
 
-/// How the oracle refused a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Refusal {
     pub(crate) status: ExitStatus,
@@ -63,14 +60,12 @@ impl fmt::Display for Refusal {
 /// One run of the oracle: its verdict, and the three files of the run it went through, none of them named yet.
 #[derive(Debug)]
 pub(crate) struct OracleRun<'run> {
-    /// The samples, or how the oracle refused the stream.
     pub(crate) decoded: Result<Vec<f32>, Refusal>,
     pub(crate) media: Unnamed<'run>,
     pub(crate) pcm: Unnamed<'run>,
     pub(crate) stderr: Unnamed<'run>,
 }
 
-/// Why the oracle gave no verdict at all.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OracleError {
     #[error("could not write the media file the oracle reads: {0}")]
@@ -117,7 +112,6 @@ fn samples_of(bytes: &[u8]) -> Result<Vec<f32>, OracleError> {
         .collect())
 }
 
-/// What one run of the oracle reads, which decoder it is told to use, and the files of the run it writes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Job<'job, 'run> {
     pub(crate) media: &'job Unnamed<'run>,
@@ -132,7 +126,6 @@ pub(crate) struct Job<'job, 'run> {
 /// What the oracle made of one media file, and the two files it wrote, neither named yet.
 #[derive(Debug)]
 pub(crate) struct Heard<'run> {
-    /// The samples, or how the oracle refused the stream.
     pub(crate) decoded: Result<Vec<f32>, Refusal>,
     pub(crate) pcm: Unnamed<'run>,
     pub(crate) stderr: Unnamed<'run>,

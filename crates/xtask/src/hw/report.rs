@@ -19,7 +19,7 @@ impl Check {
         }
     }
 
-    /// Records a reason the check failed; the check stays failed whatever passes after it.
+    /// The check stays failed whatever passes after it.
     pub(crate) fn fail(&mut self, reason: impl Into<String>) {
         self.passed = false;
         self.lines.push(reason.into());

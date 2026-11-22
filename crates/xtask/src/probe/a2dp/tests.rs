@@ -35,7 +35,6 @@ const RTP_VERSION_1: u8 = 0x40;
 const RTP_VERSION_3: u8 = 0xc0;
 /// The vendor and the codec identifier a vendor codec element opens with, 4 and 2 bytes (A2DP 1.3 section 4.7.2).
 const VENDOR_IDENTIFIERS_LEN: u8 = 6;
-/// Microseconds in one second.
 const MICROS_PER_SECOND: u64 = 1_000_000;
 /// The RTP header in front of every media packet.
 const RTP_HEADER_LEN: usize = 12;

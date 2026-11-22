@@ -36,7 +36,6 @@ const NO_SILENT_WINDOW: &str = "the run has no silent window to compare with";
 /// A figure, or why there is none.
 type Found<T> = Result<T, String>;
 
-/// Everything the rows are measured from.
 #[derive(Debug)]
 pub(crate) struct Recording<'a> {
     pub(crate) stream: &'a Wav,
@@ -51,7 +50,6 @@ pub(crate) struct Recording<'a> {
 }
 
 impl<'a> Recording<'a> {
-    /// The stream samples of `window` and where they start.
     fn stretch(&self, window: Window) -> (usize, &'a [f32]) {
         let range = self.timeline.stretch(window);
         (range.start, self.stream.samples.get(range).unwrap_or(&[]))

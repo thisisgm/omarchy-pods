@@ -4,7 +4,6 @@ use super::load::Loaded;
 
 /// Entries in the band table: the limits 0 to 35.
 const BANDS: usize = 36;
-/// The largest band limit the table maps.
 pub(crate) const LAST_BAND: usize = BANDS - 1;
 /// The band limit is in the second byte of a unit, after the eight bits of the global gain.
 const MAX_SFB_BYTE: usize = 1;
@@ -36,10 +35,8 @@ pub(crate) fn band_hz(line: u16, clock_hz: f64) -> f64 {
     f64::from(line) * clock_hz / LINES_PER_CLOCK
 }
 
-/// How many units declare each band limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MaxSfbReport {
-    /// Units by band limit, 0 to `LAST_BAND`.
     pub(crate) histogram: [u32; BANDS],
     /// Units whose limit is over `LAST_BAND`, which the table does not map.
     pub(crate) invalid: u32,
@@ -48,7 +45,6 @@ pub(crate) struct MaxSfbReport {
 }
 
 impl MaxSfbReport {
-    /// The largest band limit any unit declares, the invalid ones left out.
     pub(crate) fn max(&self) -> Option<u8> {
         (0_u8..)
             .zip(self.histogram)
@@ -58,7 +54,6 @@ impl MaxSfbReport {
     }
 }
 
-/// Counts the band limit of every unit.
 pub(crate) fn bandwidth(loaded: &Loaded) -> MaxSfbReport {
     let mut report = MaxSfbReport {
         histogram: [0; BANDS],
