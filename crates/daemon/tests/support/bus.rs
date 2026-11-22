@@ -54,12 +54,14 @@ fn bus_dir(session: &Session, name: &str) -> PathBuf {
     session.dir.path().join(name)
 }
 
+/// The socket the bus `name` listens on, known before it runs.
+pub(crate) fn bus_socket(session: &Session, name: &str) -> PathBuf {
+    bus_dir(session, name).join(SOCKET_NAME)
+}
+
 /// The address the bus `name` listens on, known before it runs.
 pub(crate) fn bus_address(session: &Session, name: &str) -> String {
-    format!(
-        "unix:path={}",
-        bus_dir(session, name).join(SOCKET_NAME).display()
-    )
+    format!("unix:path={}", bus_socket(session, name).display())
 }
 
 /// Starts the bus `name` and returns once it accepts.
@@ -81,7 +83,7 @@ pub(crate) fn start_bus(session: &Session, name: &str) -> Bus {
         .spawn()
         .unwrap_or_else(|error| panic!("cannot start {BUS_DAEMON}: {error}"));
     let daemon = Daemon { child, log };
-    let socket = dir.join(SOCKET_NAME);
+    let socket = bus_socket(session, name);
     wait_for("the private bus to accept", || {
         UnixStream::connect(&socket).ok()
     });

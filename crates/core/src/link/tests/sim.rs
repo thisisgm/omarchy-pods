@@ -48,6 +48,7 @@ pub(super) enum Input {
     /// The call of this action the machine made first fails, however long ago.
     FirstCallFailed(DeviceAction),
     Tick,
+    Resumed,
     /// Moves the clock on, ticking at every deadline on the way.
     Wait(Duration),
     /// Scripts the answer to the next open.
@@ -93,6 +94,7 @@ enum Queued {
     CallFailed(Call),
     SendFailed,
     Tick,
+    Resumed,
     Shutdown,
 }
 
@@ -172,6 +174,7 @@ impl Sim {
                 Queued::CallFailed(*made.unwrap())
             }
             Input::Tick => Queued::Tick,
+            Input::Resumed => Queued::Resumed,
             Input::Shutdown => Queued::Shutdown,
             Input::Wait(span) => return self.run_until(self.now.saturating_add(span)),
             Input::NextOpen(answer) => return self.answers.push_back(answer),
@@ -344,6 +347,7 @@ impl Sim {
             Queued::CallFailed(call) => Event::CallFailed(call),
             Queued::SendFailed => Event::SendFailed,
             Queued::Tick => Event::Tick,
+            Queued::Resumed => Event::Resumed,
             Queued::Shutdown => Event::Shutdown,
         };
         let actions = self.machine.step(&mut self.state, event, self.now);

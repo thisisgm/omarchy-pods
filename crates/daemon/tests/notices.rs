@@ -21,9 +21,9 @@ mod tests {
 
     use super::support::children::{children, reaped_children_faults, the_only_child};
     use super::support::omarchy::{
-        DISCONNECT_NOTICE, Mood, NOTIFY_WAIT, PROGRAM, RECORDED_WITHIN, REFUSAL,
+        DISCONNECT_NOTICE, Mood, NOTIFY_WAIT, PROGRAM, RECORDED_WITHIN, REFUSAL, loss_is_announced,
     };
-    use super::support::rig::{ABSENT_GRACE, REAL_TIME_SLACK, Rig, assert_gap, not_before};
+    use super::support::rig::{ABSENT_GRACE, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::{HANG_LIMIT, pause, wait_for};
 
     /// The daemon's wait for the notifier to stop.
@@ -69,19 +69,7 @@ mod tests {
     #[test]
     fn a_lost_link_sends_one_disconnect_notice_at_the_reset() {
         let (rig, device) = Rig::with_linked_pods();
-        let down = Instant::now();
-        rig.link_down(&device);
-        let calls = rig
-            .omarchy()
-            .wait_calls(1, ABSENT_GRACE.saturating_add(HANG_LIMIT));
-        assert_gap(
-            "the notice after the pods went",
-            down,
-            Instant::now(),
-            &not_before(ABSENT_GRACE),
-        );
-        assert_eq!(calls, [DISCONNECT_NOTICE]);
-        rig.omarchy().none_for(RECORDED_WITHIN);
+        loss_is_announced(&rig, &device);
         rig.finish();
     }
 

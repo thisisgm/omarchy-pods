@@ -8,7 +8,9 @@ pub(crate) mod logind;
 pub(crate) mod omarchy;
 pub(crate) mod parked;
 pub(crate) mod players;
+pub(crate) mod relay;
 pub(crate) mod rig;
+pub(crate) mod sleep;
 
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};

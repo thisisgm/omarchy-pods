@@ -8,6 +8,7 @@ mod link;
 mod notify;
 mod proto1;
 mod signals;
+mod sleep;
 mod socket;
 pub(crate) mod state_file;
 
@@ -125,12 +126,16 @@ async fn serve(paths: Paths) -> ExitCode {
     // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(dbus::serve(hub.clone()));
     let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests));
+    let suspends = tokio::spawn(sleep::watch(link.clone()));
     let (code, driver) = until_stopped(stop.first(), accept, follow, driver, watcher).await;
     if let Some(driver) = driver {
         link::stop(&link, driver).await;
     }
     // After the driver, so no notice comes in once the notifier is stopping.
     notify::stop(stop_notifier, notifier).await;
+    suspends.abort();
+    // Awaited so its system bus connection closes first; the result is only the cancellation.
+    drop(suspends.await);
     bus.abort();
     // Awaited so the bus name is released first; the result is only the cancellation.
     drop(bus.await);

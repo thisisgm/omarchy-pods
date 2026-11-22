@@ -1,5 +1,6 @@
 //! The desktop notices with their text, and the rule that shows one when the link is lost.
 
+use super::sleep::Suspend;
 use crate::link::Signal;
 
 /// No text holds the device's name.
@@ -45,16 +46,14 @@ impl Notice {
     }
 }
 
-/// A device reset after its link was up; one that never came up, a parked device among them, is silent.
+/// A device reset after its link was up, unless the link went down inside a suspend window; one that never came up, a parked device among them, is silent.
 #[must_use]
-pub(super) fn disconnected(signal: Signal) -> Option<Notice> {
+pub(super) fn disconnected(signal: Signal, suspend: Suspend) -> Option<Notice> {
     match signal {
         Signal::Lost {
-            populated: true, ..
-        } => Some(Notice::Disconnected),
-        Signal::Lost {
-            populated: false, ..
-        }
-        | Signal::Up { .. } => None,
+            down_at: Some(down_at),
+            ..
+        } if !suspend.covers(down_at) => Some(Notice::Disconnected),
+        Signal::Lost { .. } | Signal::Up { .. } => None,
     }
 }

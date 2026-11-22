@@ -76,6 +76,8 @@ pub enum Event<'a> {
     SendFailed,
     /// The clock reached `deadline()`, or any time a driver wakes.
     Tick,
+    /// The system woke from a suspend and its settle has passed.
+    Resumed,
     Shutdown,
 }
 
@@ -106,8 +108,11 @@ pub enum Action {
 pub enum Signal {
     /// The link entered `Up`.
     Up { device: BdAddr },
-    /// The device was reset; `populated` says its link reached `Up` since the reset before.
-    Lost { device: BdAddr, populated: bool },
+    /// The device was reset; `down_at` is when its link last left `Up` since the reset before, `None` if it never came up.
+    Lost {
+        device: BdAddr,
+        down_at: Option<Duration>,
+    },
 }
 
 /// Where the session is, with the data each state needs.
@@ -174,6 +179,8 @@ pub struct Machine {
     held: bool,
     /// The link reached `Up` since the last device reset.
     populated: bool,
+    /// The last step that began in `Up`, which is when the link last left it.
+    down_at: Duration,
     session: Session,
     /// User disconnects called in this session and not failed; while any, the device leaving skips the grace and no dial goes out.
     user_disconnects: u32,
@@ -200,6 +207,9 @@ impl Machine {
     /// Takes one event at `now` and changes `state` in one go; the driver carries out the actions in order.
     #[must_use]
     pub fn step(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
+        if matches!(self.phase, Phase::Up { .. }) {
+            self.down_at = now;
+        }
         let mut actions = self.written(state, event);
         actions.extend(self.react(state, event, now));
         actions
@@ -241,6 +251,7 @@ impl Machine {
                     command: Command::Forget,
                 },
             ) => self.forget_device(state, ticket),
+            (_, E::Resumed) => self.resumed(state, now),
             (
                 P::Idle
                 | P::Opening { .. }
@@ -697,7 +708,7 @@ impl Machine {
         let lost = self.active.map(|device| {
             Action::Signal(Signal::Lost {
                 device,
-                populated: self.populated,
+                down_at: self.populated.then_some(self.down_at),
             })
         });
         state.reset_device();
@@ -770,6 +781,7 @@ mod tests {
     mod lifecycle;
     mod log_lines;
     mod reports;
+    mod resumed;
     mod signals;
     mod sim;
 }

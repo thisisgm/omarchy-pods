@@ -1,12 +1,15 @@
 //! Support tests: the disconnect notice rule, the low battery latch, and their text and numbers pinned to the C++ daemon's.
 
+use std::time::Duration;
+
 use cpp_source::{LOW_BATTERY, MAIN};
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
 
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
 use super::notices::{Notice, Part, disconnected};
-use super::{Effect, Fact, Policy};
+use super::sleep::{RESUME_SETTLE_MS, Suspend};
+use super::{Effect, Fact, Policy, SleepEdge};
 use crate::link::Signal;
 use crate::state::State;
 
@@ -48,24 +51,27 @@ fn armed(latch: &mut Latch) -> bool {
 fn a_device_lost_after_its_link_was_up_shows_the_disconnect_notice() {
     let lost = Signal::Lost {
         device: device(),
-        populated: true,
+        down_at: Some(Duration::ZERO),
     };
-    assert_eq!(disconnected(lost), Some(Notice::Disconnected));
+    assert_eq!(
+        disconnected(lost, Suspend::default()),
+        Some(Notice::Disconnected)
+    );
 }
 
 #[test]
 fn a_device_lost_before_its_link_came_up_shows_nothing() {
     let lost = Signal::Lost {
         device: device(),
-        populated: false,
+        down_at: None,
     };
-    assert_eq!(disconnected(lost), None);
+    assert_eq!(disconnected(lost, Suspend::default()), None);
 }
 
 #[test]
 fn the_link_coming_up_shows_nothing() {
     let up = Signal::Up { device: device() };
-    assert_eq!(disconnected(up), None);
+    assert_eq!(disconnected(up, Suspend::default()), None);
 }
 
 #[test]
@@ -146,19 +152,119 @@ fn the_policy_answers_a_lost_link_and_a_low_case_and_keeps_the_latch_past_the_lo
         percent: LOW_BATTERY_TRIGGER,
     };
     assert_eq!(
-        policy.step(&state, Fact::Changed),
+        policy.step(&state, Fact::Changed, Duration::ZERO),
         [Effect::Notify(case_notice)]
     );
     state.reset_device();
     let lost = Signal::Lost {
         device: device(),
-        populated: true,
+        down_at: Some(Duration::ZERO),
     };
     assert_eq!(
-        policy.step(&state, Fact::Link(lost)),
+        policy.step(&state, Fact::Link(lost), Duration::ZERO),
         [Effect::Notify(Notice::Disconnected)]
     );
-    assert_eq!(policy.step(&state, Fact::Changed), []);
+    assert_eq!(policy.step(&state, Fact::Changed, Duration::ZERO), []);
     state.batteries.case = low_case;
-    assert_eq!(policy.step(&state, Fact::Changed), []);
+    assert_eq!(policy.step(&state, Fact::Changed, Duration::ZERO), []);
+}
+
+#[test]
+fn a_loss_that_began_in_a_suspend_is_silent_and_the_wake_comes_once_at_the_settle() {
+    let mut policy = Policy::default();
+    let state = State::default();
+    let at = Duration::from_millis;
+    let lost = |down_at| {
+        Fact::Link(Signal::Lost {
+            device: device(),
+            down_at: Some(at(down_at)),
+        })
+    };
+    assert_eq!(
+        policy.step(&state, Fact::Sleep(SleepEdge::Sleeping), at(100)),
+        []
+    );
+    assert_eq!(
+        policy.step(&state, Fact::Sleep(SleepEdge::Woke), at(500)),
+        []
+    );
+    let closes = 500 + RESUME_SETTLE_MS;
+    assert_eq!(policy.deadline(), Some(at(closes)));
+    assert_eq!(policy.step(&state, Fact::Tick, at(closes - 1)), []);
+    assert_eq!(policy.step(&state, Fact::Tick, at(closes)), [Effect::Wake]);
+    assert_eq!(policy.step(&state, Fact::Tick, at(closes)), []);
+    assert_eq!(policy.deadline(), None);
+    assert_eq!(policy.step(&state, lost(200), at(20_000)), []);
+    assert_eq!(
+        policy.step(&state, lost(closes + 1), at(20_000)),
+        [Effect::Notify(Notice::Disconnected)]
+    );
+    assert_eq!(
+        policy.step(&state, lost(99), at(20_000)),
+        [Effect::Notify(Notice::Disconnected)]
+    );
+}
+
+#[test]
+fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_back() {
+    let at = Duration::from_millis;
+    let down = State::default();
+    let up = State {
+        connected: true,
+        ..State::default()
+    };
+    let lost = |down_at| {
+        Fact::Link(Signal::Lost {
+            device: device(),
+            down_at: Some(at(down_at)),
+        })
+    };
+    let closes = 500 + RESUME_SETTLE_MS;
+    let suspended_once = |at_close: &State| {
+        let mut policy = Policy::default();
+        assert_eq!(
+            policy.step(&up, Fact::Sleep(SleepEdge::Sleeping), at(100)),
+            []
+        );
+        assert_eq!(
+            policy.step(&down, Fact::Sleep(SleepEdge::Woke), at(500)),
+            []
+        );
+        assert_eq!(
+            policy.step(at_close, Fact::Tick, at(closes)),
+            [Effect::Wake]
+        );
+        policy
+    };
+    // A loss inside the first window, the link down since, its reset after the second sleep.
+    let mut policy = suspended_once(&down);
+    assert_eq!(
+        policy.step(&down, Fact::Sleep(SleepEdge::Sleeping), at(closes + 1_000)),
+        []
+    );
+    assert_eq!(policy.step(&down, lost(200), at(closes + 7_750)), []);
+    // The link back after the first window, then lost before the second sleep: announced.
+    let mut policy = suspended_once(&down);
+    assert_eq!(policy.step(&up, Fact::Changed, at(closes + 50)), []);
+    assert_eq!(policy.step(&down, Fact::Changed, at(closes + 100)), []);
+    assert_eq!(
+        policy.step(&down, Fact::Sleep(SleepEdge::Sleeping), at(closes + 1_000)),
+        []
+    );
+    assert_eq!(
+        policy.step(&down, lost(closes + 100), at(closes + 7_850)),
+        [Effect::Notify(Notice::Disconnected)]
+    );
+    // The link up through the first window, hours of it, then lost just before a sleep: announced.
+    let hours = 8 * 60 * 60 * 1_000;
+    let mut policy = suspended_once(&up);
+    assert_eq!(policy.step(&down, Fact::Changed, at(hours)), []);
+    assert_eq!(
+        policy.step(&down, Fact::Sleep(SleepEdge::Sleeping), at(hours + 5_000)),
+        []
+    );
+    assert_eq!(
+        policy.step(&down, lost(hours), at(hours + 7_750)),
+        [Effect::Notify(Notice::Disconnected)]
+    );
 }

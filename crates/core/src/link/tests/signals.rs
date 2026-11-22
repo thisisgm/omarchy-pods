@@ -1,20 +1,20 @@
-//! The signals: one `Up` on entering `Up`, one `Lost` at each device reset, saying whether the link had been up.
+//! The signals: one `Up` on entering `Up`, one `Lost` at each device reset, saying when the link last left `Up`, if it was up.
 
 use std::time::Duration;
 
 use super::sim::{Answer, Input, Sim, addr, ms};
 use crate::command::Command;
 use crate::link::Signal;
-use crate::link::ladder::{ABSENT_GRACE_MS, NOTIFY_REREQUEST_MS};
+use crate::link::ladder::{ABSENT_GRACE_MS, FIRST_RETRY_MS, NOTIFY_REREQUEST_MS};
 
 fn up() -> Signal {
     Signal::Up { device: addr(0) }
 }
 
-fn lost(populated: bool) -> Signal {
+fn lost(down_at: Option<Duration>) -> Signal {
     Signal::Lost {
         device: addr(0),
-        populated,
+        down_at,
     }
 }
 
@@ -48,7 +48,7 @@ fn pods_gone_for_good_signal_lost_when_the_grace_ends() {
     assert_eq!(signals_since(&sim, 1), []);
     sim.feed(Input::Wait(ms(1)));
     let reset = down.saturating_add(ms(ABSENT_GRACE_MS));
-    assert_eq!(sim.signals[1..], [(reset, lost(true))]);
+    assert_eq!(sim.signals[1..], [(reset, lost(Some(down)))]);
     sim.check();
 }
 
@@ -58,7 +58,7 @@ fn a_device_that_never_came_up_signals_lost_unpopulated_when_it_leaves() {
     sim.feed(Input::Up(0));
     assert_eq!(signals_since(&sim, 0), []);
     sim.feed(Input::Down(0));
-    assert_eq!(signals_since(&sim, 0), [lost(false)]);
+    assert_eq!(signals_since(&sim, 0), [lost(None)]);
     sim.check();
 }
 
@@ -70,7 +70,7 @@ fn a_user_disconnect_signals_lost_at_once() {
     sim.feed(Input::Down(0));
     let reset = sim.now;
     sim.feed(Input::Wait(ms(ABSENT_GRACE_MS)));
-    assert_eq!(sim.signals[1..], [(reset, lost(true))]);
+    assert_eq!(sim.signals[1..], [(reset, lost(Some(reset)))]);
     sim.check();
 }
 
@@ -78,9 +78,12 @@ fn a_user_disconnect_signals_lost_at_once() {
 fn a_device_removed_while_up_signals_lost_once() {
     let mut sim = Sim::new();
     sim.bring_up(0);
+    // Up for 1 ms past a repeated request, so the stamp is the leaving step's, not the entry's or the request's.
+    sim.feed(Input::Wait(ms(NOTIFY_REREQUEST_MS + 1)));
+    let gone = sim.now;
     sim.feed(Input::Gone(0));
     sim.feed(Input::Wait(Duration::from_secs(1)));
-    assert_eq!(signals_since(&sim, 1), [lost(true)]);
+    assert_eq!(signals_since(&sim, 1), [lost(Some(gone))]);
     sim.check();
 }
 
@@ -88,10 +91,12 @@ fn a_device_removed_while_up_signals_lost_once() {
 fn a_device_removed_while_waiting_to_retry_signals_lost() {
     let mut sim = Sim::new();
     sim.bring_up(0);
+    let closed = sim.now;
     sim.feed(Input::PeerCloses);
     assert_eq!(signals_since(&sim, 1), []);
+    sim.feed(Input::Wait(ms(FIRST_RETRY_MS - 1)));
     sim.feed(Input::Gone(0));
-    assert_eq!(signals_since(&sim, 1), [lost(true)]);
+    assert_eq!(signals_since(&sim, 1), [lost(Some(closed))]);
     sim.check();
 }
 
