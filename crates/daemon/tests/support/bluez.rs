@@ -101,6 +101,7 @@ struct Device {
     address: BdAddr,
     uuids: Vec<String>,
     connected: bool,
+    modalias: Option<String>,
 }
 
 struct Edge {
@@ -223,6 +224,7 @@ impl Bluez {
             address,
             uuids: uuids.iter().map(|uuid| (*uuid).to_owned()).collect(),
             connected,
+            modalias: None,
         };
         let interfaces = HashMap::from([(DEVICE_INTERFACE.to_owned(), device.properties())]);
         {
@@ -251,6 +253,9 @@ impl Bluez {
                     edges.push(Edge::now(&path.0, device.address, device.connected));
                 }
                 "UUIDs" => device.uuids = Vec::try_from(value.try_clone().unwrap()).unwrap(),
+                "Modalias" => {
+                    device.modalias = Some(String::try_from(value.try_clone().unwrap()).unwrap());
+                }
                 _ => {}
             }
         }
@@ -462,7 +467,13 @@ impl Device {
     fn properties(&self) -> HashMap<String, OwnedVariant> {
         let address = octets(self.address, ":");
         let uuids = OwnedVariant::try_from(Variant::from(self.uuids.clone())).unwrap();
-        HashMap::from([
+        let modalias = self.modalias.iter().map(|modalias| {
+            (
+                "Modalias".to_owned(),
+                OwnedVariant::from(Str::from(modalias.clone())),
+            )
+        });
+        let mut properties = HashMap::from([
             (
                 "Address".to_owned(),
                 OwnedVariant::from(Str::from(address.clone())),
@@ -482,7 +493,9 @@ impl Device {
                 "ServicesResolved".to_owned(),
                 OwnedVariant::from(self.connected),
             ),
-        ])
+        ]);
+        properties.extend(modalias);
+        properties
     }
 }
 

@@ -1,4 +1,4 @@
-//! The supported models, their published numbers and what each one can do.
+//! The supported models, their published numbers and product identifiers, and what each one can do.
 
 /// Declares `Model` and `Model::ALL` from one list of variants, so `ALL` cannot leave one out.
 macro_rules! models {
@@ -78,6 +78,38 @@ const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A3064", Model::AirPodsPro3),
     ("A3065", Model::AirPodsPro3),
 ];
+
+/// Powerbeats Pro and Powerbeats Pro 2: the keys `0x0B20` and `0x1D20` proposed for the C++ map, byte swapped.
+const BEATS_PRODUCTS: &[u16] = &[0x200B, 0x201D];
+
+/// The Bluetooth SIG vendor source and Apple's company identifier `0x004C`.
+const APPLE_MODALIAS_PREFIX: &str = "bluetooth:v004Cp";
+const MODALIAS_FIELD_DIGITS: usize = 4;
+
+/// Takes the number `product_of_modalias` gives, never the byte swapped key of the C++ map.
+#[must_use]
+pub fn is_beats(id: u16) -> bool {
+    BEATS_PRODUCTS.contains(&id)
+}
+
+/// Sample input: `bluetooth:v004Cp2027d0000`, upper case hex as BlueZ prints it; another vendor or shape is `None`.
+#[must_use]
+pub fn product_of_modalias(modalias: &str) -> Option<u16> {
+    let rest = modalias.strip_prefix(APPLE_MODALIAS_PREFIX)?;
+    let (product, version) = rest.split_at_checked(MODALIAS_FIELD_DIGITS)?;
+    let version = version.strip_prefix('d')?;
+    if !is_modalias_field(product) || !is_modalias_field(version) {
+        return None;
+    }
+    u16::from_str_radix(product, 16).ok()
+}
+
+fn is_modalias_field(field: &str) -> bool {
+    field.len() == MODALIAS_FIELD_DIGITS
+        && field
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte))
+}
 
 impl Model {
     /// Sample input: `A3064`, matched exactly.

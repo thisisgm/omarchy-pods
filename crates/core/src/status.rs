@@ -20,7 +20,7 @@ pub fn to_status_line(state: &State) -> String {
 #[must_use]
 pub fn to_status_object(state: &State) -> Value {
     let counters = &state.counters;
-    let capabilities = state.model.capabilities();
+    let capabilities = state.capabilities();
     let batteries = &state.batteries;
     object(BTreeMap::from([
         ("schema_version", Value::from(SCHEMA_VERSION)),

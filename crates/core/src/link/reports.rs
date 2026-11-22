@@ -70,6 +70,11 @@ fn apply_control(state: &mut State, known: &mut KnownSettings, control: ControlC
                 known.one_bud_anc = true;
             }
         }
+        ControlId::ALLOW_OFF_OPTION => {
+            if let Some(offered) = control.state() {
+                state.noise_off = Some(offered);
+            }
+        }
         ControlId::ADAPTIVE_NOISE_LEVEL => {
             let [percent, ..] = control.value;
             if let Ok(level) = AdaptiveLevel::new(percent) {

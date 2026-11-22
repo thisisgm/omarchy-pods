@@ -190,7 +190,7 @@ fn handling(
     pending: &[Pending],
     command: Command,
 ) -> Handling {
-    let features = state.model.capabilities();
+    let features = state.capabilities();
     match command {
         Command::SetNoise(target) => noise(state, known, pending, features, target),
         Command::SetConversationalAwareness(enabled) => switch(

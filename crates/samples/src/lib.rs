@@ -28,6 +28,8 @@ pub const ONE_BUD_ANC: u8 = 0x1b;
 pub const CONVERSATION_AWARENESS: u8 = 0x28;
 /// Adaptive audio level; value 0 to 100.
 pub const ADAPTIVE_LEVEL: u8 = 0x2e;
+/// Whether the pods offer the Off listening mode; value 1 yes, 2 no.
+pub const ALLOW_OFF_OPTION: u8 = 0x34;
 
 /// One part's battery: percent, and whether it charges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,12 +304,22 @@ mod tests {
     #[test]
     fn burst_settings_take_overrides_inside_their_identifiers_only() {
         let plain = burst_settings(&[]);
-        let overridden = burst_settings(&[(NOISE, 3), (ADAPTIVE_LEVEL, 50)]);
+        let overridden = burst_settings(&[(NOISE, 3), (ADAPTIVE_LEVEL, 50), (ALLOW_OFF_OPTION, 1)]);
         let noise = usize::from(NOISE) - 1;
         assert_eq!(overridden[noise], setting(NOISE, 3));
         assert_eq!(plain[noise], setting(NOISE, 1));
         let mut rest = overridden.clone();
         rest[noise] = plain[noise].clone();
         assert_eq!(rest, plain);
+    }
+
+    #[test]
+    fn the_off_option_identifier_is_the_cpp_one() {
+        let cpp = cpp_source::PACKETS.byte(
+            Some("namespace AllowOffOption"),
+            "BasicControlCommand<",
+            '>',
+        );
+        assert_eq!(ALLOW_OFF_OPTION, cpp);
     }
 }

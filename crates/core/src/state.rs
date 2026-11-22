@@ -1,6 +1,6 @@
 use pods_proto::battery::{Batteries, Component};
 use pods_proto::ear::EarReport;
-use pods_proto::model::Model;
+use pods_proto::model::{Capabilities, Model};
 use pods_proto::noise::NoiseMode;
 
 use crate::command::AdaptiveLevel;
@@ -14,6 +14,8 @@ pub struct State {
     /// The raw `A<NNNN>` metadata code, kept when `model` is `Unknown` or reset.
     pub model_number: String,
     pub noise_mode: NoiseMode,
+    /// Whether the pods reported they offer Off; `None` until they do.
+    pub noise_off: Option<bool>,
     pub adaptive_noise_level: AdaptiveLevel,
     pub conversational_awareness: bool,
     pub one_bud_anc_mode: bool,
@@ -34,6 +36,7 @@ impl Default for State {
             model: Model::Unknown,
             model_number: String::new(),
             noise_mode: NoiseMode::Off,
+            noise_off: None,
             adaptive_noise_level: AdaptiveLevel::default(),
             conversational_awareness: false,
             one_bud_anc_mode: false,
@@ -53,9 +56,25 @@ impl State {
         self.device_name.clear();
         self.model = Model::Unknown;
         self.noise_mode = NoiseMode::Off;
+        self.noise_off = None;
         self.batteries = Batteries::default();
         self.ear = EarReport::default();
         self.primary = None;
+    }
+
+    /// The pods' own report when they sent one, else the model table.
+    #[must_use]
+    pub fn supports_noise_off(&self) -> bool {
+        self.noise_off
+            .unwrap_or_else(|| self.model.capabilities().noise_off)
+    }
+
+    #[must_use]
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            noise_off: self.supports_noise_off(),
+            ..self.model.capabilities()
+        }
     }
 }
 
