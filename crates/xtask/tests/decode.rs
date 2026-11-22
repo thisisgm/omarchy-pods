@@ -101,6 +101,11 @@ mod tests {
     /// The mode of a stand-in for FFmpeg: its owner may run it.
     const RUNNABLE: u32 = 0o700;
     const STAND_IN_LINE: &str = "a line from the stand-in";
+    /// The offset basis and the prime of the 64 bit FNV-1a hash.
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    /// The hash of the WAV file the probe wrote for the mixed run while the decoder was the probe's own.
+    const PINNED_WAV: u64 = 0x3c5f_47e3_b4fe_df7c;
 
     /// A short run clocked at `rate_hz` that opens with a device information packet and holds what `unit_of` gives as each unit in turn, analysed.
     fn analysed_units<'unit>(
@@ -124,6 +129,24 @@ mod tests {
     /// Such a run with `unit` as every unit.
     fn analysed_run(home: &TempDir, name: &str, rate_hz: u32, unit: &[u8]) -> PathBuf {
         analysed_units(home, name, rate_hz, || unit)
+    }
+
+    /// Such a run whose units are the tone or silence, as a generator seeded `MIX_SEED` draws them.
+    fn mixed_run(home: &TempDir, name: &str) -> PathBuf {
+        let mut random = MIX_SEED;
+        analysed_units(home, name, RATE_HZ, || {
+            if next_random(&mut random).is_multiple_of(2) {
+                &TONE_UNIT[..]
+            } else {
+                &SILENT_UNIT[..]
+            }
+        })
+    }
+
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(FNV_OFFSET, |hash, &byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+        })
     }
 
     /// What every file a decode adds holds.
@@ -267,15 +290,7 @@ mod tests {
             return;
         }
         let home = tempfile::tempdir().unwrap();
-        let mut random = MIX_SEED;
-        let mixed = || {
-            if next_random(&mut random).is_multiple_of(2) {
-                &TONE_UNIT[..]
-            } else {
-                &SILENT_UNIT[..]
-            }
-        };
-        let run = analysed_units(&home, "mixed", RATE_HZ, mixed);
+        let run = mixed_run(&home, "mixed");
         let table = table_of(&probe(&home, "decode", &run).output().unwrap(), &run);
 
         let units = UNITS.to_string();
@@ -303,6 +318,21 @@ mod tests {
             );
             assert!(number(&table, &format!("splice_{decoder}_step_lsb")) > 0.0);
         }
+    }
+
+    #[test]
+    fn the_probe_decodes_to_the_same_samples_after_the_move() {
+        let home = tempfile::tempdir().unwrap();
+        let run = mixed_run(&home, "pinned");
+        // A stand-in for FFmpeg, so the pin holds where FFmpeg is not installed; what it writes is not pinned.
+        let oracle = stand_in(SAMPLES * SAMPLE_BYTES, "exit 0");
+        let mut decode = probe(&home, "decode", &run);
+        decode.env("PATH", path_with(oracle.path()));
+        let table = table_of(&decode.output().unwrap(), &run);
+        assert_eq!(row(&table, "candidate_decoded").0, UNITS.to_string());
+        assert!(number(&table, "candidate_peak_lsb") > LOUD_LSB, "{table}");
+        let wav = fnv1a(&fs::read(run.join("pods.f32.wav")).unwrap());
+        assert_eq!(wav, PINNED_WAV, "the hash is {wav:#018x}");
     }
 
     #[test]
