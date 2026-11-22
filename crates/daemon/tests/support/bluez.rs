@@ -162,8 +162,17 @@ impl FakeBluez {
             .is_none_or(|(_, thread)| thread.is_finished())
     }
 
-    /// Ends the serving thread, failing the test if it stopped serving or panicked before.
+    /// Ends the reactor once the reactions already queued ran; they emit through the server, so it ends first.
+    fn end_reactions(&mut self) -> Option<thread::Result<()>> {
+        self.lock().reactions = None;
+        self.reactor.take().map(JoinHandle::join)
+    }
+
+    /// Ends the reactions and the serving thread, failing the test if either panicked or the serving stopped before.
     pub(crate) fn finish(mut self) {
+        if let Some(Err(panic)) = self.end_reactions() {
+            panic::resume_unwind(panic);
+        }
         let (stop, thread) = self.server.take().expect("a serving fake BlueZ");
         assert!(
             !thread.is_finished(),
@@ -363,9 +372,7 @@ impl Bluez {
 
 impl Drop for FakeBluez {
     fn drop(&mut self) {
-        // The reactor ends once its queue's sender is gone.
-        self.lock().reactions = None;
-        let reacted = self.reactor.take().map(JoinHandle::join);
+        let reacted = self.end_reactions();
         let served = self.server.take().map(|(stop, thread)| {
             // A thread that already ended dropped its receiver, which is the end wanted.
             stop.send(()).ok();
