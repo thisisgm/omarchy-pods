@@ -43,10 +43,14 @@ impl PlayerOwner {
     }
 }
 
+/// The link's losses counted when a pause was decided, so its result is kept only if no loss came after.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Era(u64);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaRequest {
-    /// Pause every player that reads `Playing`.
-    PauseAll,
+    /// Pause every player that reads `Playing`, and hand the result back with the era.
+    PauseAll(Era),
     Play(Vec<PlayerOwner>),
 }
 
@@ -62,6 +66,7 @@ pub(super) struct Ear {
     settle: Option<Duration>,
     /// What the media adapter paused, and the only players a resume asks.
     pub(super) paused: Vec<PlayerOwner>,
+    era: Era,
 }
 
 impl Ear {
@@ -116,6 +121,7 @@ impl Ear {
                 self.ours = false;
                 self.settle = None;
                 self.paused.clear();
+                self.era = Era(self.era.0.wrapping_add(1));
                 self.worn = worn(state.ear);
             }
         }
@@ -129,13 +135,9 @@ impl Ear {
         };
     }
 
-    /// Remembers what the adapter paused while the link is up; buds already back by the preference make it a return.
-    pub(super) fn paused(
-        &mut self,
-        state: &State,
-        players: Vec<PlayerOwner>,
-    ) -> Option<MediaRequest> {
-        if !state.connected {
+    /// Remembers what a pause of this era paused; buds already back by the preference make it a return.
+    pub(super) fn paused(&mut self, era: Era, players: Vec<PlayerOwner>) -> Option<MediaRequest> {
+        if era != self.era {
             return None;
         }
         for player in players {
@@ -157,7 +159,7 @@ impl Ear {
     }
 
     fn pause(&self) -> Option<MediaRequest> {
-        self.ours.then_some(MediaRequest::PauseAll)
+        self.ours.then_some(MediaRequest::PauseAll(self.era))
     }
 
     /// A return ends the absence and its settle: the remembered players are played when they can be, and forgotten either way.

@@ -18,7 +18,7 @@ pub use adverts::{MonitorFact, Sighting};
 use audio::{AudioFact, AudioRequest};
 use battery::Latches;
 use ear::Ear;
-pub use ear::{BOTH_OUT_SETTLE_MS, MediaRequest, PAUSED_MAX, PlayerOwner};
+pub use ear::{BOTH_OUT_SETTLE_MS, Era, MediaRequest, PAUSED_MAX, PlayerOwner};
 use notices::Notice;
 pub use sleep::SleepEdge;
 use sleep::Suspend;
@@ -33,8 +33,8 @@ pub enum Fact {
     /// The clock reached `deadline()`.
     Tick,
     Audio(AudioFact),
-    /// The players the media adapter paused.
-    Paused(Vec<PlayerOwner>),
+    /// The players a pause of that era paused.
+    Paused(Era, Vec<PlayerOwner>),
     Advert(Sighting),
     Monitor(MonitorFact),
 }
@@ -95,7 +95,7 @@ impl Policy {
             | Fact::Sleep(_)
             | Fact::Tick
             | Fact::Audio(_)
-            | Fact::Paused(_) => {}
+            | Fact::Paused(..) => {}
         }
     }
 
@@ -133,8 +133,8 @@ impl Policy {
                 self.ear.audio(fact);
                 Vec::new()
             }
-            Fact::Paused(players) => {
-                Vec::from_iter(self.ear.paused(state, players).map(Effect::Media))
+            Fact::Paused(era, players) => {
+                Vec::from_iter(self.ear.paused(era, players).map(Effect::Media))
             }
             Fact::Advert(_) | Fact::Monitor(_) => Vec::new(),
         };

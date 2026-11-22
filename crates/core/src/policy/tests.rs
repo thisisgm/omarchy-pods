@@ -14,7 +14,7 @@ use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
 use super::ear::{BOTH_OUT_SETTLE_MS, BUS_NAME_MAX};
 use super::notices::{Notice, Part, disconnected};
 use super::sleep::{RESUME_SETTLE_MS, Suspend};
-use super::{Effect, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge};
+use super::{Effect, Era, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge};
 use crate::link::Signal;
 use crate::state::{EarDetectionBehavior, LidState, State};
 
@@ -362,7 +362,7 @@ enum Step {
     /// Primary then secondary, true for in an ear.
     Report(bool, bool),
     Prefer(EarDetectionBehavior),
-    /// The adapter reports `PLAYER` paused.
+    /// The adapter reports `PLAYER` paused by a pause decided before any loss.
     Paused,
     Up,
     /// The clock moves to the end of the pending settle.
@@ -457,7 +457,7 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
     let mut asked = Vec::new();
     for effect in effects {
         match effect {
-            Effect::Media(MediaRequest::PauseAll) => asked.push(PAUSE),
+            Effect::Media(MediaRequest::PauseAll(_)) => asked.push(PAUSE),
             Effect::Media(MediaRequest::Play(players)) => {
                 assert_eq!(players, [player()]);
                 asked.push(PLAY);
@@ -500,7 +500,7 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
                 state.ear_detection_behavior = behavior;
                 Fact::Changed
             }
-            Step::Paused => Fact::Paused(vec![player()]),
+            Step::Paused => Fact::Paused(Era::default(), vec![player()]),
             Step::Ours => sink(OURS),
             Step::Settle => {
                 now = policy.deadline().expect("a settle pending");
@@ -588,7 +588,7 @@ fn the_settle_and_a_suspend_window_each_end_at_their_own_deadline() {
     let settled = at(OUT_AT_MS + BOTH_OUT_SETTLE_MS);
     let closes = at(WOKE_AT_MS + RESUME_SETTLE_MS);
     assert_eq!(policy.deadline(), Some(settled));
-    let pause_all = Effect::Media(MediaRequest::PauseAll);
+    let pause_all = Effect::Media(MediaRequest::PauseAll(Era::default()));
     assert_eq!(policy.step(&state, Fact::Tick, settled), [pause_all]);
     assert_eq!(policy.deadline(), Some(closes));
     assert_eq!(policy.step(&state, Fact::Tick, closes), [Effect::Wake]);
@@ -604,17 +604,75 @@ fn players_past_the_bound_and_repeated_ones_are_not_remembered() {
     };
     let named = |index: usize| PlayerOwner::new(&format!("{PLAYER}{index}")).unwrap();
     let twice = vec![named(0), named(0)];
-    assert_eq!(policy.step(&state, Fact::Paused(twice), Duration::ZERO), []);
+    assert_eq!(
+        policy.step(&state, Fact::Paused(Era::default(), twice), Duration::ZERO),
+        []
+    );
     assert_eq!(policy.ear.paused, [named(0)]);
     let first: Vec<PlayerOwner> = (0..PAUSED_MAX).map(named).collect();
     assert_eq!(
-        policy.step(&state, Fact::Paused(first.clone()), Duration::ZERO),
+        policy.step(
+            &state,
+            Fact::Paused(Era::default(), first.clone()),
+            Duration::ZERO
+        ),
         []
     );
     assert_eq!(policy.ear.paused, first);
     let past = vec![named(PAUSED_MAX)];
-    assert_eq!(policy.step(&state, Fact::Paused(past), Duration::ZERO), []);
+    assert_eq!(
+        policy.step(&state, Fact::Paused(Era::default(), past), Duration::ZERO),
+        []
+    );
     assert_eq!(policy.ear.paused, first);
+}
+
+/// The era of the pause among `effects`.
+fn decided(effects: &[Effect]) -> Era {
+    let era = effects.iter().find_map(|effect| {
+        if let Effect::Media(MediaRequest::PauseAll(era)) = effect {
+            Some(*era)
+        } else {
+            None
+        }
+    });
+    era.expect("a pause decided")
+}
+
+#[test]
+fn a_pause_report_from_before_a_loss_is_dropped_after_the_relink() {
+    let mut policy = Policy::default();
+    let mut state = State {
+        connected: true,
+        ..State::default()
+    };
+    let now = Duration::ZERO;
+    let one_out = |policy: &mut Policy, state: &mut State| {
+        drop(policy.step(state, sink(OURS), now));
+        state.ear = EarReport::from_in_ear(true, true);
+        drop(policy.step(state, Fact::Changed, now));
+        state.ear = EarReport::from_in_ear(true, false);
+        decided(&policy.step(state, Fact::Changed, now))
+    };
+    let before_loss = one_out(&mut policy, &mut state);
+    state.reset_device();
+    state.connected = false;
+    let lost = Signal::Lost {
+        device: device(),
+        down_at: Some(now),
+    };
+    drop(policy.step(&state, Fact::Link(lost), now));
+    state.connected = true;
+    let up = Signal::Up { device: device() };
+    drop(policy.step(&state, Fact::Link(up), now));
+    let after_relink = one_out(&mut policy, &mut state);
+    assert_ne!(before_loss, after_relink);
+    let late = Fact::Paused(before_loss, vec![player()]);
+    assert_eq!(policy.step(&state, late, now), []);
+    assert_eq!(policy.ear.paused, []);
+    let own = Fact::Paused(after_relink, vec![player()]);
+    assert_eq!(policy.step(&state, own, now), []);
+    assert_eq!(policy.ear.paused, [player()]);
 }
 
 #[test]
@@ -631,10 +689,16 @@ fn a_late_pause_with_the_buds_back_plays_only_its_own_players() {
     assert_eq!(policy.step(&state, Fact::Changed, now), []);
     assert_eq!(policy.step(&state, sink(ELSEWHERE), now), []);
     // The buds are back with the sink elsewhere, so this pause is dropped rather than kept for later.
-    assert_eq!(policy.step(&state, Fact::Paused(vec![player()]), now), []);
+    assert_eq!(
+        policy.step(&state, Fact::Paused(Era::default(), vec![player()]), now),
+        []
+    );
     assert_eq!(policy.step(&state, sink(OURS), now), []);
     let play = Effect::Media(MediaRequest::Play(vec![other.clone()]));
-    assert_eq!(policy.step(&state, Fact::Paused(vec![other]), now), [play]);
+    assert_eq!(
+        policy.step(&state, Fact::Paused(Era::default(), vec![other]), now),
+        [play]
+    );
 }
 
 #[test]
