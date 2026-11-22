@@ -328,6 +328,7 @@ fn the_unit_gets_every_hardening_directive_of_the_service_file() {
         .display()
         .to_string();
     assert!(properties.contains(&format!("ReadWritePaths={dir}").as_str()));
+    assert!(properties.contains(&"StartLimitIntervalSec=0"));
     assert!(args.contains(&format!("--setenv=XDG_STATE_HOME={dir}/state")));
     assert!(args.iter().any(|arg| {
         arg.starts_with("--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/")

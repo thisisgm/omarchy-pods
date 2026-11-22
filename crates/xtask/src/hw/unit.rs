@@ -272,6 +272,8 @@ pub(crate) fn start_arguments(binary: &Path, dir: &Path, uid: u32) -> Vec<OsStri
     let mut read_write = OsString::from("ReadWritePaths=");
     read_write.push(dir);
     args.extend(["-p".into(), read_write]);
+    // Ten restarts of a daemon that is up in a fraction of a second would trip the default start rate limit.
+    args.extend(["-p".into(), "StartLimitIntervalSec=0".into()]);
     for (name, path) in [("XDG_RUNTIME_DIR", "run"), ("XDG_STATE_HOME", "state")] {
         let mut setting = OsString::from(format!("--setenv={name}="));
         setting.push(dir.join(path));
