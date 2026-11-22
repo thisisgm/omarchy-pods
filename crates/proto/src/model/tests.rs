@@ -2,6 +2,7 @@
 
 use super::*;
 use cpp_source::{DEVICE_INFO, ENUMS};
+use proptest::prelude::*;
 
 type Flag = fn(Capabilities) -> bool;
 
@@ -361,4 +362,89 @@ fn default_model_matches_the_cpp_device_info() {
     // Sample input: `setModel(AirPodsModel::Unknown);` inside `void reset()`.
     let reset = DEVICE_INFO.find(Some("void reset()"), "setModel(AirPodsModel::", ')');
     assert_eq!(cpp_name(Model::default()), reset);
+}
+
+/// The Pro 3's product as BlueZ prints it, and the byte swapped key the C++ map gives it.
+const PRO_3_MODALIAS: &str = "bluetooth:v004Cp2027d0000";
+const PRO_3_CPP_KEY: u16 = 0x2720;
+
+#[test]
+fn a_modalias_gives_the_cpp_key_byte_swapped() {
+    let id = product_of_modalias(PRO_3_MODALIAS);
+    assert_eq!(id, Some(PRO_3_CPP_KEY.swap_bytes()));
+}
+
+#[test]
+fn the_powerbeats_keys_of_the_proposed_cpp_entries_are_beats() {
+    let proposed_cpp_keys: [u16; 2] = [0x0B20, 0x1D20];
+    for key in proposed_cpp_keys {
+        assert!(is_beats(key.swap_bytes()), "{key:#06X}");
+        assert!(!is_beats(key), "{key:#06X}");
+    }
+    assert_eq!(BEATS_PRODUCTS.len(), proposed_cpp_keys.len());
+}
+
+#[test]
+fn the_pro_3_identifier_is_not_beats() {
+    assert_eq!(
+        product_of_modalias(PRO_3_MODALIAS).map(is_beats),
+        Some(false)
+    );
+}
+
+#[test]
+fn a_modalias_names_a_product_only_in_the_shape_bluez_prints() {
+    assert_eq!(
+        product_of_modalias("bluetooth:v004Cp200Bd0001"),
+        Some(0x200B)
+    );
+    for text in [
+        "",
+        "bluetooth:v004Cp",
+        "bluetooth:v004Cp2027",
+        "bluetooth:v004Cp2027d",
+        "bluetooth:v004Cp2027d000",
+        "bluetooth:v004Cp2027d00000",
+        "bluetooth:v004Cp20270d0000",
+        "bluetooth:v0059p2027d0000",
+        "usb:v05ACp2027d0000",
+        "bluetooth:v004cp2027d0000",
+        "Bluetooth:v004Cp2027d0000",
+        "bluetooth:v004Cp200bd0001",
+        "bluetooth:v004Cp2027D0000",
+        "bluetooth:v004Cp2027d000a",
+        "bluetooth:v004Cp+027d0000",
+        "bluetooth:v004Cp20\u{e9}d0000",
+        "bluetooth:v004Cp2\u{e9}7d0000",
+        "not a modalias at all",
+    ] {
+        assert_eq!(product_of_modalias(text), None, "{text}");
+    }
+}
+
+proptest! {
+    #[test]
+    fn every_product_and_version_reads_back(id: u16, version: u16) {
+        let modalias = format!("{APPLE_MODALIAS_PREFIX}{id:04X}d{version:04X}");
+        prop_assert_eq!(product_of_modalias(&modalias), Some(id));
+    }
+
+    #[test]
+    fn near_misses_and_any_text_read_only_in_the_exact_shape(
+        product in "[0-9A-F]{4}|[0-9A-Fa-f+ \u{e9}]{3,5}",
+        separator in "[dD]",
+        version in "[0-9A-F]{4}|[0-9A-Fa-f+ \u{e9}]{3,5}",
+        bare in any::<String>(),
+    ) {
+        let near_miss = format!("{APPLE_MODALIAS_PREFIX}{product}{separator}{version}");
+        for text in [near_miss, bare] {
+            if let Some(id) = product_of_modalias(&text) {
+                let version = text.strip_prefix(&format!("{APPLE_MODALIAS_PREFIX}{id:04X}d"));
+                let printed = |version: &str| {
+                    u16::from_str_radix(version, 16).is_ok_and(|number| format!("{number:04X}") == version)
+                };
+                prop_assert!(version.is_some_and(printed), "{text}");
+            }
+        }
+    }
 }

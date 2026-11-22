@@ -26,6 +26,7 @@ fn populated_state_lands_every_field_on_its_key() {
         model: Model::AirPodsPro2USBC,
         model_number: "A3048".to_owned(),
         noise_mode: NoiseMode::Adaptive,
+        noise_off: Some(false),
         adaptive_noise_level: level(37),
         conversational_awareness: true,
         one_bud_anc_mode: true,
@@ -93,7 +94,7 @@ fn populated_state_lands_every_field_on_its_key() {
         "supports_adaptive": true,
         "supports_conversational_awareness": true,
         "supports_noise_control": true,
-        "supports_noise_off": true,
+        "supports_noise_off": false,
         "supports_one_bud_anc": true,
     });
     assert_eq!(status(&state), expected);

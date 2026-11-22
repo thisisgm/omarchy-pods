@@ -15,7 +15,7 @@ use zbus::export::futures_core::Stream;
 use zbus::{Guid, MessageStream};
 
 use super::calls::Calls;
-use super::objects::{Candidates, Change, Properties};
+use super::objects::{Candidates, Change, Kind, Properties};
 use super::{DeviceEvent, ErrorLog, Input, Watcher};
 
 /// Long enough for a call the watcher wrongly made to reach the peer.
@@ -48,7 +48,7 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
         let mut candidates = Candidates::default();
         let pods = Properties {
             address: Some(device),
-            lists_aap: Some(true),
+            kind: Some(Kind::Pods),
             connected: Some(true),
         };
         candidates.apply(Change::Device {

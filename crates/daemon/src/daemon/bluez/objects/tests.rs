@@ -9,7 +9,7 @@ fn address(last: u8) -> BdAddr {
 fn pods(last: u8, connected: bool) -> Properties {
     Properties {
         address: Some(address(last)),
-        lists_aap: Some(true),
+        kind: Some(Kind::Pods),
         connected: Some(connected),
     }
 }
@@ -49,7 +49,7 @@ const SECOND_ADAPTER: &str = "/org/bluez/hci1/dev_02_00_00_00_00_01";
 fn a_device_without_the_uuid_is_not_a_candidate() {
     let mut candidates = Candidates::default();
     let headset = Properties {
-        lists_aap: Some(false),
+        kind: Some(Kind::Other),
         ..pods(1, true)
     };
     assert!(candidates.apply(device(FIRST, headset)).is_empty());
@@ -67,7 +67,7 @@ fn a_device_without_the_uuid_is_not_a_candidate() {
 fn uuids_arriving_after_connected_make_it_up() {
     let mut candidates = Candidates::default();
     let paired = Properties {
-        lists_aap: Some(false),
+        kind: Some(Kind::Other),
         ..pods(1, true)
     };
     assert!(candidates.apply(device(FIRST, paired)).is_empty());
@@ -149,7 +149,7 @@ fn an_address_that_does_not_parse_is_skipped() {
         read,
         Properties {
             address: None,
-            lists_aap: Some(true),
+            kind: Some(Kind::Pods),
             connected: Some(true)
         }
     );
@@ -194,4 +194,94 @@ fn one_address_under_two_paths_is_down_only_when_neither_is_connected() {
     };
     assert_eq!(named(&candidates.apply(second)), ["gone 1"]);
     assert_eq!(named(&candidates.apply(Change::Lost)), ["lost"]);
+}
+
+/// Powerbeats Pro, product `0x200B`.
+const BEATS: &str = "bluetooth:v004Cp200Bd0001";
+
+fn beats(last: u8, connected: bool) -> Properties {
+    Properties {
+        kind: Some(Kind::Beats),
+        ..pods(last, connected)
+    }
+}
+
+#[test]
+fn only_a_beats_modalias_under_the_uuid_is_beats() {
+    for (lists_aap, modalias, expected) in [
+        (true, Some(BEATS), Kind::Beats),
+        (true, Some("bluetooth:v004Cp201Dd0001"), Kind::Beats),
+        (true, Some("bluetooth:v004Cp2027d0000"), Kind::Pods),
+        (true, Some("bluetooth:v004Cp20FFd0000"), Kind::Pods),
+        (true, Some("bluetooth:v0059p200Bd0001"), Kind::Pods),
+        (true, Some("bluetooth:v004Cp200B"), Kind::Pods),
+        (true, None, Kind::Pods),
+        (false, Some(BEATS), Kind::Other),
+        (false, None, Kind::Other),
+    ] {
+        assert_eq!(
+            kind(lists_aap, modalias),
+            expected,
+            "{lists_aap} {modalias:?}"
+        );
+    }
+}
+
+#[test]
+fn the_modalias_is_read_and_another_type_reads_as_absent() {
+    let with = |modalias: OwnedVariant| {
+        HashMap::from([
+            (
+                "UUIDs".to_owned(),
+                OwnedVariant::try_from(Variant::from(vec![AAP_UUID])).unwrap(),
+            ),
+            ("Modalias".to_owned(), modalias),
+        ])
+    };
+    let named_beats = with(OwnedVariant::try_from(Variant::from(BEATS)).unwrap());
+    assert_eq!(Properties::read(&named_beats).kind, Some(Kind::Beats));
+    let wrong_type = with(OwnedVariant::from(7_u32));
+    assert_eq!(Properties::read(&wrong_type).kind, Some(Kind::Pods));
+    let no_uuids = HashMap::from([(
+        "Modalias".to_owned(),
+        OwnedVariant::try_from(Variant::from(BEATS)).unwrap(),
+    )]);
+    assert_eq!(Properties::read(&no_uuids).kind, None);
+}
+
+#[test]
+fn beats_are_never_a_candidate_and_a_kept_one_that_turns_beats_is_gone() {
+    let mut candidates = Candidates::default();
+    assert!(candidates.apply(device(FIRST, beats(1, true))).is_empty());
+    let swept = vec![(FIRST.to_owned(), beats(1, true))];
+    assert!(candidates.apply(Change::Swept(swept)).is_empty());
+    assert!(!candidates.holds(FIRST));
+    assert_eq!(
+        named(&candidates.apply(device(FIRST, pods(1, true)))),
+        ["up 1"]
+    );
+    assert_eq!(
+        named(&candidates.apply(device(FIRST, beats(1, true)))),
+        ["gone 1"]
+    );
+}
+
+#[test]
+fn only_a_change_that_carries_beats_names_them() {
+    assert!(device(FIRST, beats(1, false)).names_beats());
+    let swept = vec![
+        (FIRST.to_owned(), pods(1, false)),
+        (SECOND_ADAPTER.to_owned(), beats(2, false)),
+    ];
+    assert!(Change::Swept(swept).names_beats());
+    assert!(!device(FIRST, pods(1, false)).names_beats());
+    assert!(!device(FIRST, connected(true)).names_beats());
+    assert!(!Change::Swept(vec![(FIRST.to_owned(), pods(1, true))]).names_beats());
+    assert!(
+        !Change::Removed {
+            path: FIRST.to_owned()
+        }
+        .names_beats()
+    );
+    assert!(!Change::Lost.names_beats());
 }

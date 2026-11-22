@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::future::poll_fn;
 use std::ops::ControlFlow;
 use std::pin::{Pin, pin};
+use std::sync::Once;
 use std::task::Poll;
 use std::time::Duration;
 
@@ -39,6 +40,10 @@ const SWEEP_RETRY_MS: u64 = 1000;
 
 const SYSTEM_BUS_RETRY_MS: u64 = 5000;
 
+/// Holds no address and no name, and is written once per daemon life.
+const NOT_AIRPODS_LOG: &str = "bluez: one device is not AirPods";
+static NOT_AIRPODS_LOGGED: Once = Once::new();
+
 const BLUEZ: &str = "org.bluez";
 const BUS: &str = "org.freedesktop.DBus";
 const DEVICE_INTERFACE: &str = "org.bluez.Device1";
@@ -50,10 +55,10 @@ const OBJECTS_RULE: &str =
     "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',path='/'";
 const PROPERTIES_RULE: &str = "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='/org/bluez',arg0='org.bluez.Device1'";
 
-const CLASSIFYING: [&str; 3] = ["Connected", "UUIDs", "ServicesResolved"];
+const CLASSIFYING: [&str; 4] = ["Connected", "UUIDs", "ServicesResolved", "Modalias"];
 
-/// A new path's `Connected` comes before its `UUIDs`, so these make it worth a read.
-const WORTH_A_READ: [&str; 2] = ["UUIDs", "ServicesResolved"];
+/// A new path's `Connected` comes before its `UUIDs`, and a kept path's `Modalias` needs a whole read, so these make it worth a read.
+const WORTH_A_READ: [&str; 3] = ["UUIDs", "ServicesResolved", "Modalias"];
 
 /// Every match rule's signals, in the order the connection received them.
 type Signals = IntoStream<JoinMultiple<Vec<Peekable<MessageStream>>>>;
@@ -206,7 +211,8 @@ impl Watcher<'_> {
         if !names(&CLASSIFYING) {
             return None;
         }
-        let properties = if self.candidates.holds(path) {
+        // A `Modalias` may turn kept pods into Beats, which only a whole read can tell.
+        let properties = if self.candidates.holds(path) && !changed.contains_key("Modalias") {
             Properties::read(&changed)
         } else if names(&WORTH_A_READ) {
             self.read(path).await?
@@ -298,6 +304,9 @@ impl Watcher<'_> {
     }
 
     async fn report(&mut self, change: Change) -> ControlFlow<()> {
+        if change.names_beats() {
+            NOT_AIRPODS_LOGGED.call_once(|| log(NOT_AIRPODS_LOG));
+        }
         for event in self.candidates.apply(change) {
             send(self.inputs, event).await?;
         }

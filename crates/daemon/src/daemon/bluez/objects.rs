@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use pods_core::link::ladder::KNOWN_MAX;
 use pods_proto::addr::BdAddr;
+use pods_proto::model::{is_beats, product_of_modalias};
 use zbus::{Array, OwnedVariant, Variant};
 
 use super::AAP_UUID;
@@ -13,9 +14,17 @@ use crate::daemon::link::DeviceEvent;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Properties {
     pub(super) address: Option<BdAddr>,
-    /// Whether `UUIDs` holds `AAP_UUID`.
-    pub(super) lists_aap: Option<bool>,
+    /// `None` when `UUIDs` is not named.
+    pub(super) kind: Option<Kind>,
     pub(super) connected: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    Pods,
+    /// Lists `AAP_UUID` under a Beats `Modalias`, so it is never kept as a candidate.
+    Beats,
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,16 +55,31 @@ pub(super) struct Candidates {
 }
 
 impl Properties {
-    /// Sample input: `{"Address": <"02:00:00:00:00:01">, "UUIDs": <["74ec2172-0bad-4d01-8f77-997b2be0722a"]>, "Connected": <true>}`; another type reads as absent.
+    /// Sample input: `{"Address": <"02:00:00:00:00:01">, "UUIDs": <["74ec2172-0bad-4d01-8f77-997b2be0722a"]>, "Modalias": <"bluetooth:v004Cp2027d0000">, "Connected": <true>}`; another type reads as absent.
     pub(super) fn read(properties: &HashMap<String, OwnedVariant>) -> Self {
         let value = |name: &str| properties.get(name).map(|value| &**value);
+        let modalias = value("Modalias").and_then(|modalias| <&str>::try_from(modalias).ok());
         Self {
             address: value("Address")
                 .and_then(|address| <&str>::try_from(address).ok())
                 .and_then(|address| address.parse().ok()),
-            lists_aap: value("UUIDs").and_then(lists_aap),
+            kind: value("UUIDs")
+                .and_then(lists_aap)
+                .map(|lists_aap| kind(lists_aap, modalias)),
             connected: value("Connected").and_then(|connected| bool::try_from(connected).ok()),
         }
+    }
+}
+
+/// A device that lists `AAP_UUID` is pods unless its `Modalias` names a Beats product; one that does not parse names none.
+fn kind(lists_aap: bool, modalias: Option<&str>) -> Kind {
+    if !lists_aap {
+        return Kind::Other;
+    }
+    if modalias.and_then(product_of_modalias).is_some_and(is_beats) {
+        Kind::Beats
+    } else {
+        Kind::Pods
     }
 }
 
@@ -66,6 +90,17 @@ fn lists_aap(uuids: &Variant<'_>) -> Option<bool> {
             <&str>::try_from(uuid).is_ok_and(|uuid| uuid.eq_ignore_ascii_case(AAP_UUID))
         }),
     )
+}
+
+impl Change {
+    pub(super) fn names_beats(&self) -> bool {
+        let beats = |properties: &Properties| properties.kind == Some(Kind::Beats);
+        match self {
+            Self::Device { properties, .. } => beats(properties),
+            Self::Swept(devices) => devices.iter().any(|(_, properties)| beats(properties)),
+            Self::Removed { .. } | Self::Lost => false,
+        }
+    }
 }
 
 impl Candidates {
@@ -104,7 +139,10 @@ impl Candidates {
         let kept = self.paths.get(&path).copied();
         let device = kept.map(|entry| entry.device).or(properties.address)?;
         let before = self.presence(device);
-        if properties.lists_aap.unwrap_or(kept.is_some()) {
+        if properties
+            .kind
+            .map_or(kept.is_some(), |kind| kind == Kind::Pods)
+        {
             if kept.is_none() && self.paths.len() >= KNOWN_MAX {
                 return None;
             }
@@ -131,7 +169,7 @@ impl Candidates {
         let before = self.devices();
         self.paths.clear();
         for (path, properties) in devices {
-            if let (Some(device), Some(true)) = (properties.address, properties.lists_aap)
+            if let (Some(device), Some(Kind::Pods)) = (properties.address, properties.kind)
                 && self.paths.len() < KNOWN_MAX
             {
                 let connected = properties.connected.unwrap_or(false);
