@@ -39,8 +39,8 @@ mod tests {
     /// Long enough for a call the daemon wrongly makes to reach the fake BlueZ.
     const QUIET: Duration = Duration::from_millis(300);
 
-    /// Enough for the end of a refused dial to reach the daemon; the next dial of the ladder is 8 s away.
-    const REFUSAL_SETTLES: Duration = Duration::from_millis(100);
+    /// Refused dials before `do connect`, each ending in a backoff the next held step is seconds away from.
+    const REFUSED_DIALS: usize = 4;
 
     const STATUS_CALLS: usize = 10;
     const STATUS_APART: Duration = Duration::from_millis(200);
@@ -139,8 +139,8 @@ mod tests {
             },
         );
         rig.link_up(&device);
-        rig.wait_dials(4, HANG_LIMIT);
-        pause(REFUSAL_SETTLES);
+        rig.wait_dials(REFUSED_DIALS, HANG_LIMIT);
+        rig.wait_entered("backoff", REFUSED_DIALS);
         rig.accept(&device);
         let mut client = Proto1::connect(rig.session());
         let asked = Instant::now();

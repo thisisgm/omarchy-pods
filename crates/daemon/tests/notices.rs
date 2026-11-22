@@ -51,14 +51,16 @@ mod tests {
             .collect()
     }
 
-    /// Two user disconnects with the stand-in in `mood`, then the status, the runs recorded and the notifier's lines.
-    fn two_losses(mood: Mood) -> (Value, usize, Vec<String>) {
+    /// Two user disconnects with the stand-in in `mood`, which runs it `runs` times, then the status, the runs recorded and the notifier's lines.
+    fn two_losses(mood: Mood, runs: usize) -> (Value, usize, Vec<String>) {
         let (mut rig, device) = Rig::with_linked_pods();
         rig.omarchy().become_(mood);
         rig.disconnect();
         rig.relink(&device);
         rig.disconnect();
-        pause(RECORDED_WITHIN);
+        rig.omarchy().wait_calls(runs, HANG_LIMIT);
+        // A notice that finds no program leaves no run and no second line, so the quiet window stands in for it.
+        rig.omarchy().none_for(RECORDED_WITHIN);
         let status = rig.status();
         let runs = rig.omarchy().calls().len();
         let lines = notifier_lines(&mut rig);
@@ -82,7 +84,7 @@ mod tests {
         rig.link_up(&device);
         rig.wait_logged("link: opening to handshake");
         rig.link_down(&device);
-        rig.wait_entered("idle");
+        rig.wait_entered("idle", 1);
         rig.omarchy().never_ran(RECORDED_WITHIN);
         rig.finish();
     }
@@ -122,8 +124,8 @@ mod tests {
 
     #[test]
     fn a_missing_omarchy_logs_once_and_changes_nothing() {
-        let (absent, absent_runs, absent_lines) = two_losses(Mood::Absent);
-        let (works, works_runs, works_lines) = two_losses(Mood::Works);
+        let (absent, absent_runs, absent_lines) = two_losses(Mood::Absent, 0);
+        let (works, works_runs, works_lines) = two_losses(Mood::Works, 2);
         assert_eq!(absent_lines, [NOT_FOUND]);
         assert_eq!(absent_runs, 0);
         assert_eq!(works_lines, [""; 0]);
