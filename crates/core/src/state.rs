@@ -33,6 +33,7 @@ pub struct State {
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
     pub audio_server: AudioServer,
+    pub advert_intake: AdvertIntake,
 }
 
 impl Default for State {
@@ -56,6 +57,7 @@ impl Default for State {
             // The C++ `Notifier` starts enabled.
             notifications: true,
             audio_server: AudioServer::Idle,
+            advert_intake: AdvertIntake::Paused,
         }
     }
 }
@@ -157,6 +159,28 @@ impl AudioServer {
             Self::Idle => "idle",
             Self::Up => "up",
             Self::Down => "down",
+        }
+    }
+}
+
+/// Whether the daemon reads the pods' adverts through the BlueZ advert monitor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdvertIntake {
+    /// BlueZ accepted the monitor.
+    Listening,
+    /// Neither of the others: the link is up, no keys are held, or BlueZ has not accepted the registration yet.
+    Paused,
+    /// While the monitor is wanted (keys held, no link up) and not accepted because no adapter offered it or each registration was refused.
+    Unavailable,
+}
+
+impl AdvertIntake {
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Listening => "listening",
+            Self::Paused => "paused",
+            Self::Unavailable => "unavailable",
         }
     }
 }

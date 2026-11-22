@@ -15,6 +15,7 @@ use zbus::export::futures_core::Stream;
 use zbus::{Guid, MessageStream};
 
 use super::calls::Calls;
+use super::monitor::Monitor;
 use super::objects::{Candidates, Change, Kind, Properties};
 use super::{DeviceEvent, ErrorLog, Input, Watcher};
 
@@ -62,6 +63,7 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
         let (inputs, mut events) = mpsc::channel(1);
         let mut errors = ErrorLog::default();
         let mut calls = Calls::default();
+        let mut monitor = Monitor::default();
         let mut watcher = Watcher {
             connection,
             inputs: &inputs,
@@ -69,6 +71,7 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
             errors: &mut errors,
             retry: None,
             calls: &mut calls,
+            monitor: &mut monitor,
         };
         let call = Call {
             action: DeviceAction::Connect,

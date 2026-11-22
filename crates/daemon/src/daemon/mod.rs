@@ -109,6 +109,7 @@ async fn serve(
     let (media_requests, media_queue) = media::queue();
     let adapter = tokio::spawn(audio::run(link.clone(), audio_queue, paths.runtime_dir));
     let (keys, pairs) = keys::queue();
+    let (monitor, monitor_wanted) = watch::channel(false);
     let driver = tokio::spawn(link::drive(
         hub.clone(),
         inputs,
@@ -121,7 +122,9 @@ async fn serve(
             audio: audio_requests,
             keys,
             media: media_requests,
+            monitor,
         },
+        stored.clone(),
     ));
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
@@ -147,7 +150,7 @@ async fn serve(
     let keys_writer = tokio::spawn(keys::follow(pairs, keys_file, stored));
     // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(session_bus(hub.clone(), link.clone(), media_queue));
-    let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests));
+    let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests, monitor_wanted));
     let suspends = tokio::spawn(sleep::watch(link.clone()));
     let (code, driver) = until_stopped(stop.first(), accept, follow, driver, watcher).await;
     if let Some(driver) = driver {
@@ -466,6 +469,7 @@ mod tests {
                 requests,
                 refuse,
                 outlets,
+                None,
             ));
             // The real driver returns after a `Shutdown`, here one the stop path never sent.
             let (done, _stopped) = oneshot::channel();

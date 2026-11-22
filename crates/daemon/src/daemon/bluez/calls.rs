@@ -9,15 +9,13 @@ use tokio::task::{Id, JoinSet};
 use tokio::time::timeout;
 use zbus::{Connection, ObjectPath, OwnedObjectPath, OwnedVariant};
 
-use super::{BLUEZ, DEVICE_INTERFACE, PROPERTIES};
+use super::{ADAPTER_INTERFACE, BLUEZ, DEVICE_INTERFACE, PROPERTIES};
 
 /// A BlueZ `Connect` can run for a whole page and the set up of every profile.
 const CALL_TIMEOUT_MS: u64 = 30_000;
 
 /// Past this, the next call fails at once.
 const CALLS_IN_FLIGHT_MAX: usize = 4;
-
-const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 
 #[derive(Debug, Default)]
 pub(super) struct Calls {

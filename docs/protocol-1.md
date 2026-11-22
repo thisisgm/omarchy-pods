@@ -138,7 +138,14 @@ A reply carries the request's `id` and `ok`.
   prints and the state file holds. Besides the keys the older daemon wrote, it
   carries `notifications_enabled`, the `notifications` setting. Its
   `audio_server` is `idle` while no AirPods link is up, `up` while the daemon
-  reads the desktop's audio server, and `down` while it cannot reach it.
+  reads the desktop's audio server, and `down` while it cannot reach it. Its
+  `advert_intake` is `listening` once BlueZ accepted the daemon's advert
+  monitor, which reads the AirPods' battery, case, lid and ear state from their
+  adverts while no link is up; `unavailable` while the monitor is wanted,
+  because the AirPods' keys are kept and no link is up, and BlueZ has not
+  accepted it because no adapter offered advert monitors or BlueZ refused each
+  try; and `paused` otherwise, while the link is up, the AirPods' keys are not
+  kept or BlueZ has not accepted the registration yet.
 - `set` and `do` reply with `result`. `confirmed` means the state shows the
   change: either it already did, or the AirPods reported the change within
   700 ms of the command. `sent` means the command was handed on and the reply

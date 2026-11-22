@@ -17,7 +17,7 @@ use pods_core::link::{
 };
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
-use pods_core::policy::{Effect, Fact, PlayerOwner, Policy, SleepEdge};
+use pods_core::policy::{Effect, Fact, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge};
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -72,6 +72,8 @@ pub(super) enum Input {
     Audio(AudioFact),
     /// The players the media adapter paused.
     Media(Vec<PlayerOwner>),
+    Advert(Sighting),
+    Monitor(MonitorFact),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +90,8 @@ pub(super) struct Outlets {
     pub(super) audio: mpsc::Sender<AudioRequest>,
     pub(super) keys: mpsc::Sender<ProximityKeys>,
     pub(super) media: media::Outlet,
+    /// Whether the advert monitor is wanted; a watch, so the latest is never dropped, and each `true` registers it anew.
+    pub(super) monitor: watch::Sender<bool>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -126,11 +130,12 @@ pub(super) async fn drive(
     requests: mpsc::Sender<Request>,
     connector: Connector,
     outlets: Outlets,
+    keys: Option<ProximityKeys>,
 ) {
     let mut driver = Driver {
         hub,
         machine: Machine::new(),
-        policy: Policy::default(),
+        policy: Policy::new(keys),
         outlets,
         started: Instant::now(),
         feedback,
@@ -142,6 +147,9 @@ pub(super) async fn drive(
         fed_back: VecDeque::new(),
         announced: false,
     };
+    for effect in driver.policy.start() {
+        driver.route(effect);
+    }
     loop {
         let turn = match driver.fed_back.pop_front() {
             Some(input) => Turn::Input(input),
@@ -240,6 +248,8 @@ impl Driver {
             }
             Input::Audio(fact) => self.observe(Fact::Audio(fact)),
             Input::Media(paused) => self.observe(Fact::Paused(paused)),
+            Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
+            Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
         }
         ControlFlow::Continue(())
     }
@@ -269,6 +279,7 @@ impl Driver {
         }
         for fact in &facts {
             next.audio_server = server_after(next.audio_server, fact);
+            self.policy.apply(&mut next, fact);
         }
         let effects: Vec<Effect> = facts
             .into_iter()
@@ -287,11 +298,17 @@ impl Driver {
         }
     }
 
-    /// A fact from outside the link machine: the server reading folds it in, then the policy steps on that state.
+    /// A fact from outside the link machine: the server reading and the policy fold it in, then the policy steps on that state.
     fn observe(&mut self, fact: Fact) {
-        let mut next = self.hub.state();
+        let last = self.hub.state();
+        let mut next = last.clone();
         next.audio_server = server_after(next.audio_server, &fact);
-        let effects = self.policy.step(&next, fact, self.started.elapsed());
+        self.policy.apply(&mut next, &fact);
+        let now = self.started.elapsed();
+        let mut effects = self.policy.step(&next, fact, now);
+        if next != last {
+            effects.extend(self.policy.step(&next, Fact::Changed, now));
+        }
         self.hub.publish(next);
         for effect in effects {
             self.route(effect);
@@ -306,6 +323,7 @@ impl Driver {
             Effect::Audio(request) => audio::offer(&self.outlets.audio, request),
             Effect::StoreKeys(keys) => keys::offer(&self.outlets.keys, keys),
             Effect::Media(request) => self.outlets.media.offer(request),
+            Effect::Monitor(wanted) => drop(self.outlets.monitor.send_replace(wanted)),
         }
     }
 

@@ -176,6 +176,7 @@ struct Properties {
     capabilities: Vec<String>,
     status_json: String,
     audio_server: &'static str,
+    advert_intake: &'static str,
 }
 
 impl Properties {
@@ -213,10 +214,11 @@ impl Properties {
             capabilities,
             status_json: status.to_string(),
             audio_server: state.audio_server.word(),
+            advert_intake: state.advert_intake.word(),
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 13] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 14] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -234,6 +236,7 @@ impl Properties {
             ("Capabilities", Variant::from(self.capabilities.clone())),
             ("StatusJson", Variant::from(self.status_json.as_str())),
             ("AudioServer", Variant::from(self.audio_server)),
+            ("AdvertIntake", Variant::from(self.advert_intake)),
         ]
     }
 
@@ -346,6 +349,11 @@ impl Omapods {
     #[zbus(property)]
     fn audio_server(&self) -> &'static str {
         self.now().audio_server
+    }
+
+    #[zbus(property)]
+    fn advert_intake(&self) -> &'static str {
+        self.now().advert_intake
     }
 
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {

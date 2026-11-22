@@ -1,5 +1,6 @@
-//! What the daemon does about the link besides the link itself: link signals, state changes, suspends, audio and media facts in, the notices, wakes, audio and media requests due out.
+//! What the daemon does about the link besides the link itself: link signals, state changes, suspends, audio and media facts and adverts in, the notices, wakes, audio, media and monitor requests it asks for.
 
+mod adverts;
 pub mod audio;
 mod battery;
 mod ear;
@@ -11,7 +12,9 @@ use std::time::Duration;
 use pods_proto::keys::ProximityKeys;
 
 use crate::link::Signal;
-use crate::state::State;
+use crate::state::{AdvertIntake, State};
+use adverts::Adverts;
+pub use adverts::{MonitorFact, Sighting};
 use audio::{AudioFact, AudioRequest};
 use battery::Latches;
 use ear::Ear;
@@ -20,7 +23,7 @@ use notices::Notice;
 pub use sleep::SleepEdge;
 use sleep::Suspend;
 
-/// What the driver saw in one step of the link machine, from logind or from the audio and media adapters.
+/// What the driver saw in one step of the link machine, from logind, from the audio and media adapters or from the BlueZ watcher.
 #[derive(Debug, Clone)]
 pub enum Fact {
     Link(Signal),
@@ -32,6 +35,8 @@ pub enum Fact {
     Audio(AudioFact),
     /// The players the media adapter paused.
     Paused(Vec<PlayerOwner>),
+    Advert(Sighting),
+    Monitor(MonitorFact),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +48,8 @@ pub enum Effect {
     /// A pair the pods answered with; the driver hands it to the writer of `keys.json`.
     StoreKeys(ProximityKeys),
     Media(MediaRequest),
+    /// Whether the BlueZ advert monitor is wanted; `true` again after a wake asks for it anew.
+    Monitor(bool),
 }
 
 /// Lives as long as the driver, so a latch outlives the link that set it.
@@ -51,13 +58,56 @@ pub struct Policy {
     low_battery: Latches,
     suspend: Suspend,
     ear: Ear,
+    adverts: Adverts,
 }
 
 impl Policy {
+    /// `keys` is the pair `keys.json` held at start.
+    #[must_use]
+    pub fn new(keys: Option<ProximityKeys>) -> Self {
+        Self {
+            adverts: Adverts::new(keys),
+            ..Self::default()
+        }
+    }
+
+    /// What is due before any fact: the advert monitor, when keys are held.
+    #[must_use]
+    pub fn start(&self) -> Vec<Effect> {
+        Vec::from_iter(self.adverts.wanted().then_some(Effect::Monitor(true)))
+    }
+
+    /// Folds a fact into `state` before `step` sees it: an advert from our pods, and what the advert monitor reads.
+    pub fn apply(&self, state: &mut State, fact: &Fact) {
+        match fact {
+            Fact::Link(Signal::Up { .. }) => state.advert_intake = AdvertIntake::Paused,
+            Fact::Advert(sighting) => {
+                if let Some(keys) = self.adverts.keys() {
+                    adverts::read(state, keys, sighting);
+                }
+            }
+            Fact::Monitor(monitor) if self.adverts.wanted() => {
+                state.advert_intake = monitor.intake();
+            }
+            Fact::Link(Signal::Down | Signal::Lost { .. } | Signal::Keys(_))
+            | Fact::Monitor(_)
+            | Fact::Changed
+            | Fact::Sleep(_)
+            | Fact::Tick
+            | Fact::Audio(_)
+            | Fact::Paused(_) => {}
+        }
+    }
+
     /// `state` is the state after the step the fact comes from; `now` is on the link machine's clock.
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
-        let effects = match fact {
+        let monitor = if let Fact::Link(signal) = &fact {
+            self.adverts.follow(signal)
+        } else {
+            None
+        };
+        let mut effects = match fact {
             Fact::Link(Signal::Keys(keys)) => vec![Effect::StoreKeys(keys)],
             Fact::Link(signal) => {
                 let mut effects = notify(notices::disconnected(&signal, self.suspend));
@@ -75,7 +125,7 @@ impl Policy {
                 Vec::new()
             }
             Fact::Tick => {
-                let mut effects = Vec::from_iter(self.suspend.close(now).then_some(Effect::Wake));
+                let mut effects = self.woke(now);
                 effects.extend(self.ear.tick(now).map(Effect::Media));
                 effects
             }
@@ -86,12 +136,23 @@ impl Policy {
             Fact::Paused(players) => {
                 Vec::from_iter(self.ear.paused(state, players).map(Effect::Media))
             }
+            Fact::Advert(_) | Fact::Monitor(_) => Vec::new(),
         };
+        effects.extend(monitor);
         // After the fact, so a window that closes with the link up is forgotten in the same step.
         if state.connected {
             self.suspend.relinked();
         }
         effects
+    }
+
+    /// A closed suspend window wakes the link, and asks for the monitor anew, as BlueZ may have dropped it in the suspend.
+    fn woke(&mut self, now: Duration) -> Vec<Effect> {
+        if !self.suspend.close(now) {
+            return Vec::new();
+        }
+        let again = self.adverts.wanted().then_some(Effect::Monitor(true));
+        [Effect::Wake].into_iter().chain(again).collect()
     }
 
     /// When the driver must hand in `Fact::Tick` next, if the policy waits on the clock.

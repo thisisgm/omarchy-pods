@@ -24,7 +24,7 @@ const UNFOLLOW: Effect = Effect::Audio(AudioRequest::Follow(None));
 /// A synthetic address, never a real one.
 const DEVICE: &str = "02:00:00:00:00:01";
 
-fn device() -> BdAddr {
+pub(super) fn device() -> BdAddr {
     DEVICE.parse().unwrap()
 }
 
@@ -323,13 +323,20 @@ fn the_notices_and_the_latches_are_the_same_with_notices_off() {
     assert_eq!(on[3], [Effect::Notify(Notice::Disconnected), UNFOLLOW]);
 }
 
-#[test]
-fn every_reply_goes_to_the_writer() {
-    let keys = ProximityKeys {
+/// The sample pair the pods answer with.
+pub(super) fn sample_keys() -> ProximityKeys {
+    ProximityKeys {
         identity: Key::from_bytes(IDENTITY_KEY),
         payload: Key::from_bytes(PAYLOAD_KEY),
-    };
+    }
+}
+
+#[test]
+fn every_reply_goes_to_the_writer() {
+    let keys = sample_keys();
     let mut policy = Policy::default();
+    let up = Fact::Link(Signal::Up { device: device() });
+    drop(policy.step(&State::default(), up, Duration::ZERO));
     for _ in 0..2 {
         let reply = Fact::Link(Signal::Keys(keys.clone()));
         let effects = policy.step(&State::default(), reply, Duration::ZERO);
@@ -455,7 +462,11 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
                 assert_eq!(players, [player()]);
                 asked.push(PLAY);
             }
-            Effect::Notify(_) | Effect::Wake | Effect::Audio(_) | Effect::StoreKeys(_) => {}
+            Effect::Notify(_)
+            | Effect::Wake
+            | Effect::Audio(_)
+            | Effect::StoreKeys(_)
+            | Effect::Monitor(_) => {}
         }
     }
     asked

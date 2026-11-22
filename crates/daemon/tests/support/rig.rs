@@ -675,6 +675,8 @@ fn react(bluez: &Bluez, call: &Call, devices: &Mutex<Vec<Device>>) {
         DeviceMethod::StartDiscovery
         | DeviceMethod::StopDiscovery
         | DeviceMethod::SetDiscoveryFilter
+        | DeviceMethod::RegisterMonitor
+        | DeviceMethod::UnregisterMonitor
         | DeviceMethod::Set { .. } => {}
     }
 }

@@ -64,6 +64,9 @@ pub(crate) enum DeviceMethod {
     StartDiscovery,
     StopDiscovery,
     SetDiscoveryFilter,
+    /// `AdvertisementMonitorManager1` calls, on an adapter that serves the interface or not.
+    RegisterMonitor,
+    UnregisterMonitor,
     /// A `Properties.Set` on `Adapter1`, the value as D-Bus text writes it: `false`.
     Set {
         property: String,
@@ -104,7 +107,8 @@ struct Objects {
     monitors: Monitors,
     /// Every change of a device object's connection, its adding and its removal included, oldest first.
     edges: Vec<Edge>,
-    calls: Vec<Call>,
+    /// Each call recorded with when it reached the fake.
+    calls: Vec<(Instant, Call)>,
     hold: bool,
     fail: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
@@ -375,7 +379,21 @@ impl Bluez {
 
     /// Every `Device1` and `Adapter1` method call, oldest first.
     pub(crate) fn calls(&self) -> Vec<Call> {
-        self.lock().calls.clone()
+        self.lock()
+            .calls
+            .iter()
+            .map(|(_, call)| call.clone())
+            .collect()
+    }
+
+    /// When each call of `method` reached the fake, oldest first.
+    pub(crate) fn call_times(&self, method: &DeviceMethod) -> Vec<Instant> {
+        let objects = self.lock();
+        let of_method = objects
+            .calls
+            .iter()
+            .filter(|(_, call)| call.method == *method);
+        of_method.map(|(at, _)| *at).collect()
     }
 
     /// Calls `method` on the device's `Device1` over the bus, as the daemon would.
@@ -505,7 +523,7 @@ impl Objects {
         }
         let recorded = record(call);
         if let Some(recorded) = &recorded {
-            self.calls.push(recorded.clone());
+            self.calls.push((Instant::now(), recorded.clone()));
         }
         if self.hold {
             return Answer::Held;
@@ -521,6 +539,9 @@ impl Objects {
             (Some(MANAGER_INTERFACE), Some(member), Some(path)) if self.monitors.serves(path) => {
                 return self.monitors.answer(call, path, member);
             }
+            (Some(MANAGER_INTERFACE), _, _) => {
+                Message::error(&header, UNKNOWN).build(&("No manager on this adapter",))
+            }
             (Some(OBJECT_MANAGER), Some("GetManagedObjects"), Some("/")) => {
                 Message::method_return(&header).build(&self.managed())
             }
@@ -533,7 +554,13 @@ impl Objects {
                 Message::method_return(&header).build(&())
             }
             (Some(PROPERTIES), Some("GetAll"), Some(path)) => match self.properties(path) {
-                Some(properties) => Message::method_return(&header).build(&properties),
+                Some(properties) => {
+                    let reply = Message::method_return(&header).build(&properties).unwrap();
+                    // Sent on this connection ahead of the reply, so the daemon holds the change before the read can end.
+                    let mut messages = Vec::from_iter(self.monitors.advert_at_read(path));
+                    messages.push(reply);
+                    return Answer::Send(messages);
+                }
                 None => Message::error(&header, UNKNOWN).build(&("No such object",)),
             },
             (Some(PROPERTIES), Some("Get"), Some(path)) => {
@@ -607,7 +634,7 @@ impl Edge {
     }
 }
 
-/// The call as `calls` lists it: `Connect` or `Disconnect` on `Device1`, a method of `Adapter1` that `DeviceMethod` names, or a `Set` on `Adapter1`.
+/// The call as `calls` lists it: `Connect` or `Disconnect` on `Device1`, a method of `Adapter1` or the monitor manager that `DeviceMethod` names, or a `Set` on `Adapter1`.
 fn record(call: &Message) -> Option<Call> {
     let header = call.header();
     let interface = header.interface().map(InterfaceName::as_str);
@@ -623,6 +650,10 @@ fn record(call: &Message) -> Option<Call> {
         (Some(ADAPTER_INTERFACE), Some("StopDiscovery")) => (DeviceMethod::StopDiscovery, None),
         (Some(ADAPTER_INTERFACE), Some("SetDiscoveryFilter")) => {
             (DeviceMethod::SetDiscoveryFilter, None)
+        }
+        (Some(MANAGER_INTERFACE), Some("RegisterMonitor")) => (DeviceMethod::RegisterMonitor, None),
+        (Some(MANAGER_INTERFACE), Some("UnregisterMonitor")) => {
+            (DeviceMethod::UnregisterMonitor, None)
         }
         // Sample body: ("org.bluez.Adapter1", "Powered", <false>).
         (Some(PROPERTIES), Some("Set")) => {

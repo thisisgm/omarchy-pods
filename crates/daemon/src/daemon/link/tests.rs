@@ -31,12 +31,14 @@ pub(in crate::daemon) fn unread_outlets() -> Outlets {
     let (audio, _unread) = audio::queue();
     let (keys, _unstored) = keys::queue();
     let (media, _unread) = media::queue();
+    let (monitor, _unwatched) = watch::channel(false);
     Outlets {
         notices,
         prefs,
         audio,
         keys,
         media,
+        monitor,
     }
 }
 
@@ -148,6 +150,7 @@ impl Running {
                     requests,
                     connector,
                     unread_outlets(),
+                    None,
                 ));
                 // An error is a dropped `Running`, which stops the driver all the same.
                 asked.await.ok();

@@ -110,7 +110,7 @@ impl Ear {
     pub(super) fn link(&mut self, signal: &Signal, state: &State) {
         match signal {
             Signal::Up { .. } => self.ours = false,
-            Signal::Keys(_) => {}
+            Signal::Down | Signal::Keys(_) => {}
             Signal::Lost { .. } => {
                 self.ours = false;
                 self.settle = None;

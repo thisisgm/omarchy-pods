@@ -38,15 +38,21 @@ pub fn advert_of(
     random: [u8; 3],
 ) -> Advert {
     let [r0, r1, r2] = random;
-    let r0 = (r0 & !ADDRESS_KIND) | RESOLVABLE;
-    let [h0, h1, h2] = hash(&keys.identity, [r2, r1, r0]);
-    let octets = [r0, r1, r2, h2, h1, h0];
-    let address = octets.map(|octet| format!("{octet:02X}")).join(":");
+    let address = address_of(&keys.identity, [(r0 & !ADDRESS_KIND) | RESOLVABLE, r1, r2]);
     let mut data = [0; ADVERT_LEN];
     let (front, back) = data.split_at_mut(HEADER_LEN);
     front.copy_from_slice(&header);
     back.copy_from_slice(&encrypt(&keys.payload, payload));
     Advert { address, data }
+}
+
+/// The address `identity` makes of `random` as written, whatever kind its two top bits name: `random`, then its hash.
+#[must_use]
+pub fn address_of(identity: &[u8; 16], random: [u8; 3]) -> String {
+    let [r0, r1, r2] = random;
+    let [h0, h1, h2] = hash(identity, [r2, r1, r0]);
+    let octets = [r0, r1, r2, h2, h1, h0];
+    octets.map(|octet| format!("{octet:02X}")).join(":")
 }
 
 /// `ah` of `bleutils.cpp`: the low three bytes of `e(k, r')`, `r'` the random part zero padded, all little endian.

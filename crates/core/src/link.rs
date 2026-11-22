@@ -109,6 +109,8 @@ pub enum Action {
 pub enum Signal {
     /// The link entered `Up`.
     Up { device: BdAddr },
+    /// The link left `Up` for any phase but `Stopped`; a later `Lost` carries this step's time as its `down_at`.
+    Down,
     /// The device was reset; `down_at` is when its link last left `Up` since the reset before, `None` if it never came up.
     Lost {
         device: BdAddr,
@@ -210,11 +212,17 @@ impl Machine {
     /// Takes one event at `now` and changes `state` in one go; the driver carries out the actions in order.
     #[must_use]
     pub fn step(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
-        if matches!(self.phase, Phase::Up { .. }) {
+        let was_up = matches!(self.phase, Phase::Up { .. });
+        if was_up {
             self.down_at = now;
         }
         let mut actions = self.written(state, event);
-        actions.extend(self.react(state, event, now));
+        let reacted = self.react(state, event, now);
+        // A shutdown signals nothing, as it signals no `Lost` either.
+        if was_up && !matches!(self.phase, Phase::Up { .. } | Phase::Stopped) {
+            actions.push(Action::Signal(Signal::Down));
+        }
+        actions.extend(reacted);
         actions
     }
 
