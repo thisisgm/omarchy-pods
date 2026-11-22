@@ -41,7 +41,7 @@ use capture::{
     ATT_LOG_NAME, EndReason, HANDLES_NAME, LOG_NAME, Links, MARKS_NAME, Mark, OpenAtt, Outcome,
     Outputs, STOP_TAIL_MS,
 };
-use script::{Opening, Route, ScriptError, ScriptName};
+use script::{Opening, Route, Script, ScriptError, ScriptName, StepsError};
 use store::{Run, Session, StoreError};
 
 /// Bounds the connect: the connect timeout of aacp.rs in librepods-org/librepods pull request 655.
@@ -50,6 +50,10 @@ pub(crate) const CONNECT_TIMEOUT_MS: u64 = 10_000;
 const META_NAME: &str = "meta.txt";
 /// The `tool=` line of `META_NAME`.
 const TOOL: &str = concat!("xtask probe capture ", env!("CARGO_PKG_VERSION"));
+/// The `script=` line of a run that followed a step file.
+const STEPS_SCRIPT: &str = "steps";
+/// The copy of the step file a run keeps, which its step marks cite by line.
+const STEPS_NAME: &str = "steps.txt";
 /// Nanoseconds in the seconds a clock reading is split into.
 const NS_PER_SECOND: u64 = 1_000_000_000;
 /// What would otherwise kill a capture with its uplink running: the two keys, a polite kill, and a terminal or session that went away.
@@ -124,8 +128,11 @@ struct CaptureArgs {
     #[arg(long, default_value_t = Route::Uplink)]
     route: Route,
     /// The script to follow; a name that is not one is answered with the list.
-    #[arg(long)]
-    script: ScriptName,
+    #[arg(long, required_unless_present = "steps")]
+    script: Option<ScriptName>,
+    /// A step file to follow in place of a script, on the dictation route: one write-request, write-command, read, control or wait a line; end it with a wait to keep the last answers.
+    #[arg(long, conflicts_with_all = ["script", "minutes", "no_marker"])]
+    steps: Option<PathBuf>,
     /// How many minutes listen and soak run, 1 to 90; no other script takes it.
     #[arg(long)]
     minutes: Option<u32>,
@@ -163,6 +170,10 @@ enum ProbeError {
     HomeNotText(OsString),
     #[error(transparent)]
     Script(#[from] ScriptError),
+    #[error("{}: {error}", .path.display())]
+    Steps { path: PathBuf, error: StepsError },
+    #[error("pass --script or --steps")]
+    NoScript,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error("could not watch for the signals that end a capture: {0}")]
@@ -272,7 +283,7 @@ fn record(
     host: &mut Host<'_>,
     interrupted: &AtomicBool,
 ) -> Result<Outcome, ProbeError> {
-    let script = script::build(args.script, args.route, args.minutes, !args.no_marker)?;
+    let (script, steps_text) = plan(args)?;
     let script = if args.unchecked {
         script.allow_unchecked(args.route)?
     } else {
@@ -294,20 +305,38 @@ fn record(
         None
     };
     let mut marks = run.create_file(MARKS_NAME)?;
+    // The copy is kept before meta.txt names it.
+    if let Some(text) = &steps_text {
+        let written = run.create_file(STEPS_NAME)?.write_all(text);
+        written.map_err(|source| ProbeError::Write {
+            file: STEPS_NAME,
+            source,
+        })?;
+    }
     let mut meta = run.create_file(META_NAME)?;
     let zero_ns = clock_ns(ClockId::Monotonic);
     let realtime_at_zero_ns = clock_ns(ClockId::Realtime);
     let now_ns = || clock_ns(ClockId::Monotonic).saturating_sub(zero_ns);
-    let script_name = args.script;
+    let script_name: &dyn fmt::Display = match &args.script {
+        Some(name) => name,
+        None => &STEPS_SCRIPT,
+    };
     // A run of the uplink route keeps the three lines it always had.
     let route_line = match args.route {
         Route::Uplink => String::new(),
-        Route::Dictation | Route::Both => format!(
-            "route={}\nno_marker={}\nunchecked={}\n",
-            args.route, args.no_marker, args.unchecked
-        ),
+        Route::Dictation | Route::Both => {
+            // A step file holds its own markers, so its run names the copy it keeps instead.
+            let marker = match &steps_text {
+                Some(_) => format!("steps={STEPS_NAME}"),
+                None => format!("no_marker={}", args.no_marker),
+            };
+            format!(
+                "route={}\n{marker}\nunchecked={}\n",
+                args.route, args.unchecked
+            )
+        }
     };
-    let about = meta_text(&script_name, TOOL, realtime_at_zero_ns) + &route_line;
+    let about = meta_text(script_name, TOOL, realtime_at_zero_ns) + &route_line;
     let written = meta.write_all(about.as_bytes());
     written.map_err(|source| ProbeError::Write {
         file: META_NAME,
@@ -349,6 +378,26 @@ fn record(
         interrupted,
         &now_ns,
     ))
+}
+
+/// The named script, or the one a step file plans with the file's text, read whole before anything is opened.
+fn plan(args: &CaptureArgs) -> Result<(Script, Option<Vec<u8>>), ProbeError> {
+    match (&args.steps, args.script) {
+        (Some(path), _) => {
+            let text = store::read_trace(path, script::MAX_STEPS_FILE_BYTES)?;
+            let events = script::parse_steps(&text).map_err(|error| ProbeError::Steps {
+                path: path.clone(),
+                error,
+            })?;
+            Ok((script::stepped(args.route, events)?, Some(text)))
+        }
+        (None, Some(name)) => {
+            let script = script::build(name, args.route, args.minutes, !args.no_marker)?;
+            Ok((script, None))
+        }
+        // The parser takes one of the two before this runs.
+        (None, None) => Err(ProbeError::NoScript),
+    }
 }
 
 /// Opens the control channel, unless the script opens the attribute channel alone.

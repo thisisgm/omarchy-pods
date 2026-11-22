@@ -20,7 +20,7 @@ use pods_proto::uplink::{self, MicSide};
 use pods_sys::l2cap::{Channel, ChannelError};
 
 use super::dictate::{HANDLE_WALK_TIMEOUT_MS, HandleCheck};
-use super::script::{Action, Opening, Script};
+use super::script::{Action, Opening, Script, StepPacket};
 use att::Asked;
 use guard::{Dictation, Dropped, Session, SideChange, Tail, Uplink};
 use record::Recorder;
@@ -403,11 +403,12 @@ impl Engine<'_, '_> {
     }
 
     fn fire_due(&mut self, now_ns: u64) -> Flow {
+        let script = self.script;
         loop {
             let Phase::Scripted { gate_ns, next } = &mut self.phase else {
                 return Ok(());
             };
-            let Some(event) = self.script.events.get(*next) else {
+            let Some(event) = script.events.get(*next) else {
                 return Ok(());
             };
             let offset_ns = u64::from(event.at_ms).saturating_mul(NS_PER_MS);
@@ -415,11 +416,11 @@ impl Engine<'_, '_> {
                 return Ok(());
             }
             *next = next.saturating_add(1);
-            self.fire(event.action)?;
+            self.fire(&event.action)?;
         }
     }
 
-    fn fire(&mut self, action: Action) -> Flow {
+    fn fire(&mut self, action: &Action) -> Flow {
         match action {
             Action::Start => self.start(),
             Action::Stop => {
@@ -433,7 +434,7 @@ impl Engine<'_, '_> {
                 Ok(record_dropped(self.recorder, self.dropped)?)
             }
             Action::Cue(text) => Ok(self.recorder.cue(self.wires.now(), text)?),
-            Action::SetSide(side) => self.set_side(side),
+            Action::SetSide(side) => self.set_side(*side),
             Action::RestoreSide => {
                 self.side = None;
                 Ok(record_dropped(self.recorder, self.dropped)?)
@@ -442,8 +443,20 @@ impl Engine<'_, '_> {
             Action::MarkIdle => self.mark_idle(),
             Action::DictationStart => self.dictation_start(),
             Action::DictationStop => self.dictation_stop(),
+            Action::Step { line, packet } => self.send_step(*line, packet),
             Action::End => Err(EndReason::ScriptDone),
         }
+    }
+
+    /// Sends a step as it is and marks it with its line, as `line 4 write-request 0x000e`; its answer is logged like any packet.
+    fn send_step(&mut self, line: usize, step: &StepPacket) -> Flow {
+        let (bearer, packet) = match step {
+            StepPacket::Att(att) => (Bearer::Att, att.pdu()),
+            StepPacket::Control(packet) => (Bearer::Accessory, packet.clone()),
+        };
+        let sent = self.wires.link(bearer)?.send(&packet);
+        let text = format_args!("line {line} {step}");
+        Ok(self.recorder.sent(sent, &packet, Mark::Step, &text)?)
     }
 
     fn start(&mut self) -> Flow {

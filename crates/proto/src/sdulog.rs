@@ -127,8 +127,8 @@ fn parse_stamp(stamp: &str) -> Result<u64, LogError> {
     Ok(at_ns)
 }
 
-// Sample input: `0400040058000100`, two lowercase hex digits for each of 1 to MAX_SDU_LEN bytes.
-fn parse_hex(hex: &str) -> Result<Vec<u8>, LogError> {
+/// Sample input: `0400040058000100`, two lowercase hex digits for each of 1 to `MAX_SDU_LEN` bytes.
+pub fn parse_hex(hex: &str) -> Result<Vec<u8>, LogError> {
     if hex.is_empty() {
         return Err(LogError::Empty);
     }

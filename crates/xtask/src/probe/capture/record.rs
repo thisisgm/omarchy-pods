@@ -103,6 +103,8 @@ pub(crate) enum Mark {
     Stopped,
     /// A request the pods made of the host.
     AttRequest,
+    /// A packet of a step file.
+    Step,
     End,
 }
 
@@ -128,6 +130,7 @@ impl Mark {
             Self::Started => "started",
             Self::Stopped => "stopped",
             Self::AttRequest => "att-request",
+            Self::Step => "step",
             Self::End => "end",
         }
     }

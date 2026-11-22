@@ -1,6 +1,6 @@
 //! The dictation microphone stream: Opus frames in ATT notifications, read and built with no I/O.
 
-use crate::att::{AttPdu, HANDLE_VALUE_NOTIFICATION};
+use crate::att::{AttPdu, HANDLE_VALUE_NOTIFICATION, WRITE_COMMAND};
 use crate::error::{ParseError, Parser};
 
 // Every byte and layout here was seen between a Mac and one pair of AirPods, none from Linux.
@@ -20,9 +20,9 @@ pub const SESSION_IDLE: [u8; 11] = [
 ];
 
 /// ATT Write Command to `START_HANDLE` that asks the pods to start the stream.
-pub const START: [u8; 5] = [0x52, 0x07, 0x00, 0x01, 0x00];
+pub const START: [u8; 5] = [WRITE_COMMAND, 0x07, 0x00, 0x01, 0x00];
 /// ATT Write Command to `STOP_HANDLE` that asks the pods to stop the stream.
-pub const STOP: [u8; 6] = [0x52, 0x0a, 0x00, 0x01, 0x00, 0x00];
+pub const STOP: [u8; 6] = [WRITE_COMMAND, 0x0a, 0x00, 0x01, 0x00, 0x00];
 /// The pods' answer to `START`; nobody can read its value, so it is compared whole.
 pub const STARTED: [u8; 15] = [
     0x1b, 0x10, 0x00, 0x01, 0x00, 0x02, 0x08, 0x00, 0x00, 0x80, 0xbf, 0x00, 0x00, 0x00, 0x00,

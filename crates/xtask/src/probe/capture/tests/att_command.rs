@@ -33,7 +33,8 @@ pub(super) fn soak_args(run: &str, no_marker: bool) -> CaptureArgs {
         stamp: STAMP.to_owned(),
         run: run.to_owned(),
         route: Route::Dictation,
-        script: ScriptName::Soak,
+        script: Some(ScriptName::Soak),
+        steps: None,
         minutes: Some(1),
         no_marker,
         unchecked: false,
@@ -92,7 +93,8 @@ fn knock_args(run: &str) -> CaptureArgs {
         stamp: STAMP.to_owned(),
         run: run.to_owned(),
         route: Route::Dictation,
-        script: ScriptName::AttKnock,
+        script: Some(ScriptName::AttKnock),
+        steps: None,
         minutes: None,
         no_marker: false,
         unchecked: false,
@@ -459,7 +461,8 @@ fn the_att_map_command_dials_the_attribute_psm_alone_and_writes_the_table() {
     let never = Arc::new(AtomicBool::new(false));
     let transcript = pods::spawn_on(None, Some(far), Pods::default(), never);
     let args = CaptureArgs {
-        script: ScriptName::AttMap,
+        script: Some(ScriptName::AttMap),
+        steps: None,
         ..knock_args("map-1")
     };
     let ran = run_dialled(home.path(), vec![(ATT_PSM, near)], move |host| {
@@ -498,7 +501,8 @@ fn a_capture_of_both_routes_dials_both_channels_and_stops_what_it_started() {
     let home = home_with_device();
     let args = CaptureArgs {
         route: Route::Both,
-        script: ScriptName::Both,
+        script: Some(ScriptName::Both),
+        steps: None,
         minutes: None,
         ..soak_args("both-1", false)
     };

@@ -13,7 +13,8 @@ pub const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
 const OPCODE_LEN: usize = 2;
 const OPCODE_BATTERY: u16 = 0x0004;
 const OPCODE_EAR: u16 = 0x0006;
-const OPCODE_CONTROL: u16 = 0x0009;
+/// The opcode of a control command, which sets or reports one setting.
+pub const OPCODE_CONTROL: u16 = 0x0009;
 const OPCODE_METADATA: u16 = 0x001d;
 const OPCODE_PROXIMITY_KEYS: u16 = 0x0031;
 const OPCODE_UPLINK: u16 = 0x0058;

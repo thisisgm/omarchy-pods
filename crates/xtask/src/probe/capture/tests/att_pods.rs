@@ -20,6 +20,16 @@ const FORMAT_SHORT: u8 = 0x01;
 pub(super) const READ_BY_TYPE: u8 = 0x08;
 /// The opcode of a Read By Type response.
 const READ_BY_TYPE_RESPONSE: u8 = 0x09;
+/// The opcode of a Write Response, which carries nothing more.
+pub(super) const WRITE_RESPONSE: u8 = 0x13;
+/// The opcode of a Read Response, which the value follows.
+pub(super) const READ_RESPONSE: u8 = 0x0b;
+/// The value of every attribute they are asked to read.
+pub(super) const READ_VALUE: [u8; 2] = [0x5a, 0xa5];
+/// The error code of a refused write (Vol 3, Part F, 3.4.1.1).
+pub(super) const WRITE_NOT_PERMITTED: u8 = 0x03;
+/// The error code of a refused read.
+pub(super) const READ_NOT_PERMITTED: u8 = 0x02;
 /// The length of each declaration in a reply: its handle, the property byte, the value handle and a 16 bit type.
 const DECLARATION_LEN: u8 = 0x07;
 /// How many attributes they list in one reply unless a test says otherwise, so a walk of the table takes several requests.
@@ -86,6 +96,8 @@ pub(super) struct AttPods {
     pub(super) hang_up_after: Option<u32>,
     /// The number of such packets at which they hang up the control channel.
     pub(super) hang_up_control_after: Option<u32>,
+    /// The handles whose write requests and read requests they answer with an error response.
+    pub(super) refused: Vec<u16>,
 }
 
 impl Default for AttPods {
@@ -104,8 +116,31 @@ impl Default for AttPods {
             interrupt_after: None,
             hang_up_after: None,
             hang_up_control_after: None,
+            refused: Vec::new(),
         }
     }
+}
+
+/// The response to a write request or a read request, as `13` answers `12 19 00 01 00`, or the error response for a refused handle.
+fn request_reply(part: &AttPods, pdu: &[u8]) -> Option<Vec<u8>> {
+    let (opcode, refusal, reply) = match pdu {
+        [att::WRITE_REQUEST, ..] => (
+            att::WRITE_REQUEST,
+            WRITE_NOT_PERMITTED,
+            vec![WRITE_RESPONSE],
+        ),
+        [att::READ_REQUEST, ..] => (
+            att::READ_REQUEST,
+            READ_NOT_PERMITTED,
+            [&[READ_RESPONSE][..], &READ_VALUE].concat(),
+        ),
+        _ => return None,
+    };
+    let handle = u16::from_le_bytes([*pdu.get(1)?, *pdu.get(2)?]);
+    if part.refused.contains(&handle) {
+        return Some(att::error_response(opcode, handle, refusal).to_vec());
+    }
+    Some(reply)
 }
 
 /// Up to `page` attributes of `table` from `start`, as `05 01 07 00 2a 2b` lists 0x0007, or the error that ends it.
@@ -183,6 +218,9 @@ impl AttState {
             }
             self.stopped_due = Instant::now().checked_add(part.stopped_after);
             return Vec::new();
+        }
+        if let Some(reply) = request_reply(part, pdu) {
+            return vec![reply];
         }
         let Some(table) = &part.table else {
             return Vec::new();
