@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 /// The installed daemon's unit, stopped for the run and restored after it.
 pub(crate) const INSTALLED: &str = "librepods.service";
 
+/// The installed client under the home directory, which C3 and C9 run.
+const INSTALLED_CTL: &str = ".local/bin/librepods-ctl";
+
 /// The transient unit the binary under test runs in.
 pub(crate) const UNDER_TEST: &str = "librepods-hw.service";
 
@@ -58,6 +61,13 @@ impl Ran {
     pub(crate) fn succeeded(&self) -> bool {
         self.status.success()
     }
+}
+
+pub(crate) fn installed_ctl(home: &OsStr) -> String {
+    Path::new(home)
+        .join(INSTALLED_CTL)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Waits `duration` on the calling thread; xtask has no clock to inject.

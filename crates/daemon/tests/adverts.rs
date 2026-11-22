@@ -14,13 +14,13 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_fake::Profile;
-    use pods_samples::advert::{Advert, HEADER_LEN, Keys, SEALED_LEN, advert_of};
-    use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
+    use pods_samples::advert::{HEADER_LEN, SEALED_LEN, advert_of};
     use pods_trap::Answer;
     use rustix::io::Errno;
     use serde_json::{Value, json};
     use zbus::OwnedVariant;
 
+    use super::support::advert::{HEADER, PAYLOAD, RANDOM, keyed, keys, ours};
     use super::support::bluez::monitor::{Registered, manager_call, registration};
     use super::support::bluez::{Call, DeviceMethod};
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
@@ -30,21 +30,13 @@ mod tests {
     use super::support::sleep::logged;
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for};
 
-    /// Paired AirPods Pro 3: the left bud primary and in the case, the right one in an ear, the case at 70 percent and charging, the lid open.
-    const HEADER: [u8; HEADER_LEN] = [
-        0x07, 0x19, 0x01, 0x27, 0x20, 0x62, 0x88, 0x47, 0x00, 0x00, 0x04,
-    ];
     /// The same pods with the case at 10 percent and not charging.
     const LOW_CASE_HEADER: [u8; HEADER_LEN] = [
         0x07, 0x19, 0x01, 0x27, 0x20, 0x62, 0x88, 0x01, 0x00, 0x00, 0x04,
     ];
-    /// Primary 80 charging, secondary 60, case 40, then twelve zero bytes.
-    const PAYLOAD: [u8; SEALED_LEN] = [0x00, 0xd0, 0x3c, 0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     /// The primary byte of 75 percent and charging.
     const PRIMARY_75_CHARGING: u8 = 0xcb;
     const PRIMARY_AT: usize = 1;
-    /// The synthetic random part of every advert address, made resolvable by `advert_of`.
-    const RANDOM: [u8; 3] = [0x40, 0x00, 0x01];
     const OTHER_IDENTITY: [u8; 16] = [0x11; 16];
     /// The most an advert may take to reach `librepods status`, polling included.
     const SEEN_WITHIN: Duration = Duration::from_secs(1);
@@ -78,25 +70,6 @@ mod tests {
     /// The adverts timed one by one, for the range of an advert to a surface.
     const TIMED: u8 = 5;
     const APPLE_PATTERN: (u8, u8, [u8; 3]) = (0, 0xff, [0x4c, 0x00, 0x07]);
-
-    fn keys(identity: [u8; 16]) -> Keys {
-        Keys {
-            identity,
-            payload: PAYLOAD_KEY,
-        }
-    }
-
-    fn ours(header: [u8; HEADER_LEN], payload: [u8; SEALED_LEN]) -> Advert {
-        advert_of(header, payload, &keys(IDENTITY_KEY), RANDOM)
-    }
-
-    /// The rig with the keys stored and the manager served on its adapter; no daemon yet.
-    fn keyed() -> Rig {
-        let rig = Rig::new();
-        rig.session().store_sample_keys();
-        rig.bluez().add_monitor_manager(rig.adapter());
-        rig
-    }
 
     /// Started, and the monitor read by the fake BlueZ.
     fn listening() -> Rig {

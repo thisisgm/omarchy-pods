@@ -21,7 +21,7 @@ holds the AirPods.
   ```
 
 - The installed `librepods-ctl` under `~/.local/bin`, which check C3 compares
-  against.
+  against and check C9 reads the installed daemon's line with.
 
 Then, on that machine:
 
@@ -78,11 +78,25 @@ once more in the adapter check with `--adapter-cycle`.
 | C1 adoption | restarts the unit 10 times with the AirPods connected | each restart reaches a populated state |
 | C2 stop | stops the unit with the link up | the unit is inactive within 1 s, the socket and state file are gone, and BlueZ still holds the device |
 | C3 same contract | reads `librepods status` and the installed `librepods-ctl status` | the keys are exactly the status document's, and both print the same line |
+| C9 old line | reads the status line of the installed daemon before it is stopped, then the Rust daemon's on the same pods | every one of the C++ daemon's 36 keys is present in both (the Rust daemon's line adds 3, for 39), and each key outside the list below has byte equal values |
 | C4 reconnect | `do disconnect` then `do connect`, 5 times | `connected` is false within 5 s and the state is populated again within 15 s |
 | C5 idle | 10 minutes with the link up, then 10 minutes after `do disconnect` | the daemon's wakeups stay within the bounds below and the adapter is never discovering |
 | C6 commands | each command of the census 10 times, then one with no bud in (`--attended`) | every command answers its expected word 10 of 10 (`confirmed`, or `sent` for the adaptive level, which alternates between 40 and 60 so each trial is a write), and the last answers `not_worn` |
 | C7 adapter | `bluetoothctl power off`, `power on`, `do connect` (`--adapter-cycle`) | `connected` is true before and false after power off, and the state is populated again |
 | C8 burst | opens the AirPods' control channel once, runs the opening exchange and reads for 3 s after the notification request | the distinct opcodes and the distinct setting identifiers equal those of the sample burst the test suite's fake AirPods play, and every packet parses |
+
+C9 runs when the installed daemon is the C++ one, which its line shows by
+carrying none of the three keys the Rust daemon adds. Otherwise, or when
+`librepods.service` was not running, it reports `skipped` with the reason,
+which does not fail the run. It prints each key with `equal`, `differs`,
+`only new` or `only old`, and the byte length of each line, never a value.
+The keys allowed to differ are the `*_total` counters, which count each
+daemon's own calls, the three added keys, and `left`, `right`, `case`,
+`headset` and `lid_state`, which follow the AirPods between the two reads.
+`device_name` must hold the same bytes in both, so when the pods' name holds
+U+2019 the check shows both daemons write it the same way; a name without it
+tests nothing about that mark. Both lines are kept only as files of mode 0600
+in the run's private directory, which the run removes when it ends.
 
 C8 runs on every invocation, last, after `librepods-hw` has stopped and
 before `librepods.service` is started again, so only one program holds a

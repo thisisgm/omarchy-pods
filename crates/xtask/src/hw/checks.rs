@@ -3,7 +3,6 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use pods_core::link::STATE_POPULATED_LINE;
@@ -150,12 +149,11 @@ pub(crate) fn same_contract(lab: &Lab<'_>) -> Check {
         Err(error) => Err(error),
     };
     let before = line("librepods", lab.librepods(&["status"], STATUS_TIMEOUT));
-    let ctl_path = Path::new(lab.home).join(".local/bin/librepods-ctl");
     let run_dir = lab.run_dir();
     let ctl = line(
         "librepods-ctl",
         run(
-            &ctl_path.to_string_lossy(),
+            &unit::installed_ctl(lab.home),
             &[OsStr::new("status")],
             &[("XDG_RUNTIME_DIR", run_dir.as_os_str())],
             STATUS_TIMEOUT,

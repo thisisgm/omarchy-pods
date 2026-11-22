@@ -1,5 +1,6 @@
 //! The temp session, the daemon process and the waits that the tests against the built binary share.
 
+pub(crate) mod advert;
 pub(crate) mod audio;
 pub(crate) mod bluez;
 pub(crate) mod bus;

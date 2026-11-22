@@ -12,6 +12,7 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
+    use super::support::advert::keyed;
     use super::support::bluez::Call;
     use super::support::bluez::monitor::registration;
     use super::support::rig::Rig;
@@ -29,9 +30,7 @@ mod tests {
 
     /// Started with the keys stored and the manager served on its adapter, the monitor registered once.
     fn listening() -> Rig {
-        let mut rig = Rig::new();
-        rig.session().store_sample_keys();
-        rig.bluez().add_monitor_manager(rig.adapter());
+        let mut rig = keyed();
         rig.start();
         wait_registered(&rig, 1);
         rig

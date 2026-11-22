@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use pods_core::link::STATE_POPULATED_LINE;
 use serde_json::{Map, Value};
 
+use super::old_line::Installed;
 use super::system::{Waited, bluez, find, journal_cursor, wait_for_entries};
 use super::unit::{self, POLL_INTERVAL, pause, run};
 use super::{Interrupted, stopped};
@@ -32,6 +33,8 @@ pub(crate) struct Lab<'a> {
     pub(crate) uid: u32,
     pub(crate) home: &'a OsStr,
     pub(crate) idle_window: Duration,
+    /// What the installed daemon showed before the run stopped it, for C9.
+    pub(crate) installed: Installed,
     device: String,
     adapter: String,
     /// A `do disconnect` was sent and no `do connect` has succeeded since.
@@ -54,6 +57,7 @@ impl<'a> Lab<'a> {
         uid: u32,
         home: &'a OsStr,
         idle_window: Duration,
+        installed: Installed,
     ) -> Self {
         Self {
             binary,
@@ -61,6 +65,7 @@ impl<'a> Lab<'a> {
             uid,
             home,
             idle_window,
+            installed,
             device: String::new(),
             adapter: String::new(),
             disconnect_sent: Cell::new(false),
