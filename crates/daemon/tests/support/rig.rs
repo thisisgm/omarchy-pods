@@ -382,6 +382,19 @@ impl Rig {
         })
     }
 
+    /// Asks `librepods status` for `duration`, failing at the first answer where `check` does not hold.
+    pub(crate) fn holds_for(&self, duration: Duration, what: &str, check: impl Fn(&Value) -> bool) {
+        let started = Instant::now();
+        while started.elapsed() < duration {
+            let status = self.status();
+            assert!(
+                check(&status),
+                "{what} ended after {:?}: {status}",
+                started.elapsed()
+            );
+        }
+    }
+
     /// Waits for the link up and the pods' name in the status, which the burst brings after the batteries and the ears.
     pub(crate) fn wait_filled(&self) -> Value {
         self.wait_status("the link up and the pods' name", |status| {
@@ -426,8 +439,7 @@ impl Rig {
                         daemon.log()
                     );
                 }
-                kill_process(daemon.pid(), Signal::TERM).unwrap();
-                let status = daemon.wait_exit();
+                let status = daemon.stop();
                 assert!(
                     status.success(),
                     "the daemon exited with {status}: {}",
