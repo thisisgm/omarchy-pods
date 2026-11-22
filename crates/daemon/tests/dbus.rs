@@ -22,13 +22,13 @@ mod tests {
     use zbus::{Connection, MessageStream, OwnedVariant};
 
     use super::support::bus::{
-        BUS_NAME, CONVERSATION_LIMIT, INTERFACE, OBJECT_PATH, bus_address, changes_rule,
-        owned_connection, start_bus, start_daemon,
+        BUS_NAME, CONVERSATION_LIMIT, INTERFACE, Listener, NO_SESSION_LOG, OBJECT_PATH,
+        bus_address, changes_rule, owned_connection, start_bus, start_daemon,
     };
     use super::support::players::PROPERTIES;
     use super::support::{BINARY, HANG_LIMIT, Session, log_lines, wait_for};
 
-    /// How the daemon's line about a missing bus or a taken name starts, from `serve` in `src/daemon/dbus.rs`.
+    /// How the daemon's line about a taken name starts, from `serve` in `src/daemon/dbus.rs`.
     const NO_BUS_LOG: &str =
         "D-Bus interface off: cannot own io.github.thisisgm.Omapods on the session bus:";
 
@@ -97,6 +97,28 @@ mod tests {
             assert_eq!(name.as_str(), format!("{INTERFACE}.Error.{name_wanted}"));
             assert_eq!(message.as_deref(), Some(refusal.message()), "{level}");
         }
+    }
+
+    /// Whether the daemon of process `pid` answers at its object on a unique name, failing if it has no connection.
+    fn answers_at_its_object(asker: &Listener, pid: u32) -> bool {
+        let names: Vec<String> = asker.ask_bus("ListNames", &());
+        let theirs: Vec<String> = names
+            .into_iter()
+            .filter(|name| name.starts_with(':'))
+            .filter(|name| {
+                asker.ask_bus::<u32>("GetConnectionUnixProcessID", &name.as_str()) == pid
+            })
+            .collect();
+        assert!(
+            !theirs.is_empty(),
+            "process {pid} has no connection on the bus"
+        );
+        let version = (INTERFACE, "ApiVersion");
+        theirs.iter().any(|name| {
+            asker
+                .call(name, OBJECT_PATH, PROPERTIES, "Get", &version)
+                .is_ok()
+        })
     }
 
     fn text(value: &OwnedVariant) -> String {
@@ -189,6 +211,15 @@ mod tests {
             other.log().contains(&taken).then_some(())
         });
         assert!(second.status().starts_with('{'));
+        // One connection asks both, so none of the test's own leaves between a listing and its process queries.
+        let asker = Listener::subscribe(&address, changes_rule().as_str());
+        assert!(
+            answers_at_its_object(&asker, daemon.child.id()),
+            "{}",
+            daemon.log()
+        );
+        let pid = other.child.id();
+        assert!(!answers_at_its_object(&asker, pid), "{}", other.log());
         assert_eq!(other.stop().code(), Some(0));
         let log = other.log();
         assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
@@ -213,15 +244,15 @@ mod tests {
             let status = session.status();
             assert_eq!(status, fs::read_to_string(session.state_file()).unwrap());
             wait_for("the bus line", || {
-                daemon.log().contains(NO_BUS_LOG).then_some(())
+                daemon.log().contains(NO_SESSION_LOG).then_some(())
             });
             assert_eq!(session.send(b"ear:off"), b"");
             assert_ne!(session.status(), status);
             assert_eq!(daemon.stop().code(), Some(0));
             let log = daemon.log();
             assert_eq!(log_lines(&log).len(), 2, "{log}");
-            assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
-            let unreachable = format!("{NO_BUS_LOG} {CONNECT_FAILED} `{address}`:");
+            assert_eq!(log.matches(NO_SESSION_LOG).count(), 1, "{log}");
+            let unreachable = format!("{NO_SESSION_LOG} {CONNECT_FAILED} `{address}`:");
             assert!(log.contains(&unreachable), "{log}");
             assert!(log.ends_with("SIGTERM received, stopping\n"), "{log}");
         }

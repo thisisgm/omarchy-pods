@@ -43,6 +43,11 @@ pub const MEDIA_CONTROLLER: CppHeader = CppHeader {
     text: include_str!("../../../daemon/media/mediacontroller.h"),
 };
 
+pub const MEDIA_CONTROLLER_SOURCE: CppHeader = CppHeader {
+    path: "daemon/media/mediacontroller.cpp",
+    text: include_str!("../../../daemon/media/mediacontroller.cpp"),
+};
+
 pub const BLE_MANAGER: CppHeader = CppHeader {
     path: "daemon/ble/blemanager.h",
     text: include_str!("../../../daemon/ble/blemanager.h"),

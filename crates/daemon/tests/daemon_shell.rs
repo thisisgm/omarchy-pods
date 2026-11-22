@@ -25,6 +25,7 @@ mod tests {
     use rustix::fs::{CWD, Mode, OFlags, mkfifoat, open};
     use rustix::process::{Signal, kill_process};
 
+    use super::support::bus::NO_SESSION_LOG;
     use super::support::{
         BINARY, Daemon, HANG_LIMIT, Session, log_lines, pause, read_to_close, wait_for, wait_within,
     };
@@ -71,10 +72,6 @@ mod tests {
     /// SIGTERM is signal 15, so bit 14 of a signal mask in `/proc/<pid>/status`.
     const SIGTERM_BIT: u64 = 1 << 14;
 
-    /// How the daemon's line about a missing session bus starts, from `serve` in `src/daemon/dbus.rs`.
-    const NO_BUS_LOG_PREFIX: &str =
-        "D-Bus interface off: cannot own io.github.thisisgm.Omapods on the session bus:";
-
     /// The level the adaptive verb sends.
     const ADAPTIVE_VERB: &str = "adaptive:37";
 
@@ -118,7 +115,7 @@ mod tests {
     /// The log without the daemon's lines about its missing buses, which these tests never give it.
     fn log_without_the_bus_lines(log: &str) -> Vec<&str> {
         let mut lines = log_lines(log);
-        lines.retain(|line| !line.starts_with(NO_BUS_LOG_PREFIX));
+        lines.retain(|line| !line.starts_with(NO_SESSION_LOG));
         lines
     }
 

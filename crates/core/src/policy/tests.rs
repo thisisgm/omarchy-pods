@@ -1,20 +1,22 @@
-//! Support tests: the disconnect notice rule, the low battery latch, and their text and numbers pinned to the C++ daemon's.
+//! Support tests: the disconnect notice rule, the low battery latch, the ear rules, and their text and numbers pinned to the C++ daemon's.
 
 use std::time::Duration;
 
-use cpp_source::{LOW_BATTERY, MAIN, NOTIFIER};
+use cpp_source::{LOW_BATTERY, MAIN, MEDIA_CONTROLLER_SOURCE, NOTIFIER};
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
+use pods_proto::ear::EarReport;
 use pods_proto::keys::{Key, ProximityKeys};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
 
-use super::audio::AudioRequest;
+use super::audio::{AudioFact, AudioRequest, Percent, SinkFact};
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
+use super::ear::{BOTH_OUT_SETTLE_MS, BUS_NAME_MAX};
 use super::notices::{Notice, Part, disconnected};
 use super::sleep::{RESUME_SETTLE_MS, Suspend};
-use super::{Effect, Fact, Policy, SleepEdge};
+use super::{Effect, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge};
 use crate::link::Signal;
-use crate::state::State;
+use crate::state::{EarDetectionBehavior, LidState, State};
 
 /// What every lost link asks of the audio adapter, whatever the notices do.
 const UNFOLLOW: Effect = Effect::Audio(AudioRequest::Follow(None));
@@ -332,5 +334,304 @@ fn every_reply_goes_to_the_writer() {
         let reply = Fact::Link(Signal::Keys(keys.clone()));
         let effects = policy.step(&State::default(), reply, Duration::ZERO);
         assert_eq!(effects, [Effect::StoreKeys(keys.clone())]);
+    }
+}
+
+/// The time between two steps of an ear row.
+const STEP_MS: u64 = 100;
+
+/// When both buds leave in the settle tests.
+const OUT_AT_MS: u64 = 100;
+
+/// A later change that leaves both buds out.
+const LATER_AT_MS: u64 = 900;
+
+/// A wake from suspend inside the settle.
+const WOKE_AT_MS: u64 = 200;
+
+/// One step of an ear row, each `STEP_MS` after the last.
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    /// Primary then secondary, true for in an ear.
+    Report(bool, bool),
+    Prefer(EarDetectionBehavior),
+    /// The adapter reports `PLAYER` paused.
+    Paused,
+    Up,
+    /// The clock moves to the end of the pending settle.
+    Settle,
+    Lost,
+    /// The pods' sink becomes the default.
+    Ours,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asks {
+    PauseAll,
+    PlayPlayer,
+}
+
+const ONE: EarDetectionBehavior = EarDetectionBehavior::PauseWhenOneRemoved;
+const BOTH: EarDetectionBehavior = EarDetectionBehavior::PauseWhenBothRemoved;
+const OFF: EarDetectionBehavior = EarDetectionBehavior::Disabled;
+const IN: Step = Step::Report(true, true);
+const ONE_OUT: Step = Step::Report(true, false);
+/// One bud out as `ONE_OUT`, reported after the other bud became the primary.
+const OTHER_OUT: Step = Step::Report(false, true);
+const OUT: Step = Step::Report(false, false);
+const PAUSED: Step = Step::Paused;
+const UP: Step = Step::Up;
+const SETTLED: Step = Step::Settle;
+const LOST: Step = Step::Lost;
+const SINK_OURS: Step = Step::Ours;
+const PAUSE: Asks = Asks::PauseAll;
+const PLAY: Asks = Asks::PlayPlayer;
+const OURS: bool = true;
+const ELSEWHERE: bool = false;
+const PLAYER: &str = ":1.42";
+
+/// Preference, whose sink is the default, the steps, what they ask at once, what the settle's end asks, players still remembered.
+type EarRow = (
+    EarDetectionBehavior,
+    bool,
+    &'static [Step],
+    &'static [Asks],
+    &'static [Asks],
+    usize,
+);
+
+#[rustfmt::skip]
+const EAR_ROWS: [EarRow; 38] = [
+    (OFF, OURS, &[IN, ONE_OUT, OUT], &[], &[], 0),
+    (OFF, OURS, &[IN, OUT, PAUSED, IN], &[], &[], 0),
+    (OFF, OURS, &[IN, PAUSED], &[], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT], &[PAUSE], &[], 0),
+    (ONE, OURS, &[IN, OUT], &[PAUSE], &[], 0),
+    (ONE, ELSEWHERE, &[IN, ONE_OUT], &[], &[], 0),
+    (ONE, OURS, &[ONE_OUT], &[], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, OTHER_OUT], &[PAUSE], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, IN], &[PAUSE, PLAY], &[], 0),
+    (ONE, OURS, &[IN, OUT, PAUSED, ONE_OUT], &[PAUSE], &[], 1),
+    (ONE, ELSEWHERE, &[IN, ONE_OUT, PAUSED, IN], &[], &[], 0),
+    (ONE, ELSEWHERE, &[IN, ONE_OUT, PAUSED, IN, SINK_OURS, ONE_OUT, IN], &[PAUSE], &[], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT], &[], &[], 0),
+    (ONE, OURS, &[IN, PAUSED], &[PLAY], &[], 0),
+    (BOTH, OURS, &[IN, OUT], &[], &[PAUSE], 0),
+    (BOTH, ELSEWHERE, &[IN, OUT], &[], &[], 0),
+    (BOTH, OURS, &[IN, ONE_OUT], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, PAUSED, ONE_OUT], &[PLAY], &[], 0),
+    (BOTH, OURS, &[IN, OUT, PAUSED, IN], &[PLAY], &[], 0),
+    (BOTH, OURS, &[IN, OUT, Step::Prefer(ONE)], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, PAUSED, Step::Prefer(OFF)], &[], &[], 1),
+    (BOTH, OURS, &[IN, OUT, PAUSED, Step::Prefer(OFF), IN, Step::Prefer(ONE), ONE_OUT, IN], &[PAUSE], &[], 0),
+    (BOTH, OURS, &[IN, OUT, PAUSED, LOST], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, LOST, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, LOST, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SETTLED, PAUSED, Step::Prefer(OFF), IN, Step::Prefer(BOTH), OUT, IN], &[PAUSE], &[], 0),
+    (BOTH, ELSEWHERE, &[IN, OUT, PAUSED, IN, SINK_OURS, ONE_OUT, OUT, IN], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SETTLED, PAUSED, Step::Prefer(OFF), ONE_OUT, Step::Prefer(BOTH), OUT, SETTLED, ONE_OUT], &[PAUSE, PAUSE], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, Step::Prefer(BOTH), OUT, SETTLED, IN], &[PAUSE, PAUSE, PLAY], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, OUT, ONE_OUT, OUT, IN], &[PAUSE, PAUSE, PAUSE, PLAY], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SETTLED, PAUSED, Step::Prefer(OFF), ONE_OUT, IN, Step::Prefer(BOTH), OUT, SETTLED, IN], &[PAUSE, PAUSE], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SETTLED, PAUSED, Step::Prefer(OFF), IN, Step::Prefer(BOTH), OUT, SETTLED, IN], &[PAUSE, PAUSE], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, LOST, PAUSED], &[PAUSE], &[], 0),
+    (BOTH, ELSEWHERE, &[IN, OUT, PAUSED, ONE_OUT, Step::Prefer(ONE), SINK_OURS, IN], &[], &[], 0),
+    (ONE, OURS, &[IN, OUT, PAUSED, Step::Prefer(OFF), ONE_OUT, Step::Prefer(ONE), IN], &[PAUSE], &[], 0),
+    (ONE, OURS, &[IN, OUT, Step::Prefer(OFF), ONE_OUT, Step::Prefer(ONE), PAUSED, OUT, IN], &[PAUSE, PAUSE, PLAY], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, Step::Prefer(BOTH), IN, OUT, SETTLED, IN], &[PAUSE, PLAY, PAUSE], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, Step::Prefer(OFF), IN, Step::Prefer(ONE), ONE_OUT, IN], &[PAUSE, PAUSE], &[], 0),
+];
+
+fn player() -> PlayerOwner {
+    PlayerOwner::new(PLAYER).unwrap()
+}
+
+fn asks(effects: Vec<Effect>) -> Vec<Asks> {
+    let mut asked = Vec::new();
+    for effect in effects {
+        match effect {
+            Effect::Media(MediaRequest::PauseAll) => asked.push(PAUSE),
+            Effect::Media(MediaRequest::Play(players)) => {
+                assert_eq!(players, [player()]);
+                asked.push(PLAY);
+            }
+            Effect::Notify(_) | Effect::Wake | Effect::Audio(_) | Effect::StoreKeys(_) => {}
+        }
+    }
+    asked
+}
+
+fn sink(is_default: bool) -> Fact {
+    let volume = Percent::FULL;
+    Fact::Audio(AudioFact::Sink(Some(SinkFact { is_default, volume })))
+}
+
+/// Runs a row's steps on a linked state, then the clock to the settle's end if one is pending.
+fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
+    let (behavior, ours, steps, ..) = row;
+    let mut policy = Policy::default();
+    let mut state = State {
+        connected: true,
+        ear_detection_behavior: behavior,
+        ..State::default()
+    };
+    let mut now = Duration::ZERO;
+    let mut at_once = asks(policy.step(&state, Fact::Changed, now));
+    at_once.extend(asks(policy.step(&state, sink(ours), now)));
+    for &step in steps {
+        now = now.saturating_add(Duration::from_millis(STEP_MS));
+        let fact = match step {
+            Step::Report(primary, secondary) => {
+                state.ear = EarReport::from_in_ear(primary, secondary);
+                Fact::Changed
+            }
+            Step::Prefer(behavior) => {
+                state.ear_detection_behavior = behavior;
+                Fact::Changed
+            }
+            Step::Paused => Fact::Paused(vec![player()]),
+            Step::Ours => sink(OURS),
+            Step::Settle => {
+                now = policy.deadline().expect("a settle pending");
+                Fact::Tick
+            }
+            Step::Up => {
+                let up = Signal::Up { device: device() };
+                at_once.extend(asks(policy.step(&state, Fact::Link(up), now)));
+                Fact::Changed
+            }
+            Step::Lost => {
+                state.reset_device();
+                state.connected = false;
+                let down_at = Some(now);
+                let lost = Signal::Lost {
+                    device: device(),
+                    down_at,
+                };
+                at_once.extend(asks(policy.step(&state, Fact::Link(lost), now)));
+                Fact::Changed
+            }
+        };
+        at_once.extend(asks(policy.step(&state, fact, now)));
+    }
+    let mut at_settle = Vec::new();
+    if let Some(at) = policy.deadline() {
+        let before = at.saturating_sub(Duration::from_millis(1));
+        assert_eq!(asks(policy.step(&state, Fact::Tick, before)), []);
+        at_settle = asks(policy.step(&state, Fact::Tick, at));
+        assert_eq!(policy.deadline(), None);
+    }
+    (at_once, at_settle, policy.ear.paused.len())
+}
+
+#[test]
+fn every_ear_row_asks_what_it_names() {
+    for row in EAR_ROWS {
+        let (.., at_once, at_settle, remembered) = row;
+        let ran = run_ear_row(row);
+        assert_eq!(
+            ran,
+            (at_once.to_vec(), at_settle.to_vec(), remembered),
+            "{row:?}"
+        );
+    }
+}
+
+#[test]
+fn the_settle_ends_at_its_first_both_out_report_and_is_the_cpp_daemons() {
+    let source = MEDIA_CONTROLLER_SOURCE.find(None, "bothPodsOutSettleMs = ", ';');
+    assert_eq!(source, BOTH_OUT_SETTLE_MS.to_string());
+    let mut policy = Policy::default();
+    let mut state = State {
+        connected: true,
+        ear_detection_behavior: BOTH,
+        ..State::default()
+    };
+    let at = Duration::from_millis;
+    state.ear = EarReport::from_in_ear(true, true);
+    assert_eq!(policy.step(&state, Fact::Changed, at(0)), []);
+    state.ear = EarReport::from_in_ear(false, false);
+    assert_eq!(policy.step(&state, Fact::Changed, at(OUT_AT_MS)), []);
+    // A change that leaves both buds out must not move the settle.
+    state.lid_state = LidState::Open;
+    assert_eq!(policy.step(&state, Fact::Changed, at(LATER_AT_MS)), []);
+    assert_eq!(policy.deadline(), Some(at(OUT_AT_MS + BOTH_OUT_SETTLE_MS)));
+}
+
+#[test]
+fn the_settle_and_a_suspend_window_each_end_at_their_own_deadline() {
+    let mut policy = Policy::default();
+    let mut state = State {
+        connected: true,
+        ear_detection_behavior: BOTH,
+        ..State::default()
+    };
+    let at = Duration::from_millis;
+    assert_eq!(policy.step(&state, sink(OURS), at(0)), []);
+    state.ear = EarReport::from_in_ear(true, true);
+    assert_eq!(policy.step(&state, Fact::Changed, at(0)), []);
+    state.ear = EarReport::from_in_ear(false, false);
+    assert_eq!(policy.step(&state, Fact::Changed, at(OUT_AT_MS)), []);
+    let woke = Fact::Sleep(SleepEdge::Woke);
+    assert_eq!(policy.step(&state, woke, at(WOKE_AT_MS)), []);
+    let settled = at(OUT_AT_MS + BOTH_OUT_SETTLE_MS);
+    let closes = at(WOKE_AT_MS + RESUME_SETTLE_MS);
+    assert_eq!(policy.deadline(), Some(settled));
+    let pause_all = Effect::Media(MediaRequest::PauseAll);
+    assert_eq!(policy.step(&state, Fact::Tick, settled), [pause_all]);
+    assert_eq!(policy.deadline(), Some(closes));
+    assert_eq!(policy.step(&state, Fact::Tick, closes), [Effect::Wake]);
+    assert_eq!(policy.deadline(), None);
+}
+
+#[test]
+fn players_past_the_bound_and_repeated_ones_are_not_remembered() {
+    let mut policy = Policy::default();
+    let state = State {
+        connected: true,
+        ..State::default()
+    };
+    let named = |index: usize| PlayerOwner::new(&format!("{PLAYER}{index}")).unwrap();
+    let twice = vec![named(0), named(0)];
+    assert_eq!(policy.step(&state, Fact::Paused(twice), Duration::ZERO), []);
+    assert_eq!(policy.ear.paused, [named(0)]);
+    let first: Vec<PlayerOwner> = (0..PAUSED_MAX).map(named).collect();
+    assert_eq!(
+        policy.step(&state, Fact::Paused(first.clone()), Duration::ZERO),
+        []
+    );
+    assert_eq!(policy.ear.paused, first);
+    let past = vec![named(PAUSED_MAX)];
+    assert_eq!(policy.step(&state, Fact::Paused(past), Duration::ZERO), []);
+    assert_eq!(policy.ear.paused, first);
+}
+
+#[test]
+fn a_late_pause_with_the_buds_back_plays_only_its_own_players() {
+    let mut policy = Policy::default();
+    let mut state = State {
+        connected: true,
+        ear_detection_behavior: ONE,
+        ..State::default()
+    };
+    state.ear = EarReport::from_in_ear(true, true);
+    let now = Duration::ZERO;
+    let other = PlayerOwner::new(&format!("{PLAYER}2")).unwrap();
+    assert_eq!(policy.step(&state, Fact::Changed, now), []);
+    assert_eq!(policy.step(&state, sink(ELSEWHERE), now), []);
+    // The buds are back with the sink elsewhere, so this pause is dropped rather than kept for later.
+    assert_eq!(policy.step(&state, Fact::Paused(vec![player()]), now), []);
+    assert_eq!(policy.step(&state, sink(OURS), now), []);
+    let play = Effect::Media(MediaRequest::Play(vec![other.clone()]));
+    assert_eq!(policy.step(&state, Fact::Paused(vec![other]), now), [play]);
+}
+
+#[test]
+fn a_player_owner_is_a_unique_bus_name() {
+    let longest = format!("{PLAYER}{}", "2".repeat(BUS_NAME_MAX - PLAYER.len()));
+    assert_eq!(PlayerOwner::new(&longest).unwrap().as_str(), longest);
+    let past = format!("{longest}2");
+    for refused in ["", ":", "org.mpris.MediaPlayer2.one", "1.42", &past] {
+        assert_eq!(PlayerOwner::new(refused), None, "{refused:?}");
     }
 }
