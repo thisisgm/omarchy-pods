@@ -24,7 +24,7 @@ pub(crate) const UNITS_KEY: &str = "audio_units";
 /// The key of the rows that hold the sample clock of each start.
 pub(crate) const CLOCK_KEY: &str = "clock_hz";
 /// What a row reads when there is nothing to measure.
-const NONE: &str = "none";
+pub(crate) const NONE: &str = "none";
 const PACKETS: &str = "packets";
 const UNITS: &str = "units";
 const BYTES: &str = "bytes";
@@ -106,18 +106,25 @@ pub(crate) fn analyse(records: &[Record], marks: &[Mark], script: &str, cut: Cut
     }
 }
 
-/// One row for each line file: whether its last line came without a newline and was left out.
+/// Whether the last line of `file` came without a newline and was left out.
+fn cut_row(key: &str, file: &str, cut: bool) -> Row {
+    let note = format!(
+        "last line of {file} without its newline, left out: a capture killed while writing"
+    );
+    Row::new(key, &u8::from(cut), "lines", &note)
+}
+
+/// That row for the marks file, which every table cut by the marks carries.
+pub(crate) fn marks_cut_row(cut: bool) -> Row {
+    cut_row("marks_cut_lines", MARKS_FILE, cut)
+}
+
+/// One such row for each line file.
 fn cut_rows(cut: CutLines) -> [Row; 2] {
-    let files = [
-        ("sdu_log_cut_lines", LOG_FILE, cut.log),
-        ("marks_cut_lines", MARKS_FILE, cut.marks),
-    ];
-    files.map(|(key, file, cut)| {
-        let note = format!(
-            "last line of {file} without its newline, left out: a capture killed while writing"
-        );
-        Row::new(key, &u8::from(cut), "lines", &note)
-    })
+    [
+        cut_row("sdu_log_cut_lines", LOG_FILE, cut.log),
+        marks_cut_row(cut.marks),
+    ]
 }
 
 fn count_rows(whole: &Loaded, marks: &[Mark]) -> Vec<Row> {

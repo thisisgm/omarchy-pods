@@ -53,22 +53,49 @@ const FIRSTWORD_END_MS: u32 = 48_000;
 /// The cue `voice` shows before and after the speech, so the two taps bracket it.
 const TAP_LEFT_TWICE: &str = "Tap the left bud twice";
 
+/// The three cues of `voice` that ask for speech, at three efforts.
+const SPEAK: [&str; 3] = [
+    "Count one to ten slowly, then say the fox sentence",
+    "Say the fox sentence quietly",
+    "Say the fox sentence loudly",
+];
+const SAY_SSS: &str = "Say sss for three seconds, then shh for three seconds";
+const JINGLE_KEYS: &str = "Jingle your keys for five seconds";
+const STAY_SILENT: &str = "Stay silent";
+
+/// What a cue of `voice` asks the owner for, which is what is then measured in its window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    Taps,
+    Speech,
+    Sibilant,
+    Jingle,
+    Silence,
+}
+
+impl Asked {
+    // Sample input: `Stay silent`, the text of a cue as the marks file holds it; a cue no measure reads gives `None`.
+    pub(crate) fn by(cue: &str) -> Option<Self> {
+        match cue {
+            TAP_LEFT_TWICE => Some(Self::Taps),
+            SAY_SSS => Some(Self::Sibilant),
+            JINGLE_KEYS => Some(Self::Jingle),
+            STAY_SILENT => Some(Self::Silence),
+            _ => SPEAK.contains(&cue).then_some(Self::Speech),
+        }
+    }
+}
+
 /// `voice`: one uplink run with speech at three levels, two noises and a silence.
 const VOICE: [Event; 11] = [
     at(0, Action::Start),
     at(3_000, Action::Cue(TAP_LEFT_TWICE)),
-    at(
-        8_000,
-        Action::Cue("Count one to ten slowly, then say the fox sentence"),
-    ),
-    at(33_000, Action::Cue("Say the fox sentence quietly")),
-    at(41_000, Action::Cue("Say the fox sentence loudly")),
-    at(
-        49_000,
-        Action::Cue("Say sss for three seconds, then shh for three seconds"),
-    ),
-    at(59_000, Action::Cue("Jingle your keys for five seconds")),
-    at(67_000, Action::Cue("Stay silent")),
+    at(8_000, Action::Cue(SPEAK[0])),
+    at(33_000, Action::Cue(SPEAK[1])),
+    at(41_000, Action::Cue(SPEAK[2])),
+    at(49_000, Action::Cue(SAY_SSS)),
+    at(59_000, Action::Cue(JINGLE_KEYS)),
+    at(67_000, Action::Cue(STAY_SILENT)),
     at(79_000, Action::Cue(TAP_LEFT_TWICE)),
     at(VOICE_STOP_MS, Action::Stop),
     at(VOICE_END_MS, Action::End),

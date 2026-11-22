@@ -30,7 +30,7 @@ pub(crate) const SAMPLES_PER_UNIT: u16 = 480;
 /// The table of figures, which is also what the command prints.
 const DECODE_FILE: &str = "decode.tsv";
 /// What the candidate decoded, as a WAV file of floats.
-const WAV_FILE: &str = "pods.f32.wav";
+pub(crate) const WAV_FILE: &str = "pods.f32.wav";
 /// The rate the stream is thought to run at, and the rate its configuration declares.
 const TRUE_RATE_HZ: u32 = 64_000;
 const DECLARED_RATE_HZ: u32 = 48_000;

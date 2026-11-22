@@ -2,6 +2,7 @@
 
 mod a2dp;
 mod analyse;
+mod audio;
 mod capture;
 mod decode;
 mod dictate;
@@ -92,6 +93,8 @@ enum ProbeCommand {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,
     },
+    /// Measures the decoded audio of a run, alone or against a reference recording, and writes audio.tsv into it.
+    Audio(audio::AudioArgs),
 }
 
 #[derive(Debug, Args)]
@@ -201,6 +204,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
         ProbeCommand::Analyse { run_dir } => print_table(analyse::analyse_run(&run_dir)),
         ProbeCommand::Decode { run_dir } => print_table(decode::decode_run(&run_dir)),
+        ProbeCommand::Audio(args) => print_table(audio::audio_run(&args)),
     }
 }
 
