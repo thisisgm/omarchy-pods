@@ -1,7 +1,7 @@
 //! The `tst_enums` cases, translated, plus the model rows compared with the C++ source.
 
 use super::*;
-use cpp_source::{DEVICE_INFO, ENUMS};
+use cpp_source::{BLE_MANAGER_SOURCE, DEVICE_INFO, ENUMS};
 use proptest::prelude::*;
 
 type Flag = fn(Capabilities) -> bool;
@@ -368,28 +368,64 @@ fn default_model_matches_the_cpp_device_info() {
 const PRO_3_MODALIAS: &str = "bluetooth:v004Cp2027d0000";
 const PRO_3_CPP_KEY: u16 = 0x2720;
 
+fn bad_map_line(line: &str) -> ! {
+    panic!("daemon/ble/blemanager.cpp: bad modelMap line `{line}`")
+}
+
 #[test]
-fn a_modalias_gives_the_cpp_key_byte_swapped() {
+fn product_identifiers_are_the_cpp_model_map_byte_swapped() {
+    // Sample input: `{0x2720, AirPodsModel::AirPodsPro3}` one entry per line, `//` lines between.
+    let cpp: Vec<(u16, String)> = BLE_MANAGER_SOURCE
+        .between("modelMap = {", "};")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        .map(|line| {
+            let (key, name) = line
+                .strip_prefix("{0x")
+                .and_then(|entry| entry.split_once(", AirPodsModel::"))
+                .unwrap_or_else(|| bad_map_line(line));
+            let (name, _) = name.split_once('}').unwrap_or_else(|| bad_map_line(line));
+            let key = u16::from_str_radix(key, 16).unwrap_or_else(|_| bad_map_line(line));
+            (key, name.to_owned())
+        })
+        .collect();
+    let rust: Vec<(u16, String)> = AIRPODS_PRODUCTS
+        .iter()
+        .map(|&(id, model)| (id.swap_bytes(), cpp_name(model)))
+        .collect();
+    assert_eq!(rust, cpp);
+    for (key, name) in &cpp {
+        match product(key.swap_bytes()) {
+            Product::AirPods(model) => assert_eq!(&cpp_name(model), name, "{key:#06X}"),
+            other @ (Product::Beats | Product::Unknown) => panic!("{key:#06X} reads as {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn the_lookup_takes_the_modalias_number_not_the_cpp_key() {
     let id = product_of_modalias(PRO_3_MODALIAS);
     assert_eq!(id, Some(PRO_3_CPP_KEY.swap_bytes()));
+    assert_eq!(id.map(product), Some(Product::AirPods(Model::AirPodsPro3)));
+    assert_eq!(product(PRO_3_CPP_KEY), Product::Unknown);
 }
 
 #[test]
 fn the_powerbeats_keys_of_the_proposed_cpp_entries_are_beats() {
     let proposed_cpp_keys: [u16; 2] = [0x0B20, 0x1D20];
     for key in proposed_cpp_keys {
-        assert!(is_beats(key.swap_bytes()), "{key:#06X}");
-        assert!(!is_beats(key), "{key:#06X}");
+        assert_eq!(product(key.swap_bytes()), Product::Beats, "{key:#06X}");
+        assert_eq!(product(key), Product::Unknown, "{key:#06X}");
     }
     assert_eq!(BEATS_PRODUCTS.len(), proposed_cpp_keys.len());
 }
 
 #[test]
-fn the_pro_3_identifier_is_not_beats() {
-    assert_eq!(
-        product_of_modalias(PRO_3_MODALIAS).map(is_beats),
-        Some(false)
-    );
+fn no_identifier_is_both_airpods_and_beats() {
+    for &(id, _) in AIRPODS_PRODUCTS {
+        assert!(!BEATS_PRODUCTS.contains(&id), "{id:#06X}");
+    }
 }
 
 #[test]

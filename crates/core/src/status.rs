@@ -18,6 +18,7 @@ pub const CPP_KEY_COUNT: usize = 36;
 pub const ADDITIVE_KEYS: &[&str] = &[
     "notifications_enabled",
     "audio_server",
+    "advert_intake",
 ];
 
 /// Keys in ascending byte order, as the C++ `QJsonObject` writes them.
@@ -125,6 +126,7 @@ pub fn to_status_object(state: &State) -> Value {
         ("lid_state", Value::from(state.lid_state.number())),
         ("notifications_enabled", Value::from(state.notifications)),
         ("audio_server", Value::from(state.audio_server.word())),
+        ("advert_intake", Value::from(state.advert_intake.word())),
     ]))
 }
 

@@ -1,4 +1,4 @@
-//! Support tests: a queue that never empties, a write that fails, and a queue that closes.
+//! Support tests: a queue that never empties, a write that fails, a queue that closes, and a full request queue at an advert monitor edge.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
@@ -9,19 +9,21 @@ use pods_core::command::{AdaptiveLevel, Command, CommandError, Outcome};
 use pods_core::link::ladder::HANDSHAKE_STEP_TIMEOUT_MS;
 use pods_core::state::State;
 use pods_fake::pair;
+use pods_proto::keys::{Key, ProximityKeys};
 use pods_proto::noise::NoiseMode;
-use pods_samples::{ADAPTIVE_LEVEL, NOISE, setting};
+use pods_samples::{ADAPTIVE_LEVEL, IDENTITY_KEY, NOISE, PAYLOAD_KEY, setting};
 use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 use rustix::time::{ClockId, clock_gettime};
 use tokio::runtime::Builder;
-use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{mpsc, watch};
+use tokio::task::yield_now;
 use tokio::time::sleep;
 use zeroize::Zeroizing;
 
 use super::super::reader::RECV_BUFFER_LEN;
-use super::super::{Connector, Input, REQUEST_QUEUE, drive, queue};
+use super::super::{Connector, Input, Outlets, REQUEST_QUEUE, Request, drive, queue};
 use super::{
     HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device_up, report, unread_outlets,
     wait_for_state, wire,
@@ -199,6 +201,7 @@ fn a_closed_queue_neither_ends_nor_spins_the_driver() {
             requests,
             refuse,
             unread_outlets(),
+            None,
         ));
         drop(link);
         let before = thread_cpu();
@@ -212,6 +215,47 @@ fn a_closed_queue_neither_ends_nor_spins_the_driver() {
             "the driver ended when its queue closed"
         );
         assert!(spent < IDLE_CPU, "the driver spun on its closed queue");
+        driver.abort();
+    });
+}
+
+#[test]
+fn the_monitor_wanted_at_start_reaches_the_watcher_behind_a_full_request_queue() {
+    block_on(async {
+        let (link, inputs) = queue();
+        let (requests, mut watcher) = mpsc::channel(REQUEST_QUEUE);
+        for _ in 0..REQUEST_QUEUE {
+            requests.try_send(Request::Sweep).unwrap();
+        }
+        let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
+        let hub = Hub::new(link.clone(), State::default());
+        let keys = ProximityKeys {
+            identity: Key::from_bytes(IDENTITY_KEY),
+            payload: Key::from_bytes(PAYLOAD_KEY),
+        };
+        let (monitor, mut wanted) = watch::channel(false);
+        let outlets = Outlets {
+            monitor,
+            ..unread_outlets()
+        };
+        let driver = tokio::spawn(drive(
+            hub,
+            inputs,
+            link,
+            requests,
+            refuse,
+            outlets,
+            Some(keys),
+        ));
+        // The driver routes the policy's start before its first wait.
+        yield_now().await;
+        assert!(wanted.has_changed().unwrap());
+        assert!(*wanted.borrow_and_update());
+        let mut swept = 0_usize;
+        while let Ok(Request::Sweep) = watcher.try_recv() {
+            swept = swept.saturating_add(1);
+        }
+        assert_eq!(swept, REQUEST_QUEUE, "the queue stayed full");
         driver.abort();
     });
 }

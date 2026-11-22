@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Resolves the pods' random address and opens their advert, the AES block the C++ daemon takes from OpenSSL; `zeroize` wipes its key schedule.
+aes = { version = "0.9.4", default-features = false, features = ["zeroize"] }
 thiserror.workspace = true
 zeroize.workspace = true
 

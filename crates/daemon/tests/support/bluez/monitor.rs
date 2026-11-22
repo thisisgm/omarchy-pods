@@ -13,8 +13,8 @@ use zbus::{Connection, Message, OwnedObjectPath, OwnedVariant, Str, Variant};
 
 use super::super::wait_within;
 use super::{
-    AdapterPath, Answer, Bluez, DEVICE_INTERFACE, FAILED, Managed, OBJECT_MANAGER, Objects,
-    PROPERTIES, UNKNOWN, object,
+    AdapterPath, Answer, Bluez, Call, DEVICE_INTERFACE, DeviceMethod, FAILED, Managed,
+    OBJECT_MANAGER, Objects, PROPERTIES, UNKNOWN, object,
 };
 
 pub(super) const MANAGER_INTERFACE: &str = "org.bluez.AdvertisementMonitorManager1";
@@ -63,6 +63,8 @@ pub(super) struct Monitors {
     refuse: bool,
     apps: Vec<App>,
     devices: Vec<Advertised>,
+    /// An address and its next advert, shown just ahead of the reply to the next `GetAll` of its device.
+    at_read: Option<(String, Vec<u8>)>,
 }
 
 /// What BlueZ tells applications apart by: the adapter, the owner's unique name and the root path.
@@ -153,6 +155,17 @@ impl Bluez {
         advertiser
     }
 
+    /// As `advertise`, and `newer` is shown just ahead of the reply to the daemon's first read of the device, a reply still holding `apple_data`.
+    pub(crate) fn advertise_changing_at_read(
+        &self,
+        address: &str,
+        apple_data: &[u8],
+        newer: &[u8],
+    ) -> Advertiser {
+        self.lock().monitors.at_read = Some((address.to_owned(), newer.to_vec()));
+        self.advertise(address, apple_data)
+    }
+
     /// Calls `Release` on every monitor and drops it while its application stays registered, as when the kernel removes the monitors.
     pub(crate) fn release_monitors(&self) {
         let releases = self.lock().monitors.release_all();
@@ -211,6 +224,14 @@ impl Monitors {
     pub(super) fn device_properties(&self, path: &str) -> Option<HashMap<String, OwnedVariant>> {
         let device = self.devices.iter().find(|device| device.path == path)?;
         Some(device.properties())
+    }
+
+    /// The change of the advert held for a read of `path`, once, the device keeping the newer data.
+    pub(super) fn advert_at_read(&mut self, path: &str) -> Option<Message> {
+        let device = self.devices.iter().find(|device| device.path == path)?;
+        let (adapter, address) = (device.adapter.clone(), device.address.clone());
+        let (_, newer) = self.at_read.take_if(|(held, _)| *held == address)?;
+        self.show(&adapter, path, &address, &newer)
     }
 
     /// The answer to `RegisterMonitor` or `UnregisterMonitor` on `adapter`, in the order BlueZ checks.
@@ -569,4 +590,21 @@ fn manufacturer_data(data: &[u8]) -> OwnedVariant {
 /// The path BlueZ gives the address's device on the adapter: `/org/bluez/hci0/dev_02_00_00_00_00_01`.
 fn device_path(adapter: &str, address: &str) -> String {
     format!("{adapter}/dev_{}", address.to_uppercase().replace(':', "_"))
+}
+
+/// A call on the monitor manager of `adapter`, as `calls` lists it.
+pub(crate) fn manager_call(adapter: &AdapterPath, method: DeviceMethod) -> Call {
+    Call {
+        object: adapter.0.clone(),
+        method,
+        argument: None,
+    }
+}
+
+/// One registration as the daemon makes it: any earlier one dropped, then the monitor registered, which BlueZ accepts again.
+pub(crate) fn registration(adapter: &AdapterPath) -> Vec<Call> {
+    vec![
+        manager_call(adapter, DeviceMethod::UnregisterMonitor),
+        manager_call(adapter, DeviceMethod::RegisterMonitor),
+    ]
 }

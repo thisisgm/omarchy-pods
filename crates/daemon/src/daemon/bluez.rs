@@ -1,11 +1,12 @@
 //! Watches BlueZ and tells the driver when paired AirPods appear, connect, disconnect or go.
 
 mod calls;
+mod monitor;
 mod objects;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::poll_fn;
 use std::ops::ControlFlow;
 use std::pin::{Pin, pin};
@@ -14,12 +15,14 @@ use std::task::Poll;
 use std::time::Duration;
 
 use pods_core::link::Call;
+use pods_core::policy::MonitorFact;
 use pods_proto::addr::BdAddr;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{Sleep, sleep, timeout};
 use zbus::export::futures_core::Stream;
 use zbus::export::ordered_stream::{IntoStream, JoinMultiple, OrderedStreamExt, Peekable};
 use zbus::export::serde::Deserialize;
+use zbus::message::{Flags, Type as MessageType};
 use zbus::names::MemberName;
 use zbus::zvariant::Type;
 use zbus::{Connection, Message, MessageStream, OwnedObjectPath, OwnedVariant};
@@ -27,6 +30,7 @@ use zbus::{Connection, Message, MessageStream, OwnedObjectPath, OwnedVariant};
 use super::link::{DeviceEvent, Input, Request};
 use super::log;
 use calls::Calls;
+use monitor::{APP_PATH, MANAGER_INTERFACE, Monitor};
 use objects::{Candidates, Change, Properties};
 
 /// Listed by a device that offers the AirPods control channel.
@@ -47,6 +51,7 @@ static NOT_AIRPODS_LOGGED: Once = Once::new();
 const BLUEZ: &str = "org.bluez";
 const BUS: &str = "org.freedesktop.DBus";
 const DEVICE_INTERFACE: &str = "org.bluez.Device1";
+const ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 
@@ -54,6 +59,9 @@ const OWNER_RULE: &str = "type='signal',sender='org.freedesktop.DBus',interface=
 const OBJECTS_RULE: &str =
     "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',path='/'";
 const PROPERTIES_RULE: &str = "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='/org/bluez',arg0='org.bluez.Device1'";
+const ADAPTER_RULE: &str = "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path_namespace='/org/bluez',arg0='org.bluez.Adapter1'";
+
+const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
 
 const CLASSIFYING: [&str; 4] = ["Connected", "UUIDs", "ServicesResolved", "Modalias"];
 
@@ -67,9 +75,14 @@ type Signals = IntoStream<JoinMultiple<Vec<Peekable<MessageStream>>>>;
 type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>;
 
 /// A call outlives the connection it went out on and ends by its own timeout.
-pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Receiver<Request>) {
+pub(super) async fn watch(
+    inputs: mpsc::Sender<Input>,
+    mut requests: mpsc::Receiver<Request>,
+    mut monitor_wanted: watch::Receiver<bool>,
+) {
     let mut errors = ErrorLog::default();
     let mut calls = Calls::default();
+    let mut monitor = Monitor::default();
     loop {
         match Connection::system().await {
             Ok(connection) => {
@@ -81,8 +94,13 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Recei
                     errors: &mut errors,
                     retry: None,
                     calls: &mut calls,
+                    monitor: &mut monitor,
                 };
-                if watcher.run(&mut requests).await.is_break() {
+                if watcher
+                    .run(&mut requests, &mut monitor_wanted)
+                    .await
+                    .is_break()
+                {
                     return;
                 }
             }
@@ -90,10 +108,17 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>, mut requests: mpsc::Recei
                 "bluez: cannot reach the system bus: {error}; trying again every {SYSTEM_BUS_RETRY_MS} ms"
             )),
         }
-        if send(&inputs, DeviceEvent::Lost).await.is_break()
-            || wait_to_retry(&inputs, &mut requests, &mut calls)
-                .await
-                .is_break()
+        if tell(&inputs, monitor.forget_bluez()).await.is_break()
+            || send(&inputs, DeviceEvent::Lost).await.is_break()
+            || wait_to_retry(
+                &inputs,
+                &mut requests,
+                &mut monitor_wanted,
+                &mut calls,
+                &mut monitor,
+            )
+            .await
+            .is_break()
         {
             return;
         }
@@ -105,6 +130,8 @@ enum Next {
     Request(Request),
     Retry,
     CallEnded(Call, zbus::Result<()>),
+    Wanted,
+    Monitor(monitor::Event),
     Closed,
     DriverGone,
 }
@@ -118,13 +145,26 @@ struct Watcher<'a> {
     /// Only after a sweep failed with BlueZ on the bus.
     retry: Option<Pin<Box<Sleep>>>,
     calls: &'a mut Calls,
+    monitor: &'a mut Monitor,
 }
 
 impl Watcher<'_> {
     /// Subscribes, then sweeps; `Break` once the driver is gone.
-    async fn run(&mut self, requests: &mut mpsc::Receiver<Request>) -> ControlFlow<()> {
+    async fn run(
+        &mut self,
+        requests: &mut mpsc::Receiver<Request>,
+        monitor_wanted: &mut watch::Receiver<bool>,
+    ) -> ControlFlow<()> {
         let mut streams = Vec::new();
-        for rule in [OWNER_RULE, OBJECTS_RULE, PROPERTIES_RULE] {
+        let calls_rule = format!("type='method_call',path_namespace='{APP_PATH}'");
+        let rules = [
+            OWNER_RULE,
+            OBJECTS_RULE,
+            PROPERTIES_RULE,
+            ADAPTER_RULE,
+            &calls_rule,
+        ];
+        for rule in rules {
             match MessageStream::for_match_rule(rule, &self.connection, None).await {
                 Ok(stream) => streams.push(stream.peekable()),
                 Err(error) => {
@@ -137,13 +177,39 @@ impl Watcher<'_> {
         let mut signals = JoinMultiple(streams).into_stream();
         self.sweep().await?;
         loop {
-            match next(&mut signals, requests, &mut self.retry, self.calls).await {
+            let waits = Waits {
+                retry: &mut self.retry,
+                calls: self.calls,
+                monitor: self.monitor,
+                monitor_wanted: &mut *monitor_wanted,
+            };
+            match next(&mut signals, requests, waits).await {
                 Next::Signal(message) => self.take(&message).await?,
                 Next::Request(Request::Sweep) | Next::Retry => self.sweep().await?,
                 Next::Request(Request::Call { device, call }) => {
                     self.call(device, call).await?;
                 }
+                Next::Wanted => {
+                    let wanted = *monitor_wanted.borrow_and_update();
+                    let fact = self.monitor.want(wanted, &self.connection);
+                    tell(self.inputs, fact).await?;
+                }
                 Next::CallEnded(call, result) => call_ended(self.inputs, call, result).await?,
+                Next::Monitor(monitor::Event::Ended(ended)) => {
+                    if let Some((adapter, Err(reason))) = &ended {
+                        self.errors.note(format!(
+                            "bluez: {adapter} refused the advert monitor: {reason}"
+                        ));
+                    }
+                    let fact = self.monitor.ended(ended);
+                    tell(self.inputs, fact).await?;
+                }
+                Next::Monitor(monitor::Event::RetryDue) => self.monitor.retry(&self.connection),
+                Next::Monitor(monitor::Event::Read(read)) => {
+                    if let Some(sighting) = self.monitor.read_ended(read) {
+                        monitor::offer(self.inputs, sighting);
+                    }
+                }
                 Next::Closed => return ControlFlow::Continue(()),
                 Next::DriverGone => return ControlFlow::Break(()),
             }
@@ -164,35 +230,61 @@ impl Watcher<'_> {
 
     /// Sample input: `("org.bluez", ":1.4", "")`, `(/org/bluez/hci0/dev_02_00_00_00_00_01, {"org.bluez.Device1": {"Connected": <true>}})` or `(/org/bluez/hci0/dev_02_00_00_00_00_01, ["org.bluez.Device1"])`.
     async fn take(&mut self, message: &Message) -> ControlFlow<()> {
+        if message.message_type() == MessageType::MethodCall {
+            return self.called(message).await;
+        }
         let header = message.header();
         let change = match header.member().map(MemberName::as_str) {
             Some("NameOwnerChanged") => {
                 match self.body::<(String, String, String)>(message, "NameOwnerChanged") {
-                    Some((_, _, owner)) if owner.is_empty() => Some(Change::Lost),
+                    Some((_, _, owner)) if owner.is_empty() => {
+                        let fact = self.monitor.forget_bluez();
+                        tell(self.inputs, fact).await?;
+                        Some(Change::Lost)
+                    }
                     Some(_) => return self.sweep().await,
                     None => None,
                 }
             }
-            Some("InterfacesAdded") => self
-                .body::<(
+            Some("InterfacesAdded") => {
+                let added = self.body::<(
                     OwnedObjectPath,
                     HashMap<String, HashMap<String, OwnedVariant>>,
-                )>(message, "InterfacesAdded")
-                .and_then(|(path, interfaces)| {
-                    let properties = Properties::read(interfaces.get(DEVICE_INTERFACE)?);
-                    Some(Change::Device {
+                )>(message, "InterfacesAdded");
+                let Some((path, interfaces)) = added else {
+                    return ControlFlow::Continue(());
+                };
+                if interfaces.contains_key(MANAGER_INTERFACE) {
+                    let fact = self.monitor.manager_added(path.as_str(), &self.connection);
+                    tell(self.inputs, fact).await?;
+                }
+                interfaces
+                    .get(DEVICE_INTERFACE)
+                    .map(|device| Change::Device {
                         path: path.to_string(),
-                        properties,
+                        properties: Properties::read(device),
                     })
-                }),
-            Some("InterfacesRemoved") => self
-                .body::<(OwnedObjectPath, Vec<String>)>(message, "InterfacesRemoved")
-                .filter(|(_, interfaces)| interfaces.iter().any(|name| name == DEVICE_INTERFACE))
-                .map(|(path, _)| Change::Removed {
-                    path: path.to_string(),
-                }),
+            }
+            Some("InterfacesRemoved") => {
+                let removed =
+                    self.body::<(OwnedObjectPath, Vec<String>)>(message, "InterfacesRemoved");
+                let Some((path, interfaces)) = removed else {
+                    return ControlFlow::Continue(());
+                };
+                let names = |wanted: &str| interfaces.iter().any(|name| name == wanted);
+                if names(MANAGER_INTERFACE) {
+                    let fact = self.monitor.manager_removed(path.as_str());
+                    tell(self.inputs, fact).await?;
+                }
+                names(DEVICE_INTERFACE).then(|| {
+                    self.monitor.forget_device(path.as_str());
+                    Change::Removed {
+                        path: path.to_string(),
+                    }
+                })
+            }
             Some("PropertiesChanged") => match header.path() {
-                Some(path) => self.changed(path.as_str(), message).await,
+                Some(path) => return self.changed(path.as_str(), message).await,
                 None => None,
             },
             _ => None,
@@ -203,37 +295,93 @@ impl Watcher<'_> {
         }
     }
 
-    /// Sample input: `("org.bluez.Device1", {"Connected": <true>}, ["Alias"])`.
-    async fn changed(&mut self, path: &str, message: &Message) -> Option<Change> {
-        let (_, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
-            self.body(message, "PropertiesChanged")?;
+    /// Sample input: `DeviceFound(/org/bluez/hci0/dev_02_00_00_00_00_01)` on the monitor, or `GetManagedObjects()` on the application.
+    async fn called(&mut self, message: &Message) -> ControlFlow<()> {
+        let header = message.header();
+        let answer = match header.member().map(MemberName::as_str) {
+            Some("GetManagedObjects") => Message::method_return(&header).build(&monitor::objects()),
+            Some("Release") => {
+                let fact = self.monitor.released(&self.connection);
+                return tell(self.inputs, fact).await;
+            }
+            Some("DeviceFound") => {
+                if let Some((path,)) = self.body::<(OwnedObjectPath,)>(message, "DeviceFound") {
+                    self.monitor.found(path.as_str(), &self.connection);
+                }
+                return ControlFlow::Continue(());
+            }
+            Some("Activate" | "DeviceLost") => return ControlFlow::Continue(()),
+            _ if message
+                .primary_header()
+                .flags()
+                .contains(Flags::NO_REPLY_EXPECTED) =>
+            {
+                return ControlFlow::Continue(());
+            }
+            _ => Message::error(&header, UNKNOWN_METHOD)
+                .build(&("not served by the advert monitor",)),
+        };
+        if let Ok(answer) = answer {
+            // A send that fails is a connection that is closing, which the signal streams report.
+            self.connection.send(&answer).await.ok();
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// Sample input: `("org.bluez.Device1", {"Connected": <true>}, ["Alias"])` or `("org.bluez.Adapter1", {"Powered": <true>}, [])`.
+    async fn changed(&mut self, path: &str, message: &Message) -> ControlFlow<()> {
+        let Some((interface, changed, _)) = self.body::<(
+            String,
+            HashMap<String, OwnedVariant>,
+            Vec<String>,
+        )>(message, "PropertiesChanged") else {
+            return ControlFlow::Continue(());
+        };
+        if interface == ADAPTER_INTERFACE {
+            let powered = changed
+                .get("Powered")
+                .and_then(|powered| bool::try_from(&**powered).ok());
+            let fact = if powered == Some(true) {
+                self.monitor.cause(&self.connection)
+            } else {
+                None
+            };
+            return tell(self.inputs, fact).await;
+        }
+        let advert = changed.get("ManufacturerData");
+        if let Some(sighting) = advert.and_then(|data| self.monitor.changed(path, data)) {
+            monitor::offer(self.inputs, sighting);
+        }
+        match self.classify(path, &changed).await {
+            Some(properties) => {
+                let path = path.to_owned();
+                self.report(Change::Device { path, properties }).await
+            }
+            None => ControlFlow::Continue(()),
+        }
+    }
+
+    async fn classify(
+        &mut self,
+        path: &str,
+        changed: &HashMap<String, OwnedVariant>,
+    ) -> Option<Properties> {
         let names = |list: &[&str]| list.iter().any(|name| changed.contains_key(*name));
         if !names(&CLASSIFYING) {
             return None;
         }
         // A `Modalias` may turn kept pods into Beats, which only a whole read can tell.
-        let properties = if self.candidates.holds(path) && !changed.contains_key("Modalias") {
-            Properties::read(&changed)
+        if self.candidates.holds(path) && !changed.contains_key("Modalias") {
+            Some(Properties::read(changed))
         } else if names(&WORTH_A_READ) {
-            self.read(path).await?
+            self.read(path).await
         } else {
-            return None;
-        };
-        Some(Change::Device {
-            path: path.to_owned(),
-            properties,
-        })
+            None
+        }
     }
 
     async fn read(&mut self, path: &str) -> Option<Properties> {
-        let call = self.connection.call_method(
-            Some(BLUEZ),
-            path,
-            Some(PROPERTIES),
-            "GetAll",
-            &(DEVICE_INTERFACE,),
-        );
-        let reply = reply::<HashMap<String, OwnedVariant>>(call).await;
+        let reply = device_properties(&self.connection, path).await;
         let properties = self.noted(reply, "a device")?;
         Some(Properties::read(&properties))
     }
@@ -254,6 +402,11 @@ impl Watcher<'_> {
         };
         self.retry = None;
         self.errors.clear();
+        let managers: BTreeSet<String> = objects
+            .iter()
+            .filter(|(_, interfaces)| interfaces.contains_key(MANAGER_INTERFACE))
+            .map(|(path, _)| path.to_string())
+            .collect();
         let devices = objects
             .into_iter()
             .filter_map(|(path, interfaces)| {
@@ -261,6 +414,8 @@ impl Watcher<'_> {
                 Some((path.to_string(), properties))
             })
             .collect();
+        let fact = self.monitor.swept(managers, &self.connection);
+        tell(self.inputs, fact).await?;
         self.report(Change::Swept(devices)).await
     }
 
@@ -358,12 +513,41 @@ async fn not_made(inputs: &mpsc::Sender<Input>, call: Call, reason: &str) -> Con
     send(inputs, DeviceEvent::CallFailed(call)).await
 }
 
+/// Every property of a device; the watcher's reads and the monitor's reads share it.
+async fn device_properties(
+    connection: &Connection,
+    path: &str,
+) -> Result<HashMap<String, OwnedVariant>, String> {
+    let call = connection.call_method(
+        Some(BLUEZ),
+        path,
+        Some(PROPERTIES),
+        "GetAll",
+        &(DEVICE_INTERFACE,),
+    );
+    reply(call).await
+}
+
+/// What `next` waits on besides the signals and the requests.
+struct Waits<'a> {
+    retry: &'a mut Option<Pin<Box<Sleep>>>,
+    calls: &'a mut Calls,
+    monitor: &'a mut Monitor,
+    monitor_wanted: &'a mut watch::Receiver<bool>,
+}
+
 async fn next(
     signals: &mut Signals,
     requests: &mut mpsc::Receiver<Request>,
-    retry: &mut Option<Pin<Box<Sleep>>>,
-    calls: &mut Calls,
+    waits: Waits<'_>,
 ) -> Next {
+    let Waits {
+        retry,
+        calls,
+        monitor,
+        monitor_wanted,
+    } = waits;
+    let mut new_want = pin!(monitor_wanted.changed());
     poll_fn(|context| {
         match Pin::new(&mut *signals).poll_next(context) {
             Poll::Ready(Some(Ok(message))) => return Poll::Ready(Next::Signal(message)),
@@ -373,6 +557,13 @@ async fn next(
         }
         if let Poll::Ready((call, result)) = calls.poll_ended(context) {
             return Poll::Ready(Next::CallEnded(call, result));
+        }
+        if let Poll::Ready(event) = monitor.poll(context) {
+            return Poll::Ready(Next::Monitor(event));
+        }
+        // The driver drops the sender only as it ends, with the request queue.
+        if let Poll::Ready(changed) = new_want.as_mut().poll(context) {
+            return Poll::Ready(changed.map_or(Next::DriverGone, |()| Next::Wanted));
         }
         if let Poll::Ready(request) = requests.poll_recv(context) {
             return Poll::Ready(request.map_or(Next::DriverGone, Next::Request));
@@ -392,6 +583,7 @@ async fn next(
 enum Retry {
     Due,
     Request(Request),
+    Wanted,
     CallEnded(Call, zbus::Result<()>),
     DriverGone,
 }
@@ -400,32 +592,52 @@ enum Retry {
 async fn wait_to_retry(
     inputs: &mpsc::Sender<Input>,
     requests: &mut mpsc::Receiver<Request>,
+    monitor_wanted: &mut watch::Receiver<bool>,
     calls: &mut Calls,
+    monitor: &mut Monitor,
 ) -> ControlFlow<()> {
     let mut pause = pin!(sleep(Duration::from_millis(SYSTEM_BUS_RETRY_MS)));
     loop {
-        let woke = poll_fn(|context| {
-            if pause.as_mut().poll(context).is_ready() {
-                return Poll::Ready(Retry::Due);
-            }
-            if let Poll::Ready((call, result)) = calls.poll_ended(context) {
-                return Poll::Ready(Retry::CallEnded(call, result));
-            }
-            requests.poll_recv(context).map(|request| match request {
-                Some(request) => Retry::Request(request),
-                None => Retry::DriverGone,
+        let woke = {
+            let mut new_want = pin!(monitor_wanted.changed());
+            poll_fn(|context| {
+                if pause.as_mut().poll(context).is_ready() {
+                    return Poll::Ready(Retry::Due);
+                }
+                if let Poll::Ready((call, result)) = calls.poll_ended(context) {
+                    return Poll::Ready(Retry::CallEnded(call, result));
+                }
+                if let Poll::Ready(changed) = new_want.as_mut().poll(context) {
+                    return Poll::Ready(changed.map_or(Retry::DriverGone, |()| Retry::Wanted));
+                }
+                requests.poll_recv(context).map(|request| match request {
+                    Some(request) => Retry::Request(request),
+                    None => Retry::DriverGone,
+                })
             })
-        })
-        .await;
+            .await
+        };
         match woke {
             Retry::Due => return ControlFlow::Continue(()),
             Retry::DriverGone => return ControlFlow::Break(()),
             Retry::Request(Request::Sweep) => {}
+            Retry::Wanted => monitor.set_wanted(*monitor_wanted.borrow_and_update()),
             Retry::Request(Request::Call { call, .. }) => {
                 not_made(inputs, call, "the system bus is out of reach").await?;
             }
             Retry::CallEnded(call, result) => call_ended(inputs, call, result).await?,
         }
+    }
+}
+
+/// Hands the driver what the monitor reads now, if that changed; `Break` once the driver is gone.
+async fn tell(inputs: &mpsc::Sender<Input>, fact: Option<MonitorFact>) -> ControlFlow<()> {
+    let Some(fact) = fact else {
+        return ControlFlow::Continue(());
+    };
+    match inputs.send(Input::Monitor(fact)).await {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(_) => ControlFlow::Break(()),
     }
 }
 

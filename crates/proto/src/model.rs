@@ -79,6 +79,29 @@ const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A3065", Model::AirPodsPro3),
 ];
 
+/// What a product identifier names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Product {
+    AirPods(Model),
+    Beats,
+    Unknown,
+}
+
+/// Product identifiers as `Modalias` prints them, in the order of the C++ map, which keys each one byte swapped.
+const AIRPODS_PRODUCTS: &[(u16, Model)] = &[
+    (0x2002, Model::AirPods1),
+    (0x200F, Model::AirPods2),
+    (0x2013, Model::AirPods3),
+    (0x2019, Model::AirPods4),
+    (0x201B, Model::AirPods4ANC),
+    (0x200A, Model::AirPodsMaxLightning),
+    (0x201F, Model::AirPodsMaxUSBC),
+    (0x200E, Model::AirPodsPro),
+    (0x2014, Model::AirPodsPro2Lightning),
+    (0x2024, Model::AirPodsPro2USBC),
+    (0x2027, Model::AirPodsPro3),
+];
+
 /// Powerbeats Pro and Powerbeats Pro 2: the keys `0x0B20` and `0x1D20` proposed for the C++ map, byte swapped.
 const BEATS_PRODUCTS: &[u16] = &[0x200B, 0x201D];
 
@@ -88,8 +111,14 @@ const MODALIAS_FIELD_DIGITS: usize = 4;
 
 /// Takes the number `product_of_modalias` gives, never the byte swapped key of the C++ map.
 #[must_use]
-pub fn is_beats(id: u16) -> bool {
-    BEATS_PRODUCTS.contains(&id)
+pub fn product(id: u16) -> Product {
+    if let Some(&(_, model)) = AIRPODS_PRODUCTS.iter().find(|&&(known, _)| known == id) {
+        Product::AirPods(model)
+    } else if BEATS_PRODUCTS.contains(&id) {
+        Product::Beats
+    } else {
+        Product::Unknown
+    }
 }
 
 /// Sample input: `bluetooth:v004Cp2027d0000`, upper case hex as BlueZ prints it; another vendor or shape is `None`.

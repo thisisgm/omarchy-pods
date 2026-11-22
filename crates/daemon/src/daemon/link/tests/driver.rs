@@ -431,6 +431,7 @@ fn stop_with_the_link_up_ends_the_reader_thread() {
             requests,
             connector,
             unread_outlets(),
+            None,
         ));
         link.send(Input::Device(DeviceEvent::Up(device())))
             .await
@@ -563,7 +564,9 @@ fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<Stri
                 | Input::Sleep(_)
                 | Input::Shutdown(_)
                 | Input::Audio(_)
-                | Input::Media(_) => {
+                | Input::Media(_)
+                | Input::Advert(_)
+                | Input::Monitor(_) => {
                     format!("unexpected {input:?}")
                 }
             });

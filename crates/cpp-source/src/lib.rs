@@ -58,6 +58,11 @@ pub const BLE_MANAGER_SOURCE: CppHeader = CppHeader {
     text: include_str!("../../../daemon/ble/blemanager.cpp"),
 };
 
+pub const BLE_UTILS: CppHeader = CppHeader {
+    path: "daemon/ble/bleutils.cpp",
+    text: include_str!("../../../daemon/ble/bleutils.cpp"),
+};
+
 pub const MAIN: CppHeader = CppHeader {
     path: "daemon/main.cpp",
     text: include_str!("../../../daemon/main.cpp"),

@@ -13,7 +13,7 @@ use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::{Attempt, KNOWN_MAX};
 use crate::link::{DeviceAction, Event, Machine, Phase};
-use crate::state::{AudioServer, EarDetectionBehavior, LidState, State};
+use crate::state::{AdvertIntake, AudioServer, EarDetectionBehavior, LidState, State};
 
 #[test]
 fn handshake_sends_the_three_requests_in_order_and_goes_up() {
@@ -557,6 +557,7 @@ fn reset_device_matches_the_cpp_reset() {
         },
         notifications: false,
         audio_server: AudioServer::Up,
+        advert_intake: AdvertIntake::Listening,
     };
     let kept = state.clone();
     state.reset_device();

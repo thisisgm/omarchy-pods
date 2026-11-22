@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::command::tests::level;
-use crate::state::{AudioServer, Counters, EarDetectionBehavior, LidState};
+use crate::state::{AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState};
 
 fn status(state: &State) -> Value {
     serde_json::from_str(&to_status_line(state)).unwrap()
@@ -60,10 +60,12 @@ fn populated_state_lands_every_field_on_its_key() {
         },
         notifications: false,
         audio_server: AudioServer::Up,
+        advert_intake: AdvertIntake::Listening,
     };
     let expected = json!({
         "adaptive_level_changes_total": 11,
         "adaptive_noise_level": 37,
+        "advert_intake": "listening",
         "audio_server": "up",
         "ca_changes_total": 6,
         "case": {"available": true, "charging": true, "level": 40},

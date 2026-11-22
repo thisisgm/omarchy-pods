@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use pods_core::link::ladder::KNOWN_MAX;
 use pods_proto::addr::BdAddr;
-use pods_proto::model::{is_beats, product_of_modalias};
+use pods_proto::model::{Product, product, product_of_modalias};
 use zbus::{Array, OwnedVariant, Variant};
 
 use super::AAP_UUID;
@@ -76,10 +76,9 @@ fn kind(lists_aap: bool, modalias: Option<&str>) -> Kind {
     if !lists_aap {
         return Kind::Other;
     }
-    if modalias.and_then(product_of_modalias).is_some_and(is_beats) {
-        Kind::Beats
-    } else {
-        Kind::Pods
+    match modalias.and_then(product_of_modalias).map(product) {
+        Some(Product::Beats) => Kind::Beats,
+        Some(Product::AirPods(_) | Product::Unknown) | None => Kind::Pods,
     }
 }
 

@@ -12,9 +12,9 @@ pub(crate) mod relay;
 pub(crate) mod rig;
 pub(crate) mod sleep;
 
-use std::fs::{self, File};
+use std::fs::{self, DirBuilder, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -141,6 +141,23 @@ impl Session {
     /// The proximity keys the daemon keeps, beside the status document.
     pub(crate) fn keys_file(&self) -> PathBuf {
         self.state_home().join("librepods").join("keys.json")
+    }
+
+    /// Stores the sample keys as the daemon writes them: `{"identity":"<32 hex digits>","payload":"<32 hex digits>"}` and a newline.
+    pub(crate) fn store_sample_keys(&self) {
+        let hex = |key: [u8; 16]| key.map(|byte| format!("{byte:02x}")).concat();
+        let text = format!(
+            "{{\"identity\":\"{}\",\"payload\":\"{}\"}}\n",
+            hex(pods_samples::IDENTITY_KEY),
+            hex(pods_samples::PAYLOAD_KEY)
+        );
+        let path = self.keys_file();
+        DirBuilder::new()
+            .recursive(true)
+            .mode(DIR_MODE)
+            .create(path.parent().unwrap())
+            .unwrap();
+        fs::write(path, text).unwrap();
     }
 
     /// The binary with this session's environment and nothing of the real one's XDG, home or path.

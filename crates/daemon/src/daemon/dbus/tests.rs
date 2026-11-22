@@ -98,6 +98,7 @@ const INTROSPECTED: &str = r#"
     <arg type="s" direction="out"/>
   </method>
   <property name="AdaptiveLevel" type="y" access="read"/>
+  <property name="AdvertIntake" type="s" access="read"/>
   <property name="ApiVersion" type="u" access="read">
     <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
   </property>

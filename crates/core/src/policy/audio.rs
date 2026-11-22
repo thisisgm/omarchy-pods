@@ -55,7 +55,7 @@ pub(super) fn follow(signal: &Signal) -> Option<AudioRequest> {
     match signal {
         Signal::Up { device } => Some(AudioRequest::Follow(Some(*device))),
         Signal::Lost { .. } => Some(AudioRequest::Follow(None)),
-        Signal::Keys(_) => None,
+        Signal::Down | Signal::Keys(_) => None,
     }
 }
 
@@ -67,8 +67,10 @@ pub fn server_after(was: AudioServer, fact: &Fact) -> AudioServer {
         Fact::Link(Signal::Lost { .. }) => AudioServer::Idle,
         Fact::Audio(AudioFact::Up) if was != AudioServer::Idle => AudioServer::Up,
         Fact::Audio(AudioFact::Down) if was != AudioServer::Idle => AudioServer::Down,
-        Fact::Link(Signal::Keys(_))
+        Fact::Link(Signal::Down | Signal::Keys(_))
         | Fact::Audio(_)
+        | Fact::Advert(_)
+        | Fact::Monitor(_)
         | Fact::Changed
         | Fact::Sleep(_)
         | Fact::Tick

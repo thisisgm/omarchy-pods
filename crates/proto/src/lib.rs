@@ -17,5 +17,6 @@ pub mod model;
 pub mod noise;
 pub mod packet;
 pub mod packets;
+pub mod proximity;
 pub mod sdulog;
 pub mod uplink;
