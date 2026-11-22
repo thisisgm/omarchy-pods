@@ -1,5 +1,3 @@
-//! Sorting a log into the packets each analysis reads, and cutting it at the marks.
-
 use pods_proto::battery::Charge;
 use pods_proto::error::HEADER_LEN;
 use pods_proto::uplink::{AUDIO_HEADER_LEN, START, STOP, UNIT_PREFIX_LEN};

@@ -37,17 +37,14 @@ fn hertz(rate: u32) -> f32 {
     f32::from(u16::try_from(rate).unwrap())
 }
 
-/// The samples `ms` milliseconds hold at `rate`.
 pub(crate) fn samples_in(ms: u32, rate: u32) -> usize {
     usize::try_from(u64::from(ms).saturating_mul(u64::from(rate)) / 1000).unwrap()
 }
 
-/// The samples of `len_ms` milliseconds from `from_ms` on, at `rate`.
 pub(crate) fn span(from_ms: u32, len_ms: u32, rate: u32) -> Range<usize> {
     samples_in(from_ms, rate)..samples_in(from_ms.saturating_add(len_ms), rate)
 }
 
-/// A sine that starts `phase` radians into its turn.
 pub(crate) fn sine(hz: f32, rate: u32, amplitude: f32, mut phase: f32, len: usize) -> Vec<f32> {
     let step = TAU * hz / hertz(rate);
     let mut next = || {

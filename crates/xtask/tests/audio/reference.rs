@@ -17,7 +17,6 @@ use super::{
     probe, put_file, refusal, row, table_of, uplink_lines,
 };
 
-/// The rate of the reference recorder.
 pub(super) const RECORDER_RATE: u32 = 48_000;
 /// The recorder of the tap run starts this long before the zero of the run.
 pub(super) const BEFORE_ZERO_MS: u32 = 300;
@@ -43,7 +42,6 @@ pub(super) const HEAD_MS: u32 = 1000;
 /// What a start of two seconds holds of the stream, and the head and the body no start under four seconds has.
 const SHORT_START_MS: u32 = 1980;
 const HEAD_AND_BODY_MS: u32 = 4000;
-/// Why a start has no row when the reference ends or begins inside what is searched.
 const SEARCH_NOT_HELD: &str = "the reference does not hold the 2000 ms to either side of where the start mark puts the head and the body";
 
 /// The command on `run` with the reference at `path`, whose first sample has the wall clock time `first_sample_ns`.
@@ -440,7 +438,6 @@ fn the_head_of_each_start_is_placed_against_its_body() {
     }
 }
 
-/// The rows a reference gives each start.
 const START_ROWS: [&str; 5] = [
     "head_offset_ms",
     "body_offset_ms",

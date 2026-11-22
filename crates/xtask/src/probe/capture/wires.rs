@@ -17,7 +17,7 @@ pub(crate) type OpenAtt<'a> = &'a dyn Fn() -> Result<Channel, ChannelError>;
 #[derive(Clone, Copy)]
 pub(super) struct Wires<'a> {
     pub(super) accessory: Option<&'a Channel>,
-    /// The attribute channel while it is open; taking it out closes it.
+    /// Taking the channel out closes it.
     pub(super) att: &'a RefCell<Option<Channel>>,
     pub(super) now_ns: &'a dyn Fn() -> u64,
 }
@@ -60,7 +60,6 @@ impl<'a> Wires<'a> {
     }
 }
 
-/// One channel of a run, for whoever sends on it.
 #[derive(Clone, Copy)]
 pub(super) struct Link<'a> {
     bearer: Bearer,
@@ -86,7 +85,6 @@ impl Link<'_> {
     }
 }
 
-/// What one wait on the channels ended with.
 #[derive(Clone, Copy)]
 pub(super) enum Wake<'b> {
     Sdu(Bearer, &'b [u8]),

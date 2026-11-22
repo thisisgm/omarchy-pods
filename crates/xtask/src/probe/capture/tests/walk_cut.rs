@@ -33,7 +33,6 @@ fn cut_case(table: Vec<u16>, answers: u32, unchecked: bool) -> Case {
     case
 }
 
-/// What the first attribute channel carried, and what the fresh one did.
 fn by_channel(report: &Report) -> (&[Vec<u8>], &[Vec<u8>]) {
     let got = &report.pods.att_got;
     got.split_at(report.pods.att_fresh_from.unwrap_or(got.len()))
@@ -121,7 +120,6 @@ fn a_stream_that_ignores_its_stop_ends_the_tail_at_its_packet_bound() {
     assert_eq!(report.kinds().last(), Some(&"end"));
 }
 
-/// Tables that hold the four handles, lack one, or hold nothing at all.
 fn any_table() -> impl Strategy<Value = Vec<u16>> {
     prop_oneof![
         Just((1..=TABLE_END).collect::<Vec<u16>>()),

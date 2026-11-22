@@ -27,7 +27,6 @@ const QUEUE_POLL: Duration = Duration::from_millis(2);
 /// How long the fake pods hold back their reply to the stop write: inside the second the command keeps its channels open, and far past any reply the loop itself could read.
 const LATE_REPLY: Duration = Duration::from_millis(300);
 
-/// What one capture left behind.
 struct Aired {
     ran: Ran,
     pods: Transcript,
@@ -36,7 +35,7 @@ struct Aired {
 }
 
 impl Aired {
-    /// The stamp and the text of every mark of one kind, as `1203456789\tgate\tear` is a stamp, a kind and a text.
+    /// As `1203456789\tgate\tear` is a stamp, a kind and a text.
     fn marks(&self, kind: &str) -> Vec<(u64, &str)> {
         let lines = self.marks.lines();
         lines
@@ -70,7 +69,6 @@ fn air(
     air_until(args, part, fars, near, dial_att, Arc::default())
 }
 
-/// As `air`, with the flag a signal raises given by the test, which may then raise it itself.
 fn air_until(
     args: CaptureArgs,
     part: Pods,

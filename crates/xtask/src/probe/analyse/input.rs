@@ -4,42 +4,31 @@ use std::fmt;
 
 use pods_proto::sdulog::{LogError, Record, parse_line};
 
-/// The packet log of a run, one line a packet.
 pub(crate) const LOG_FILE: &str = "sdu.log";
-/// The log of the attribute channel, in the lines of the packet log; only a run that opened the channel holds one.
+/// Only a run that opened the attribute channel holds one.
 pub(crate) const ATT_LOG_FILE: &str = "att.log";
 /// What the capture did and when, one line a mark.
 pub(crate) const MARKS_FILE: &str = "marks.tsv";
 /// What produced the run, one `key=value` a line.
 pub(crate) const META_FILE: &str = "meta.txt";
-/// The separator of the three fields of a mark.
 const MARK_SEPARATOR: char = '\t';
 /// A mark is a stamp, a kind and a text.
 const MARK_FIELDS: usize = 3;
-/// A mark kind is at most this many characters.
 const KIND_MAX: usize = 16;
-/// The kind of the mark written when START goes out.
 const KIND_START: &str = "start";
-/// The kind of the mark written when STOP goes out.
 const KIND_STOP: &str = "stop";
-/// The kind of the mark written when the dictation start write goes out.
 const KIND_DICTATION_START: &str = "dictation-start";
-/// The kind of the mark written when the dictation stop write goes out.
 const KIND_DICTATION_STOP: &str = "dictation-stop";
-/// The kind of the mark written for a receive the buffer cut, in two parts: a store test bans the whole word from this crate.
+/// A store test bans the whole word from this crate, so it is written in two parts.
 const KIND_CUT: &str = concat!("trunc", "ated");
 /// The kind of the mark written for each line shown to the owner.
 const KIND_CUE: &str = "cue";
-/// The separator of a meta line.
 const META_SEPARATOR: char = '=';
-/// The key of the meta line that names the script.
 const SCRIPT_KEY: &str = "script";
-/// A script name is at most this many characters.
 const SCRIPT_MAX: usize = 32;
-/// The key of the meta line that holds the wall clock, in nanoseconds since 1970, at the zero of the stamps.
+/// The wall clock in nanoseconds since 1970 at the zero of the stamps.
 const REALTIME_KEY: &str = "realtime_at_zero_ns";
 
-/// The kinds of mark the analysis reads; every other kind is `Other`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MarkKind {
     Start,
@@ -50,7 +39,6 @@ pub(crate) enum MarkKind {
     Other,
 }
 
-/// One line of the marks file, without its text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Mark {
     /// On the clock of the packet log.
@@ -58,23 +46,20 @@ pub(crate) struct Mark {
     pub(crate) kind: MarkKind,
 }
 
-/// One cue of the marks file: when it was shown and what it said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Cue<'a> {
     pub(crate) at_ns: u64,
     pub(crate) text: &'a str,
 }
 
-/// What the meta file says about the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Meta {
     /// The name of the capture script, 1 to `SCRIPT_MAX` characters of a-z, 0-9 and -.
     pub(crate) script: String,
-    /// `None` for a run whose meta file has no such line.
     pub(crate) realtime_at_zero_ns: Option<u64>,
 }
 
-/// The rule a line broke; it never repeats the line, whose text can identify a device.
+/// It never repeats the line, whose text can identify a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum LineRule {
     #[error("{0}")]
@@ -102,7 +87,7 @@ pub(crate) enum LineRule {
     NotText,
 }
 
-/// Why a file of a run was refused; it names the file, the line and the rule, never the text.
+/// Names the file, the line and the rule, never the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum InputError {
     #[error("{file} line {line}: {rule}")]

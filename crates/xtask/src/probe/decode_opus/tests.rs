@@ -7,7 +7,6 @@ use crate::probe::decode::compare::tests::{
     BETWEEN_THE_RULES, FRAME, ONE_LSB, PAST_BOTH_RULES, laid,
 };
 
-/// The value and the note of the row under `key`.
 fn row<'rows>(rows: &'rows [Row], key: &str) -> (&'rows str, &'rows str) {
     let found = rows.iter().find(|row| row.key == key).unwrap();
     (&found.value, &found.note)

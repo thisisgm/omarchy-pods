@@ -1,4 +1,4 @@
-//! Readers of what the system reports about the link: the test unit's journal, `BlueZ`, `PipeWire` and `/proc`.
+//! Readers of the test unit's journal, `BlueZ`, `PipeWire` and `/proc`.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -32,7 +32,7 @@ pub(super) struct Entry {
     pub(super) cursor: String,
 }
 
-/// One line of `journalctl --output=json`; a message that is not text is kept empty; sample input `{"__CURSOR":"s=1;i=2","__MONOTONIC_TIMESTAMP":"812345678","MESSAGE":"link: state populated"}`.
+/// A message that is not text is kept empty; sample input `{"__CURSOR":"s=1;i=2","__MONOTONIC_TIMESTAMP":"812345678","MESSAGE":"link: state populated"}`.
 pub(super) fn parse_entry(line: &str) -> Option<Entry> {
     let Value::Object(object) = serde_json::from_str(line).ok()? else {
         return None;
@@ -257,7 +257,7 @@ pub(super) fn parse_bluez(text: &str) -> Option<Bluez> {
     Some(bluez)
 }
 
-/// Whether a Bluetooth audio card sits in a headset profile, where a connect can time out.
+/// A connect can time out while a Bluetooth audio card sits in a headset profile.
 pub(crate) fn headset_profile() -> Result<bool, String> {
     let args = [OsStr::new("list"), OsStr::new("cards")];
     let ran = run("pactl", &args, &[("LC_ALL", OsStr::new("C"))], READ_TIMEOUT)?;
@@ -283,7 +283,7 @@ pub(super) fn in_headset_profile(text: &str) -> bool {
     false
 }
 
-/// The voluntary context switches of a process's threads since the first sample, which is how often it woke.
+/// Voluntary context switches since the first sample, which is how often the process woke.
 pub(super) struct Wakeups {
     pid: u32,
     /// Per thread id: its count at the first sample that saw it, 0 for a thread born later, and at the latest sample.
@@ -299,7 +299,7 @@ impl Wakeups {
         Ok(Self { pid, threads })
     }
 
-    /// Reads every thread again; a thread that has ended keeps the count of the last sample that saw it.
+    /// A thread that has ended keeps the count of the last sample that saw it.
     pub(super) fn sample(&mut self) -> Result<(), String> {
         for (thread, count) in thread_switches(self.pid)? {
             self.threads
@@ -326,7 +326,7 @@ impl Wakeups {
     }
 }
 
-/// Each thread of `pid` with its voluntary context switches, by the thread's `/proc/<pid>/task` entry; sample input entry name `4243`.
+/// Sample input entry name `4243` under `/proc/<pid>/task`.
 fn thread_switches(pid: u32) -> Result<Vec<(u32, u64)>, String> {
     let tasks = fs::read_dir(format!("/proc/{pid}/task"))
         .map_err(|error| format!("/proc/{pid}/task: {error}"))?;
@@ -349,7 +349,7 @@ fn thread_switches(pid: u32) -> Result<Vec<(u32, u64)>, String> {
     Ok(threads)
 }
 
-/// The calling thread's id, from the `/proc/thread-self` link; sample input link target `4242/task/4243`.
+/// Sample input link target `4242/task/4243`.
 #[cfg(test)]
 pub(super) fn current_thread_id() -> u32 {
     let target = fs::read_link("/proc/thread-self").unwrap();
@@ -362,7 +362,7 @@ pub(super) fn current_thread_id() -> u32 {
         .unwrap()
 }
 
-/// The `voluntary_ctxt_switches` field of a `/proc/<pid>/task/<tid>/status` file; sample input `voluntary_ctxt_switches:\t1234\n`.
+/// Sample input `voluntary_ctxt_switches:\t1234\n`.
 pub(super) fn voluntary_switches(status: &str) -> Option<u64> {
     status.lines().find_map(|line| {
         line.strip_prefix("voluntary_ctxt_switches:")?

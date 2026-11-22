@@ -1,4 +1,4 @@
-//! `hw link`: the daemon's hardware checks, run on the test machine with the installed service stopped and always restored.
+//! `hw link`: the daemon's hardware checks, with the installed service stopped and always restored.
 
 mod adapter;
 mod burst;
@@ -31,7 +31,7 @@ use unit::{Guard, INSTALLED};
 
 /// Every check passed and every bounded gate was met.
 const EXIT_PASSED: u8 = 0;
-/// A check failed, a gate was missed, the run was stopped by a signal or a tool failed.
+/// A check failed, a gate was missed, a signal stopped the run or a tool failed.
 const EXIT_FAILED: u8 = 1;
 /// Wrong usage, or a precondition of the machine that makes the run refuse to start.
 const EXIT_USAGE: u8 = 2;
@@ -46,7 +46,7 @@ const RUN_LOCK: &str = "librepods-hw.lock";
 /// The length of each idle window of C5 unless a test shortens it.
 const IDLE_WINDOW_SECONDS: u64 = 600;
 
-/// Set by SIGINT, SIGTERM or SIGHUP; every wait looks at it, and the restore then runs as on any other way out.
+/// Set by SIGINT, SIGTERM or SIGHUP; every wait looks at it, and the restore still runs.
 static STOP: AtomicBool = AtomicBool::new(false);
 
 /// A stop signal arrived during a check.
@@ -95,7 +95,7 @@ enum Outcome {
     Failed(String),
 }
 
-/// Runs one `hw` command; `args` starts with the word `hw`.
+/// `args` starts with the word `hw`.
 pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let link = match Hw::try_parse_from(args) {
         Ok(Hw {

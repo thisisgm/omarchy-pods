@@ -41,7 +41,6 @@ pub(crate) const DEVICE_INFO_FILE: &str = "device-info.txt";
 /// The packet log is read up to 256 MiB: two hours of 354 byte SDUs, 34 a second, written in hex, come to about 170 MiB.
 pub(crate) const MAX_LOG_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Why a run was not analysed.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AnalyseError {
     #[error(transparent)]

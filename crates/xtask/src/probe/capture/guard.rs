@@ -12,7 +12,7 @@ use super::wires::{Link, Wake, Wires, receive};
 /// How many packets a tail reads at most: a stream that ignored its stop sends about 50 a second, so this is several of the seconds a tail lasts and still ends one a flood would fill.
 pub(super) const TAIL_MAX_PACKETS: u32 = 256;
 
-/// What the guards did as they dropped, kept here because a drop returns nothing.
+/// Kept here because a drop returns nothing.
 #[derive(Default)]
 pub(super) struct Dropped {
     /// A STOP the log has not recorded yet.
@@ -103,7 +103,7 @@ pub(super) struct Tail<'a> {
 }
 
 impl Tail<'_> {
-    /// Reads the tail once, handing `keep` each packet with its stamp; a second call finds nothing left to wait for.
+    /// A second call finds nothing left to wait for.
     pub(super) fn read(&mut self, keep: &mut dyn FnMut(u64, Wake<'_>)) {
         let Some(from_ns) = self.dropped.tail_from_ns.take() else {
             return;

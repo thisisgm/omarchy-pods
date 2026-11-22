@@ -6,7 +6,6 @@ use pods_proto::dictation::TOC_CELT_WIDEBAND_20MS_MONO;
 
 use super::*;
 
-/// The one sample every call of the stand-in decoder gives.
 const STAND_IN_SAMPLE: f32 = 0.25;
 
 /// A decoder call that gives one sample, except the second call, which panics, the fourth, which is an error, and the fifth, which claims more samples than the buffer holds.

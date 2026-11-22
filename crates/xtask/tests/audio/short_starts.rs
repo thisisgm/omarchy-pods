@@ -22,7 +22,6 @@ use super::{
 
 /// The uplink of `trials`, `early` and `firstword` runs this long after each start.
 const CYCLE_S: u32 = 5;
-/// The starts of `firstword`.
 const FIRSTWORD_STARTS_MS: [u32; 3] = [8_000, 23_000, 38_000];
 /// The first sample of a cycle is this much older than its start.
 const LEAD_MS: u32 = 900;

@@ -34,7 +34,7 @@ const ACK_WAIT: Duration = Duration::from_millis(HANDSHAKE_STEP_TIMEOUT_MS);
 /// Larger than the 247 byte metadata packet, the largest of the burst; a longer SDU is noted by its start.
 const RECV_BUFFER_LEN: usize = 1024;
 
-/// What the burst held: opcode counts, the opcodes of packets that did not parse, setting identifiers and the packets without an opcode, never a payload.
+/// What the burst held, never a payload.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Tally {
     opcodes: BTreeMap<u16, usize>,
@@ -54,7 +54,6 @@ pub(super) struct Difference {
     without_opcode: usize,
 }
 
-/// Why the check ended without a tally.
 enum Ended {
     Interrupted,
     Failed(String),
@@ -67,7 +66,7 @@ impl From<ChannelError> for Ended {
 }
 
 impl Tally {
-    /// Keeps the opcode, whether the packet parsed and, for a setting, its identifier; nothing else of the SDU.
+    /// Keeps nothing of the SDU but its opcode, whether it parsed and a setting's identifier.
     pub(super) fn note(&mut self, sdu: &[u8]) {
         let Some(opcode) = opcode_of(sdu) else {
             self.without_opcode = self.without_opcode.saturating_add(1);
@@ -191,7 +190,7 @@ fn runs(settings: &BTreeSet<u8>) -> String {
     }))
 }
 
-/// C8: stops the test unit, then opens the control channel of the connected `AirPods` once and tallies their first burst.
+/// C8: stops the test unit, then opens the control channel once and tallies the first burst.
 pub(super) fn run(_lab: &Lab<'_>) -> Result<Check, Interrupted> {
     let mut check = Check::new("C8 burst");
     // The daemon under test holds a channel while it runs, and whether the pods would take a second one is unknown.
@@ -216,7 +215,7 @@ pub(super) fn run(_lab: &Lab<'_>) -> Result<Check, Interrupted> {
     Ok(check)
 }
 
-/// The address of the `AirPods` `BlueZ` reports connected now; a device it does not is never dialled.
+/// A device `BlueZ` does not report connected is never dialled.
 fn connected_address() -> Result<BdAddr, String> {
     let device = bluez()?.connected().ok_or("no connected AirPods")?;
     device

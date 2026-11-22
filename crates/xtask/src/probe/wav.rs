@@ -1,4 +1,4 @@
-//! Writes decoded audio as a WAV file of 32 bit floats, mono, with the rate the caller names, and reads the WAV files a decode or a recorder wrote.
+//! Writes decoded audio as a mono 32 bit float WAV, and reads the WAV files a decode or a recorder wrote.
 
 use std::io::{self, Write};
 

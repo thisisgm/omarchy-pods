@@ -46,7 +46,6 @@ mod tests {
     const REFUSED: i32 = 1;
     /// The units of the short run at 64 kHz: 31 s of whole SDUs.
     const UNITS: u32 = SHORT_RUN_S * RATE_HZ / (SAMPLES_PER_UNIT * UNITS_PER_SDU) * UNITS_PER_SDU;
-    /// The samples those units decode to.
     const SAMPLES: u32 = UNITS * SAMPLES_PER_UNIT;
     /// The files a run holds once it is analysed, the device strings among them.
     const ANALYSED: [&str; 6] = [
@@ -57,7 +56,6 @@ mod tests {
         "sdu.log",
         "units.tsv",
     ];
-    /// The files a decode adds.
     const DECODED: [&str; 5] = [
         "decode.tsv",
         "eld.mp4",
@@ -72,7 +70,6 @@ mod tests {
     const MS_PER_SECOND: u32 = 1000;
     /// The time between two SDUs of the generated stream at 64 kHz.
     const ONE_SDU_MS: u32 = UNITS_PER_SDU * SAMPLES_PER_UNIT * MS_PER_SECOND / RATE_HZ;
-    /// The most units one decode takes.
     const MAX_UNITS: u32 = 160_000;
     /// A second over the time that many units last at 64 kHz.
     const TOO_LONG_S: u32 = MAX_UNITS * SAMPLES_PER_UNIT / RATE_HZ + 1;
@@ -103,7 +100,6 @@ mod tests {
     const REFUSED_AT: u32 = 10;
     /// The mode of a stand-in for FFmpeg: its owner may run it.
     const RUNNABLE: u32 = 0o700;
-    /// A line a stand-in writes on its standard error.
     const STAND_IN_LINE: &str = "a line from the stand-in";
 
     /// A short run clocked at `rate_hz` that opens with a device information packet and holds what `unit_of` gives as each unit in turn, analysed.

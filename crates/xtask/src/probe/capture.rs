@@ -39,12 +39,11 @@ const EAR_REPORT_WAIT_MS: u64 = 3_000;
 const RECV_BUFFER_LEN: usize = 4096;
 /// How long the channel stays open after STOP: pull request 85 of this repository flushes for up to 1 s before it closes.
 pub(crate) const STOP_TAIL_MS: u64 = 1_000;
-/// How long a script that changes the microphone side waits for the pods to report it; chosen here to match the ear wait.
+/// How long a side change waits for the pods to report it; chosen to match the ear wait.
 const SIDE_REPORT_WAIT_MS: u64 = 3_000;
-/// Nanoseconds in the milliseconds the waits and the script offsets are written in.
 const NS_PER_MS: u64 = 1_000_000;
 
-/// How long the loop waits at each step, in nanoseconds; a test passes shorter waits.
+/// Each wait in nanoseconds; a test passes shorter waits.
 #[derive(Debug, Clone, Copy)]
 struct Timing {
     handshake_step: u64,
@@ -65,14 +64,13 @@ impl Timing {
     };
 }
 
-/// What a run is given to reach the pods: the control channel, open, and the way to open the attribute channel, which a run given one takes when its script opens on that channel or, after a handshake, as soon as that ends.
+/// The open control channel, and an attribute channel opener taken at the opening or after the handshake.
 #[derive(Clone, Copy)]
 pub(crate) struct Links<'a> {
     pub(crate) accessory: Option<&'a Channel>,
     pub(crate) att: Option<OpenAtt<'a>>,
 }
 
-/// Why a run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EndReason {
     ScriptDone,
@@ -127,7 +125,6 @@ impl From<IoFailure> for EndReason {
     }
 }
 
-/// What a run counted and why it ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Outcome {
     /// Packets from the pods that went into the log.
@@ -148,7 +145,6 @@ pub(crate) struct Outcome {
     pub(crate) dictation_starts: u32,
     /// Dictation stop writes that left.
     pub(crate) dictation_stops: u32,
-    /// Requests of the pods that were answered with a refusal.
     pub(crate) att_requests_refused: u32,
     pub(crate) end: EndReason,
 }
@@ -186,7 +182,6 @@ struct Engine<'a, 'o> {
     initial_side: Option<ControlCommand>,
     /// The channel the last packet came from, which the next wait asks last.
     last_read: Bearer,
-    /// What the attribute channel waits for.
     asked: Asked,
     /// The walk found the four handles, or the owner waived a listing the pods did not give.
     checked: bool,
@@ -330,7 +325,7 @@ impl Engine<'_, '_> {
         Ok(())
     }
 
-    /// Opens the attribute channel; no packet stamp is taken while the connect lasts, so the two marks bound the stamps that came late.
+    /// No packet stamp is taken while the connect lasts, so the two marks bound the stamps that came late.
     fn connect_att(&mut self) -> Flow {
         let what = Bearer::Att.name();
         let open = self.open_att.ok_or(IoFailure::NotGiven { what })?;
@@ -359,7 +354,6 @@ impl Engine<'_, '_> {
         }
     }
 
-    /// Ends a wait that ran out, opens the gate when its conditions hold, and fires the events that are due.
     fn advance(&mut self, now_ns: u64) -> Flow {
         self.end_overdue_wait(now_ns)?;
         match &self.phase {
@@ -493,7 +487,6 @@ impl Engine<'_, '_> {
     }
 }
 
-/// Marks and counts a packet the receive buffer could not hold.
 fn too_long(
     recorder: &mut Recorder<'_>,
     at_ns: u64,
@@ -522,7 +515,7 @@ fn side_name(side: MicSide) -> &'static str {
     }
 }
 
-/// Records what the guards sent as they dropped, in the order they drop; each is recorded even when one before it failed.
+/// In the order the guards drop; each is recorded even when one before it failed.
 fn record_dropped(recorder: &mut Recorder<'_>, dropped: &Dropped) -> Result<(), IoFailure> {
     let stop = dropped.stop.take().map_or(Ok(()), |sent| {
         if sent.result.is_ok() {
@@ -547,7 +540,7 @@ fn record_dropped(recorder: &mut Recorder<'_>, dropped: &Dropped) -> Result<(), 
     stop.and(dictation_stop).and(idle).and(restore)
 }
 
-/// Logs one packet of the tail, and marks a reply of the stream with its delay as the loop does.
+/// Marks a reply of the stream with its delay, as the loop does.
 fn keep(
     recorder: &mut Recorder<'_>,
     at_ns: u64,
@@ -574,7 +567,6 @@ fn first_failure(end: EndReason, later: Result<(), IoFailure>) -> EndReason {
     }
 }
 
-/// Follows `script` on the open channels until it ends, the pods hang up, a signal raises `interrupted`, or a step fails.
 pub(crate) fn run(
     links: &Links<'_>,
     script: &Script,

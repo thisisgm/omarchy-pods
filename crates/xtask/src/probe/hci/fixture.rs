@@ -19,13 +19,10 @@ pub(crate) const DEVICE_NAME: &str = "Synthetic Pods";
 pub(crate) const LINK_KEY: [u8; 16] = [
     0x9e, 0x37, 0x79, 0xb9, 0x7f, 0x4a, 0x7c, 0x15, 0xf3, 0x9c, 0xc0, 0x60, 0x5c, 0xed, 0xc8, 0x34,
 ];
-/// What a keyboard on a second link sends, which no output may hold.
+/// What a keyboard on a second link sends; no output may hold it.
 pub(crate) const KEYSTROKES: &[u8] = b"typed-on-a-keyboard";
-/// A made up connection handle for the pods.
 pub(crate) const PODS_HANDLE: u16 = 0x000b;
-/// A made up connection handle for the keyboard.
 pub(crate) const KEYBOARD_HANDLE: u16 = 0x000c;
-/// A made up connection handle for the pods' voice link.
 const VOICE_HANDLE: u16 = 0x0101;
 /// 2026-11-20T12:00:00Z in microseconds since 1970, the moment every synthetic trace starts.
 pub(crate) const START_UNIX_MICROS: u64 = 1_795_176_000_000_000;
@@ -33,7 +30,6 @@ pub(crate) const START_UNIX_MICROS: u64 = 1_795_176_000_000_000;
 const YEAR_0_TO_1970_MICROS: u64 = 62_168_256_000_000_000;
 /// How far the clock moves after every record unless a test sets it.
 const STEP_MICROS: u64 = 1_000;
-/// Microseconds in one millisecond.
 const MICROS_PER_MILLI: u64 = 1_000;
 /// The only version of the btsnoop format (`BlueZ` src/shared/btsnoop.c, `btsnoop_version`).
 const BTSNOOP_VERSION: u32 = 1;
@@ -74,7 +70,6 @@ pub(crate) const EVENT_DISCONNECTION_COMPLETE: u8 = 0x05;
 pub(crate) const EVENT_REMOTE_NAME: u8 = 0x07;
 pub(crate) const EVENT_LINK_KEY: u8 = 0x18;
 pub(crate) const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
-/// The status of an event that reports success.
 const STATUS_SUCCESS: u8 = 0x00;
 /// The type and the bus of a new adapter record: a primary controller on USB (`BlueZ` src/shared/btsnoop.h, `btsnoop_opcode_new_index`).
 const PRIMARY_ON_USB: [u8; 2] = [0x00, 0x01];
@@ -148,7 +143,6 @@ pub(crate) const PKLG_SCO_SENT: u8 = 0x18;
 pub(crate) const PKLG_SCO_RECEIVED: u8 = 0x19;
 /// What the length field of a `PacketLogger` record counts besides the payload: seconds, microseconds and the type.
 pub(crate) const PKLG_COUNTED_LEN: u32 = 9;
-/// Microseconds in one second.
 const MICROS_PER_SECOND: u64 = 1_000_000;
 /// The opcode of HCI Create Connection, whose parameters open with the address (Core 6.1 Vol 4 Part E 7.1.5).
 const CREATE_CONNECTION: u16 = 0x0405;
@@ -163,14 +157,13 @@ const OTHER_WRITE: [u8; 4] = [0x52, 0x03, 0x00, 0x01];
 const FRAME_FLAG: u8 = 0x80;
 const FRAME_LEVEL: u8 = 200;
 
-/// How a trace under construction lays its records out.
 #[derive(Clone, Copy)]
 enum Layout {
     Btsnoop,
     PacketLogger,
 }
 
-/// One trace under construction; records are stamped by a clock that steps after each.
+/// Records are stamped by a clock that steps after each.
 pub(crate) struct Trace {
     bytes: Vec<u8>,
     micros: u64,
@@ -202,17 +195,14 @@ impl Trace {
         }
     }
 
-    /// Sets the clock to `ms` milliseconds after the start of the trace.
     pub(crate) fn at_ms(&mut self, ms: u64) {
         self.at_micros(ms.saturating_mul(MICROS_PER_MILLI));
     }
 
-    /// Sets the clock to `micros` microseconds after the start of the trace.
     pub(crate) fn at_micros(&mut self, micros: u64) {
         self.micros = START_UNIX_MICROS.saturating_add(micros);
     }
 
-    /// Sends what follows on another connection handle.
     pub(crate) fn on(&mut self, handle: u16) {
         self.handle = handle;
     }
@@ -264,7 +254,6 @@ impl Trace {
         self.record(OPCODE_EVENT, &packet);
     }
 
-    /// A Disconnection Complete event for `handle`, after which the link is gone.
     pub(crate) fn end_link(&mut self, handle: u16) {
         let mut ended = vec![STATUS_SUCCESS];
         ended.extend(handle.to_le_bytes());
@@ -272,7 +261,6 @@ impl Trace {
         self.event(EVENT_DISCONNECTION_COMPLETE, &ended);
     }
 
-    /// One ACL data packet with the given packet boundary flag.
     pub(crate) fn acl(&mut self, direction: Direction, boundary: u16, data: &[u8]) {
         let mut packet = (self.handle | (boundary << BOUNDARY_SHIFT))
             .to_le_bytes()
@@ -308,12 +296,10 @@ impl Trace {
         self.acl(direction, boundary, rest);
     }
 
-    /// One L2CAP PDU in one ACL packet.
     pub(crate) fn pdu(&mut self, direction: Direction, cid: u16, payload: &[u8]) {
         self.fragments(direction, cid, payload, &[]);
     }
 
-    /// One signalling command in a PDU of its own.
     pub(crate) fn signal(&mut self, direction: Direction, code: u8, data: &[u8]) {
         let mut command = vec![code, SIGNAL_IDENTIFIER];
         command.extend(u16::try_from(data.len()).unwrap().to_le_bytes());
@@ -321,7 +307,6 @@ impl Trace {
         self.pdu(direction, SIGNALLING_CID, &command);
     }
 
-    /// A connection request for `psm` and the response that answers it with `result`.
     pub(crate) fn connect(
         &mut self,
         requester: Direction,
@@ -348,7 +333,6 @@ impl Trace {
         self.connect(requester, psm, cids, RESULT_SUCCESS);
     }
 
-    /// A configuration request from `sender` for the channel with `cids`, carrying one MTU option.
     pub(crate) fn offer_mtu(&mut self, sender: Direction, cids: (u16, u16), mtu: u16) {
         let mut request = receiver_cid(sender, cids).to_le_bytes().to_vec();
         request.extend(0_u16.to_le_bytes());
@@ -357,7 +341,6 @@ impl Trace {
         self.signal(sender, CONFIGURATION_REQUEST, &request);
     }
 
-    /// A configuration request from `sender` for the channel with `cids`, asking for an L2CAP mode.
     pub(crate) fn offer_mode(&mut self, sender: Direction, cids: (u16, u16), mode: u8) {
         let mut request = receiver_cid(sender, cids).to_le_bytes().to_vec();
         request.extend(0_u16.to_le_bytes());
@@ -365,7 +348,6 @@ impl Trace {
         self.signal(sender, CONFIGURATION_REQUEST, &request);
     }
 
-    /// One PDU from `sender` on the channel with `cids`.
     pub(crate) fn send(&mut self, sender: Direction, cids: (u16, u16), payload: &[u8]) {
         self.pdu(sender, receiver_cid(sender, cids), payload);
     }
@@ -406,7 +388,6 @@ pub(crate) fn receiver_cid(sender: Direction, cids: (u16, u16)) -> u16 {
     }
 }
 
-/// One AVDTP signal in a single packet.
 pub(crate) fn avdtp(label: u8, message: u8, signal: u8, body: &[u8]) -> Vec<u8> {
     let mut packet = vec![(label << 4) | message, signal];
     packet.extend(body);
@@ -420,7 +401,6 @@ pub(crate) fn capability(category: u8, data: &[u8]) -> Vec<u8> {
     capability
 }
 
-/// A Media Codec capability for an audio codec.
 pub(crate) fn media_codec(codec_type: u8, bytes: &[u8]) -> Vec<u8> {
     let mut data = vec![MEDIA_TYPE_AUDIO, codec_type];
     data.extend(bytes);
@@ -443,7 +423,6 @@ pub(crate) fn counting_bytes(len: usize) -> Vec<u8> {
         .collect()
 }
 
-/// The control channel packets of the session trace, in order.
 pub(crate) fn control_packets() -> Vec<(Direction, Vec<u8>)> {
     let mut acknowledgement = HANDSHAKE_ACK_PREFIX.to_vec();
     acknowledgement.extend([0x00; 8]);
@@ -490,7 +469,6 @@ fn identify(trace: &mut Trace) {
     paired(trace);
 }
 
-/// The events that name the pods: the connection, the name and the link key.
 fn paired(trace: &mut Trace) {
     let mut connected = vec![STATUS_SUCCESS];
     connected.extend(PODS_HANDLE.to_le_bytes());

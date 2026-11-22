@@ -13,7 +13,6 @@ pub(crate) const SEARCH_UNITS: usize = 3;
 /// The fewest units a decode may hold: one more than the furthest offset reaches at both ends, so a frame is left to judge it on.
 const FEWEST_UNITS: usize = 2 * SEARCH_UNITS + 1;
 
-/// How far apart two decodes of one stream are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Comparison {
     /// The units the first decode is behind the second, where the two agree best; none when no frame could judge the offsets, and the decodes are then compared level.
@@ -57,7 +56,6 @@ impl Apart {
     }
 }
 
-/// Why two decodes were not compared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CompareError {
     #[error("{samples} samples are not a whole number of units of {samples_per_unit}")]
@@ -83,7 +81,6 @@ pub(crate) fn lsb_apart(a: f32, b: f32) -> f64 {
     }
 }
 
-/// The largest difference in a frame of each decode.
 pub(crate) fn frame_apart(a: &[f32], b: &[f32]) -> f64 {
     let apart = a.iter().zip(b).map(|(&a, &b)| lsb_apart(a, b));
     apart.fold(0.0, f64::max)
@@ -100,7 +97,6 @@ fn units_in(samples: &[f32], samples_per_unit: usize) -> Result<usize, CompareEr
     samples.len().checked_div(samples_per_unit).ok_or(not_whole)
 }
 
-/// Frame `index` of a decode.
 fn frame(samples: &[f32], index: usize, samples_per_unit: usize) -> Option<&[f32]> {
     let from = index.checked_mul(samples_per_unit)?;
     samples.get(from..from.checked_add(samples_per_unit)?)

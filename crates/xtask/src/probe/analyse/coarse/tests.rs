@@ -10,18 +10,14 @@ use super::super::support::{NS_PER_MS, NS_PER_SECOND, OPAQUE, SEED, close, from_
 use super::super::synth::synth;
 use super::*;
 
-/// Samples in one unit of the generated streams.
 const SAMPLES_PER_UNIT: u32 = 480;
-/// Units in one SDU of the generated streams.
 const UNITS_PER_SDU: u32 = 4;
-/// The length of one cycle of the scripts with short starts.
 const CYCLE_S: u32 = 5;
 const MS_PER_SECOND: u32 = 1000;
 /// How near the figure of a steady stream comes to the rate it was generated at.
 const STEADY_WITHIN_HZ: f64 = 100.0;
 /// The figures a decode labels 64 kHz: those within five percent of it.
 const LABELLED_64_KHZ: std::ops::RangeInclusive<f64> = 60_800.0..=67_200.0;
-/// The figures a decode labels 48 kHz.
 const LABELLED_48_KHZ: std::ops::RangeInclusive<f64> = 45_600.0..=50_400.0;
 
 fn steady(rate_hz: u32, seconds: u32, jitter_ms: u32) -> Vec<Record> {

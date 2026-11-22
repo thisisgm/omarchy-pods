@@ -11,13 +11,11 @@ use super::super::onsets::{SAME_TAP_MS, SameTaps, ratio_ppm, same_taps, taps};
 use super::super::reference::Reference;
 use super::{ANSWER, DB, Found, MS, RECORDER_CLOCK, Recording, answer, counted, figure};
 
-/// Why a window has no figure against the reference.
 pub(super) const NOT_HELD: &str = "the reference does not hold the whole window";
 const NS_PER_MS: f64 = 1e6;
 /// What a tap row says where under three taps leave none between the first and the last.
 const TOO_FEW_TAPS: &str = "too few to show that they are the same taps in both";
 const PPM: &str = "ppm";
-/// The rows the taps of both recordings give, each with its unit.
 const TAP_ROWS: [(&str, &str); 4] = [
     ("tap_spacing_ratio", PPM),
     ("tap_arrival_minus_reference_min", MS),
@@ -111,7 +109,6 @@ fn behind_ns(
     }
 }
 
-/// Nanoseconds as milliseconds, signed.
 fn ms_of(ns: i128) -> f64 {
     let size = to_f64(u64::try_from(ns.unsigned_abs()).unwrap_or(u64::MAX)) / NS_PER_MS;
     if ns < 0 { -size } else { size }

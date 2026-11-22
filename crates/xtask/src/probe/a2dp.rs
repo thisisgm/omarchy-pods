@@ -42,7 +42,6 @@ pub(crate) const VENDOR_CODEC: u8 = 0xff;
 const RTP_VERSION_SHIFT: u32 = 6;
 /// The RTP version every media packet carries (RFC 3550 section 5.1).
 const RTP_VERSION: u8 = 2;
-/// Nanoseconds in one second.
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 /// Which codec a Media Codec capability names.
@@ -81,7 +80,6 @@ pub(crate) struct Second {
     pub starts: u64,
 }
 
-/// Everything read from the AVDTP channels of one link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Music {
     /// Every Media Codec capability the pods returned to Get Capabilities and Get All Capabilities, in trace order.
@@ -124,7 +122,6 @@ struct Signal<'a> {
     body: &'a [u8],
 }
 
-/// What one packet on a signalling channel is.
 #[derive(Debug, Clone, Copy)]
 enum Packet<'a> {
     Single(Signal<'a>),
@@ -139,7 +136,7 @@ struct Proposal {
     codec: Option<Codec>,
 }
 
-/// The Set Configuration command of each side that waits for the other side's response; both may wait with one label.
+/// Each side's Set Configuration command waiting for the other's response; both may share one label.
 #[derive(Debug, Default)]
 struct Proposals {
     from_host: Option<Proposal>,
@@ -164,7 +161,6 @@ struct MediaPacket {
     gap: bool,
 }
 
-/// What one pass over the AVDTP channels of a link has found so far.
 #[derive(Debug, Default)]
 struct Tables {
     capabilities: Vec<Codec>,
@@ -230,7 +226,7 @@ fn rtp_sequence(packet: &[u8]) -> Option<u16> {
     (first >> RTP_VERSION_SHIFT == RTP_VERSION).then_some(sequence)
 }
 
-/// The AVDTP channels of one link with their roles: the first to open is signalling and the next is media.
+/// The first channel to open is signalling and the next is media.
 fn roles(channels: &Channels, link: usize) -> Vec<(Role, &Channel)> {
     let mut roles: Vec<(Role, &Channel)> = Vec::new();
     for channel in &channels.list {

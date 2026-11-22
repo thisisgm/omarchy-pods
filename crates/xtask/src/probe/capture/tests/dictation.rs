@@ -43,14 +43,12 @@ pub(super) const OPEN_STREAM: [Event; 3] = [
 pub(super) const HANDSHAKE_REQUESTS: [&[u8]; 3] =
     [&HANDSHAKE, &SET_SPECIFIC_FEATURES, &REQUEST_NOTIFICATIONS];
 
-/// A run of `events` after the handshake, on both channels.
 pub(super) fn dictation_case(events: &[Event]) -> Case {
     let mut case = Case::new(Opening::Handshake, events);
     case.wired = BOTH_CHANNELS;
     case
 }
 
-/// The marks of a run that say what was sent to start and stop a stream, in the order the loop wrote them.
 pub(super) fn stream_kinds(report: &Report) -> Vec<&str> {
     let kinds = report.kinds().into_iter();
     let stream = [
@@ -65,7 +63,6 @@ pub(super) fn stream_kinds(report: &Report) -> Vec<&str> {
     kinds.filter(|kind| stream.contains(kind)).collect()
 }
 
-/// What a loop built by hand on both channels left behind.
 pub(super) struct TwoBench<T> {
     pub(super) result: T,
     /// Whether what the guards sent as they dropped was sent and recorded.
@@ -79,7 +76,7 @@ pub(super) struct TwoBench<T> {
     pub(super) marks: String,
 }
 
-/// Builds the loop past its gate on two socket pairs that no thread plays, hands it, its clock and the far end of the attribute channel to `drive`, and drops it as a return would; the clock moves by one at each reading.
+/// Hands the loop past its gate on two unplayed socket pairs to `drive`, then drops it as a return would; the clock moves by one at each reading.
 pub(super) fn on_two_channels<T>(
     script: &Script,
     drive: impl FnOnce(&mut Engine<'_, '_>, &Cell<u64>, &mut Option<Channel>) -> T,

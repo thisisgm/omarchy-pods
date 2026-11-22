@@ -33,7 +33,6 @@ mod tests {
     const TEN_MINUTES_S: u32 = 600;
     /// The SDU taken out of the ten minute log, far from both of its ends.
     const WITHHELD_SDU: u32 = 7000;
-    /// Parts in one.
     const MILLION: f64 = 1e6;
     /// How close the reported clock must come to the generated one, in parts per million.
     const WITHIN_PPM: f64 = 20.0;

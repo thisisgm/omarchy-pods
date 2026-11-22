@@ -1,5 +1,3 @@
-//! Counts of the packets that are not audio, the control replies, the battery and the start trials.
-
 use pods_proto::battery::Charge;
 use pods_proto::uplink::{START, STOP};
 
@@ -14,10 +12,8 @@ use super::*;
 const CONTROL_REPLY: [u8; 13] = [
     0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x01, 0x01,
 ];
-/// An ear detection packet.
 const EAR: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00];
 
-/// A packet of `len` bytes whose opcode bytes read `opcode`.
 fn packet(opcode: u16, len: usize) -> Vec<u8> {
     let [low, high] = opcode.to_le_bytes();
     let mut sdu = vec![0x04, 0x00, 0x04, 0x00, low, high];

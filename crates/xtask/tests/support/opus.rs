@@ -43,12 +43,10 @@ const BETWEEN_NS: u64 = 3 * NS_PER_SECOND;
 /// The mode of a stand-in for FFmpeg: its owner may run it.
 const RUNNABLE: u32 = 0o700;
 
-/// A count of frames or samples as a float.
 pub(crate) fn count(len: usize) -> f64 {
     f64::from(u32::try_from(len).unwrap())
 }
 
-/// One frame of a generated run.
 pub(crate) struct Sent {
     pub(crate) flag: u8,
     pub(crate) level: u8,

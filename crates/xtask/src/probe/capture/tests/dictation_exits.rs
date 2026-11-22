@@ -56,7 +56,6 @@ fn exits_with_the_stream_running() -> Vec<(&'static str, Case, Option<EndReason>
     ]
 }
 
-/// Whether `packets` holds `first` once and `second` once, in that order, with nothing after `second`.
 fn in_order_and_last(packets: &[&[u8]], first: &[u8], second: &[u8]) -> bool {
     let count = |wanted: &[u8]| packets.iter().filter(|got| **got == wanted).count();
     let first_at = packets.iter().position(|got| *got == first);

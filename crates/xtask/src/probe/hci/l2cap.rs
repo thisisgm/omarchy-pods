@@ -1,4 +1,4 @@
-//! The L2CAP channels inside a trace: ACL fragments joined, and channel identifiers mapped to PSMs by the signalling or, where a trace holds none, by content.
+//! L2CAP channels in a trace: ACL fragments joined, identifiers mapped to PSMs by signalling or content.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -105,12 +105,11 @@ pub(crate) struct Unmapped {
     pub handle: u16,
     /// The identifier in the PDUs, which is the receiving side's.
     pub cid: u16,
-    /// Who sent the PDUs.
     pub direction: Direction,
     pub pdus: u64,
 }
 
-/// What the reader met and could not use; nothing is dropped without landing in one of these.
+/// Nothing is dropped without landing in one of these.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Counts {
     pub acl_packets: u64,
@@ -133,7 +132,6 @@ pub(crate) struct Counts {
     pub unmapped_over_limit: u64,
 }
 
-/// Everything `channels` found in a trace.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Channels {
     /// The channels in the order they opened.
@@ -147,7 +145,6 @@ pub(crate) struct Channels {
     pub counts: Counts,
 }
 
-/// The channels of one ACL link and the PDU being joined in each direction.
 #[derive(Debug, Default)]
 struct Link {
     /// The value its channels carry in `Channel::link`.
@@ -165,7 +162,7 @@ struct Link {
 }
 
 impl Link {
-    /// The channel a PDU from `sender` with this identifier belongs to; the identifier is the receiving side's.
+    /// The identifier in a PDU is the receiving side's.
     fn receiving(&self, sender: Direction, cid: u16) -> Option<usize> {
         let cids = match sender {
             Direction::ToPods => &self.pods_cids,
@@ -175,7 +172,6 @@ impl Link {
     }
 }
 
-/// Where and when one PDU was seen.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Seen {
     /// The position of the record that completed it.
@@ -184,7 +180,6 @@ pub(super) struct Seen {
     pub(super) handle: u16,
     /// The number of the link on that handle.
     pub(super) link: usize,
-    /// Who sent it.
     pub(super) direction: Direction,
 }
 
@@ -228,7 +223,6 @@ fn other(direction: Direction) -> Direction {
     }
 }
 
-/// The options of one configuration request that the reader uses.
 #[derive(Debug, Clone, Copy, Default)]
 struct Options {
     mtu: Option<u16>,
@@ -515,7 +509,6 @@ impl Reader {
         self.links.get(&handle)?.receiving(sender, cid)
     }
 
-    /// Marks a channel closed by the record at `seen.position` and frees both of its identifiers.
     fn close(&mut self, index: Option<usize>, seen: Seen) {
         let Some(index) = index else { return };
         let Some(channel) = self.found.list.get_mut(index) else {
@@ -565,12 +558,11 @@ impl Reader {
     }
 }
 
-/// Joins the ACL fragments of every link and sorts the PDUs into the channels the signalling opened.
 pub(crate) fn channels(records: &[HciRecord]) -> Channels {
     Reader::default().read(records).found
 }
 
-/// As `channels`, and what no response opened is mapped by what it carries; an identifier that matches no rule stays unmapped.
+/// As `channels`, then what no response opened is mapped by content; one no rule matches stays unmapped.
 pub(crate) fn channels_by_content(records: &[HciRecord]) -> Channels {
     let by_content = Reader {
         unopened: Some(Unopened::default()),

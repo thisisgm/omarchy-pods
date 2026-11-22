@@ -53,14 +53,12 @@ fn read(trace: &Trace) -> Channels {
     channels(&records(&trace.bytes()).unwrap().kept)
 }
 
-/// The stamp of a record written `ms` milliseconds into a synthetic trace.
 fn at_ns(ms: u64) -> u64 {
     START_UNIX_MICROS
         .saturating_add(ms.saturating_mul(1_000))
         .saturating_mul(1_000)
 }
 
-/// The first bytes of a PDU: its length, then the identifier of the receiving end.
 fn pdu_header(len: u16, cid: u16) -> Vec<u8> {
     let mut header = len.to_le_bytes().to_vec();
     header.extend(cid.to_le_bytes());

@@ -17,7 +17,6 @@ pub(super) const NOTIFICATION: [u8; 5] = [0x1b, 0x21, 0x00, 0xb8, 0x00];
 const MTU_REQUEST: [u8; 3] = [0x02, 0x00, 0x02];
 /// An indication on handle 0x0021, which a peer sends and then waits on.
 const INDICATION: [u8; 4] = [0x1d, 0x21, 0x00, 0x01];
-/// How long the knock of these tests holds the channel.
 const HOLD_MS: u32 = 30;
 /// The same hold in the nanoseconds the marks are stamped in.
 const HOLD_NS: u64 = 30_000_000;

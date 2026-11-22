@@ -13,7 +13,7 @@ use super::*;
 
 const HOST: Direction = Direction::ToPods;
 const PODS: Direction = Direction::FromPods;
-/// The identifiers of a second and a third channel.
+// The host's identifier, then the pods', of a second and a third channel.
 const SECOND: (u16, u16) = (0x0048, 0x0058);
 const THIRD: (u16, u16) = (0x0049, 0x0059);
 /// A dynamic channel identifier no request of these traces opens.

@@ -15,18 +15,15 @@ use super::super::refused::{REFUSED_MESSAGE, REFUSED_UNIT};
 use super::super::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};
 use super::*;
 
-/// The units of each stream decoded here.
 const UNITS: usize = 200;
 /// A wait status of a child that exited with code 3: the code is the second byte.
 const EXITED_WITH_3: i32 = 3 << 8;
 
-/// An empty run in a store under `home`, and where it is.
 fn scratch(home: &TempDir) -> (Run, PathBuf) {
     let path = run_with(home, "scratch", &[]);
     (Run::open(&path).unwrap(), path)
 }
 
-/// The samples of one unit as a length.
 fn frame() -> usize {
     usize::from(SAMPLES_PER_UNIT)
 }

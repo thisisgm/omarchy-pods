@@ -51,7 +51,6 @@ mod tests {
     const BITS_PER_BYTE: f64 = 8.0;
     /// How close the mean bitrate must come to the bits of the median second.
     const MEAN_NEAR_MEDIAN: f64 = 500.0;
-    /// Parts in one.
     const MILLION: f64 = 1e6;
     /// How close the reported clock must come to the generated one, in parts per million.
     const WITHIN_PPM: f64 = 20.0;

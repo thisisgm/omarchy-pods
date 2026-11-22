@@ -1,5 +1,3 @@
-//! The band limit each unit declares, and the spectral line and frequency it stands for.
-
 use super::super::load::load;
 use super::super::support::{OPAQUE, audio, close};
 use super::*;

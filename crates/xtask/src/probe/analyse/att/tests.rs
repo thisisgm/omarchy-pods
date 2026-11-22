@@ -17,7 +17,6 @@ use super::synth::{
 };
 use super::*;
 
-/// Where the generated session starts.
 const START_NS: u64 = 2 * NS_PER_SECOND;
 /// The longest packet the property test feeds, one receive buffer.
 const LONGEST_PACKET: usize = 4096;
@@ -27,7 +26,6 @@ const DAMAGED_FRAMES: u32 = 150;
 const PACKET_BYTES: u64 = 81;
 const PACKET_BITS: u64 = PACKET_BYTES * 8;
 
-/// One packet of one frame for every instant given, in the order given.
 fn logged_at(instants: impl IntoIterator<Item = u64>) -> Vec<Heard> {
     let numbered = (1_u64..).zip(instants);
     let heard = numbered.map(|(frames_done, at_ns)| Heard {
@@ -37,7 +35,6 @@ fn logged_at(instants: impl IntoIterator<Item = u64>) -> Vec<Heard> {
     heard.collect()
 }
 
-/// `packets` packets, the first at zero and the last at `span_ns`.
 fn evenly(packets: u64, span_ns: u64) -> Vec<Heard> {
     let gaps = packets.saturating_sub(1);
     logged_at((0..packets).map(|k| span_ns.saturating_mul(k).checked_div(gaps).unwrap_or(0)))

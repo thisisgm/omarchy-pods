@@ -27,21 +27,18 @@ const fn refused(
     (key, "refused", unit, THIN)
 }
 
-/// What a lead row says when too few packets deliver audio.
 const TOO_FEW_FOR_A_LEAD: &str =
     "start 1; fewer than 50 packets with a whole unit in the first 10 s";
 /// The rows `lead` gives, each cut by a frame length.
 const LEAD_KEYS: [&str; 4] = ["lead_ms", "burst_packets", "burst_frames", "burst_ms"];
 const OWN_FRAME: &str = "frame from clock_units_per_second";
 const NOMINAL_FRAME: &str = "nominal 7.500 ms frame assumed, not measured";
-/// What the gaps row says when no stamp step exists to judge a break against.
 const STAMPS_UNCHECKED: &str = "stamps not checked, no modal step from unit to unit";
 /// A clock about 1560 ppm fast of 64000 Hz, so a figure taken from a fixed 64000 Hz misses every tolerance here.
 const FAST_HZ: u32 = 64_100;
 /// Spectral line 336, the top line of band 31, at `FAST_HZ`: 336 x 64100 / 960.
 const TOP_LINE_HZ: f64 = 22_435.0;
 
-/// The rows of the one start mark of `mixed_run`, in order.
 const START_ROWS: &[(&str, &str, &str, &str)] = &[
     (
         "trial_control_ms",

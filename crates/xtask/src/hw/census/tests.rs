@@ -24,9 +24,9 @@ use super::{
 use crate::hw::report::Check;
 use crate::hw::unit::pause;
 
-/// The reply bound the census gets in these tests, in place of the product's 10 s.
+/// In place of the product's 10 s.
 const TEST_REPLY_TIMEOUT: Duration = Duration::from_millis(200);
-/// The longest a stub daemon serves, so a census that never stops cannot keep it alive.
+/// So a census that never stops cannot keep the stub alive.
 const SERVER_DEADLINE: Duration = Duration::from_secs(30);
 const TIMEOUT_REPLY: &str = r#"{"id":1,"ok":false,"error":{"code":"timeout","message":"m"}}"#;
 const CONFIRMED_REPLY: &str = r#"{"id":1,"ok":true,"result":"confirmed"}"#;
@@ -44,7 +44,7 @@ fn originals_at(level: u64) -> Originals {
     }
 }
 
-/// Gives the reply line to one request line, or `None` to never answer it.
+/// `None` never answers the request.
 type Answer = Box<dyn FnMut(&str) -> Option<&'static str> + Send>;
 
 /// A stub daemon on `socket` that reads each request and gives it `answer`'s reply; it returns the requests it read.
@@ -142,7 +142,7 @@ fn a_command_expected_to_answer_sent_fails_on_any_other_word() {
     );
 }
 
-/// Answers `sent` to every adaptive level and `confirmed` to the rest; the bench's daemon stand-in confirms an unchanged level end to end.
+/// `sent` to every adaptive level, `confirmed` to the rest; the bench confirms an unchanged level.
 fn level_sent() -> Answer {
     Box::new(|line| {
         Some(if line.contains("adaptive_level") {
@@ -167,7 +167,6 @@ fn every_adaptive_level_trial_is_a_write_and_only_sent_counts() {
     assert_eq!(levels_sent(&requests), alternating("60", "40"));
 }
 
-/// The adaptive levels the census asked for, in order.
 fn levels_sent(requests: &[String]) -> Vec<String> {
     requests
         .iter()
@@ -177,7 +176,6 @@ fn levels_sent(requests: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// `CENSUS_TRIALS` values, `first` then `second` in turn.
 fn alternating(first: &str, second: &str) -> Vec<String> {
     (0..CENSUS_TRIALS)
         .map(|trial| if trial % 2 == 0 { first } else { second }.to_owned())

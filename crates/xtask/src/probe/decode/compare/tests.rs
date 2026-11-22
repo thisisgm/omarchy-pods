@@ -19,7 +19,6 @@ pub(crate) const PAST_BOTH_RULES: Laid = (
     [lsb(8.0), lsb(6.0), 0.0, 0.0],
 );
 
-/// The sample that is `steps` steps of a 16 bit sample.
 const fn lsb(steps: f32) -> f32 {
     steps * ONE_LSB
 }

@@ -41,7 +41,6 @@ fn unmapped(handle: u16, cid: u16, direction: Direction, pdus: u64) -> Unmapped 
     }
 }
 
-/// The direction and bytes of every PDU one mapped kind holds.
 fn packets(carried: &Carried) -> Vec<(Direction, Vec<u8>)> {
     let sdus = carried.sdus.iter();
     sdus.map(|sdu| (sdu.direction, sdu.sdu.clone())).collect()

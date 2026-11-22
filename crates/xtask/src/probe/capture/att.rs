@@ -32,7 +32,6 @@ pub(super) enum Asked {
 }
 
 impl Engine<'_, '_> {
-    /// Logs one packet of the attribute channel, answers it if the pods wait on an answer, and hands it to whatever waits for a reply.
     pub(super) fn on_pdu(&mut self, at_ns: u64, pdu: &[u8]) -> Flow {
         self.recorder.received_pdu(at_ns, pdu)?;
         self.answer(at_ns, pdu)?;
@@ -84,12 +83,11 @@ impl Engine<'_, '_> {
         }
     }
 
-    /// Sends the first request of the walk.
     pub(super) fn start_walk(&mut self) -> Flow {
         self.ask_walk(HandleWalk::default(), HandleWalk::first())
     }
 
-    /// Sends one request of the walk, as `04 0a 00 ff ff` asks from handle 0x000a, and waits for its answer.
+    /// As `04 0a 00 ff ff` asks from handle 0x000a, then waits for its answer.
     fn ask_walk(&mut self, walk: HandleWalk, request: [u8; 5]) -> Flow {
         let sent = self.wires.link(Bearer::Att)?.send(&request);
         let at_ns = sent.at_ns;
@@ -100,7 +98,6 @@ impl Engine<'_, '_> {
         Ok(self.recorder.sent(sent, &request, Mark::Sent, &text)?)
     }
 
-    /// Hands one packet to the walk: the next request goes out, or the walk is over, or the packet was no answer and the wait goes on.
     fn walk_on(&mut self, pdu: &[u8]) -> Flow {
         self.list(pdu)?;
         let asked = mem::replace(&mut self.asked, Asked::Nothing);
@@ -129,7 +126,7 @@ impl Engine<'_, '_> {
         }
     }
 
-    /// Writes the attributes one reply of the walk lists, each as `attribute\t0x0007\t0x2803`.
+    /// Each as `attribute\t0x0007\t0x2803`.
     fn list(&mut self, pdu: &[u8]) -> Flow {
         let Ok(AttPdu::Information(pairs)) = AttPdu::parse(pdu) else {
             return Ok(());
@@ -163,7 +160,7 @@ impl Engine<'_, '_> {
         Ok(())
     }
 
-    /// Ends a walk the pods did not end: the channel is closed, because after a timeout or a reply the walk could not follow a request may still be out on it and no other may follow that one (Vol 3, Part F, 3.3.2), and a table past the bound is asked nothing more; only a walk that listed nothing and that the owner waived goes on, on a fresh channel.
+    /// Closes the channel, as a request may still be out (Vol 3, Part F, 3.3.2); a waived empty walk goes on, on a fresh one.
     fn walk_cut(&mut self, check: &HandleCheck, why: &dyn fmt::Display) -> Flow {
         let at_ns = self.close_att(why)?;
         if self.script.opening == Opening::AttMap {
@@ -196,7 +193,6 @@ impl Engine<'_, '_> {
         Ok(at_ns)
     }
 
-    /// Sends the one request of `att-map` for the characteristic declarations.
     fn ask_declarations(&mut self) -> Flow {
         let request = dictate::declarations_request();
         let sent = self.wires.link(Bearer::Att)?.send(&request);
@@ -206,7 +202,7 @@ impl Engine<'_, '_> {
         Ok(self.recorder.sent(sent, &request, Mark::Sent, &text)?)
     }
 
-    /// Writes the declarations of the reply, each as `declaration\t0x0006\t0x04\t0x0007\t0x2b2a`; any reply ends the wait, and what the pods send unasked does not.
+    /// Each as `declaration\t0x0006\t0x04\t0x0007\t0x2b2a`; any reply ends the wait, an unasked packet does not.
     fn declarations_on(&mut self, pdu: &[u8]) -> Flow {
         let entries = match AttPdu::parse(pdu) {
             Ok(AttPdu::ByType(entries)) => entries,
@@ -238,7 +234,6 @@ impl Engine<'_, '_> {
         Ok(())
     }
 
-    /// Ends a wait on the attribute channel that ran out.
     pub(super) fn end_overdue_wait(&mut self, now_ns: u64) -> Flow {
         let asked_at_ns = match &self.asked {
             Asked::Nothing => return Ok(()),

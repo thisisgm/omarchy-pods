@@ -19,7 +19,6 @@ fn built(route: Route, name: ScriptName, marker: bool) -> Script {
     build(name, route, minutes, marker).unwrap()
 }
 
-/// The offsets at which a script does `wanted`.
 fn offsets(script: &Script, wanted: Action) -> Vec<u32> {
     let events = script.events.iter();
     events

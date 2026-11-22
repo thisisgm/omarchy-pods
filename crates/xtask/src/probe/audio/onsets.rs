@@ -11,7 +11,6 @@ const HIGH_PASS_HZ: f64 = 2000.0;
 const ENERGY_MS: u32 = 2;
 /// The stretch before it that it is weighed against.
 const BEFORE_MS: u32 = 50;
-/// The shortest window a rise can be read in.
 pub(crate) const RISE_OVER_MS: u32 = BEFORE_MS + ENERGY_MS;
 /// The rise that makes an onset.
 const RISE_DB: f64 = 20.0;
@@ -69,7 +68,6 @@ fn energy_before(samples: &[f32], rate: u32) -> Vec<f64> {
     running
 }
 
-/// What a count of taps says of itself.
 pub(crate) fn taps_note() -> String {
     format!(
         "rises of {RISE_DB} dB in the energy of {ENERGY_MS} ms above {HIGH_PASS_HZ} Hz over the {BEFORE_MS} ms before, {APART_MS} ms apart"

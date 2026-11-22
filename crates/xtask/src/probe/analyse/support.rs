@@ -19,10 +19,8 @@ pub(crate) const SEED: u64 = 0x5eed_0001;
 pub(crate) const STAMP_STEP: u32 = 480;
 /// The arrival interval of the hand built streams, four 7.5 ms units.
 pub(crate) const SDU_INTERVAL_NS: u64 = 30 * NS_PER_MS;
-/// Units in each SDU of the hand built streams.
 pub(crate) const UNITS_PER_SDU: u32 = 4;
 
-/// A run named `name` in a store under `home`, holding the given files.
 pub(crate) fn run_with(home: &TempDir, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
     let session = Session::open(&root(home.path().as_os_str()), STAMP).unwrap();
     let run = Run::create(&session, name).unwrap();
@@ -48,7 +46,6 @@ pub(crate) fn to_pods(at_ns: u64, sdu: &[u8]) -> Record {
     }
 }
 
-/// One audio SDU from the pods holding `units`, each a stamp and its coded bytes.
 pub(crate) fn audio(at_ns: u64, opaque: &[u8; OPAQUE_LEN], units: &[(u32, &[u8])]) -> Record {
     let units: Vec<AccessUnit<'_>> = units
         .iter()
@@ -81,7 +78,6 @@ pub(crate) fn mark(at_ns: u64, kind: MarkKind) -> Mark {
     Mark { at_ns, kind }
 }
 
-/// Moves every record `by_ns` later.
 pub(crate) fn shifted(mut records: Vec<Record>, by_ns: u64) -> Vec<Record> {
     for record in &mut records {
         record.at_ns = record.at_ns.saturating_add(by_ns);
@@ -103,7 +99,6 @@ pub(crate) fn close(a: f64, b: f64, tolerance: f64) -> bool {
     (a - b).abs() <= tolerance
 }
 
-/// How far `measured` is from `truth`, in parts per million of `truth`.
 pub(crate) fn ppm_apart(measured: f64, truth: f64) -> f64 {
     ((measured - truth) / truth * 1e6).abs()
 }

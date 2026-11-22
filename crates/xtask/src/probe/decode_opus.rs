@@ -1,4 +1,4 @@
-//! Decodes the dictation frames of one analysed run with the Opus decoder candidate and with FFmpeg's two decoders, each by name, compares them, and runs the fixed experiments.
+//! Decodes a run's dictation frames with the Opus candidate and FFmpeg's two decoders, compares them, runs the experiments.
 
 mod candidate;
 mod experiments;
@@ -86,7 +86,6 @@ impl OracleDecoder {
     }
 }
 
-/// Why a run was not decoded.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DecodeOpusError {
     #[error(transparent)]
@@ -187,7 +186,6 @@ fn against_rows(decoder: OracleDecoder, compared: &Result<Comparison, String>) -
     against
 }
 
-/// What one oracle made of the stream and how far the candidate's whole decode is from it.
 fn oracle_rows(decoder: OracleDecoder, heard: &Heard<'_>, candidate: Option<&[f32]>) -> Vec<Row> {
     let key = decoder.key();
     let from_oracle = heard.decoded.as_deref().ok();
@@ -207,7 +205,7 @@ fn oracle_rows(decoder: OracleDecoder, heard: &Heard<'_>, candidate: Option<&[f3
     rows
 }
 
-/// Decodes the run at `run_dir`, writes the decodes and their table into it, all or none, and returns the table.
+/// Writes the decodes and their table into the run, all or none.
 pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeOpusError> {
     let run = Run::open(run_dir)?;
     let listed = run.read(FRAMES_FILE, MAX_READ_BYTES)?;

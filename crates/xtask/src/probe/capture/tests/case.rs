@@ -105,7 +105,6 @@ impl Write for Tape<'_> {
     }
 }
 
-/// One run of the loop against fake pods.
 pub(super) struct Case {
     pub(super) script: Script,
     pub(super) timing: Timing,
@@ -123,9 +122,7 @@ pub(super) struct Case {
 
 /// The control channel alone, written twice because a run holds one or two channels.
 pub(super) const CONTROL_ONLY: [Bearer; 2] = [Bearer::Accessory; 2];
-/// The attribute channel alone.
 pub(super) const ATT_ONLY: [Bearer; 2] = [Bearer::Att; 2];
-/// Both channels.
 pub(super) const BOTH_CHANNELS: [Bearer; 2] = [Bearer::Accessory, Bearer::Att];
 
 impl Case {
@@ -236,14 +233,11 @@ impl Case {
     }
 }
 
-/// What one run left behind.
 pub(super) struct Report {
     /// `None` when the loop panicked.
     pub(super) outcome: Option<Outcome>,
     pub(super) log: String,
-    /// The log of the attribute channel.
     pub(super) att_log: String,
-    /// The list of the pods' attribute table.
     pub(super) handles: String,
     pub(super) marks: String,
     pub(super) cues: String,
@@ -251,7 +245,6 @@ pub(super) struct Report {
     pub(super) returned_ns: u64,
     /// The loop's clock when the log writer failed or panicked.
     pub(super) faulted_at_ns: Option<u64>,
-    /// How many times the loop asked for the attribute channel to be opened.
     pub(super) att_dials: usize,
     pub(super) pods: Transcript,
 }
@@ -283,7 +276,6 @@ impl Report {
             .collect()
     }
 
-    /// The packets of the log of the attribute channel that went one way, in order.
     pub(super) fn att_logged(&self, direction: Direction) -> Vec<Vec<u8>> {
         let records = self.att_records().into_iter();
         records
@@ -300,7 +292,7 @@ impl Report {
             .collect()
     }
 
-    /// The stamp and the text of every mark of one kind, as `1203456789\tgate\tear` is a stamp in nanoseconds, a kind and a text.
+    /// As `1203456789\tgate\tear` is a stamp in nanoseconds, a kind and a text.
     pub(super) fn marks(&self, kind: &str) -> Vec<(u64, &str)> {
         let lines = self.marks.lines();
         lines
@@ -314,7 +306,6 @@ impl Report {
             .collect()
     }
 
-    /// The text of every mark of one kind, in the order the loop wrote them.
     pub(super) fn texts(&self, kind: &str) -> Vec<&str> {
         let marks = self.marks(kind).into_iter();
         marks.map(|(_, text)| text).collect()
@@ -326,14 +317,12 @@ impl Report {
         lines.map(|line| line.split('\t').nth(1).unwrap()).collect()
     }
 
-    /// The text of the only mark of one kind.
     pub(super) fn mark(&self, kind: &str) -> &str {
         let marks = self.marks(kind);
         assert_eq!(marks.len(), 1, "{kind} marks in:\n{}", self.marks);
         marks[0].1
     }
 
-    /// The log stamp of the only time the loop sent `sdu`.
     pub(super) fn sent_at_ns(&self, sdu: &[u8]) -> u64 {
         let records = self.records();
         let mut sent = records

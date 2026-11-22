@@ -3,16 +3,13 @@
 use super::super::analyse::stats::count;
 use super::levels::{LSB_POWER, db, mean_power, samples_in};
 
-/// The frame of the loudness envelope.
 const ENVELOPE_MS: u32 = 5;
-/// The step the offsets are tried in.
 const STEP_MS: usize = 1;
 /// Under this correlation of the two envelopes nothing was found.
 const MIN_SCORE: f64 = 0.5;
 /// The head of a start is its first second, and the body the three seconds after it.
 const HEAD_MS: u32 = 1000;
 const BODY_MS: u32 = 3000;
-/// The least stretch a start needs for both.
 pub(crate) const HEAD_AND_BODY_MS: u32 = HEAD_MS + BODY_MS;
 /// How far from where it is expected each is searched: a second of lead, and as much of clock error between two machines.
 pub(crate) const SEARCH_SPAN_MS: u32 = 2000;
@@ -37,7 +34,6 @@ pub(crate) struct HeadCheck {
 }
 
 impl Alignment {
-    /// Whether this and `other` place one start within `AGREE_WITHIN_MS` of each other.
     pub(crate) fn agrees_with(self, other: Self) -> bool {
         self.offset_ms.abs_diff(other.offset_ms) <= AGREE_WITHIN_MS
     }

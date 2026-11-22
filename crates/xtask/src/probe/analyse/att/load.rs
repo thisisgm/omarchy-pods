@@ -14,34 +14,29 @@ pub(crate) struct FrameSeen {
     pub(crate) counter: u16,
     pub(crate) flag: u8,
     pub(crate) level: u8,
-    /// Coded bytes in the frame.
     pub(crate) len: usize,
     /// The first coded byte, `None` for a frame with none.
     pub(crate) toc: Option<u8>,
 }
 
-/// One audio notification the pods sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Notification {
     /// Its place among the records that were loaded, counted from 0.
     pub(crate) record: usize,
     pub(crate) at_ns: u64,
     pub(crate) counter: u8,
-    /// The whole frames, in order.
     pub(crate) frames: Vec<FrameSeen>,
     pub(crate) length_matches: bool,
     /// Bytes after the last whole frame.
     pub(crate) trailing: usize,
 }
 
-/// Which write of the host a reply of the pods answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Answers {
     Start,
     Stop,
 }
 
-/// One of the two replies of the stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Reply {
     /// Its place among the records that were loaded, counted from 0.
@@ -50,7 +45,6 @@ pub(crate) struct Reply {
     pub(crate) answers: Answers,
 }
 
-/// What the pods said of one handle of their table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Listed {
     /// The type of the attribute, as `TypeText` writes it.
@@ -59,25 +53,21 @@ pub(crate) struct Listed {
     pub(crate) properties: Option<u8>,
 }
 
-/// The packets of one stretch of the attribute log, sorted by what reads them.
 #[derive(Debug, Default)]
 pub(crate) struct LoadedAtt {
     pub(crate) audio: Vec<Notification>,
     pub(crate) replies: Vec<Reply>,
     pub(crate) handles: BTreeMap<u16, Listed>,
-    /// Requests the pods made of the host, by opcode.
     pub(crate) requests: BTreeMap<u8, u32>,
     /// Packets from the pods no parser reads: one cut before its fixed fields, a list with no whole entry, a value on the audio handle without its marker.
     pub(crate) parse_failures: u32,
     pub(crate) from_pods: u32,
     /// Packets the host sent, which no figure reads.
     pub(crate) to_pods: u32,
-    /// The longest packet from the pods, `None` when they sent none.
     pub(crate) largest_pdu: Option<usize>,
 }
 
 impl LoadedAtt {
-    /// Every whole frame, in order.
     pub(crate) fn frames(&self) -> impl Iterator<Item = &FrameSeen> {
         self.audio.iter().flat_map(|packet| &packet.frames)
     }
@@ -108,7 +98,6 @@ impl LoadedAtt {
         }
     }
 
-    /// Takes a packet that is no part of the stream: a listing of the table, a request, or one nothing reads.
     fn take_other(&mut self, pdu: &[u8], declarations_asked: bool) {
         match AttPdu::parse(pdu) {
             Ok(AttPdu::Information(pairs)) => {
@@ -144,7 +133,7 @@ impl LoadedAtt {
     }
 }
 
-/// Sorts `records`; nothing is dropped, and a packet no figure reads is still counted.
+/// Nothing is dropped; a packet no figure reads is still counted.
 pub(crate) fn load(records: &[Record]) -> LoadedAtt {
     let mut loaded = LoadedAtt::default();
     // A reply answers the last request of the host, so only a request changes what the next list is read as.

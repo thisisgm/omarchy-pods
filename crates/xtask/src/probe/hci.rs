@@ -1,4 +1,4 @@
-//! Reads a Bluetooth trace: the btsnoop file `btmon -w` writes here, Apple's `PacketLogger` file in `pklg`, and in `l2cap` the channels inside either.
+//! Reads a Bluetooth trace: btsnoop from `btmon -w`, `PacketLogger` in `pklg`, the channels in `l2cap`.
 
 mod content;
 mod export;
@@ -28,7 +28,6 @@ const MONITOR_DATALINK: u32 = 2001;
 const MAX_RECORD_LEN: u32 = 65_535;
 /// Microseconds from the btsnoop epoch, midnight of year 0, to 1970 (`BlueZ` src/shared/btsnoop.c: 0x00E03AB44A676000 less 946684800 seconds).
 const YEAR_0_TO_1970_MICROS: u64 = 62_168_256_000_000_000;
-/// Nanoseconds in one microsecond.
 const NANOS_PER_MICRO: u64 = 1_000;
 /// Monitor opcode of an HCI event (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_EVENT_PKT`).
 const OPCODE_EVENT: u16 = 3;
@@ -40,7 +39,6 @@ const OPCODE_ACL_RX: u16 = 5;
 const EVENT_DISCONNECTION_COMPLETE: u8 = 0x05;
 /// HCI Synchronous Connection Complete (`BlueZ` monitor/bt.h, `BT_HCI_EVT_SYNC_CONN_COMPLETE`).
 const EVENT_SYNCHRONOUS_CONNECTION_COMPLETE: u8 = 0x2c;
-/// The status of an event that reports success.
 const STATUS_SUCCESS: u8 = 0x00;
 /// A connection handle is the low 12 bits of the field that holds it (`BlueZ` lib/bluetooth/hci.h, `acl_handle`).
 pub(crate) const HANDLE_MASK: u16 = 0x0fff;
@@ -81,7 +79,7 @@ pub(crate) enum Read {
     PacketLogger(Vec<HciRecord>),
 }
 
-/// Why a trace was refused: a rule its file header or one of its `PacketLogger` records broke; none holds a byte of the trace.
+/// A rule the file header or a `PacketLogger` record broke; none holds a byte of the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum TraceError {
     #[error("btsnoop trace is {len} bytes, shorter than its {FILE_HEADER_LEN} byte file header")]
@@ -141,7 +139,7 @@ impl fmt::Display for Damage {
     }
 }
 
-/// Where a trace stops being read; every record before it is whole and is read.
+/// Every record before the cut is whole and is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "btsnoop record {record} at byte offset {offset} {damage}, so the trace is read only up to the whole records before it"
@@ -154,7 +152,6 @@ pub(crate) struct Cut {
     pub damage: Damage,
 }
 
-/// What `records` read from a trace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Records {
     /// The records the tables need, in trace order.
@@ -163,14 +160,13 @@ pub(crate) struct Records {
     pub cut: Option<Cut>,
 }
 
-/// Takes the next `N` bytes off the front of `rest`; `None`, with nothing taken, when fewer are left.
+/// `None`, with nothing taken, when fewer than `N` bytes are left.
 pub(crate) fn take<const N: usize>(rest: &mut &[u8]) -> Option<[u8; N]> {
     let (head, tail) = rest.split_first_chunk::<N>()?;
     *rest = tail;
     Some(*head)
 }
 
-/// The fields of one record header that the reader uses.
 struct RecordHeader {
     /// How many data bytes follow the header.
     included: u32,
@@ -225,7 +221,7 @@ pub(crate) fn sender(kind: Kind) -> Option<Direction> {
     }
 }
 
-/// Keeps one record the tables need: an ACL packet with its bytes, every other kind as the kind alone.
+/// An ACL packet keeps its bytes, every other kind only the kind.
 fn keep(kept: &mut Vec<HciRecord>, at_ns: u64, kind: Option<Kind>, packet: &[u8]) {
     if let Some(kind) = kind {
         let data = sender(kind).map_or_else(Vec::new, |_| packet.to_vec());

@@ -20,10 +20,8 @@ const TYPE_ACL_RECEIVED: u8 = 0x03;
 const TYPE_SCO_SENT: u8 = 0x18;
 /// Synchronous data the host received, with the audio left out; not 0x09, the type Wireshark knows.
 const TYPE_SCO_RECEIVED: u8 = 0x19;
-/// Nanoseconds in one second.
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
-/// What is wrong with the record a `PacketLogger` trace is refused at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fault {
     /// Fewer bytes are left than a length, a stamp and a type take.
@@ -50,7 +48,6 @@ impl fmt::Display for Fault {
     }
 }
 
-/// The fields in front of one payload.
 struct Header {
     /// How many bytes follow the length field.
     counted: u32,

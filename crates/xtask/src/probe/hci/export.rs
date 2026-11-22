@@ -34,10 +34,8 @@ const LINKS_NAME: &str = "links.txt";
 /// What the meta file of a run names as its script when a trace made it, and as its tool.
 const SCRIPT: &str = "trace";
 const TOOL: &str = concat!("xtask probe hci ", env!("CARGO_PKG_VERSION"));
-/// The column names of `psm.tsv`.
 const REQUESTS_HEADER: &str =
     "at_ns\tside\tpsm\tresult\thandle\thost_mtu\tpods_mtu\thost_mode\tpods_mode";
-/// The column names of `a2dp.tsv`.
 const SECONDS_HEADER: &str =
     "second\tmedia_packets\tmedia_bytes\trtp_gaps\tlargest_interval_ns\tavdtp_suspend\tavdtp_start";
 /// What a column holds when the trace has no value for it.
@@ -54,14 +52,13 @@ pub(crate) struct Exported {
     pub cut: Option<Cut>,
 }
 
-/// One file of the run: its name and its whole text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Output {
     pub name: String,
     pub text: String,
 }
 
-/// Why the command failed; each names the file and the rule, never a byte of the trace.
+/// Each names the file and the rule, never a byte of the trace.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ExportError {
     #[error(transparent)]
@@ -87,7 +84,6 @@ impl fmt::Display for Hex<'_> {
     }
 }
 
-/// Lines joined into the text of a file, each ended by a newline.
 fn text(lines: &[String]) -> String {
     lines
         .iter()
@@ -145,7 +141,6 @@ fn log(name: &str, handle: u16, sdus: &[Record]) -> Result<(String, String), Exp
     Ok((text(&lines), counted))
 }
 
-/// Every connection request with who sent it, how it was answered and the MTU and the mode each side asked for its channel.
 fn requests_table(found: &Channels) -> String {
     let mut lines = vec![REQUESTS_HEADER.to_owned()];
     let or_absent = |value: Option<String>| value.unwrap_or_else(|| ABSENT.to_owned());
@@ -536,7 +531,7 @@ fn refused_read(source: StoreError) -> ExportError {
     }
 }
 
-/// Reads `trace`, then creates the run and writes its files; a trace that is refused creates nothing.
+/// A trace that is refused creates nothing.
 pub(crate) fn export(
     root: &Path,
     trace: &Path,

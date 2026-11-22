@@ -18,16 +18,13 @@ const LONG_FRAME_SAMPLES: u16 = 512;
 const TRUE_RATE_CONFIG: [u8; 4] = [0xf8, 0xe4, 0x30, 0x00];
 /// The unit a splice takes out, counted from 0 as the units table counts.
 const SPLICED_UNIT: usize = 1000;
-/// The mutated units the candidate is fed.
 const MUTATIONS: usize = 10_000;
 /// The seed of the mutations, so two runs over one log feed the same bytes.
 const MUTATION_SEED: u64 = 0x5eed_0007;
 const BITS_PER_BYTE: usize = 8;
-/// Why a figure of the whole decode against another decode is refused.
 const NOT_FRAME_ON_FRAME: &str =
     "one of the two decodes is not whole, or they do not fit frame on frame";
 
-/// What taking one unit out did to a decode.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Splice {
     /// Frames from the splice on that differ from the same frames of the whole decode by more than 1 LSB.

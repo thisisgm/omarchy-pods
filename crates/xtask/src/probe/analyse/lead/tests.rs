@@ -1,5 +1,3 @@
-//! How far the first frame of a stream lies before its start command, and the burst that delivers the backlog.
-
 use super::super::support::{NS_PER_MS, NS_PER_SECOND, close};
 use super::*;
 
@@ -7,11 +5,8 @@ use super::*;
 const FRAME_NS: f64 = 7_500_000.0;
 /// The same duration as a whole number, for building arrival times.
 const FRAME_WHOLE_NS: u64 = 7_500_000;
-/// Frames in each packet of the built streams.
 const FRAMES_PER_PACKET: u64 = 4;
-/// The arrival interval of the built streams, four frames.
 const PACKET_NS: u64 = FRAMES_PER_PACKET * FRAME_WHOLE_NS;
-/// When the start command goes out in the built streams.
 const START_NS: u64 = 5 * NS_PER_SECOND;
 /// Packets in six seconds of a built stream.
 const PACKETS: u64 = 200;

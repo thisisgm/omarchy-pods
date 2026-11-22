@@ -23,7 +23,6 @@ fn probe(home: &Path, args: &[&str]) -> Command {
     command
 }
 
-/// What a command wrote on its standard error.
 fn error_of(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }

@@ -1,4 +1,4 @@
-//! Fake pods on the far end of a channel, played on a thread of their own; the capture loop's unit tests and the tests of the built command both run against them.
+//! Fake pods on the far end of a channel, on their own thread; unit tests and command tests run against them.
 
 use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +30,6 @@ const PODS_POLL: Duration = Duration::from_millis(2);
 const PODS_BUFFER_LEN: usize = 8192;
 /// The two byte unit the tests of `pods_proto::uplink` call silent; the loop logs it and never decodes it.
 const SILENT_UNIT: [u8; 2] = [0x00, 0x00];
-/// How many units the pods are reported to put in one audio SDU.
 const UNITS_PER_SDU: u32 = 4;
 /// Both buds in the ear: the header of `pods_proto::ear`, then its placement byte 00 for each bud.
 pub(super) const EAR_PACKET: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00];
@@ -56,13 +55,10 @@ pub(super) struct Pods {
     pub(super) interrupt_after: Option<u32>,
     /// Whether they hang up once the notification request has arrived.
     pub(super) hang_up_when_ready: bool,
-    /// Whether they hang up once STOP has arrived.
     pub(super) hang_up_on_stop: bool,
     /// Packets they send once STOP has arrived.
     pub(super) parting: Vec<Vec<u8>>,
-    /// What they do on the attribute channel.
     pub(super) att: AttPods,
-    /// How long they play before they give up.
     pub(super) deadline: Duration,
     /// Set, and its waiters woken, once the notification request has arrived, which is where the handshake ends.
     pub(super) handshaken: Arc<(Mutex<bool>, Condvar)>,
@@ -87,14 +83,12 @@ impl Default for Pods {
     }
 }
 
-/// One thing the fake pods saw happen, in the order they saw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Heard {
     Got(Vec<u8>),
     SentEar,
 }
 
-/// What the fake pods saw and sent.
 #[derive(Debug, Default)]
 pub(super) struct Transcript {
     pub(super) heard: Vec<Heard>,
@@ -109,7 +103,6 @@ pub(super) struct Transcript {
 }
 
 impl Transcript {
-    /// The packets the loop sent, in order.
     pub(super) fn got(&self) -> Vec<&[u8]> {
         let heard = self.heard.iter();
         heard
@@ -125,14 +118,13 @@ impl Transcript {
     }
 }
 
-/// Which of their two channels a packet came on.
 #[derive(Clone, Copy)]
 enum End {
     Control,
     Att,
 }
 
-/// The fake pods' ends of the channels; one that is `None` was never opened or has been hung up.
+/// A channel that is `None` was never opened or has been hung up.
 struct Far {
     accessory: Option<Channel>,
     att: Option<Channel>,
@@ -187,7 +179,7 @@ impl Far {
         }
     }
 
-    /// Sends one packet on the control channel and says whether it left; it cannot once the loop has closed the channel.
+    /// Says whether the packet left; it cannot once the loop has closed the channel.
     fn say(&mut self, sdu: &[u8]) -> bool {
         let left = self.accessory.as_ref();
         let left = left.is_some_and(|channel| channel.send(sdu).is_ok());
@@ -197,7 +189,6 @@ impl Far {
         left
     }
 
-    /// Sends one packet on the attribute channel and says whether it left.
     fn say_att(&mut self, pdu: &[u8]) -> bool {
         let left = self.att.as_ref();
         let left = left.is_some_and(|channel| channel.send(pdu).is_ok());
@@ -207,7 +198,6 @@ impl Far {
         left
     }
 
-    /// Sends what is due of the stream on the attribute channel, and does what their part says follows that packet.
     fn stream_on(&mut self, stream: &mut AttState, part: &AttPods, interrupted: &AtomicBool) {
         if let Some(reply) = stream.late_reply() {
             self.say_att(&reply);
@@ -233,7 +223,7 @@ impl Far {
         }
     }
 
-    /// The next packet from the loop and its channel, waiting no longer than the poll; a channel the loop closed is forgotten, and `stream` ends with the attribute channel.
+    /// Waits no longer than the poll; a closed channel is forgotten, and `stream` ends with the attribute one.
     fn hear(&mut self, stream: &mut AttState, buf: &mut [u8]) -> Option<(End, Vec<u8>)> {
         let ends = [
             (End::Control, self.accessory.as_ref()),
@@ -299,7 +289,6 @@ pub(super) fn ack(prefix: &[u8]) -> Vec<u8> {
     [prefix, &ACK_REST].concat()
 }
 
-/// Plays the pods until the loop closes every channel, their part says to hang up, or the deadline passes.
 fn play(mut far: Far, part: &Pods, interrupted: &AtomicBool) -> Transcript {
     if let Some(channel) = &far.accessory {
         channel.set_recv_timeout(PODS_POLL).unwrap();
@@ -382,7 +371,6 @@ fn play(mut far: Far, part: &Pods, interrupted: &AtomicBool) -> Transcript {
     far.transcript
 }
 
-/// Plays the pods on the control channel alone, on a thread of their own; the transcript arrives when they are done.
 pub(super) fn spawn(
     far: Channel,
     part: Pods,
@@ -391,7 +379,6 @@ pub(super) fn spawn(
     spawn_on(Some(far), None, part, interrupted)
 }
 
-/// Plays the pods on the channels given, with no fresh attribute channel to turn to.
 pub(super) fn spawn_on(
     accessory: Option<Channel>,
     att: Option<Channel>,
@@ -401,7 +388,6 @@ pub(super) fn spawn_on(
     spawn_dialled(accessory, dialled([att]), part, interrupted)
 }
 
-/// Plays the pods on the control channel given, and on the attribute channel once its far end arrives on `att_dial`.
 pub(super) fn spawn_dialled(
     accessory: Option<Channel>,
     att_dial: mpsc::Receiver<Channel>,
@@ -421,7 +407,6 @@ pub(super) fn spawn_with_fresh(
     spawn_dialled(accessory, dialled(att), part, interrupted)
 }
 
-/// The attribute channels the loop has already dialled, in the order it opens them.
 fn dialled<const N: usize>(att: [Option<Channel>; N]) -> mpsc::Receiver<Channel> {
     let (dial, att_dial) = mpsc::channel();
     for att in att.into_iter().flatten() {
@@ -430,7 +415,6 @@ fn dialled<const N: usize>(att: [Option<Channel>; N]) -> mpsc::Receiver<Channel>
     att_dial
 }
 
-/// Plays the pods on a thread of their own; the transcript arrives when they are done.
 fn play_apart(far: Far, part: Pods, interrupted: Arc<AtomicBool>) -> mpsc::Receiver<Transcript> {
     let (done, result) = mpsc::channel();
     // The send fails only when the test has stopped waiting for it, and a wait that ran out has already failed the test.
@@ -438,7 +422,7 @@ fn play_apart(far: Far, part: Pods, interrupted: Arc<AtomicBool>) -> mpsc::Recei
     result
 }
 
-/// Both ends of a channel that no thread plays; what one end sends waits in the other end's queue.
+/// Both ends of a channel no thread plays; what one end sends waits in the other's queue.
 #[expect(
     clippy::disallowed_methods,
     reason = "a test wraps both ends of a socket pair as channels"
@@ -454,7 +438,7 @@ pub(super) fn pair() -> (Channel, Channel) {
     (l2cap::from_fd(near), l2cap::from_fd(far))
 }
 
-/// Every packet waiting in `far`'s queue, in order; an empty queue ends the read at the poll timeout.
+/// An empty queue ends the read at the poll timeout.
 pub(super) fn queued(far: &Channel) -> Vec<Vec<u8>> {
     far.set_recv_timeout(PODS_POLL).unwrap();
     let mut buf = vec![0_u8; PODS_BUFFER_LEN];

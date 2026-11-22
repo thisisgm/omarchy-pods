@@ -253,7 +253,7 @@ mod tests {
 
     /// How many times the thread under count sleeps, so wakes, before it idles.
     const SLEEPS: u64 = 200;
-    /// The window, long enough that the thread under count ends inside it.
+    /// Long enough that the thread under count ends inside it.
     const WINDOW: Duration = Duration::from_secs(4);
 
     #[test]

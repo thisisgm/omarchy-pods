@@ -7,9 +7,7 @@ use super::super::super::super::support::{NS_PER_MS, NS_PER_SECOND, stall};
 use super::super::super::analyse;
 use super::super::super::tests::{one, shown, start_at_zero, steady};
 
-/// What every refusal of a coarse clock ends with.
 const OPENING: &str = "counted from 1 s after the first audio SDU";
-/// Why a span whose halves disagree gives no figure.
 const UNSTEADY: &str = "the delay of the arrivals changes inside it";
 
 fn coarse_row(records: &[Record]) -> (String, String) {

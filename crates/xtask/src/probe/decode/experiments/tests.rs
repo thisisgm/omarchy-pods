@@ -10,7 +10,6 @@ use super::*;
 /// A frame short enough to write out.
 const FRAME: usize = 2;
 
-/// The bits that differ between two byte strings of one length.
 fn bits_apart(a: &[u8], b: &[u8]) -> u32 {
     assert_eq!(a.len(), b.len());
     a.iter().zip(b).map(|(a, b)| (a ^ b).count_ones()).sum()
