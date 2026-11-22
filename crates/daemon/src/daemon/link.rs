@@ -14,7 +14,7 @@ use pods_core::link::{
     Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Ticket, phase_change_line,
 };
 use pods_core::policy::notices::Notice;
-use pods_core::policy::{Effect, Fact, Policy};
+use pods_core::policy::{Effect, Fact, Policy, SleepEdge};
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pods_proto::model::Model;
@@ -61,6 +61,7 @@ pub(super) enum Input {
         command: Command,
         reply: oneshot::Sender<Outcome>,
     },
+    Sleep(SleepEdge),
     Shutdown(oneshot::Sender<()>),
 }
 
@@ -178,6 +179,9 @@ impl Driver {
         let deadline = self
             .machine
             .deadline()
+            .into_iter()
+            .chain(self.policy.deadline())
+            .min()
             .and_then(|at| self.started.checked_add(at));
         let received = match deadline {
             // Served before the queue, which can stay full for as long as the pods keep talking.
@@ -214,6 +218,7 @@ impl Driver {
                 self.replies.insert(ticket, reply);
                 self.step(Event::Command { ticket, command });
             }
+            Input::Sleep(edge) => self.observe(Fact::Sleep(edge)),
             Input::Shutdown(done) => {
                 self.step(Event::Shutdown);
                 // A stop that stopped waiting has nobody left to tell.
@@ -224,12 +229,13 @@ impl Driver {
         ControlFlow::Continue(())
     }
 
-    /// The link machine, then the policy on its signals and on a changed state, then one publish.
+    /// The link machine, then the policy on its signals, a changed state and the clock, then one publish, then the effects.
     fn step(&mut self, event: Event<'_>) {
         let before = self.machine.phase();
         let last = self.hub.state();
         let mut next = last.clone();
-        let actions = self.machine.step(&mut next, event, self.started.elapsed());
+        let now = self.started.elapsed();
+        let actions = self.machine.step(&mut next, event, now);
         self.log_progress(before, &next);
         let mut facts = Vec::new();
         for action in &actions {
@@ -240,20 +246,35 @@ impl Driver {
         if next != last {
             facts.push(Fact::Changed);
         }
-        for fact in facts {
-            for effect in self.policy.step(&next, fact) {
-                self.route(effect);
-            }
+        if event == Event::Tick {
+            facts.push(Fact::Tick);
         }
+        let effects: Vec<Effect> = facts
+            .into_iter()
+            .flat_map(|fact| self.policy.step(&next, fact, now))
+            .collect();
         self.hub.publish(next);
         for action in actions {
             self.execute(action);
         }
+        for effect in effects {
+            self.route(effect);
+        }
     }
 
-    fn route(&self, effect: Effect) {
+    /// The policy on a fact from outside the link machine, against the state as published.
+    fn observe(&mut self, fact: Fact) {
+        let state = self.hub.state();
+        for effect in self.policy.step(&state, fact, self.started.elapsed()) {
+            self.route(effect);
+        }
+    }
+
+    /// After the step's own publish and actions, so a wake is a step of its own.
+    fn route(&mut self, effect: Effect) {
         match effect {
             Effect::Notify(notice) => notify::offer(&self.outlets.notices, notice),
+            Effect::Wake => self.step(Event::Resumed),
         }
     }
 

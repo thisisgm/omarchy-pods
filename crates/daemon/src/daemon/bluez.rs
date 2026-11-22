@@ -38,7 +38,7 @@ const SWEEP_TIMEOUT_MS: u64 = 2000;
 /// A busy or starting bluetoothd answers a later sweep.
 const SWEEP_RETRY_MS: u64 = 1000;
 
-const SYSTEM_BUS_RETRY_MS: u64 = 5000;
+pub(super) const SYSTEM_BUS_RETRY_MS: u64 = 5000;
 
 /// Holds no address and no name, and is written once per daemon life.
 const NOT_AIRPODS_LOG: &str = "bluez: one device is not AirPods";
@@ -439,19 +439,19 @@ async fn send(inputs: &mpsc::Sender<Input>, event: DeviceEvent) -> ControlFlow<(
 
 /// A repeat is not logged until a success clears it, as the C++ `m_lastSweepError`.
 #[derive(Debug, Default)]
-struct ErrorLog {
+pub(super) struct ErrorLog {
     last: Option<String>,
 }
 
 impl ErrorLog {
-    fn note(&mut self, line: String) {
+    pub(super) fn note(&mut self, line: String) {
         if self.last.as_ref() != Some(&line) {
             log(&line);
             self.last = Some(line);
         }
     }
 
-    fn clear(&mut self) {
+    pub(super) fn clear(&mut self) {
         self.last = None;
     }
 }

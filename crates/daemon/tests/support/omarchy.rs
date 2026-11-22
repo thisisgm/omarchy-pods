@@ -4,9 +4,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use super::{Session, pause, wait_within};
+use super::rig::{ABSENT_GRACE, Device, Rig, assert_gap, not_before};
+use super::{HANG_LIMIT, Session, pause, wait_within};
 
 /// How long a hung stand-in sleeps before it exits by itself, under the 10 s a stand-in may live.
 pub(crate) const HANG: Duration = Duration::from_secs(8);
@@ -174,4 +175,21 @@ impl Omarchy {
             "{PROGRAM} ran within {quiet:?}: {calls:?}"
         );
     }
+}
+
+/// Takes the pods away and checks the one disconnect notice comes the grace after.
+pub(crate) fn loss_is_announced(rig: &Rig, device: &Device) {
+    let down = Instant::now();
+    rig.link_down(device);
+    let calls = rig
+        .omarchy()
+        .wait_calls(1, ABSENT_GRACE.saturating_add(HANG_LIMIT));
+    assert_gap(
+        "the notice after the pods went",
+        down,
+        Instant::now(),
+        &not_before(ABSENT_GRACE),
+    );
+    assert_eq!(calls, [DISCONNECT_NOTICE]);
+    rig.omarchy().none_for(RECORDED_WITHIN);
 }

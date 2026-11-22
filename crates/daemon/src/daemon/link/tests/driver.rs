@@ -560,6 +560,7 @@ fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<Stri
                 Input::Device(_)
                 | Input::SendFailed
                 | Input::Command { .. }
+                | Input::Sleep(_)
                 | Input::Shutdown(_) => {
                     format!("unexpected {input:?}")
                 }

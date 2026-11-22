@@ -21,10 +21,11 @@ use serde_json::Value;
 
 use super::audio::FakeAudio;
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
-use super::bus::{Bus, bus_address, start_bus};
+use super::bus::{Bus, bus_address, bus_socket, start_bus};
 use super::logind::{FakeLogind, Impostor};
 use super::omarchy::{Mood, Omarchy};
 use super::players::{FakePlayer, Playback};
+use super::relay::Relay;
 use super::{
     BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, do_request, outcome, wait_for,
     wait_within,
@@ -71,6 +72,8 @@ pub(crate) const ADAPTIVE: Mode = Mode { wire: 4, status: 3 };
 
 const SYSTEM_BUS: &str = "system";
 const SESSION_BUS: &str = "session";
+/// The socket in the session the daemon takes for its system bus once a test relays it.
+const SYSTEM_RELAY_SOCKET: &str = "system-relay.sock";
 const WATCH_LOG_NAME: &str = "watch.log";
 /// Every fixture address is this prefix and one more octet; the daemon's log may hold neither form.
 const ADDRESS_PREFIX: [u8; 5] = [0x02, 0x00, 0x00, 0x00, 0x00];
@@ -102,6 +105,8 @@ pub(crate) struct Rig {
     /// Set once the test itself has ended the daemon, the one exit before `finish` that is no failure.
     stopped: bool,
     trap: Option<Trap>,
+    /// Between the daemon and the system bus once a test asks; the fakes reach the bus directly.
+    relay: Option<Relay>,
     audio: Option<Rc<FakeAudio>>,
     bluez: Option<FakeBluez>,
     adapter: Option<AdapterPath>,
@@ -145,6 +150,7 @@ impl Rig {
             daemon: None,
             stopped: false,
             trap: None,
+            relay: None,
             audio: None,
             bluez: None,
             adapter: None,
@@ -263,6 +269,26 @@ impl Rig {
     /// Changes the daemon's command before a start.
     pub(crate) fn prepare(&mut self, change: impl FnOnce(&mut Command) + 'static) {
         self.prepare.push(Box::new(change));
+    }
+
+    /// Hands the daemon, once started, a relay of the system bus that `cut_system_bus` can sever.
+    pub(crate) fn relay_system_bus(&mut self) {
+        assert!(
+            self.daemon.is_none(),
+            "the relay must be in place before the daemon starts"
+        );
+        let path = self.session.dir.path().join(SYSTEM_RELAY_SOCKET);
+        let relay = Relay::start(&path, &bus_socket(&self.session, SYSTEM_BUS));
+        let address = relay.address();
+        self.prepare(move |command| {
+            command.env("DBUS_SYSTEM_BUS_ADDRESS", address);
+        });
+        self.relay = Some(relay);
+    }
+
+    /// Closes every system bus connection the daemon holds; the bus, the fakes and the relay's listener live on.
+    pub(crate) fn cut_system_bus(&self) {
+        self.relay.as_ref().expect("a relayed system bus").cut();
     }
 
     /// Starts the built daemon under the trap and returns once its socket accepts.

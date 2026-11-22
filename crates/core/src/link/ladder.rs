@@ -1,4 +1,9 @@
-//! The intervals and bounds of the link's recovery ladders, each with the reason for its value.
+//! The intervals and bounds of the link's recovery ladders, each with the reason for its value, and how a wake cuts their waits short.
+
+use std::time::Duration;
+
+use super::{Action, Machine, Phase, after};
+use crate::state::State;
 
 /// No C++ counterpart: the C++ daemon never times out a handshake step, and the acknowledgement was measured at about 10 ms.
 pub const HANDSHAKE_STEP_TIMEOUT_MS: u64 = 2000;
@@ -35,3 +40,27 @@ pub const PENDING_MAX: usize = 16;
 
 /// Paired AirPods the machine remembers; once full, a new address is not kept.
 pub const KNOWN_MAX: usize = 16;
+
+impl Machine {
+    /// A waiting ladder dials now and goes on from its attempt, a grace starts again, and BlueZ is read again; a stopped machine does nothing.
+    pub(super) fn resumed(&mut self, state: &mut State, now: Duration) -> Vec<Action> {
+        let mut actions = match self.phase {
+            Phase::Stopped => return Vec::new(),
+            Phase::Backoff { attempt, .. } => self.retry(state, attempt, now, now),
+            Phase::Parked { .. } => self.retry(state, Attempt::Parked, now, now),
+            Phase::Grace { .. } => {
+                let until = after(now, ABSENT_GRACE_MS);
+                self.enter(state, Phase::Grace { until });
+                Vec::new()
+            }
+            Phase::Idle
+            | Phase::Opening { .. }
+            | Phase::AwaitHandshakeAck { .. }
+            | Phase::AwaitFeaturesAck { .. }
+            | Phase::Up { .. }
+            | Phase::Closing { .. } => Vec::new(),
+        };
+        actions.push(Action::Sweep);
+        actions
+    }
+}
