@@ -2,6 +2,7 @@
 
 pub(crate) mod bluez;
 pub(crate) mod bus;
+pub(crate) mod logind;
 pub(crate) mod omarchy;
 pub(crate) mod rig;
 

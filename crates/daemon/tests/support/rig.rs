@@ -20,6 +20,7 @@ use serde_json::Value;
 
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, start_bus};
+use super::logind::{FakeLogind, Impostor};
 use super::omarchy::{Mood, Omarchy};
 use super::{
     BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, do_request, outcome, wait_for,
@@ -89,7 +90,7 @@ impl Device {
 
 type Prepare = Box<dyn FnOnce(&mut Command)>;
 
-/// Declared in the order they must end: the daemon before the trap, the fake BlueZ before its bus.
+/// Declared in the order they must end: the daemon before the trap, the fakes before their bus.
 pub(crate) struct Rig {
     daemon: Option<Daemon>,
     /// Set once the test itself has ended the daemon, the one exit before `finish` that is no failure.
@@ -97,6 +98,7 @@ pub(crate) struct Rig {
     trap: Option<Trap>,
     bluez: Option<FakeBluez>,
     adapter: Option<AdapterPath>,
+    logind: Option<FakeLogind>,
     system_bus: Option<Bus>,
     session_bus: Bus,
     /// Shared with the fake BlueZ's reaction to calls.
@@ -113,17 +115,17 @@ pub(crate) fn test_address(last: u8) -> BdAddr {
 }
 
 impl Rig {
-    /// A session, both private buses, the fake BlueZ owning its name and one adapter; no daemon yet.
+    /// A session, both private buses, the fake BlueZ owning its name and one adapter, the fake logind owning its; no daemon yet.
     pub(crate) fn new() -> Self {
         let mut rig = Self::before_system_bus();
-        rig.bring_up_bluez(true);
+        rig.bring_up_system_bus(true);
         rig
     }
 
     /// As `new`, but nobody owns `org.bluez` until `bluez().take_name()`.
     pub(crate) fn before_bluez() -> Self {
         let mut rig = Self::before_system_bus();
-        rig.bring_up_bluez(false);
+        rig.bring_up_system_bus(false);
         rig
     }
 
@@ -138,6 +140,7 @@ impl Rig {
             trap: None,
             bluez: None,
             adapter: None,
+            logind: None,
             system_bus: None,
             session_bus,
             devices: Arc::default(),
@@ -148,15 +151,16 @@ impl Rig {
     }
 
     pub(crate) fn start_system_bus(&mut self) {
-        self.bring_up_bluez(true);
+        self.bring_up_system_bus(true);
     }
 
-    fn bring_up_bluez(&mut self, own_name: bool) {
+    fn bring_up_system_bus(&mut self, own_bluez_name: bool) {
         let bus = start_bus(&self.session, SYSTEM_BUS);
-        let mut bluez = FakeBluez::start(&bus.address, own_name);
+        let mut bluez = FakeBluez::start(&bus.address, own_bluez_name);
         let devices = Arc::clone(&self.devices);
         bluez.on_call(move |bluez, call| react(bluez, call, &devices));
         self.adapter = Some(bluez.add_adapter());
+        self.logind = Some(FakeLogind::start(&bus));
         self.bluez = Some(bluez);
         self.system_bus = Some(bus);
     }
@@ -180,6 +184,15 @@ impl Rig {
 
     pub(crate) fn adapter(&self) -> &AdapterPath {
         self.adapter.as_ref().expect("a running system bus")
+    }
+
+    pub(crate) fn logind(&self) -> &FakeLogind {
+        self.logind.as_ref().expect("a running system bus")
+    }
+
+    /// A second sender on the system bus that never owns the logind name.
+    pub(crate) fn impostor(&self) -> Impostor {
+        Impostor::connect(self.system_bus.as_ref().expect("a running system bus"))
     }
 
     /// Paired AirPods, not connected, at the next fixture address, routed to fake pods of their own.

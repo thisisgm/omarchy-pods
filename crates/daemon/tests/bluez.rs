@@ -30,7 +30,7 @@ mod tests {
     use zbus::{Connection, MessageStream, OwnedObjectPath, OwnedVariant, Variant};
 
     use super::support::bluez::{AAP_UUID, DEVICE_INTERFACE, FakeBluez};
-    use super::support::bus::start_bus;
+    use super::support::bus::{in_time, start_bus};
     use super::support::rig::{
         DIAL_WAIT, REAL_TIME_SLACK, Rig, SIGNAL_SLACK, connected, test_address,
     };
@@ -102,11 +102,6 @@ mod tests {
             .body()
             .deserialize()
             .unwrap()
-    }
-
-    fn in_time<T>(runtime: &Runtime, work: impl Future<Output = T>) -> T {
-        let finished = runtime.block_on(async { timeout(HANG_LIMIT, work).await });
-        finished.unwrap_or_else(|_| panic!("the bus client still waiting after {HANG_LIMIT:?}"))
     }
 
     /// A monitor of the bus at `address` that keeps every message matching `rule`.
