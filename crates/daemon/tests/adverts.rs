@@ -140,11 +140,10 @@ mod tests {
     /// The four surfaces in turn: `librepods status`, the state file, the D-Bus interface and `librepods ctl status`.
     fn surfaces(rig: &Rig) -> [Value; 4] {
         let status = picked(&rig.status());
-        let state_file = wait_for("the state file", || {
+        let state_file = wait_for("the state file showing the status", || {
             let text = fs::read_to_string(rig.session().state_file()).ok()?;
-            serde_json::from_str::<Value>(&text)
-                .ok()
-                .map(|state| picked(&state))
+            let state = picked(&serde_json::from_str::<Value>(&text).ok()?);
+            (state == status).then_some(state)
         });
         let listener = Listener::subscribe(rig.session_bus(), &changes_rule());
         let mut over_dbus = picked(&json_of(property(&listener, "StatusJson").as_bytes()));
