@@ -166,13 +166,36 @@ fn windows_open_at_a_start_and_close_at_the_next_stop_or_start() {
         mark(40, MarkKind::Start),
     ];
     let expected = [(10, Some(20)), (30, Some(40)), (40, None)];
-    let found: Vec<_> = windows(&marks)
+    let found: Vec<_> = windows(&marks, UPLINK)
         .iter()
         .map(|window| (window.start_ns, window.end_ns))
         .collect();
     assert_eq!(found, expected);
-    assert_eq!(windows(&[]), []);
-    assert_eq!(windows(&[mark(5, MarkKind::Stop)]), []);
+    assert_eq!(windows(&[], UPLINK), []);
+    assert_eq!(windows(&[mark(5, MarkKind::Stop)], UPLINK), []);
+}
+
+#[test]
+fn each_family_of_marks_cuts_its_own_windows_and_tails() {
+    let marks = [
+        mark(10, MarkKind::Start),
+        mark(15, MarkKind::DictationStart),
+        mark(20, MarkKind::Stop),
+        mark(25, MarkKind::Start),
+        mark(30, MarkKind::DictationStop),
+        mark(35, MarkKind::DictationStart),
+        mark(40, MarkKind::Stop),
+    ];
+    let ends = |window: &Window| (window.start_ns, window.end_ns);
+    let cut = |bounds| -> Vec<_> { windows(&marks, bounds).iter().map(ends).collect() };
+    assert_eq!(cut(UPLINK), [(10, Some(20)), (25, Some(40))]);
+    assert_eq!(cut(DICTATION), [(15, Some(30)), (35, None)]);
+    let after = |bounds| -> Vec<_> {
+        let tails = tails(&marks, bounds);
+        tails.iter().map(|tail| tail.as_ref().map(ends)).collect()
+    };
+    assert_eq!(after(UPLINK), [Some((20, Some(25))), Some((40, None))]);
+    assert_eq!(after(DICTATION), [Some((30, Some(35))), None]);
 }
 
 #[test]
@@ -189,11 +212,11 @@ fn a_tail_runs_from_the_stop_that_ends_a_start_to_the_next_start() {
         mark(50, MarkKind::Stop),
     ];
     let ends = |tail: &Option<Window>| tail.map(|tail| (tail.start_ns, tail.end_ns));
-    let found: Vec<_> = tails(&marks).iter().map(ends).collect();
+    let found: Vec<_> = tails(&marks, UPLINK).iter().map(ends).collect();
     assert_eq!(found, [Some((20, Some(30))), None, Some((50, None))]);
-    assert_eq!(tails(&[]), []);
-    assert_eq!(tails(&[mark(5, MarkKind::Stop)]), []);
-    assert_eq!(tails(&[mark(5, MarkKind::Start)]), [None]);
+    assert_eq!(tails(&[], UPLINK), []);
+    assert_eq!(tails(&[mark(5, MarkKind::Stop)], UPLINK), []);
+    assert_eq!(tails(&[mark(5, MarkKind::Start)], UPLINK), [None]);
 }
 
 #[test]
@@ -303,8 +326,8 @@ proptest! {
                 mark(at_ns, kinds[usize::from(kind)])
             })
             .collect();
-        let starts = windows(&marks);
-        let after = tails(&marks);
+        let starts = windows(&marks, UPLINK);
+        let after = tails(&marks, UPLINK);
         prop_assert_eq!(after.len(), starts.len());
         let next_starts = starts.iter().skip(1).map(|start| Some(start.start_ns)).chain([None]);
         for ((start, tail), next_start_ns) in starts.iter().zip(&after).zip(next_starts) {

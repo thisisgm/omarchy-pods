@@ -13,7 +13,7 @@ use super::super::coarse::{
 };
 use super::super::input::Mark;
 use super::super::lead::{Arrival, LEAD_MIN_PACKETS, LEAD_WINDOW_NS, lead};
-use super::super::load::{Loaded, Window, load, segment, tails, windows};
+use super::super::load::{Loaded, UPLINK, Window, load, segment, tails, windows};
 use super::super::rates::{
     ClockEstimate, THIN_MIN_SDUS, THIN_MIN_SPAN_NS, Thin, bitrate, cadence, clock,
 };
@@ -22,7 +22,10 @@ use super::super::shape::{
     length_agrees, opaque_fields, stamps,
 };
 use super::super::stats::{NS_PER_MS, NS_PER_SECOND, millis, seconds, share};
-use super::{BYTES, CLOCK_KEY, COARSE_CLOCK_KEY, MS, NONE, NOTE_SEPARATOR, PACKETS, Row, UNITS};
+use super::{
+    BIT_PER_SECOND, BYTES, CLOCK_KEY, COARSE_CLOCK_KEY, HZ, MS, NONE, NOTE_SEPARATOR, PACKETS,
+    REFUSED, Row, UNITS, labelled,
+};
 
 /// Samples in one unit, which turns the unit clock into a sample clock; no packet states it, so every row scaled by it says it is assumed.
 const SAMPLES_PER_UNIT: u32 = 480;
@@ -38,10 +41,6 @@ const OPAQUE_AT: usize = AUDIO_HEADER_LEN - OPAQUE_LEN;
 const HEADER_END: usize = AUDIO_HEADER_LEN - 1;
 /// The opaque bytes checked as a little endian length, each with the bytes of the SDU it leaves out.
 const LENGTH_FIELDS: [(usize, usize); 2] = [(0, 10), (6, 16)];
-/// What a rate row reads when the segment is too thin for it.
-const REFUSED: &str = "refused";
-const HZ: &str = "Hz";
-const BIT_PER_SECOND: &str = "bit/s";
 const STAMP_TICKS: &str = "stamp ticks";
 /// What the gaps row says when the stamps have no step a break could be judged against.
 const STAMPS_UNCHECKED: &str = "stamps not checked, no modal step from unit to unit";
@@ -78,7 +77,8 @@ fn tail_in(records: &[Record], after_stop: Window) -> Tail {
 /// The rows of every start mark, in the order of the marks.
 pub(super) fn start_rows(records: &[Record], marks: &[Mark], whole: &Loaded) -> Vec<Row> {
     let trials = trials(whole, marks);
-    let starts = windows(marks).into_iter().zip(tails(marks)).zip(&trials);
+    let starts = windows(marks, UPLINK).into_iter();
+    let starts = starts.zip(tails(marks, UPLINK)).zip(&trials);
     let mut rows = Vec::new();
     for (((window, after_stop), trial), ordinal) in starts.zip(1_usize..) {
         let loaded = load(segment(records, window));
@@ -140,13 +140,6 @@ fn field_token(field: FieldKind) -> String {
 }
 
 impl Segment {
-    /// The label, then every item that is not empty.
-    fn note(&self, items: &[&str]) -> String {
-        let said = items.iter().copied().filter(|item| !item.is_empty());
-        let all: Vec<&str> = std::iter::once(self.label.as_str()).chain(said).collect();
-        all.join(NOTE_SEPARATOR)
-    }
-
     /// A lost SDU bends every rate of its segment, so each of them says the segment has one.
     fn gap_flag(&self) -> &'static str {
         if self.gaps.is_empty() { "" } else { "gap" }
@@ -167,12 +160,12 @@ impl Segment {
                     key,
                     &value,
                     unit,
-                    &self.note(&[&derivation, self.gap_flag()]),
+                    &labelled(&self.label, &[&derivation, self.gap_flag()]),
                 )
             }
             Err(thin) => {
                 let held = thin_note(thin, THIN_MIN_SDUS, THIN_MIN_SPAN_NS);
-                Row::new(key, &REFUSED, unit, &self.note(&[&held]))
+                Row::new(key, &REFUSED, unit, &labelled(&self.label, &[&held]))
             }
         }
     }
@@ -191,20 +184,28 @@ impl Segment {
                 "trial_control_ms",
                 &ms(trial.control_after_ns),
                 MS,
-                &self.note(&["start mark to the first control packet from the pods"]),
+                &labelled(
+                    &self.label,
+                    &["start mark to the first control packet from the pods"],
+                ),
             ),
             Row::new(
                 "trial_audio_ms",
                 &ms(trial.audio_after_ns),
                 MS,
-                &self.note(&["start mark to the first audio SDU"]),
+                &labelled(&self.label, &["start mark to the first audio SDU"]),
             ),
-            Row::new("segment_audio_sdus", &audio.len(), PACKETS, &self.note(&[])),
+            Row::new(
+                "segment_audio_sdus",
+                &audio.len(),
+                PACKETS,
+                &labelled(&self.label, &[]),
+            ),
             Row::new(
                 "segment_span_s",
                 &format!("{:.3}", seconds(span_ns)),
                 "s",
-                &self.note(&["first to last audio SDU"]),
+                &labelled(&self.label, &["first to last audio SDU"]),
             ),
         ]
     }
@@ -327,7 +328,7 @@ impl Segment {
             }
         };
         let items: Vec<&str> = items.iter().map(String::as_str).collect();
-        Row::new(COARSE_CLOCK_KEY, &value, HZ, &self.note(&items))
+        Row::new(COARSE_CLOCK_KEY, &value, HZ, &labelled(&self.label, &items))
     }
 
     fn bitrate_rows(&self) -> [Row; 4] {
@@ -370,9 +371,14 @@ impl Segment {
         let delta_row = |key: &str, modal: Option<ModalDelta>| match modal {
             Some(modal) => {
                 let derivation = format!("modal; share {:.4}", modal.share);
-                Row::new(key, &modal.delta, STAMP_TICKS, &self.note(&[&derivation]))
+                Row::new(
+                    key,
+                    &modal.delta,
+                    STAMP_TICKS,
+                    &labelled(&self.label, &[&derivation]),
+                )
             }
-            None => Row::new(key, &NONE, STAMP_TICKS, &self.note(&[])),
+            None => Row::new(key, &NONE, STAMP_TICKS, &labelled(&self.label, &[])),
         };
         let unit = match (self.stamps.implied(), self.stamps.per_unit) {
             (Some(unit), Some(modal)) => {
@@ -382,9 +388,14 @@ impl Segment {
                     StampUnit::Unknown(_) => "unknown",
                 };
                 let derivation = format!("modal delta per unit {}", modal.delta);
-                Row::new("stamp_unit", &name, "name", &self.note(&[&derivation]))
+                Row::new(
+                    "stamp_unit",
+                    &name,
+                    "name",
+                    &labelled(&self.label, &[&derivation]),
+                )
             }
-            _ => Row::new("stamp_unit", &NONE, "name", &self.note(&[])),
+            _ => Row::new("stamp_unit", &NONE, "name", &labelled(&self.label, &[])),
         };
         [
             delta_row("stamp_delta_per_unit", self.stamps.per_unit),
@@ -402,7 +413,7 @@ impl Segment {
             "opaque_fields",
             &tokens.join(" "),
             "kind per byte",
-            &self.note(&[&order, &format!("{sdus} SDUs"), seen]),
+            &labelled(&self.label, &[&order, &format!("{sdus} SDUs"), seen]),
         )
     }
 
@@ -416,7 +427,7 @@ impl Segment {
                 "of {sdus} SDUs; little endian u16 from header byte {header_byte} against the SDU length less {less}"
             );
             let key = format!("header_length_at_{header_byte}");
-            Row::new(&key, &agree, PACKETS, &self.note(&[&rule]))
+            Row::new(&key, &agree, PACKETS, &labelled(&self.label, &[&rule]))
         })
     }
 
@@ -431,7 +442,12 @@ impl Segment {
         } else {
             String::new()
         };
-        let count = Row::new("gaps", &self.gaps.len(), "gaps", &self.note(&[&rule, &cut]));
+        let count = Row::new(
+            "gaps",
+            &self.gaps.len(),
+            "gaps",
+            &labelled(&self.label, &[&rule, &cut]),
+        );
         let listed = self.gaps.iter().take(GAPS_LISTED);
         std::iter::once(count)
             .chain(listed.map(|gap| self.gap_row(gap)))
@@ -456,7 +472,12 @@ impl Segment {
             None => String::new(),
         };
         let items = ["after the start mark", &late, &stamps];
-        Row::new("gap", &format!("{after_ms:.3}"), MS, &self.note(&items))
+        Row::new(
+            "gap",
+            &format!("{after_ms:.3}"),
+            MS,
+            &labelled(&self.label, &items),
+        )
     }
 
     fn band_rows(&self) -> [Row; 5] {
@@ -481,7 +502,7 @@ impl Segment {
                     "max_sfb_max",
                     &limit,
                     "band index",
-                    &self.note(&[&spectral]),
+                    &labelled(&self.label, &[&spectral]),
                 );
                 let hz = self.rate("max_sfb_hz", HZ, &self.clock, |clock| {
                     let items = [
@@ -496,8 +517,13 @@ impl Segment {
                 (max, hz)
             }
             None => (
-                Row::new("max_sfb_max", &NONE, "band index", &self.note(&[])),
-                Row::new("max_sfb_hz", &NONE, HZ, &self.note(&[])),
+                Row::new(
+                    "max_sfb_max",
+                    &NONE,
+                    "band index",
+                    &labelled(&self.label, &[]),
+                ),
+                Row::new("max_sfb_hz", &NONE, HZ, &labelled(&self.label, &[])),
             ),
         };
         let over = format!("over {LAST_BAND}");
@@ -506,20 +532,20 @@ impl Segment {
                 "max_sfb_histogram",
                 &histogram,
                 "units by band index",
-                &self.note(&[]),
+                &labelled(&self.label, &[]),
             ),
             max,
             Row::new(
                 "max_sfb_invalid",
                 &report.invalid,
                 UNITS,
-                &self.note(&[&over]),
+                &labelled(&self.label, &[&over]),
             ),
             Row::new(
                 "max_sfb_unread",
                 &report.unread,
                 UNITS,
-                &self.note(&["under two bytes"]),
+                &labelled(&self.label, &["under two bytes"]),
             ),
             hz,
         ]
@@ -536,7 +562,7 @@ impl Segment {
             let why = format!(
                 "fewer than {LEAD_MIN_PACKETS} packets with a whole unit in the first {window_s:.0} s"
             );
-            let note = self.note(&[&why]);
+            let note = labelled(&self.label, &[&why]);
             let keys = [
                 ("lead_ms", MS),
                 ("burst_packets", PACKETS),
@@ -557,7 +583,7 @@ impl Segment {
         let disagree = if disagree { "disagree" } else { "" };
         let line = "start mark minus the earliest arrival line";
         let span = "first to last packet of the burst";
-        let said = |what: &str| self.note(&[what, &frame, disagree, self.gap_flag()]);
+        let said = |what: &str| labelled(&self.label, &[what, &frame, disagree, self.gap_flag()]);
         vec![
             Row::new("lead_ms", &format!("{:.3}", found.lead_ms), MS, &said(line)),
             Row::new("burst_packets", &found.burst_packets, PACKETS, &said("")),
@@ -575,7 +601,7 @@ impl Segment {
     fn tail_rows(&self) -> [Row; 2] {
         let (sdus_key, last_key) = ("after_stop_audio_sdus", "after_stop_audio_ms");
         let Some(tail) = &self.tail else {
-            let note = self.note(&["no stop mark ends this start"]);
+            let note = labelled(&self.label, &["no stop mark ends this start"]);
             return [
                 Row::new(sdus_key, &NONE, PACKETS, &note),
                 Row::new(last_key, &NONE, MS, &note),
@@ -587,8 +613,13 @@ impl Segment {
         let counted = "from the stop mark to the next start mark; in no rate";
         let timed = "stop mark to the last audio SDU after it";
         [
-            Row::new(sdus_key, &tail.sdus, PACKETS, &self.note(&[counted])),
-            Row::new(last_key, &last_ms, MS, &self.note(&[timed])),
+            Row::new(
+                sdus_key,
+                &tail.sdus,
+                PACKETS,
+                &labelled(&self.label, &[counted]),
+            ),
+            Row::new(last_key, &last_ms, MS, &labelled(&self.label, &[timed])),
         ]
     }
 }

@@ -217,15 +217,44 @@ impl Window {
     }
 }
 
-/// One window for each start mark, in order.
-pub(crate) fn windows(marks: &[Mark]) -> Vec<Window> {
+/// The two kinds of mark that open and close the stream of one route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Bounds {
+    pub(crate) start: MarkKind,
+    pub(crate) stop: MarkKind,
+}
+
+/// The marks around the stream on the control channel.
+pub(crate) const UPLINK: Bounds = Bounds {
+    start: MarkKind::Start,
+    stop: MarkKind::Stop,
+};
+/// The marks around the stream on the attribute channel.
+pub(crate) const DICTATION: Bounds = Bounds {
+    start: MarkKind::DictationStart,
+    stop: MarkKind::DictationStop,
+};
+
+impl Bounds {
+    /// Whether a mark starts the stream, `None` for a mark that is neither of the two.
+    fn starts(self, mark: &Mark) -> Option<bool> {
+        if mark.kind == self.start {
+            Some(true)
+        } else if mark.kind == self.stop {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+/// One window for each start mark of `bounds`, in order.
+pub(crate) fn windows(marks: &[Mark], bounds: Bounds) -> Vec<Window> {
     let mut found = Vec::new();
     let mut open: Option<u64> = None;
     for mark in marks {
-        let starts = match mark.kind {
-            MarkKind::Start => true,
-            MarkKind::Stop => false,
-            MarkKind::Truncated | MarkKind::Other => continue,
+        let Some(starts) = bounds.starts(mark) else {
+            continue;
         };
         if let Some(start_ns) = open.take() {
             let end_ns = Some(mark.at_ns);
@@ -242,25 +271,25 @@ pub(crate) fn windows(marks: &[Mark]) -> Vec<Window> {
     found
 }
 
-/// For each start mark, in order: the window from the stop mark that ends it to the next start mark, `None` when no stop mark ends it.
-pub(crate) fn tails(marks: &[Mark]) -> Vec<Option<Window>> {
+/// For each start mark of `bounds`, in order: the window from the stop mark that ends it to the next start mark, `None` when no stop mark ends it.
+pub(crate) fn tails(marks: &[Mark], bounds: Bounds) -> Vec<Option<Window>> {
     let mut found: Vec<Option<Window>> = Vec::new();
     for mark in marks {
-        match mark.kind {
-            MarkKind::Start => {
+        match bounds.starts(mark) {
+            Some(true) => {
                 if let Some(Some(tail)) = found.last_mut() {
                     tail.end_ns = Some(mark.at_ns);
                 }
                 found.push(None);
             }
-            MarkKind::Stop => {
+            Some(false) => {
                 // A second stop mark leaves the tail where the first one opened it.
                 if let Some(tail @ None) = found.last_mut() {
                     let (start_ns, end_ns) = (mark.at_ns, None);
                     *tail = Some(Window { start_ns, end_ns });
                 }
             }
-            MarkKind::Truncated | MarkKind::Other => {}
+            None => {}
         }
     }
     found

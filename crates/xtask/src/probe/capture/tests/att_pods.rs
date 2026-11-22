@@ -30,6 +30,12 @@ pub(super) const TABLE_END: u16 = 0x0012;
 pub(super) const BURST_PACKETS: usize = 13;
 /// The frames in each of the thirteen packets a session opens with, 63 in all, as a Mac was seen to get them.
 const BURST_FRAMES: [u16; BURST_PACKETS] = [4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4];
+/// How long after the start write the first packet of a paced session leaves.
+pub(super) const BURST_AFTER: Duration = Duration::from_millis(80);
+/// How long the opening packets of a paced session take from the first to the last, as a Mac was seen to get them.
+pub(super) const BURST_SPAN: Duration = Duration::from_millis(250);
+/// The gaps between the opening packets.
+const BURST_GAPS: u32 = 12;
 /// The codec bytes that follow the table of contents byte in every frame here.
 const FRAME_NOISE_LEN: usize = 9;
 /// The flag and the level every frame here carries; the loop logs them and reads neither.
@@ -53,6 +59,15 @@ pub(super) fn declared_at(value: u16) -> u16 {
     value.saturating_sub(1)
 }
 
+/// The clock of a paced session: the pods hold `lead` of audio when the start write comes, and no frame leaves before it has ended.
+#[derive(Clone, Copy)]
+pub(super) struct Pace {
+    /// How long one frame lasts.
+    pub(super) frame: Duration,
+    /// How long before the start write the first frame began.
+    pub(super) lead: Duration,
+}
+
 /// Their part on the attribute channel; `AttPods::default()` lists a table that holds the four handles and streams from the start write to the stop write.
 #[derive(Clone)]
 pub(super) struct AttPods {
@@ -72,6 +87,10 @@ pub(super) struct AttPods {
     pub(super) deaf_to_stop: bool,
     /// Whether they answer the request for the declarations.
     pub(super) declares: bool,
+    /// The clock they stream on; `None` sends the opening thirteen at once and then a packet each turn of their loop.
+    pub(super) pace: Option<Pace>,
+    /// The frame counter they leave out of the stream, as a frame lost on the way.
+    pub(super) withheld: Option<u16>,
     /// The number of stream packets after the opening thirteen at which they raise the interrupted flag.
     pub(super) interrupt_after: Option<u32>,
     /// The number of such packets at which they hang up the attribute channel.
@@ -91,6 +110,8 @@ impl Default for AttPods {
             stopped_after: Duration::ZERO,
             deaf_to_stop: false,
             declares: true,
+            pace: None,
+            withheld: None,
             interrupt_after: None,
             hang_up_after: None,
             hang_up_control_after: None,
@@ -140,6 +161,10 @@ fn declarations(table: &[u16], start: u16) -> Vec<u8> {
 #[derive(Default)]
 pub(super) struct AttState {
     streaming: bool,
+    /// When the start write of the stream now running came.
+    started: Option<Instant>,
+    /// How many of the opening thirteen have left.
+    opened: u8,
     packets: u8,
     frames: u16,
     /// The requests of the walk they have answered.
@@ -147,7 +172,7 @@ pub(super) struct AttState {
     /// When a reply to the stop write that they hold back is due.
     stopped_due: Option<Instant>,
     /// The packets of the stream now running, or of the last one, that left after its opening thirteen.
-    pub(super) after_burst: u32,
+    after_burst: u32,
 }
 
 impl AttState {
@@ -155,10 +180,14 @@ impl AttState {
     pub(super) fn answer(&mut self, part: &AttPods, pdu: &[u8]) -> Vec<Vec<u8>> {
         if pdu == START {
             self.streaming = true;
+            self.started = Some(Instant::now());
+            self.opened = 0;
             self.frames = 0;
             self.after_burst = 0;
             let mut replies = vec![STARTED.to_vec()];
-            replies.extend(BURST_FRAMES.map(|frames| self.audio(frames)));
+            while part.pace.is_none() && usize::from(self.opened) < BURST_PACKETS {
+                replies.extend(self.packet(part.withheld));
+            }
             return replies;
         }
         if pdu == STOP {
@@ -192,12 +221,45 @@ impl AttState {
         }
     }
 
-    /// The next packet of the stream while it runs: one frame, which stands for 20 ms of audio.
-    pub(super) fn next_packet(&mut self) -> Option<Vec<u8>> {
-        if !self.streaming {
+    /// The next packet of the stream once it is due, and its number after the opening thirteen, which none of the thirteen has.
+    pub(super) fn next_packet(&mut self, part: &AttPods) -> Option<(Vec<u8>, Option<u32>)> {
+        if !self.streaming || part.pace.is_some_and(|pace| !self.due(pace)) {
             return None;
         }
-        Some(self.audio(1))
+        let opening = usize::from(self.opened) < BURST_PACKETS;
+        let packet = self.packet(part.withheld)?;
+        if opening {
+            return Some((packet, None));
+        }
+        self.after_burst = self.after_burst.saturating_add(1);
+        Some((packet, Some(self.after_burst)))
+    }
+
+    /// The frames of the next packet: those of the opening thirteen in turn, then one.
+    fn next_frames(&self) -> u16 {
+        let opening = BURST_FRAMES.get(usize::from(self.opened));
+        opening.copied().unwrap_or(1)
+    }
+
+    /// Whether the last frame of the next packet has ended on the clock of `pace`, and an opening packet has reached its turn.
+    fn due(&self, pace: Pace) -> bool {
+        let Some(since_start) = self.started.map(|started| started.elapsed()) else {
+            return false;
+        };
+        let frames = self.frames.saturating_add(self.next_frames());
+        let ended = pace.frame.saturating_mul(u32::from(frames));
+        let into_burst = BURST_SPAN.saturating_mul(u32::from(self.opened));
+        let into_burst = into_burst.checked_div(BURST_GAPS).unwrap_or_default();
+        let turn = BURST_AFTER.saturating_add(into_burst);
+        let opening = usize::from(self.opened) < BURST_PACKETS;
+        since_start.saturating_add(pace.lead) >= ended && !(opening && since_start < turn)
+    }
+
+    /// The next packet of the stream, or none when its one frame is withheld.
+    fn packet(&mut self, withheld: Option<u16>) -> Option<Vec<u8>> {
+        let frames = self.next_frames();
+        self.opened = self.opened.saturating_add(1);
+        self.audio(frames, withheld)
     }
 
     /// The reply to the stop write that they held back, once it is due.
@@ -216,13 +278,14 @@ impl AttState {
         self.stopped_due = None;
     }
 
-    /// One audio notification of `frames` frames, each the table of contents byte and bytes from the seeded generator.
-    fn audio(&mut self, frames: u16) -> Vec<u8> {
+    /// One audio notification of the next `frames` frames but a withheld one, each the table of contents byte and bytes from the seeded generator.
+    fn audio(&mut self, frames: u16, withheld: Option<u16>) -> Option<Vec<u8>> {
         let mut data = vec![TOC_CELT_WIDEBAND_20MS_MONO];
         data.extend(noise(FRAME_NOISE_LEN));
         let (flag, level) = FRAME_PREFIX;
         let first = self.frames;
         let coded: Vec<Frame<'_>> = (first..first.saturating_add(frames))
+            .filter(|counter| withheld != Some(*counter))
             .map(|counter| Frame {
                 flag,
                 level,
@@ -231,8 +294,11 @@ impl AttState {
             })
             .collect();
         self.frames = self.frames.saturating_add(frames);
+        if coded.is_empty() {
+            return None;
+        }
         let packet = encode_audio(self.packets, &coded).unwrap();
         self.packets = self.packets.wrapping_add(1);
-        packet
+        Some(packet)
     }
 }

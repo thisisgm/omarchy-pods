@@ -3,10 +3,12 @@
 use std::fmt;
 use std::mem;
 
-use pods_proto::att::{self, AttPdu, Uuid};
+use pods_proto::att::{self, AttPdu};
 use pods_proto::dictation::{self, DictationPacket, Status};
 
-use super::super::dictate::{self, HANDLE_WALK_MAX_REQUESTS, HandleCheck, HandleWalk, WalkState};
+use super::super::dictate::{
+    self, HANDLE_WALK_MAX_REQUESTS, HandleCheck, HandleWalk, TypeText, WalkState,
+};
 use super::super::script::Opening;
 use super::guard::{Dictation, Session};
 use super::record::{Bearer, IoFailure, Mark, Recorder};
@@ -27,18 +29,6 @@ pub(super) enum Asked {
     Declarations {
         at_ns: u64,
     },
-}
-
-/// An attribute type as a line of the handle list shows it: `0x2803`, or the 32 hex digits of a 128 bit one in wire order.
-struct TypeText<'a>(Uuid<'a>);
-
-impl fmt::Display for TypeText<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            Uuid::Short(short) => write!(f, "{short:#06x}"),
-            Uuid::Long(long) => long.iter().try_for_each(|byte| write!(f, "{byte:02x}")),
-        }
-    }
 }
 
 impl Engine<'_, '_> {
@@ -185,7 +175,6 @@ impl Engine<'_, '_> {
                 let at_ns = self.wires.now();
                 self.recorder.mark(at_ns, Mark::Handles, &"unchecked")?;
                 self.checked = true;
-                self.redialled_ns = at_ns;
                 Ok(())
             }
             HandleCheck::Present => {

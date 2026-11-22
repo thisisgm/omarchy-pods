@@ -1,4 +1,4 @@
-//! The built binary's `probe capture` and `probe stop` commands against the fake pods, every L2CAP connect of the command taken by the socket trap.
+//! The built binary's `probe capture` and `probe stop` commands against the fake pods, every L2CAP connect of the command taken by the socket trap, and `probe analyse` on the dictation runs they leave.
 
 #[cfg(test)]
 #[expect(
@@ -17,7 +17,9 @@ mod pods;
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
-mod tests {
+mod capture {
+    mod analysed;
+
     use std::fs::{self, OpenOptions};
     use std::io::{Read, Write};
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -86,17 +88,14 @@ mod tests {
         thread::sleep(POLL);
     }
 
-    /// Waits for `ready` to give a value, failing the test once `HANG_LIMIT` passes.
-    fn wait_for<T>(what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
+    /// Waits for `ready` to give a value, failing the test once `limit` passes.
+    fn wait_within<T>(limit: Duration, what: &str, mut ready: impl FnMut() -> Option<T>) -> T {
         let started = Instant::now();
         loop {
             if let Some(value) = ready() {
                 return value;
             }
-            assert!(
-                started.elapsed() < HANG_LIMIT,
-                "no {what} after {HANG_LIMIT:?}"
-            );
+            assert!(started.elapsed() < limit, "no {what} after {limit:?}");
             pause();
         }
     }
@@ -205,14 +204,15 @@ mod tests {
             }
         }
 
-        /// Sends SIGINT once the fake pods raise `flag`, as the owner pressing Ctrl+C mid stream.
-        fn interrupt_when(&self, flag: &AtomicBool) {
-            wait_for("raised flag", || flag.load(Ordering::SeqCst).then_some(()));
+        /// Sends SIGINT once the fake pods raise `flag`, as the owner pressing Ctrl+C mid stream; the test fails once `limit` passes.
+        fn interrupt_within(&self, limit: Duration, flag: &AtomicBool) {
+            let raised = || flag.load(Ordering::SeqCst).then_some(());
+            wait_within(limit, "raised flag", raised);
             kill_process(Pid::from_child(&self.child), Signal::INT).unwrap();
         }
 
         fn finish(mut self) -> Ran {
-            let status = wait_for("exit", || self.child.try_wait().unwrap());
+            let status = wait_within(HANG_LIMIT, "exit", || self.child.try_wait().unwrap());
             let stdout = text_of(self.child.stdout.take());
             let stderr = text_of(self.child.stderr.take());
             let trap = self.trap.take().unwrap();
@@ -335,7 +335,7 @@ mod tests {
             ..Pods::default()
         };
         let played = pods::spawn(far_end(&handed), part, Arc::clone(&flag));
-        running.interrupt_when(&flag);
+        running.interrupt_within(HANG_LIMIT, &flag);
         let ran = running.finish();
         let pods = transcript(&played);
 
@@ -380,7 +380,7 @@ mod tests {
             part,
             Arc::clone(&flag),
         );
-        running.interrupt_when(&flag);
+        running.interrupt_within(HANG_LIMIT, &flag);
         let ran = running.finish();
         let pods = transcript(&played);
 
@@ -455,7 +455,7 @@ mod tests {
             part,
             Arc::clone(&flag),
         );
-        running.interrupt_when(&flag);
+        running.interrupt_within(HANG_LIMIT, &flag);
         let ran = running.finish();
         let pods = transcript(&played);
 
@@ -495,7 +495,7 @@ mod tests {
             part,
             Arc::clone(&flag),
         );
-        running.interrupt_when(&flag);
+        running.interrupt_within(HANG_LIMIT, &flag);
         let ran = running.finish();
         let pods = transcript(&played);
 

@@ -62,6 +62,8 @@ pub(super) struct Pods {
     pub(super) parting: Vec<Vec<u8>>,
     /// What they do on the attribute channel.
     pub(super) att: AttPods,
+    /// How long they play before they give up.
+    pub(super) deadline: Duration,
     /// Set, and its waiters woken, once the notification request has arrived, which is where the handshake ends.
     pub(super) handshaken: Arc<(Mutex<bool>, Condvar)>,
 }
@@ -79,6 +81,7 @@ impl Default for Pods {
             hang_up_on_stop: false,
             parting: Vec::new(),
             att: AttPods::default(),
+            deadline: DEADLINE,
             handshaken: Arc::default(),
         }
     }
@@ -209,15 +212,16 @@ impl Far {
         if let Some(reply) = stream.late_reply() {
             self.say_att(&reply);
         }
-        let Some(packet) = stream.next_packet() else {
+        let Some((packet, sent)) = stream.next_packet(part) else {
             return;
         };
         if !self.say_att(&packet) {
             stream.cut();
             return;
         }
-        stream.after_burst = stream.after_burst.saturating_add(1);
-        let sent = Some(stream.after_burst);
+        if sent.is_none() {
+            return;
+        }
         if part.interrupt_after == sent {
             interrupted.store(true, Ordering::SeqCst);
         }
@@ -310,7 +314,7 @@ fn play(mut far: Far, part: &Pods, interrupted: &AtomicBool) -> Transcript {
         far.say(sdu);
     }
     far.pick_up_att(&part.att);
-    while began.elapsed() <= DEADLINE && far.open() {
+    while began.elapsed() <= part.deadline && far.open() {
         let sdu = match far.hear(&mut on_att, &mut buf) {
             Some((End::Control, sdu)) => sdu,
             Some((End::Att, pdu)) => {

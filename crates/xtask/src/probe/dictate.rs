@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use pods_proto::att::{self, AttPdu};
+use pods_proto::att::{self, AttPdu, Uuid};
 use pods_proto::dictation::{AUDIO_HANDLE, START_HANDLE, STATUS_HANDLE, STOP_HANDLE};
 
 /// How long the walk waits for each answer; chosen here to match one step of the handshake.
@@ -19,6 +19,22 @@ const NEEDED: [u16; 4] = [START_HANDLE, STOP_HANDLE, AUDIO_HANDLE, STATUS_HANDLE
 /// The one request of `att-map`: `08 01 00 ff ff 03 28`, every characteristic declaration of the table (Vol 3, Part G, 4.6.1).
 pub(crate) fn declarations_request() -> [u8; 7] {
     att::read_by_type_request(FIRST_HANDLE, LAST_HANDLE, att::CHARACTERISTIC_DECLARATION)
+}
+
+/// An attribute type as a table of handles shows it: `0x2803`, or the 32 hex digits of a 128 bit one, most significant octet first as a UUID is written; the wire holds that octet last.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TypeText<'a>(pub(crate) Uuid<'a>);
+
+impl fmt::Display for TypeText<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Uuid::Short(short) => write!(f, "{short:#06x}"),
+            Uuid::Long(long) => long
+                .iter()
+                .rev()
+                .try_for_each(|byte| write!(f, "{byte:02x}")),
+        }
+    }
 }
 
 /// What the pods' own listing says about the four handles.
@@ -182,6 +198,13 @@ mod tests {
     const FIND_INFORMATION: u8 = 0x04;
     /// The longest packet the property test feeds, one receive buffer.
     const LONGEST_PACKET: usize = 4096;
+
+    #[test]
+    fn a_type_of_either_width_reads_most_significant_octet_first() {
+        assert_eq!(TypeText(Uuid::Short(0x2803)).to_string(), "0x2803");
+        let long = TypeText(Uuid::Long(&FAKE_LONG_UUID)).to_string();
+        assert_eq!(long, "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0");
+    }
 
     /// A Find Information reply that gives each handle the 16 bit type 0x2803: `05 01`, then `07 00 03 28` for handle 0x0007.
     fn listing(handles: &[u16]) -> Vec<u8> {

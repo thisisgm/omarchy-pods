@@ -191,8 +191,6 @@ struct Engine<'a, 'o> {
     checked: bool,
     /// When the last dictation start write left, which the delay of the pods' reply counts from.
     start_sent_ns: Option<u64>,
-    /// When the attribute channel was last dialled again, which blocks inside a turn and so ends after the stamp of that turn.
-    redialled_ns: u64,
     // Fields drop in this order: each stream is stopped, then the session is marked idle, then the side is put back.
     uplink: Option<Uplink<'a>>,
     dictation: Option<Dictation<'a>>,
@@ -240,10 +238,10 @@ impl Engine<'_, '_> {
 
     fn open(&mut self) -> Flow {
         match self.script.opening {
-            Opening::Knock => self.open_gate(self.wires.now(), "connect"),
+            Opening::Knock => self.open_gate("connect"),
             Opening::AttKnock => {
                 self.connect_att()?;
-                self.open_gate(self.wires.now(), "connect")
+                self.open_gate("connect")
             }
             Opening::AttMap => {
                 self.connect_att()?;
@@ -384,7 +382,7 @@ impl Engine<'_, '_> {
             return Ok(());
         }
         if self.script.opening == Opening::AttMap {
-            return self.open_gate(now_ns, "map");
+            return self.open_gate("map");
         }
         if self.script.needs_initial_side && self.initial_side.is_none() {
             if now_ns >= asked_at_ns.saturating_add(self.timing.side_report) {
@@ -393,17 +391,17 @@ impl Engine<'_, '_> {
             return Ok(());
         }
         if self.ear_seen {
-            self.open_gate(now_ns, "ear")
+            self.open_gate("ear")
         } else if now_ns >= asked_at_ns.saturating_add(self.timing.ear_report) {
-            self.open_gate(now_ns, "timeout")
+            self.open_gate("timeout")
         } else {
             Ok(())
         }
     }
 
-    /// Opens the gate, dated no earlier than a redial of the attribute channel that this turn waited out.
-    fn open_gate(&mut self, now_ns: u64, why: &str) -> Flow {
-        let gate_ns = now_ns.max(self.redialled_ns);
+    fn open_gate(&mut self, why: &str) -> Flow {
+        // A fresh stamp, not that of the packet that woke the turn: the walk that ends in the same turn has marked after it, and no mark may go back.
+        let gate_ns = self.wires.now();
         self.recorder.mark(gate_ns, Mark::Gate, &why)?;
         self.phase = Phase::Scripted { gate_ns, next: 0 };
         self.fire_due(gate_ns)
@@ -627,7 +625,6 @@ fn run_with(
             asked: Asked::Nothing,
             checked: false,
             start_sent_ns: None,
-            redialled_ns: 0,
             uplink: None,
             dictation: None,
             session: None,

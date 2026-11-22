@@ -40,10 +40,14 @@ pub(crate) fn soak(rate_hz: u32, seconds: u32) -> Vec<Record> {
 
 /// A run directory under `home` shaped and moded as the store makes one, holding the three input files.
 pub(crate) fn make_run(home: &TempDir, name: &str, log: &str) -> PathBuf {
-    let files = [("sdu.log", log), ("marks.tsv", MARKS), ("meta.txt", META)];
-    run::run_holding(
-        home,
-        name,
-        &files.map(|(file, contents)| (file, contents.as_bytes())),
-    )
+    make_run_of(home, name, &[("sdu.log", log), ("marks.tsv", MARKS)])
+}
+
+/// A run directory as `make_run` makes one, holding `files` and the meta file of a soak.
+pub(crate) fn make_run_of(home: &TempDir, name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let files = files.iter().copied().chain([("meta.txt", META)]);
+    let files: Vec<(&str, &[u8])> = files
+        .map(|(file, contents)| (file, contents.as_bytes()))
+        .collect();
+    run::run_holding(home, name, &files)
 }
