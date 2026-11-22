@@ -2,6 +2,7 @@
 
 // Layouts from daemon/airpods_packets.h and parseMetadata in daemon/main.cpp; no real device bytes.
 
+pub mod advert;
 pub mod host;
 
 /// Starts every packet the pods send after the handshake; the opcode follows.
