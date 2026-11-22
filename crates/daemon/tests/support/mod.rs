@@ -13,7 +13,7 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustix::process::Pid;
+use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -124,9 +124,13 @@ impl Session {
 
     /// Starts a daemon with `args`, its stderr going to a log file in the session.
     pub(crate) fn spawn(&self, args: &[&str], log_name: &str) -> Daemon {
+        self.spawn_command(&mut self.command(Path::new(BINARY), args), log_name)
+    }
+
+    /// Starts `command` as a daemon, its stderr going to a log file in the session.
+    pub(crate) fn spawn_command(&self, command: &mut Command, log_name: &str) -> Daemon {
         let log = self.dir.path().join(log_name);
-        let child = self
-            .command(Path::new(BINARY), args)
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(File::create(&log).unwrap())
@@ -225,7 +229,7 @@ fn read_until_close(stream: &mut UnixStream) -> io::Result<Vec<u8>> {
 
 /// One protocol 1 connection: request lines out, reply lines back.
 pub(crate) struct Proto1 {
-    reader: BufReader<UnixStream>,
+    pub(crate) reader: BufReader<UnixStream>,
 }
 
 impl Proto1 {
@@ -237,22 +241,48 @@ impl Proto1 {
         }
     }
 
+    /// Writes `bytes` as they are, a partial or malformed line included.
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
+        self.reader.get_mut().write_all(bytes).unwrap();
+    }
+
     pub(crate) fn send(&mut self, request: &str) {
-        let line = format!("{request}\n");
-        self.reader.get_mut().write_all(line.as_bytes()).unwrap();
+        self.write(format!("{request}\n").as_bytes());
+    }
+
+    /// The next line, newline included, or empty at a clean close, failing on a reset or once `HANG_LIMIT` passes; sample input `{"event":"state","state":{...}}\n`.
+    pub(crate) fn line(&mut self) -> String {
+        let mut line = String::new();
+        self.reader.read_line(&mut line).unwrap();
+        line
     }
 
     /// The next line, parsed, failing once `HANG_LIMIT` passes or the daemon closes; sample input `{"id":1,"ok":true,"result":"confirmed"}`.
     pub(crate) fn reply(&mut self) -> Value {
-        let mut line = String::new();
-        let read = self.reader.read_line(&mut line).unwrap();
-        assert_ne!(read, 0, "the daemon closed the connection");
+        let line = self.line();
+        assert!(!line.is_empty(), "the daemon closed the connection");
         serde_json::from_str(&line).unwrap()
     }
 
     pub(crate) fn ask(&mut self, request: &str) -> Value {
         self.send(request);
         self.reply()
+    }
+
+    /// Sends one request line and gives the reply line back as the daemon wrote it.
+    pub(crate) fn ask_line(&mut self, request: &str) -> String {
+        self.send(request);
+        self.line()
+    }
+
+    /// Whether the daemon closed this connection with nothing more to read, failing on any other read error; unread request bytes make the close a reset.
+    pub(crate) fn closed(&mut self) -> bool {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line) {
+            Ok(read) => read == 0,
+            Err(error) if error.kind() == ErrorKind::ConnectionReset => true,
+            Err(error) => panic!("reading for the daemon's close: {error}"),
+        }
     }
 }
 
@@ -285,6 +315,12 @@ impl Daemon {
 
     pub(crate) fn wait_exit(&mut self) -> ExitStatus {
         wait_for("the daemon to exit", || self.child.try_wait().unwrap())
+    }
+
+    /// Sends SIGTERM and waits for the exit, failing once `HANG_LIMIT` passes.
+    pub(crate) fn stop(&mut self) -> ExitStatus {
+        kill_process(self.pid(), Signal::TERM).unwrap();
+        self.wait_exit()
     }
 
     pub(crate) fn log(&self) -> String {

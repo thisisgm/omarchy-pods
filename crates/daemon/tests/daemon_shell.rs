@@ -585,9 +585,7 @@ mod tests {
         wait_for("the failed write in the log", || {
             daemon.log().contains(&named).then_some(())
         });
-        wait_for("the daemon socket", || {
-            UnixStream::connect(session.socket()).ok()
-        });
+        session.wait_accepting();
         assert_eq!(session.status(), to_status_line(&State::default()));
         assert!(daemon.running());
     }

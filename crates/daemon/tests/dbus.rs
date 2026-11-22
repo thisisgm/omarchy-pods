@@ -11,16 +11,13 @@ mod support;
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::fs::{self, File};
+    use std::fs;
     use std::future::poll_fn;
-    use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::pin::Pin;
-    use std::process::{ExitStatus, Stdio};
     use std::time::{Duration, Instant};
 
     use pods_core::command::CommandError;
-    use rustix::process::{Signal, kill_process};
     use tokio::runtime::Builder as RuntimeBuilder;
     use zbus::connection::Builder;
     use zbus::export::futures_core::Stream;
@@ -54,25 +51,10 @@ mod tests {
 
     /// Starts a daemon whose session bus is `bus_address`, and waits until its socket accepts.
     fn start_daemon(session: &Session, bus_address: &str, log_name: &str) -> Daemon {
-        let log = session.dir.path().join(log_name);
-        let child = session
-            .command(Path::new(BINARY), &["daemon"])
-            .env(BUS_ADDRESS_VAR, bus_address)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(File::create(&log).unwrap())
-            .spawn()
-            .unwrap();
-        let daemon = Daemon { child, log };
-        wait_for("the daemon socket", || {
-            UnixStream::connect(session.socket()).ok()
-        });
+        let mut command = session.command(Path::new(BINARY), &["daemon"]);
+        let daemon = session.spawn_command(command.env(BUS_ADDRESS_VAR, bus_address), log_name);
+        session.wait_accepting();
         daemon
-    }
-
-    fn stop(daemon: &mut Daemon) -> ExitStatus {
-        kill_process(daemon.pid(), Signal::TERM).unwrap();
-        daemon.wait_exit()
     }
 
     /// What `librepods <args>` prints, after checking that it exited 0.
@@ -253,10 +235,10 @@ mod tests {
             other.log().contains(&taken).then_some(())
         });
         assert!(second.status().starts_with('{'));
-        assert_eq!(stop(&mut other).code(), Some(0));
+        assert_eq!(other.stop().code(), Some(0));
         let log = other.log();
         assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");
-        assert_eq!(stop(&mut daemon).code(), Some(0));
+        assert_eq!(daemon.stop().code(), Some(0));
         assert_eq!(log_lines(&daemon.log()), ["SIGTERM received, stopping"]);
     }
 
@@ -281,7 +263,7 @@ mod tests {
             });
             assert_eq!(session.send(b"ear:off"), b"");
             assert_ne!(session.status(), status);
-            assert_eq!(stop(&mut daemon).code(), Some(0));
+            assert_eq!(daemon.stop().code(), Some(0));
             let log = daemon.log();
             assert_eq!(log_lines(&log).len(), 2, "{log}");
             assert_eq!(log.matches(NO_BUS_LOG).count(), 1, "{log}");

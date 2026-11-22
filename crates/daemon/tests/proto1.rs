@@ -19,10 +19,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use rustix::process::{Signal, kill_process};
     use serde_json::Value;
 
-    use super::support::{HANG_LIMIT, Session, pause, read_to_close, wait_for};
+    use super::support::{HANG_LIMIT, Proto1, Session, pause, read_to_close, wait_for};
 
     /// The longest request line the daemon takes, newline excluded, from `MAX_LINE_BYTES` in `src/daemon/proto1.rs`.
     const MAX_LINE_BYTES: usize = 4096;
@@ -82,47 +81,6 @@ mod tests {
     const NO_DEVICE: &str = r#"{"code":"no_device","message":"There are no AirPods to act on."}"#;
     const BAD_REQUEST: &str =
         r#"{"code":"bad_request","message":"The daemon could not read the request."}"#;
-
-    /// One protocol 1 connection, read a line at a time.
-    struct Client {
-        reader: BufReader<UnixStream>,
-    }
-
-    impl Client {
-        fn connect(session: &Session) -> Self {
-            let stream = UnixStream::connect(session.socket()).unwrap();
-            stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
-            Self {
-                reader: BufReader::new(stream),
-            }
-        }
-
-        fn send(&mut self, bytes: &[u8]) {
-            self.reader.get_mut().write_all(bytes).unwrap();
-        }
-
-        /// The next line, newline included, or empty once the daemon closed.
-        fn line(&mut self) -> String {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).unwrap();
-            line
-        }
-
-        /// Sends one request line and reads one line back.
-        fn ask(&mut self, request: &str) -> String {
-            self.send(format!("{request}\n").as_bytes());
-            self.line()
-        }
-
-        /// Whether the daemon closed this connection with nothing more to read; unread request bytes make the close a reset.
-        fn closed(&mut self) -> bool {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(read) => read == 0,
-                Err(error) => error.kind() == ErrorKind::ConnectionReset,
-            }
-        }
-    }
 
     /// The legacy `status` reply without its newline, which is the state object protocol 1 carries.
     fn legacy_state(session: &Session) -> String {
@@ -189,28 +147,37 @@ mod tests {
     fn get_returns_the_same_object_as_legacy_status() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
-        assert_eq!(client.ask(GET), state_reply(7, &legacy_state(&session)));
+        let mut client = Proto1::connect(&session);
+        assert_eq!(
+            client.ask_line(GET),
+            state_reply(7, &legacy_state(&session))
+        );
         assert_eq!(session.send(b"ear:off"), b"");
-        assert_eq!(client.ask(GET), state_reply(7, &legacy_state(&session)));
+        assert_eq!(
+            client.ask_line(GET),
+            state_reply(7, &legacy_state(&session))
+        );
     }
 
     #[test]
     fn subscribe_sends_current_state_then_one_event_per_change() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut subscriber = Client::connect(&session);
+        let mut subscriber = Proto1::connect(&session);
         assert_eq!(
-            subscriber.ask(SUBSCRIBE),
+            subscriber.ask_line(SUBSCRIBE),
             state_reply(8, &legacy_state(&session))
         );
-        let mut changer = Client::connect(&session);
+        let mut changer = Proto1::connect(&session);
         let both = r#"{"v":1,"id":2,"op":"set","key":"ear_detection","value":"both"}"#;
-        assert_eq!(changer.ask(both), confirmed(2));
+        assert_eq!(changer.ask_line(both), confirmed(2));
         assert_eq!(subscriber.line(), event(&legacy_state(&session)));
         // Setting the value it already has is no change, so the next line is the reply to this get.
-        assert_eq!(changer.ask(both), confirmed(2));
-        assert_eq!(subscriber.ask(GET), state_reply(7, &legacy_state(&session)));
+        assert_eq!(changer.ask_line(both), confirmed(2));
+        assert_eq!(
+            subscriber.ask_line(GET),
+            state_reply(7, &legacy_state(&session))
+        );
     }
 
     #[test]
@@ -220,17 +187,17 @@ mod tests {
         let done = AtomicBool::new(false);
         thread::scope(|scope| {
             scope.spawn(|| {
-                let mut changer = Client::connect(&session);
+                let mut changer = Proto1::connect(&session);
                 let mut id = 0;
                 while !done.load(Ordering::Relaxed) {
-                    assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
+                    assert_eq!(changer.ask_line(&ear_change(id)), confirmed(id));
                     id += 1;
                 }
             });
             let _stop = StopOnDrop(&done);
             for _ in 0..SUBSCRIPTIONS {
-                let mut subscriber = Client::connect(&session);
-                let reply = subscriber.ask(SUBSCRIBE);
+                let mut subscriber = Proto1::connect(&session);
+                let reply = subscriber.ask_line(SUBSCRIBE);
                 let first = subscriber.line();
                 let second = subscriber.line();
                 assert_eq!(
@@ -251,10 +218,10 @@ mod tests {
     fn set_while_disconnected_is_refused_with_not_connected() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         let before = legacy_state(&session);
         let anc = r#"{"v":1,"id":9,"op":"set","key":"noise","value":"anc"}"#;
-        assert_eq!(client.ask(anc), error_reply("9", NOT_CONNECTED));
+        assert_eq!(client.ask_line(anc), error_reply("9", NOT_CONNECTED));
         assert_ne!(
             legacy_state(&session),
             before,
@@ -268,7 +235,7 @@ mod tests {
             let request =
                 format!(r#"{{"v":1,"id":{id},"op":"set","key":"{key}","value":"{value}"}}"#);
             assert_eq!(
-                client.ask(&request),
+                client.ask_line(&request),
                 error_reply(&id.to_string(), NOT_CONNECTED)
             );
         }
@@ -278,27 +245,27 @@ mod tests {
     fn every_action_with_no_airpods_known_is_no_device_and_reopen_is_not_an_action() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         for action in ["connect", "disconnect", "forget"] {
             let request = format!(r#"{{"v":1,"id":10,"op":"do","action":"{action}"}}"#);
             assert_eq!(
-                client.ask(&request),
+                client.ask_line(&request),
                 error_reply("10", NO_DEVICE),
                 "{action}"
             );
         }
         let reopen = r#"{"v":1,"id":10,"op":"do","action":"reopen"}"#;
-        assert_eq!(client.ask(reopen), error_reply("10", BAD_REQUEST));
+        assert_eq!(client.ask_line(reopen), error_reply("10", BAD_REQUEST));
     }
 
     #[test]
     fn set_ear_detection_is_confirmed_and_visible_in_state() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         let off = r#"{"v":1,"id":11,"op":"set","key":"ear_detection","value":"off"}"#;
-        assert_eq!(client.ask(off), confirmed(11));
-        let reply = client.ask(GET);
+        assert_eq!(client.ask_line(off), confirmed(11));
+        let reply = client.ask_line(GET);
         assert_eq!(reply, state_reply(7, &legacy_state(&session)));
         let state: Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(state["state"]["ear_detection_behavior"], 2);
@@ -308,29 +275,29 @@ mod tests {
     fn unknown_key_is_unknown_key() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         let volume = r#"{"v":1,"id":12,"op":"set","key":"volume","value":"3"}"#;
         let unknown = r#"{"code":"unknown_key","message":"There is no setting by that name."}"#;
-        assert_eq!(client.ask(volume), error_reply("12", unknown));
+        assert_eq!(client.ask_line(volume), error_reply("12", unknown));
     }
 
     #[test]
     fn adaptive_level_100_is_taken_and_101_is_out_of_range() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         let taken = r#"{"v":1,"id":13,"op":"set","key":"adaptive_level","value":"100"}"#;
-        assert_eq!(client.ask(taken), error_reply("13", NOT_CONNECTED));
+        assert_eq!(client.ask_line(taken), error_reply("13", NOT_CONNECTED));
         let level = r#"{"v":1,"id":13,"op":"set","key":"adaptive_level","value":"101"}"#;
         let range = r#"{"code":"out_of_range","message":"The value is outside the range the setting takes."}"#;
-        assert_eq!(client.ask(level), error_reply("13", range));
+        assert_eq!(client.ask_line(level), error_reply("13", range));
     }
 
     #[test]
     fn wrong_version_lists_supported_versions() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         let unsupported = r#"{"code":"unsupported_version","message":"This daemon speaks protocol version 1 only.","supported":[1]}"#;
         for request in [
             r#"{"v":2,"id":3,"op":"get"}"#,
@@ -339,7 +306,7 @@ mod tests {
             r#"{"v":2,"id":3}"#,
         ] {
             assert_eq!(
-                client.ask(request),
+                client.ask_line(request),
                 error_reply("3", unsupported),
                 "{request}"
             );
@@ -350,7 +317,7 @@ mod tests {
     fn garbage_line_is_bad_request_and_connection_stays_usable() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         let state = legacy_state(&session);
         for (request, id) in [
             ("{garbage", "null"),
@@ -377,17 +344,17 @@ mod tests {
             (r#"{"v":1,"id":4,"op":"do"}"#, "4"),
         ] {
             assert_eq!(
-                client.ask(request),
+                client.ask_line(request),
                 error_reply(id, BAD_REQUEST),
                 "{request}"
             );
         }
-        client.send(b"{\"v\":1,\"id\":4,\"op\":\"g\xffet\"}\n");
+        client.write(b"{\"v\":1,\"id\":4,\"op\":\"g\xffet\"}\n");
         assert_eq!(client.line(), error_reply("null", BAD_REQUEST));
         let largest = r#"{"v":1,"id":18446744073709551615,"op":"get","extra":[{"a":1}]}"#;
-        assert_eq!(client.ask(largest), state_reply(u64::MAX, &state));
+        assert_eq!(client.ask_line(largest), state_reply(u64::MAX, &state));
         assert_eq!(
-            client.ask(r#"{"v":1,"id":4,"id":5,"op":"get"}"#),
+            client.ask_line(r#"{"v":1,"id":4,"id":5,"op":"get"}"#),
             state_reply(5, &state)
         );
     }
@@ -397,22 +364,25 @@ mod tests {
         let session = Session::new();
         let daemon = session.start();
         let state = legacy_state(&session);
-        let mut client = Client::connect(&session);
+        let mut client = Proto1::connect(&session);
         assert_eq!(
-            client.ask(&padded_get(MAX_LINE_BYTES)),
+            client.ask_line(&padded_get(MAX_LINE_BYTES)),
             state_reply(1, &state)
         );
-        assert_eq!(client.ask(GET), state_reply(7, &state));
-        let mut client = Client::connect(&session);
-        client.send(format!("{}\n", padded_get(MAX_LINE_BYTES + 1)).as_bytes());
+        assert_eq!(client.ask_line(GET), state_reply(7, &state));
+        let mut client = Proto1::connect(&session);
+        client.write(format!("{}\n", padded_get(MAX_LINE_BYTES + 1)).as_bytes());
         assert!(client.closed());
-        let mut client = Client::connect(&session);
-        client.send(padded_get(MAX_LINE_BYTES + 1).as_bytes());
+        let mut client = Proto1::connect(&session);
+        client.write(padded_get(MAX_LINE_BYTES + 1).as_bytes());
         assert!(
             client.closed(),
             "a line past the bound closes before its newline"
         );
-        assert_eq!(Client::connect(&session).ask(GET), state_reply(7, &state));
+        assert_eq!(
+            Proto1::connect(&session).ask_line(GET),
+            state_reply(7, &state)
+        );
         // The daemon logs a close before it makes it, and a stall close would log its own reason instead.
         let log = daemon.log();
         let bound = format!("longer than {MAX_LINE_BYTES} bytes");
@@ -423,11 +393,11 @@ mod tests {
     fn a_pipelined_burst_of_changes_reaches_a_subscriber_whole() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut subscriber = Client::connect(&session);
-        let mut expected = ear_changes(&subscriber.ask(SUBSCRIBE));
-        let mut burst = Client::connect(&session);
+        let mut subscriber = Proto1::connect(&session);
+        let mut expected = ear_changes(&subscriber.ask_line(SUBSCRIBE));
+        let mut burst = Proto1::connect(&session);
         let lines: String = (0..BURST_CHANGES).map(|id| ear_change(id) + "\n").collect();
-        burst.send(lines.as_bytes());
+        burst.write(lines.as_bytes());
         for id in 0..BURST_CHANGES {
             assert_eq!(burst.line(), confirmed(id));
         }
@@ -447,11 +417,11 @@ mod tests {
     fn a_subscriber_pipelining_its_own_changes_gets_every_reply_and_event() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut subscriber = Client::connect(&session);
-        let mut expected = noise_changes(&subscriber.ask(SUBSCRIBE));
+        let mut subscriber = Proto1::connect(&session);
+        let mut expected = noise_changes(&subscriber.ask_line(SUBSCRIBE));
         // A refused set still counts a change, and lines this short put more changes in one read than the hub holds.
         let refused = r#"{"v":1,"id":0,"op":"set","key":"noise","value":"anc"}"#;
-        subscriber.send(format!("{refused}\n").repeat(CHANGES).as_bytes());
+        subscriber.write(format!("{refused}\n").repeat(CHANGES).as_bytes());
         let mut replies = 0;
         let mut events = 0;
         while replies < CHANGES || events < CHANGES {
@@ -474,27 +444,30 @@ mod tests {
             }
         }
         // Every change has had its event, so the next line answers this get.
-        assert_eq!(subscriber.ask(GET), state_reply(7, &legacy_state(&session)));
+        assert_eq!(
+            subscriber.ask_line(GET),
+            state_reply(7, &legacy_state(&session))
+        );
     }
 
     #[test]
     fn slow_subscriber_is_dropped_and_others_keep_receiving() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut slow = Client::connect(&session);
-        let first_reply = slow.ask(SUBSCRIBE);
-        let mut fast = Client::connect(&session);
-        fast.ask(SUBSCRIBE);
-        let mut changer = Client::connect(&session);
-        let mut getter = Client::connect(&session);
+        let mut slow = Proto1::connect(&session);
+        let first_reply = slow.ask_line(SUBSCRIBE);
+        let mut fast = Proto1::connect(&session);
+        fast.ask_line(SUBSCRIBE);
+        let mut changer = Proto1::connect(&session);
+        let mut getter = Proto1::connect(&session);
         thread::scope(|scope| {
             let reader = scope.spawn(move || (0..CHANGES).map(|_| fast.line()).collect::<Vec<_>>());
             let mut changes_made = ear_changes(&first_reply);
             for id in 0..CHANGES {
                 // The set runs every subscriber's task before its reply, so it is timed too.
                 let started = Instant::now();
-                assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
-                let reply = getter.ask(GET);
+                assert_eq!(changer.ask_line(&ear_change(id)), confirmed(id));
+                let reply = getter.ask_line(GET);
                 let waited = started.elapsed();
                 assert!(
                     waited < OTHERS_ANSWERED_WITHIN,
@@ -532,13 +505,13 @@ mod tests {
     fn a_subscriber_keeps_16_unsent_lines_and_the_17th_closes_it() {
         let session = Session::new();
         let daemon = session.start();
-        let mut subscriber = Client::connect(&session);
-        subscriber.ask(SUBSCRIBE);
-        let mut changer = Client::connect(&session);
+        let mut subscriber = Proto1::connect(&session);
+        subscriber.ask_line(SUBSCRIBE);
+        let mut changer = Proto1::connect(&session);
         // The set runs every subscriber's task before its reply, so a close it caused is logged by then.
         let closed_at = (0..CHANGES)
             .position(|id| {
-                assert_eq!(changer.ask(&ear_change(id)), confirmed(id));
+                assert_eq!(changer.ask_line(&ear_change(id)), confirmed(id));
                 daemon.log().contains("protocol 1 client closed")
             })
             .expect("the subscriber that reads nothing was never closed");
@@ -552,8 +525,8 @@ mod tests {
     fn legacy_verbs_still_work_on_the_same_socket() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut subscriber = Client::connect(&session);
-        subscriber.ask(SUBSCRIBE);
+        let mut subscriber = Proto1::connect(&session);
+        subscriber.ask_line(SUBSCRIBE);
         assert_eq!(session.send(b"ear:both"), b"");
         assert_eq!(subscriber.line(), event(&legacy_state(&session)));
         let refusal = session.ask(b"reopen");
@@ -585,14 +558,14 @@ mod tests {
         let session = Session::new();
         let daemon = session.start();
         let state = legacy_state(&session);
-        let mut subscriber = Client::connect(&session);
-        subscriber.ask(SUBSCRIBE);
+        let mut subscriber = Proto1::connect(&session);
+        subscriber.ask_line(SUBSCRIBE);
         let started = Instant::now();
-        let mut steady = Client::connect(&session);
-        let mut unfinished = Client::connect(&session);
-        unfinished.send(b"{");
-        let mut idle = Client::connect(&session);
-        idle.ask(GET);
+        let mut steady = Proto1::connect(&session);
+        let mut unfinished = Proto1::connect(&session);
+        unfinished.write(b"{");
+        let mut idle = Proto1::connect(&session);
+        idle.ask_line(GET);
         let mut unread = UnixStream::connect(session.socket()).unwrap();
         let mut writer = unread.try_clone().unwrap();
         writer.set_write_timeout(Some(HANG_LIMIT)).unwrap();
@@ -604,7 +577,7 @@ mod tests {
             // Moved in, so the steady client hangs up when done instead of staying for a stall close of its own.
             scope.spawn(move || {
                 for _ in 0..STEADY_REQUESTS {
-                    assert_eq!(steady.ask(GET), state_reply(7, state));
+                    assert_eq!(steady.ask_line(GET), state_reply(7, state));
                     pause(STALL_DEADLINE / 2);
                 }
             });
@@ -624,7 +597,7 @@ mod tests {
         let stalled = format!("made no progress for {} ms", STALL_DEADLINE.as_millis());
         let log = daemon.log();
         assert_eq!(log.matches(&stalled).count(), 3, "{log}");
-        assert_eq!(subscriber.ask(GET), state_reply(7, &state));
+        assert_eq!(subscriber.ask_line(GET), state_reply(7, &state));
     }
 
     #[test]
@@ -669,14 +642,13 @@ mod tests {
     fn stop_signal_ends_idle_protocol_1_connections() {
         let session = Session::new();
         let mut daemon = session.start();
-        let mut subscriber = Client::connect(&session);
-        subscriber.ask(SUBSCRIBE);
-        let mut idle = Client::connect(&session);
-        idle.send(b"{\"v\":1,");
-        let mut silent = Client::connect(&session);
-        silent.send(b"{");
-        kill_process(daemon.pid(), Signal::TERM).unwrap();
-        assert!(daemon.wait_exit().success(), "{}", daemon.log());
+        let mut subscriber = Proto1::connect(&session);
+        subscriber.ask_line(SUBSCRIBE);
+        let mut idle = Proto1::connect(&session);
+        idle.write(b"{\"v\":1,");
+        let mut silent = Proto1::connect(&session);
+        silent.write(b"{");
+        assert!(daemon.stop().success(), "{}", daemon.log());
         // A connection that ended before the stop, by its stall deadline or otherwise, logs its own close.
         let log = daemon.log();
         assert!(!log.contains("protocol 1 client closed"), "{log}");
@@ -687,10 +659,10 @@ mod tests {
         let session = Session::new();
         let daemon = session.start();
         let state = legacy_state(&session);
-        let mut subscribers: Vec<Client> = (0..MAX_CONNECTIONS)
+        let mut subscribers: Vec<Proto1> = (0..MAX_CONNECTIONS)
             .map(|_| {
-                let mut subscriber = Client::connect(&session);
-                assert_eq!(subscriber.ask(SUBSCRIBE), state_reply(8, &state));
+                let mut subscriber = Proto1::connect(&session);
+                assert_eq!(subscriber.ask_line(SUBSCRIBE), state_reply(8, &state));
                 subscriber
             })
             .collect();
@@ -710,7 +682,7 @@ mod tests {
             "{}",
             daemon.log()
         );
-        assert_eq!(subscribers[0].ask(GET), state_reply(7, &state));
+        assert_eq!(subscribers[0].ask_line(GET), state_reply(7, &state));
         drop(subscribers.pop());
         // The daemon frees the slot only once it has run the departed client's task, so the first try may be closed.
         wait_for("a slot freed by the departed subscriber", || {
@@ -727,8 +699,8 @@ mod tests {
     fn nothing_arrives_after_the_reply_without_a_subscription() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut client = Client::connect(&session);
-        client.ask(GET);
+        let mut client = Proto1::connect(&session);
+        client.ask_line(GET);
         assert_eq!(session.send(b"ear:both"), b"");
         client
             .reader

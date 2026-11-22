@@ -25,7 +25,7 @@ mod tests {
         recv, socket_with, socketpair,
     };
 
-    use super::support::rig::{DIAL_WAIT, Rig};
+    use super::support::rig::{DIAL_WAIT, Rig, connected};
     use super::support::wait_within;
 
     const LURE_VARIABLES: [&str; 9] = [
@@ -112,10 +112,6 @@ mod tests {
         }
     }
 
-    fn connected(rig: &Rig) -> bool {
-        rig.status()["connected"].as_bool().unwrap()
-    }
-
     #[test]
     fn the_binary_takes_a_channel_only_from_the_kernel() {
         let mut rig = Rig::new();
@@ -132,7 +128,7 @@ mod tests {
         rig.link_up(&device);
         let first_retry = Duration::from_millis(HELD_DELAYS_MS[0]);
         let dials = rig.wait_dials(2, DIAL_WAIT + first_retry);
-        assert!(!connected(&rig));
+        assert!(!connected(&rig.status()));
         assert_eq!(rig.sockets(), dials.len());
         lures.check();
         rig.finish();

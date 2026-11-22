@@ -22,7 +22,6 @@ mod tests {
     use pods_proto::packets::CONTROL_PSM;
     use pods_trap::Answer;
     use rustix::io::Errno;
-    use serde_json::Value;
     use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
     use tokio::time::timeout;
     use zbus::connection::Builder;
@@ -32,7 +31,9 @@ mod tests {
 
     use super::support::bluez::{AAP_UUID, DEVICE_INTERFACE, FakeBluez};
     use super::support::bus::start_bus;
-    use super::support::rig::{DIAL_WAIT, REAL_TIME_SLACK, Rig, SIGNAL_SLACK, test_address};
+    use super::support::rig::{
+        DIAL_WAIT, REAL_TIME_SLACK, Rig, SIGNAL_SLACK, connected, test_address,
+    };
     use super::support::{HANG_LIMIT, Session, pause, wait_for, wait_within};
 
     /// `test_address(1)` as BlueZ writes it.
@@ -200,26 +201,9 @@ mod tests {
         bluez.finish();
     }
 
-    fn connected(status: &Value) -> bool {
-        status["connected"].as_bool().unwrap()
-    }
-
     fn uuids(list: &[&str]) -> OwnedVariant {
         let list: Vec<String> = list.iter().map(|uuid| (*uuid).to_owned()).collect();
         OwnedVariant::try_from(Variant::from(list)).unwrap()
-    }
-
-    /// Asks `librepods status` for `duration`, failing at the first answer where `check` does not hold.
-    fn holds_for(rig: &Rig, duration: Duration, what: &str, check: impl Fn(&Value) -> bool) {
-        let started = Instant::now();
-        while started.elapsed() < duration {
-            let status = rig.status();
-            assert!(
-                check(&status),
-                "{what} ended after {:?}: {status}",
-                started.elapsed()
-            );
-        }
     }
 
     fn up(rig: &Rig) {
@@ -332,7 +316,7 @@ mod tests {
         rig.wait_dials(1, DIAL_WAIT);
         up(&rig);
         rig.bluez().drop_name();
-        holds_for(&rig, QUIET, "connected", connected);
+        rig.holds_for(QUIET, "connected", connected);
         rig.bluez().take_name();
         rig.no_dial_for(QUIET);
         assert_eq!(rig.dials().len(), 1);
@@ -418,14 +402,14 @@ mod tests {
             .set(&other, "Connected", OwnedVariant::from(true));
         rig.bluez()
             .set(&other, "Connected", OwnedVariant::from(false));
-        holds_for(&rig, QUIET, "connected", connected);
+        rig.holds_for(QUIET, "connected", connected);
         let closed = device.pods.wait_closed(1, Duration::ZERO);
         assert!(closed.is_err(), "the channel closed: {closed:?}");
         rig.bluez()
             .set(&other, "Connected", OwnedVariant::from(true));
         rig.bluez()
             .set(&device.path, "Connected", OwnedVariant::from(false));
-        holds_for(&rig, QUIET, "connected", connected);
+        rig.holds_for(QUIET, "connected", connected);
         let closed = device.pods.wait_closed(1, Duration::ZERO);
         assert!(closed.is_err(), "the channel closed: {closed:?}");
         rig.bluez()
@@ -559,7 +543,7 @@ mod tests {
         wait_for("the held sweep's error", || {
             rig.daemon().log().contains(SWEEP_HELD).then_some(())
         });
-        holds_for(&rig, QUIET, "not connected", |status| !connected(status));
+        rig.holds_for(QUIET, "not connected", |status| !connected(status));
         rig.finish();
     }
 

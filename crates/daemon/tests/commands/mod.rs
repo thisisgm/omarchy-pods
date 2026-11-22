@@ -9,8 +9,6 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 
-use rustix::process::{Signal, kill_process};
-
 use super::support::{BINARY, HANG_LIMIT, Session, run_to_end, wait_for};
 
 /// A device on which every write fails with no space left.
@@ -103,8 +101,7 @@ fn watch_prints_a_line_per_change_and_exits_one_when_daemon_stops() {
     assert_eq!(read_watch_line(&mut stdout), session.status());
     assert_eq!(session.send(b"ear:one"), b"");
     assert_eq!(read_watch_line(&mut stdout), session.status());
-    kill_process(daemon.pid(), Signal::TERM).unwrap();
-    assert!(daemon.wait_exit().success());
+    assert!(daemon.stop().success());
     assert_eq!(read_watch_line(&mut stdout), "");
     assert_eq!(
         finish(&watch),
@@ -216,8 +213,7 @@ fn set_exit_codes_and_messages() {
         assert_eq!(out.stdout, b"", "{args:?}");
         assert_eq!(String::from_utf8(out.stderr).unwrap(), stderr, "{args:?}");
     }
-    kill_process(daemon.pid(), Signal::TERM).unwrap();
-    assert!(daemon.wait_exit().success(), "{}", daemon.log());
+    assert!(daemon.stop().success(), "{}", daemon.log());
     let refused = format!(
         "Could not connect to OpenPods daemon at {} (is it running?)\n",
         session.socket().display()
