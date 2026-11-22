@@ -12,6 +12,26 @@ use super::{Session, pause, wait_within};
 pub(crate) const HANG: Duration = Duration::from_secs(8);
 
 pub(crate) const PROGRAM: &str = "omarchy";
+
+/// The daemon's wait for one run before it kills it.
+pub(crate) const NOTIFY_WAIT: Duration = Duration::from_millis(5000);
+
+/// Longer than a run the daemon started takes to reach the record.
+pub(crate) const RECORDED_WITHIN: Duration = Duration::from_millis(500);
+
+/// The run the daemon makes for the disconnect notice, the arguments of the C++ `Notifier` and the text of its `main.cpp`.
+pub(crate) const DISCONNECT_NOTICE: [&str; 8] = [
+    "notification",
+    "send",
+    "--app-name",
+    "AirPods",
+    "-g",
+    "\u{f025}",
+    "AirPods Disconnected",
+    "Your AirPods have been disconnected",
+];
+/// What a failing stand-in says on its standard error before it exits.
+pub(crate) const REFUSAL: &str = "omarchy: refused";
 const RECORD: &str = "omarchy.calls";
 /// Written whole beside `bin` and renamed into it, so a run never finds half a script.
 const NEXT: &str = "omarchy.next";
@@ -47,7 +67,7 @@ impl Omarchy {
     pub(crate) fn become_(&self, mood: Mood) {
         let after = match mood {
             Mood::Works => String::new(),
-            Mood::Fails => "exit 1\n".to_owned(),
+            Mood::Fails => format!("echo '{REFUSAL}' >&2\nexit 1\n"),
             // `exec` keeps one process, so the guard that kills the stand-in kills the sleep too.
             Mood::Hangs => format!("exec /usr/bin/sleep {}\n", HANG.as_secs()),
             Mood::Absent => {
@@ -116,6 +136,13 @@ impl Omarchy {
             let calls = self.calls();
             (calls.len() >= count).then_some(calls)
         })
+    }
+
+    /// Fails with the record if any run was recorded once `quiet` has passed.
+    pub(crate) fn never_ran(&self, quiet: Duration) {
+        pause(quiet);
+        let calls = self.calls();
+        assert!(calls.is_empty(), "{PROGRAM} ran: {calls:?}");
     }
 
     /// Fails with the record if a run comes within `quiet`.

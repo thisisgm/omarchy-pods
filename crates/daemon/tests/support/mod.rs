@@ -3,8 +3,10 @@
 pub(crate) mod audio;
 pub(crate) mod bluez;
 pub(crate) mod bus;
+pub(crate) mod children;
 pub(crate) mod logind;
 pub(crate) mod omarchy;
+pub(crate) mod parked;
 pub(crate) mod players;
 pub(crate) mod rig;
 

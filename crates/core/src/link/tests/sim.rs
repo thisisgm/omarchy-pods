@@ -8,7 +8,9 @@ use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURE
 
 use crate::command::{Command, Outcome};
 use crate::link::ladder::PENDING_MAX;
-use crate::link::{Action, Call, DeviceAction, End, Event, Machine, Phase, Session, Ticket};
+use crate::link::{
+    Action, Call, DeviceAction, End, Event, Machine, Phase, Session, Signal, Ticket,
+};
 use crate::state::State;
 
 /// What a step that asks for nothing returns.
@@ -108,6 +110,8 @@ pub(super) struct Sim {
     pub(super) state: State,
     pub(super) now: Duration,
     pub(super) steps: Vec<Step>,
+    /// Every signal the machine returned and when, kept out of `steps`, which hold what the shell plays.
+    pub(super) signals: Vec<(Duration, Signal)>,
     default_answer: Answer,
     answers: VecDeque<Answer>,
     channel: Channel,
@@ -133,6 +137,7 @@ impl Sim {
             state: State::default(),
             now: Duration::ZERO,
             steps: Vec::new(),
+            signals: Vec::new(),
             default_answer,
             answers: VecDeque::new(),
             channel: Channel::Free,
@@ -346,7 +351,10 @@ impl Sim {
             self.violations
                 .push(format!("{label}: {} actions", actions.len()));
         }
-        let described = actions.into_iter().map(|action| self.act(action)).collect();
+        let described = actions
+            .into_iter()
+            .filter_map(|action| self.act(action))
+            .collect();
         self.steps.push(Step {
             at: self.now,
             event: label.clone(),
@@ -365,9 +373,9 @@ impl Sim {
         event(addr(device))
     }
 
-    /// Plays the shell's part for one action and names it for the log.
-    fn act(&mut self, action: Action) -> String {
-        match action {
+    /// Plays the shell's part for one action and names it for the log, or keeps a signal apart.
+    fn act(&mut self, action: Action) -> Option<String> {
+        let label = match action {
             Action::OpenChannel(peer) => {
                 let device = index(peer);
                 if self.channel != Channel::Free {
@@ -418,7 +426,12 @@ impl Sim {
                 self.resolves.entry(ticket.0).or_default().push(outcome);
                 format!("Resolve({})", ticket.0)
             }
-        }
+            Action::Signal(signal) => {
+                self.signals.push((self.now, signal));
+                return None;
+            }
+        };
+        Some(label)
     }
 
     fn answer_open(&mut self, answer: Answer) {
