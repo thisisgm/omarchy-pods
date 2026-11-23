@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal, kill_process};
 
 pub use library::states_latency;
-pub use recorder::Recorder;
+pub use recorder::{LONGEST_RECORDING, Recorder};
 pub use server::{DRIVER_NODE, SOCKET, Server, environment, node_names, parse_dump};
 pub use wav::write_wav;
 

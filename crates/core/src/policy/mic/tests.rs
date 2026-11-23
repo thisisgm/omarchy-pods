@@ -154,31 +154,41 @@ fn phase(kind: Kind) -> Phase {
             tried: Try::FIRST,
             owed: true,
         },
-        Kind::Running => Phase::Running(Hold::Wanted),
-        Kind::Lingering => Phase::Running(Hold::Lingering {
-            since: SENT,
-            unworn: None,
-        }),
-        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }),
+        Kind::Running => Phase::Running(Hold::Wanted, watch()),
+        Kind::Lingering => Phase::Running(
+            Hold::Lingering {
+                since: SENT,
+                unworn: None,
+            },
+            watch(),
+        ),
+        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }, watch()),
         Kind::Stopping => Phase::Stopping {
             since: SENT,
             restore: true,
+            spent: None,
         },
         Kind::StoppingQuiet => Phase::Stopping {
             since: SENT,
             restore: false,
+            spent: None,
         },
         Kind::Restoring => Phase::Restoring {
             since: SENT,
             id: RestoreId(0),
-            unasked: false,
+            spent: None,
         },
         Kind::RestoringUnasked => Phase::Restoring {
             since: SENT,
             id: RestoreId(0),
-            unasked: true,
+            spent: Some(Spent::Unasked),
         },
     }
+}
+
+/// The stall check of a run its START began at `SENT`, before its first read.
+fn watch() -> Watch {
+    Watch::new(Try::FIRST, SENT)
 }
 
 fn last_try() -> Try {
@@ -206,13 +216,16 @@ fn kind(phase: Phase) -> Kind {
         } if tried.next().is_none() => Kind::LastTry,
         Phase::Starting { owed: false, .. } => Kind::Starting,
         Phase::Starting { owed: true, .. } => Kind::Owed,
-        Phase::Running(Hold::Wanted | Hold::Late) => Kind::Running,
-        Phase::Running(Hold::Lingering { .. }) => Kind::Lingering,
-        Phase::Running(Hold::Waiting { .. }) => Kind::Waiting,
+        Phase::Running(Hold::Wanted | Hold::Late, _) => Kind::Running,
+        Phase::Running(Hold::Lingering { .. }, _) => Kind::Lingering,
+        Phase::Running(Hold::Waiting { .. }, _) => Kind::Waiting,
         Phase::Stopping { restore: true, .. } => Kind::Stopping,
         Phase::Stopping { restore: false, .. } => Kind::StoppingQuiet,
-        Phase::Restoring { unasked: false, .. } => Kind::Restoring,
-        Phase::Restoring { unasked: true, .. } => Kind::RestoringUnasked,
+        Phase::Restoring {
+            spent: Some(Spent::Unasked),
+            ..
+        } => Kind::RestoringUnasked,
+        Phase::Restoring { .. } => Kind::Restoring,
     }
 }
 
@@ -304,6 +317,14 @@ pub(in crate::policy::mic) fn lines(effects: &[Effect]) -> Vec<&str> {
         .collect()
 }
 
+/// The hold of a running uplink, apart from its stall check.
+pub(in crate::policy::mic) fn hold(mic: &Mic) -> Hold {
+    let Phase::Running(hold, _) = mic.phase else {
+        panic!("not running: {:?}", mic.phase);
+    };
+    hold
+}
+
 fn mic(phase: Phase) -> Mic {
     Mic {
         phase,
@@ -386,8 +407,12 @@ fn each_answer_window_ends_at_its_deadline_and_not_before() {
         drop(mic.step(&state, &Fact::Tick, deadline));
         assert_eq!(kind(mic.phase), to, "{from:?}");
     }
-    for from in [Kind::Stopped, Kind::Failed, Kind::Running, Kind::Waiting] {
+    for from in [Kind::Stopped, Kind::Failed] {
         assert_eq!(mic(phase(from)).deadline(), None, "{from:?}");
+    }
+    // A running uplink's only deadline is its stall check, the first read due at once.
+    for from in [Kind::Running, Kind::Waiting] {
+        assert_eq!(mic(phase(from)).deadline(), Some(SENT), "{from:?}");
     }
 }
 
@@ -518,4 +543,5 @@ fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
 
 mod faults;
 mod linger;
+mod stall;
 pub(super) mod table;

@@ -4,18 +4,23 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use pods_core::policy::{MicFact, OpenId};
+use pods_mic::{NODE_LATENCY_MS, RATE_HZ, SAMPLES_PER_UNIT, STAMP_STEP};
 use pods_pw::Event;
+use pods_samples::uplink::tone_unit;
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
-use super::{Adapter, LOST, MIC_EVENT_QUEUE, MicRequest, PAUSED, STREAMING, Turn, next, watcher};
+use super::{
+    Adapter, LOST, MIC_EVENT_QUEUE, MicRequest, PAUSED, STREAMING, Tap, Turn, next, watcher,
+};
 use crate::daemon::audio::AUDIO_RETRY_MS;
 
 fn adapter() -> Adapter {
     let (wake, _wakes) = mpsc::channel(MIC_EVENT_QUEUE);
     Adapter {
         socket: PathBuf::new(),
+        tap: Tap::new(),
         wake,
         wanted: None,
         opened: None,
@@ -47,7 +52,8 @@ fn each_miss_waits_the_next_step_of_the_ladder_then_stays_on_its_last() {
 fn a_lost_source_stays_lost_and_a_full_wake_queue_never_blocks() {
     let events = Arc::new(AtomicU8::new(PAUSED));
     let (wake, mut wakes) = mpsc::channel(1);
-    let mut watched = watcher(Arc::clone(&events), wake);
+    let (_, _, resync) = pods_mic::chain(Arc::default()).unwrap();
+    let mut watched = watcher(Arc::clone(&events), wake, resync);
     let seen = |wakes: &mpsc::Receiver<()>| (events.load(Ordering::Acquire), wakes.len());
     watched(Event::Streaming);
     assert_eq!(seen(&wakes), (STREAMING, 1));
@@ -59,6 +65,41 @@ fn a_lost_source_stays_lost_and_a_full_wake_queue_never_blocks() {
     assert_eq!(seen(&wakes), (LOST, 1));
     watched(Event::Streaming);
     assert_eq!(seen(&wakes), (LOST, 1));
+}
+
+/// The tone's line and level: any unit that decodes to sound will do.
+const TONE_LINE: u16 = 10;
+const TONE_LEVEL: u8 = 180;
+
+/// Whether a reader reaches the end of three units landed at zero in two reads a unit apart, after the watcher sees `event`.
+fn reads_to_the_end(event: Event) -> bool {
+    let (wake, _wakes) = mpsc::channel(1);
+    let (mut chain, mut reader, resync) = pods_mic::chain(Arc::default()).unwrap();
+    let mut watched = watcher(Arc::new(AtomicU8::new(PAUSED)), wake, resync);
+    let tone = tone_unit(TONE_LINE, TONE_LEVEL);
+    let stamps = [0, STAMP_STEP, 2 * STAMP_STEP];
+    chain.sdu(
+        Duration::ZERO,
+        stamps.into_iter().map(|stamp| (stamp, tone.as_slice())),
+    );
+    watched(event);
+    let latency = Duration::from_millis(u64::from(NODE_LATENCY_MS));
+    let unit_time = Duration::from_secs(u64::from(SAMPLES_PER_UNIT))
+        .checked_div(RATE_HZ)
+        .unwrap();
+    let mut heard = vec![0.0_f32; usize::from(SAMPLES_PER_UNIT)];
+    // A reader left where it stood is a unit short at the end; one moved to its target is not.
+    reader.read(latency.checked_sub(unit_time).unwrap(), &mut heard);
+    reader.read(latency, &mut heard);
+    reader.read_all()
+}
+
+#[test]
+fn only_a_stream_start_moves_the_reader_to_its_target() {
+    assert!(reads_to_the_end(Event::Streaming));
+    for event in [Event::Paused, Event::Lost] {
+        assert!(!reads_to_the_end(event), "{event:?}");
+    }
 }
 
 #[test]

@@ -19,10 +19,12 @@ pub use gate::{BUD_GRACE_MS, STOP_WAITS_LINE, UPLINK_LINGER_MS};
 use gate::{Hold, Next};
 use node::Node;
 pub use node::{MicFact, MicRequest, OpenId, SOURCE_BROKEN_LINE, SOURCE_UP_LINE, withdrawn_line};
-use tries::Try;
-pub use tries::{START_TRIES, start_sent_line, unanswered_line};
+use tries::{Read, Try, Watch};
+pub use tries::{START_TRIES, UPLINK_STALL_MS, stalled_line, start_sent_line, unanswered_line};
 
-/// About three times the slowest answer to a START measured on the pods.
+/// The slowest answer to a START measured on the pods.
+const SLOWEST_START_ANSWER_MS: u64 = 510;
+/// About three times `SLOWEST_START_ANSWER_MS`.
 pub const START_ANSWER_MS: u64 = 1500;
 /// About three times the slowest answer to a STOP measured on the pods, rounded up.
 pub const STOP_ANSWER_MS: u64 = 1500;
@@ -34,6 +36,10 @@ pub const NO_UPLINK_LINE: &str = "mic: this model has no uplink";
 pub const STOP_OWED_LINE: &str = "mic: stop owed, the start is unanswered";
 pub const STOP_UNCONFIRMED_LINE: &str = "mic: stop not confirmed";
 pub const STOPPED_BY_THE_PODS_LINE: &str = "mic: stopped by the pods";
+/// The start of the line dating the running marker after a START, which ends `<ms> ms`.
+pub const RUNNING_AFTER_PREFIX: &str = "mic: uplink running after ";
+/// The start of the line dating the first audio after a START, which ends `<ms> ms`.
+pub const FIRST_AUDIO_PREFIX: &str = "mic: first audio after ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UplinkRequest {
@@ -63,17 +69,18 @@ enum Phase {
         tried: Try,
         owed: bool,
     },
-    Running(Hold),
-    /// A STOP went out at `since` and the pods have not said they stopped; `restore` unless the gate let it out with a bud worn.
+    Running(Hold, Watch),
+    /// A STOP went out at `since` and the pods have not said they stopped; `restore` unless the gate let it out with a bud worn, and `spent` what the stop ends in.
     Stopping {
         since: Duration,
         restore: bool,
+        spent: Option<Spent>,
     },
-    /// The sink's restore `id` was asked for at `since`; `unasked` while the pods stopped on their own and the want has not been absent since.
+    /// The sink's restore `id` was asked for at `since`; `spent` is what it ends in, `Unasked` while the pods stopped on their own and the want has not been absent since.
     Restoring {
         since: Duration,
         id: RestoreId,
-        unasked: bool,
+        spent: Option<Spent>,
     },
 }
 
@@ -118,8 +125,10 @@ pub(super) struct Mic {
     next_restore: u32,
     /// From logind's edge into sleep until its wake.
     asleep: bool,
-    /// Every START whose answer deadline passed since the daemon started.
+    /// Every START whose answer deadline passed, and every stall, since the daemon started.
     start_failures: u32,
+    /// When the last START went out, until the first audio after it.
+    armed: Option<Duration>,
     node: Node,
 }
 
@@ -132,6 +141,7 @@ impl Default for Mic {
             next_restore: 0,
             asleep: false,
             start_failures: 0,
+            armed: None,
             node: Node::default(),
         }
     }
@@ -153,6 +163,8 @@ impl Mic {
             Fact::Audio(fact) => self.audio(*fact),
             Fact::Sleep(edge) => self.sleep(*edge),
             Fact::Exit => self.exiting = true,
+            Fact::Mic(MicFact::FirstAudio) => self.first_audio(now, &mut effects),
+            Fact::Mic(MicFact::Heard { packets }) => self.heard(state, *packets, now, &mut effects),
             Fact::Link(Signal::Up { .. } | Signal::Keys(_))
             | Fact::Changed
             | Fact::Paused(..)
@@ -167,21 +179,31 @@ impl Mic {
     /// The pods' word is the truth of whether the uplink runs, except that a START waits only for the running marker.
     fn marker(&mut self, marker: UplinkState, now: Duration, effects: &mut Vec<Effect>) {
         self.phase = match (self.phase, marker) {
-            (Phase::Starting { since, .. }, UplinkState::Running) => {
+            (Phase::Starting { since, tried, .. }, UplinkState::Running) => {
                 let after = now.saturating_sub(since).as_millis();
-                effects.push(Effect::Log(format!("mic: uplink running after {after} ms")));
-                Phase::Running(Hold::Wanted)
+                effects.push(Effect::Log(format!("{RUNNING_AFTER_PREFIX}{after} ms")));
+                Phase::Running(Hold::Wanted, Watch::new(tried, now))
             }
-            (Phase::Stopped { .. }, UplinkState::Running) => Phase::Running(Hold::Late),
-            (Phase::Stopping { since, restore }, UplinkState::Stopped) => {
+            (Phase::Stopped { .. }, UplinkState::Running) => {
+                self.armed = None;
+                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now))
+            }
+            (
+                Phase::Stopping {
+                    since,
+                    restore,
+                    spent,
+                },
+                UplinkState::Stopped,
+            ) => {
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("mic: uplink stopped after {after} ms")));
-                self.stopped(restore, now, effects)
+                self.stopped(restore, spent, now, effects)
             }
             // A pod is silent already, so the restore runs whatever the gate says.
-            (Phase::Running(_), UplinkState::Stopped) => {
+            (Phase::Running(..), UplinkState::Stopped) => {
                 effects.push(log(STOPPED_BY_THE_PODS_LINE));
-                self.restore(true, now, effects)
+                self.restore(Some(Spent::Unasked), now, effects)
             }
             (phase, _) => phase,
         };
@@ -203,10 +225,10 @@ impl Mic {
                 self.quiet = sink.is_none_or(|sink| sink.state == SinkState::Suspended);
             }
             AudioFact::Restored(answered) => {
-                if let Phase::Restoring { id, unasked, .. } = self.phase
+                if let Phase::Restoring { id, spent, .. } = self.phase
                     && answered == id
                 {
-                    self.phase = restored(unasked);
+                    self.phase = Phase::Stopped { spent };
                 }
             }
         }
@@ -222,12 +244,12 @@ impl Mic {
                 self.start_failures = self.start_failures.saturating_add(1);
                 self.unanswered(state, tried, now, effects)
             }
-            Phase::Stopping { restore, .. } => {
+            Phase::Stopping { restore, spent, .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
-                self.stopped(restore, now, effects)
+                self.stopped(restore, spent, now, effects)
             }
-            Phase::Restoring { unasked, .. } => restored(unasked),
-            phase @ (Phase::Stopped { .. } | Phase::Running(_)) => phase,
+            Phase::Restoring { spent, .. } => Phase::Stopped { spent },
+            phase @ (Phase::Stopped { .. } | Phase::Running(..)) => phase,
         };
     }
 
@@ -240,7 +262,7 @@ impl Mic {
                 spent: Some(Spent::Unasked),
             } if !self.wants(state) => self.phase = Phase::Stopped { spent: None },
             Phase::Stopped { spent: None } if self.wants(state) && !self.asleep => {
-                self.phase = start(Try::FIRST, now, effects);
+                self.phase = self.start(Try::FIRST, now, effects);
             }
             // No STOP is ever written while a START is unanswered: the running marker sends it.
             Phase::Starting {
@@ -258,15 +280,18 @@ impl Mic {
             Phase::Restoring {
                 since,
                 id,
-                unasked: true,
+                spent: Some(Spent::Unasked),
             } if !self.wants(state) => {
                 self.phase = Phase::Restoring {
                     since,
                     id,
-                    unasked: false,
+                    spent: None,
                 };
             }
-            Phase::Running(hold) => self.running(hold, state, off, now, effects),
+            Phase::Running(hold, watch) => {
+                let watch = watch.follow(state.ear.any_in_ear(), now);
+                self.running(hold, watch, state, off, now, effects);
+            }
             Phase::Stopped { .. }
             | Phase::Starting { .. }
             | Phase::Stopping { .. }
@@ -278,6 +303,7 @@ impl Mic {
     fn running(
         &mut self,
         hold: Hold,
+        watch: Watch,
         state: &State,
         off: bool,
         now: Duration,
@@ -293,11 +319,19 @@ impl Mic {
             hold.follow(self.wants(state), state.ear.any_in_ear(), self.quiet, now)
         };
         self.phase = match next {
+            // A stall's START unanswered is a START unanswered: no STOP overtakes it, and a suspend sends nothing.
+            Next::Stop(Word::Sleep) if watch.retrying() => Phase::Stopped { spent: None },
+            Next::Stop(_) if watch.retrying() => {
+                if !watch.owes() {
+                    effects.push(log(STOP_OWED_LINE));
+                }
+                Phase::Running(hold, watch.owe())
+            }
             Next::Hold(Hold::Waiting { unworn: None }) if !matches!(hold, Hold::Waiting { .. }) => {
                 effects.push(log(STOP_WAITS_LINE));
-                Phase::Running(Hold::Waiting { unworn: None })
+                Phase::Running(Hold::Waiting { unworn: None }, watch)
             }
-            Next::Hold(hold) => Phase::Running(hold),
+            Next::Hold(hold) => Phase::Running(hold, watch),
             // The suspend comes before any answer could, so nothing waits for one.
             Next::Stop(Word::Sleep) => {
                 effects.extend([Effect::Uplink(UplinkRequest::Stop), log(Word::Sleep.line())]);
@@ -308,34 +342,41 @@ impl Mic {
                 Phase::Stopping {
                     since: now,
                     restore: word != Word::Quiet,
+                    spent: None,
                 }
             }
         };
     }
 
     /// The end of a STOP: the restore it is owed, or nothing.
-    fn stopped(&mut self, restore: bool, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+    fn stopped(
+        &mut self,
+        restore: bool,
+        spent: Option<Spent>,
+        now: Duration,
+        effects: &mut Vec<Effect>,
+    ) -> Phase {
         if !restore {
-            return Phase::Stopped { spent: None };
+            return Phase::Stopped { spent };
         }
-        self.restore(false, now, effects)
+        self.restore(spent, now, effects)
     }
 
     /// A restore under an id no earlier restore had.
-    fn restore(&mut self, unasked: bool, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+    fn restore(&mut self, spent: Option<Spent>, now: Duration, effects: &mut Vec<Effect>) -> Phase {
         let id = RestoreId(self.next_restore);
         self.next_restore = self.next_restore.wrapping_add(1);
         effects.push(Effect::Audio(AudioRequest::Restore(id)));
         Phase::Restoring {
             since: now,
             id,
-            unasked,
+            spent,
         }
     }
 
     /// Another try while the want holds and one is left; else the tries end, spent only after the last.
     fn unanswered(
-        &self,
+        &mut self,
         state: &State,
         tried: Try,
         now: Duration,
@@ -345,11 +386,71 @@ impl Mic {
             return Phase::Stopped { spent: None };
         }
         match tried.next() {
-            Some(next) => start(next, now, effects),
+            Some(next) => self.start(next, now, effects),
             None => Phase::Stopped {
                 spent: Some(spent(state, effects)),
             },
         }
+    }
+
+    fn start(&mut self, tried: Try, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+        effects.push(Effect::Audio(AudioRequest::CancelRestore));
+        self.send_start(tried, now, effects);
+        Phase::Starting {
+            since: now,
+            tried,
+            owed: false,
+        }
+    }
+
+    fn send_start(&mut self, tried: Try, now: Duration, effects: &mut Vec<Effect>) {
+        effects.extend([
+            Effect::Uplink(UplinkRequest::Start),
+            Effect::Log(start_sent_line(tried.number())),
+        ]);
+        self.armed = Some(now);
+    }
+
+    fn first_audio(&mut self, now: Duration, effects: &mut Vec<Effect>) {
+        if let Some(sent) = self.armed.take() {
+            let after = now.saturating_sub(sent).as_millis();
+            effects.push(Effect::Log(format!("{FIRST_AUDIO_PREFIX}{after} ms")));
+        }
+    }
+
+    /// The stall check: while the uplink is wanted, a count that did not move is a try gone unanswered, as `unanswered` counts one.
+    fn heard(&mut self, state: &State, packets: u64, now: Duration, effects: &mut Vec<Effect>) {
+        let Phase::Running(hold, watch) = self.phase else {
+            return;
+        };
+        let Some(read) = watch.read(packets, now) else {
+            return;
+        };
+        self.phase = match read {
+            Read::Stalled {
+                watch,
+                for_ms,
+                next,
+            } if self.wants(state) => {
+                effects.push(Effect::Log(stalled_line(for_ms)));
+                self.start_failures = self.start_failures.saturating_add(1);
+                if let Some(next) = next {
+                    self.send_start(next, now, effects);
+                    Phase::Running(hold, watch.retry(next, now))
+                } else {
+                    // The pods said they run, so the uplink is stopped and the sink restored before `mic` reads the tries spent.
+                    let spent = spent(state, effects);
+                    effects.push(Effect::Uplink(UplinkRequest::Stop));
+                    Phase::Stopping {
+                        since: now,
+                        restore: true,
+                        spent: Some(spent),
+                    }
+                }
+            }
+            // A stall while the uplink is not wanted sends no START, so it spends no try.
+            Read::Moved(watch) | Read::Stalled { watch, .. } => Phase::Running(hold, watch),
+        };
     }
 
     pub(super) fn deadline(&self) -> Option<Duration> {
@@ -363,7 +464,9 @@ impl Mic {
             Phase::Restoring { since, .. } => {
                 Some(since.saturating_add(Duration::from_millis(RESTORE_WAIT_MS)))
             }
-            Phase::Running(hold) => hold.deadline(),
+            Phase::Running(hold, watch) => {
+                hold.deadline().into_iter().chain(watch.deadline()).min()
+            }
             Phase::Stopped { .. } => None,
         };
         uplink.into_iter().chain(self.node.deadline()).min()
@@ -392,12 +495,16 @@ impl Mic {
             Phase::Stopping { .. } | Phase::Restoring { .. } => MicCode::Stopping,
             _ if !state.ear.any_in_ear() => MicCode::NotWorn,
             Phase::Starting { .. } => MicCode::Starting,
-            Phase::Running(_) if self.node.recording() => MicCode::Recording,
-            Phase::Running(_) => MicCode::Live,
+            Phase::Running(..) if self.node.recording() => MicCode::Recording,
+            Phase::Running(..) => MicCode::Live,
             Phase::Stopped {
                 spent: None | Some(Spent::Unasked),
             } => self.node.resting(),
         }
+    }
+
+    pub(super) fn recording(&self) -> bool {
+        self.node.recording()
     }
 
     pub(super) fn show(&self, state: &mut State) {
@@ -416,25 +523,6 @@ fn wanted(state: &State) -> bool {
         MicPref::Auto => !state.mic_models.contains(&state.model_number),
     };
     preferred && !state.model_number.is_empty() && state.connected && state.ear.any_in_ear()
-}
-
-fn start(tried: Try, now: Duration, effects: &mut Vec<Effect>) -> Phase {
-    effects.extend([
-        Effect::Uplink(UplinkRequest::Start),
-        Effect::Audio(AudioRequest::CancelRestore),
-        Effect::Log(start_sent_line(tried.number())),
-    ]);
-    Phase::Starting {
-        since: now,
-        tried,
-        owed: false,
-    }
-}
-
-fn restored(unasked: bool) -> Phase {
-    Phase::Stopped {
-        spent: unasked.then_some(Spent::Unasked),
-    }
 }
 
 /// Why the last try went unanswered, and its line.

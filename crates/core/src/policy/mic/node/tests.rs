@@ -10,7 +10,7 @@ use pods_samples::MODEL_NUMBER;
 use super::*;
 use crate::link::Signal;
 use crate::policy::UplinkRequest;
-use crate::policy::mic::tests::{confirmed, lines, requests};
+use crate::policy::mic::tests::{confirmed, hold, lines, requests};
 use crate::policy::mic::{Mic, UPLINK_LINGER_MS};
 use crate::policy::tests::device;
 use crate::state::Microphone;
@@ -615,13 +615,13 @@ fn a_second_recorder_inside_the_linger_sends_nothing() {
     assert_eq!(requests(&mic.step(&state, &paused, SENT)), []);
     assert_eq!(mic.code(&state), MicCode::Live);
     let linger = Duration::from_millis(UPLINK_LINGER_MS);
-    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    assert_eq!(hold(&mic).deadline(), Some(SENT.saturating_add(linger)));
     assert_eq!(
         requests(&mic.step(&state, &streaming, SENT.saturating_add(SOON))),
         []
     );
     assert_eq!(mic.code(&state), MicCode::Recording);
-    assert_eq!(mic.deadline(), None);
+    assert_eq!(hold(&mic).deadline(), None);
 }
 
 #[test]

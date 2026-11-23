@@ -23,6 +23,8 @@ zbus = { version = "6.3", default-features = false, features = ["tokio", "servic
 zeroize.workspace = true
 
 [dev-dependencies]
+# Counts the allocations of the node's fill, standing in for the system allocator in the unit test binary.
+allocation-counter.workspace = true
 cpp-source = { path = "../cpp-source" }
 pods-fake = { path = "../fake" }
 pods-pwrig = { path = "../pwrig" }

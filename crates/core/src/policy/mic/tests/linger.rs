@@ -23,7 +23,7 @@ fn the_gate_lets_a_due_stop_out_only_with_no_bud_worn_or_a_quiet_sink() {
         let mut state = linked(Column::Auto);
         state.ear = EarReport::from_in_ear(worn, false);
         let unworn = (!worn).then_some(LEFT);
-        let mut mic = mic(Phase::Running(Hold::Waiting { unworn }));
+        let mut mic = mic(Phase::Running(Hold::Waiting { unworn }, watch()));
         let effects = mic.step(&state, fact, SENT);
         assert_eq!(kind(mic.phase), to, "{worn} {fact:?}");
         let sent = if to == Kind::Waiting { NOTHING } else { STOP };
@@ -64,7 +64,7 @@ fn the_linger_counts_from_the_want_and_the_grace_from_the_last_bud() {
     let mut mic = mic(phase(Kind::Running));
     let mut state = linked(Column::Auto);
     drop(mic.step(&state, &Fact::Changed, SENT));
-    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    assert_eq!(hold(&mic).deadline(), Some(SENT.saturating_add(linger)));
     let left = SENT.saturating_add(SOON);
     state.ear = EarReport::default();
     drop(mic.step(&state, &Fact::Changed, left));
@@ -76,7 +76,7 @@ fn the_linger_counts_from_the_want_and_the_grace_from_the_last_bud() {
     assert_eq!(kind(mic.phase), Kind::Lingering);
     state.ear = EarReport::from_in_ear(true, false);
     drop(mic.step(&state, &Fact::Changed, left.saturating_add(SOON)));
-    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    assert_eq!(hold(&mic).deadline(), Some(SENT.saturating_add(linger)));
     let early = SENT
         .saturating_add(linger)
         .saturating_sub(Duration::from_millis(1));
@@ -133,7 +133,7 @@ fn each_stop_logs_its_word_and_only_a_quiet_one_skips_the_restore() {
         let unworn = (word == Word::NotWorn).then_some(LEFT);
         let mut mic = Mic {
             exiting: column == Column::Exit,
-            ..mic(Phase::Running(Hold::Waiting { unworn }))
+            ..mic(Phase::Running(Hold::Waiting { unworn }, watch()))
         };
         assert_eq!(
             lines(&mic.step(&state, &fact, SENT)),

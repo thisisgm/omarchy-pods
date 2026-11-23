@@ -33,6 +33,12 @@ pub enum MicFact {
     Broken,
     /// Whether a recorder is linked to the node and the graph runs it.
     Recording(OpenId, bool),
+    /// The first audio packet since the last START.
+    FirstAudio,
+    /// The audio packets read since the daemon started, at a tick of the clock.
+    Heard {
+        packets: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +144,7 @@ impl Node {
                 }
                 self.source = Source::Broken;
             }
+            MicFact::FirstAudio | MicFact::Heard { .. } => {}
             MicFact::Up(id) | MicFact::Down(id) | MicFact::Recording(id, _)
                 if self.source.id() != Some(id) => {}
             // Every Up is a fresh node with no recorder.

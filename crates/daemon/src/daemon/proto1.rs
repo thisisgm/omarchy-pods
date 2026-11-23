@@ -39,7 +39,7 @@ enum Wake {
     /// Bytes now at the end of `pending`; zero is the end of the stream.
     Received(io::Result<usize>),
     /// `None` when the hub dropped this subscriber for falling behind.
-    Changed(Option<State>),
+    Changed(Option<Box<State>>),
     /// Bytes of the first queued line taken by the socket.
     Wrote(io::Result<usize>),
     Stalled,
@@ -206,7 +206,7 @@ impl Connection {
         if let Some(changes) = &mut self.changes
             && let Poll::Ready(change) = changes.poll_recv(context)
         {
-            return Poll::Ready(Wake::Changed(change));
+            return Poll::Ready(Wake::Changed(change.map(Box::new)));
         }
         if let Some(stall) = &mut self.stall
             && stall.as_mut().poll(context).is_ready()

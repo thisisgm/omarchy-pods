@@ -11,6 +11,7 @@ pub(crate) mod omarchy;
 pub(crate) mod parked;
 pub(crate) mod pipewire;
 pub(crate) mod players;
+pub(crate) mod recording;
 pub(crate) mod relay;
 pub(crate) mod rig;
 pub(crate) mod settings;

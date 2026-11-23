@@ -12,7 +12,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_pwrig::tone::{CHECKED, SETTLE, assert_tone, frames};
-    use pods_pwrig::{DRIVER_NODE, Recorder, Server, node_names, write_wav};
+    use pods_pwrig::{DRIVER_NODE, LONGEST_RECORDING, Recorder, Server, node_names, write_wav};
     use rustix::process::{Pid, Signal, kill_process};
 
     /// The rate the player's file is written at.
@@ -45,8 +45,6 @@ mod tests {
     const SERVER_LOG: &str = "pipewire.log";
     /// The header pw-record writes, measured at 16 and 48 kHz.
     const WAV_HEADER_LEN: u64 = 44;
-    /// The longest recording the rig reads whole.
-    const LONGEST_RECORDING: Duration = Duration::from_secs(10);
     /// The bytes of one sample in the recorders' s16 format.
     const BYTES_PER_SAMPLE: usize = 2;
     /// How long a test waits for something it expects never to come; a local server answers in milliseconds.

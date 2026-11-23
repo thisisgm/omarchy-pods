@@ -12,7 +12,7 @@ use pods_core::settings::{
     self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, MICROPHONE, NOISE,
     NOTIFICATIONS, ONE_BUD_ANC,
 };
-use pods_core::state::State;
+use pods_core::state::{MicCounts, State};
 use pods_core::status::{battery_reading, in_ear, to_status_object};
 use pods_proto::battery::Component;
 use serde_json::Value;
@@ -181,6 +181,7 @@ struct Properties {
     mic: &'static str,
     mic_start_failures: u32,
     mic_source: String,
+    mic_counts: MicCounts,
 }
 
 impl Properties {
@@ -223,10 +224,11 @@ impl Properties {
             mic: state.microphone.code().word(),
             mic_start_failures: state.microphone.start_failures(),
             mic_source: state.mic_source(),
+            mic_counts: state.microphone.counts(),
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 18] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 21] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -249,6 +251,12 @@ impl Properties {
             ("Mic", Variant::from(self.mic)),
             ("MicStartFailures", Variant::from(self.mic_start_failures)),
             ("MicSource", Variant::from(self.mic_source.as_str())),
+            ("MicUnderruns", Variant::from(self.mic_counts.underruns)),
+            ("MicConcealed", Variant::from(self.mic_counts.concealed)),
+            (
+                "MicDecodeErrors",
+                Variant::from(self.mic_counts.decode_errors),
+            ),
         ]
     }
 
@@ -386,6 +394,21 @@ impl Omapods {
     #[zbus(property)]
     fn mic_source(&self) -> String {
         self.now().mic_source
+    }
+
+    #[zbus(property)]
+    fn mic_underruns(&self) -> u32 {
+        self.now().mic_counts.underruns
+    }
+
+    #[zbus(property)]
+    fn mic_concealed(&self) -> u32 {
+        self.now().mic_counts.concealed
+    }
+
+    #[zbus(property)]
+    fn mic_decode_errors(&self) -> u32 {
+        self.now().mic_counts.decode_errors
     }
 
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {

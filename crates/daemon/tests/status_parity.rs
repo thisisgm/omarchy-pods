@@ -177,6 +177,18 @@ mod tests {
                 Variant::from(count(&document["mic_start_failures"])),
             ),
             ("MicSource", Variant::from(word("mic_source"))),
+            (
+                "MicUnderruns",
+                Variant::from(count(&document["mic_underruns"])),
+            ),
+            (
+                "MicConcealed",
+                Variant::from(count(&document["mic_concealed"])),
+            ),
+            (
+                "MicDecodeErrors",
+                Variant::from(count(&document["mic_decode_errors"])),
+            ),
         ])
     }
 

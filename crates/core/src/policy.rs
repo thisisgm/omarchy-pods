@@ -193,6 +193,12 @@ impl Policy {
             .min()
     }
 
+    /// Whether a recorder is linked to the node the policy holds open; a fact of an earlier open never sets it.
+    #[must_use]
+    pub fn mic_recording(&self) -> bool {
+        self.mic.recording()
+    }
+
     /// What the `mic` status keys show, which the driver writes into the state before each publish.
     pub fn show_mic(&self, state: &mut State) {
         self.mic.show(state);

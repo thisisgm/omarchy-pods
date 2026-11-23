@@ -44,6 +44,7 @@ pub(in crate::daemon) fn unread_outlets() -> Outlets {
         media,
         monitor,
         mic,
+        tap: crate::daemon::mic::Tap::new(),
     }
 }
 
