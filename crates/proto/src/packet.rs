@@ -223,7 +223,7 @@ mod tests {
     fn the_first_burst_classifies_without_an_error() {
         let burst = pods_samples::first_burst();
         assert_eq!(burst.len(), 38);
-        let mut counts = [0_usize; 5];
+        let mut counts = [0_usize; 6];
         let mut others = Vec::new();
         for sdu in &burst {
             match classify(sdu).unwrap() {
@@ -235,15 +235,16 @@ mod tests {
                 Incoming::Other { opcode } => others.push(opcode),
                 Incoming::Uplink(_) => panic!("the first burst carries no uplink packet"),
                 Incoming::Keys(_) => panic!("the first burst carries no proximity keys"),
-                Incoming::UplinkState(_) => {
-                    panic!("the first burst sample carries no uplink marker")
+                Incoming::UplinkState(state) => {
+                    assert_eq!(state, UplinkState::Stopped);
+                    counts[5] += 1;
                 }
             }
         }
-        assert_eq!(counts, [1, 1, 22, 1, 1]);
+        assert_eq!(counts, [1, 1, 22, 1, 1, 1]);
         others.sort_unstable();
         let expected = [
-            0x02, 0x08, 0x0c, 0x0c, 0x0c, 0x0e, 0x2b, 0x2e, 0x2e, 0x4e, 0x53, 0x63,
+            0x02, 0x08, 0x0c, 0x0c, 0x0c, 0x2b, 0x2e, 0x2e, 0x4e, 0x53, 0x63,
         ];
         assert_eq!(others, expected);
     }

@@ -1,7 +1,15 @@
 //! Fake pods for tests: they answer the control channel from sample bytes alone.
+#![cfg_attr(
+    test,
+    expect(
+        dead_code_pub_in_binary,
+        reason = "the unit tests drive the uplink's machine; the tests under tests/ drive its handle over a socket pair"
+    )
+)]
 
 mod model;
 mod serve;
+pub mod uplink;
 
 use std::fs::File;
 use std::time::{Duration, Instant};

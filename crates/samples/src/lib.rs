@@ -108,7 +108,9 @@ pub const PAYLOAD_KEY: [u8; 16] = [
     0x9d, 0x04, 0x71, 0xea, 0x38, 0xcf, 0x56, 0x8b, 0x12, 0xfe, 0x67, 0xa0, 0x2d, 0xb9, 0x43, 0xc8,
 ];
 
-/// Opcodes of the first burst that no parser reads, each as often as it was measured.
+/// The opcode of the uplink's state marker, the one packet behind the settings of the first burst that a parser reads.
+const OPCODE_UPLINK_STATE: u16 = 0x000e;
+/// Opcodes of the first burst behind its settings, each as often as it was measured.
 const BURST_OTHER_OPCODES: [u16; 11] = [
     0x02, 0x08, 0x0c, 0x0c, 0x0c, 0x0e, 0x2e, 0x2e, 0x4e, 0x53, 0x63,
 ];
@@ -226,13 +228,14 @@ pub fn burst_settings(overrides: &[(u8, u8)]) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The 11 packets of the first burst that no parser reads.
+/// The 11 packets of the first burst behind its settings: the uplink's stopped marker, and ten that no parser reads.
 #[must_use]
 pub fn burst_others() -> Vec<Vec<u8>> {
-    BURST_OTHER_OPCODES
-        .iter()
-        .map(|opcode| packet(*opcode, &FILLER))
-        .collect()
+    let other = |opcode: &u16| match *opcode {
+        OPCODE_UPLINK_STATE => uplink::state_marker(false).to_vec(),
+        unread => packet(unread, &FILLER),
+    };
+    BURST_OTHER_OPCODES.iter().map(other).collect()
 }
 
 /// 38 packets: opcode counts and first two match a real device; later order and bodies are made up.
@@ -283,6 +286,9 @@ mod tests {
                 .count()
         };
         assert_eq!((count(0x09), count(0x0c), count(0x2e)), (22, 3, 2));
+        let stopped = uplink::state_marker(false).to_vec();
+        assert_eq!(count(OPCODE_UPLINK_STATE), 1);
+        assert!(burst.contains(&stopped), "the stopped marker of 13 bytes");
     }
 
     #[test]

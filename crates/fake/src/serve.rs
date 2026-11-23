@@ -8,13 +8,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pods_samples::{Cell, Placed};
-use pods_sys::l2cap::{Channel, ChannelError, Received};
+use pods_sys::l2cap::{self, Channel, ChannelError, Received};
 use rustix::io::Errno;
 
 use crate::model::{self, Change, Model};
+use crate::uplink::{Machine, Uplink};
 use crate::{Deadline, Fault, Heard, Profile};
 
-/// The receive timeout of a channel thread, so what the test queues goes out within it.
+/// The longest wait of a channel thread, so what the test queues goes out within it.
 const POLL: Duration = Duration::from_millis(20);
 /// How long `finish` waits for every thread to end.
 const FINISH_WITHIN: Duration = Duration::from_secs(2);
@@ -33,7 +34,7 @@ pub struct Pods {
 }
 
 #[derive(Debug)]
-struct Shared {
+pub(crate) struct Shared {
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -41,6 +42,7 @@ struct Shared {
 #[derive(Debug)]
 struct State {
     model: Model,
+    uplink: Machine,
     fault: Fault,
     lines: Vec<Line>,
     next_line: usize,
@@ -87,6 +89,7 @@ impl Pods {
     pub fn new(profile: Profile) -> Self {
         let state = State {
             model: Model::new(profile),
+            uplink: Machine::new(),
             fault: Fault::None,
             lines: Vec::new(),
             next_line: 0,
@@ -163,6 +166,12 @@ impl Pods {
         for line in &mut self.shared.lock().lines {
             line.deaf = true;
         }
+    }
+
+    /// The test's hand on the microphone uplink.
+    #[must_use]
+    pub fn uplink(&self) -> Uplink {
+        Uplink::new(Arc::clone(&self.shared))
     }
 
     /// Everything the host sent, oldest first.
@@ -302,6 +311,11 @@ impl Shared {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Runs `change` on the uplink under the lock every channel thread takes.
+    pub(crate) fn uplink<T>(&self, change: impl FnOnce(&mut Machine) -> T) -> T {
+        change(&mut self.lock().uplink)
+    }
+
     fn wait<'a>(&self, guard: MutexGuard<'a, State>, timeout: Duration) -> MutexGuard<'a, State> {
         let (guard, _) = self
             .changed
@@ -337,6 +351,7 @@ impl Shared {
         drop(channel);
         let mut state = self.lock();
         state.lines.retain(|line| line.id != id);
+        state.uplink.closed(id);
         state.closed.push(closed);
         if let Err(error) = ended {
             state
@@ -348,7 +363,6 @@ impl Shared {
 
     /// Ends on `Closed`, on a hang up or where the fault closes; a receive or send error the host did not cause is returned.
     fn serve_line(&self, id: usize, fault: Fault, channel: &Channel) -> Result<(), ChannelError> {
-        channel.set_recv_timeout(POLL)?;
         let mut buffer = vec![0; RECV_BUFFER_LEN];
         let mut sent: usize = 0;
         loop {
@@ -358,11 +372,15 @@ impl Shared {
             if model::closes(fault, sent) {
                 return Ok(());
             }
+            let pause = self.pause(id);
             if self.deaf(id) {
-                drop(self.wait(self.lock(), POLL));
+                drop(self.wait(self.lock(), pause));
                 continue;
             }
-            let len = match channel.recv(&mut buffer) {
+            if l2cap::wait_any(&[channel], pause)?.is_none() {
+                continue;
+            }
+            let len = match channel.try_recv(&mut buffer) {
                 Ok(Received::Sdu(len)) => len,
                 Ok(Received::Truncated { .. }) => RECV_BUFFER_LEN,
                 Ok(Received::TimedOut) => continue,
@@ -374,7 +392,7 @@ impl Shared {
         }
     }
 
-    /// Sends what channel `id` has queued until the socket is full; `false` once the channel is to end.
+    /// Queues what the uplink has due on channel `id`, then sends what the channel has queued until the socket is full; `false` once the channel is to end.
     fn send_queued(
         &self,
         id: usize,
@@ -382,11 +400,18 @@ impl Shared {
         channel: &Channel,
         sent: &mut usize,
     ) -> Result<bool, ChannelError> {
-        let mut state = self.lock();
+        let mut guard = self.lock();
+        let state = &mut *guard;
+        let worn = state.model.either_bud_in_an_ear();
+        let due = state.uplink.due(id, worn, Instant::now());
         let Some(line) = state.lines.iter_mut().find(|line| line.id == id) else {
             return Ok(false);
         };
         if line.hang_up {
+            return Ok(false);
+        }
+        if let Err(bound) = line.queue(due) {
+            state.overflow(bound);
             return Ok(false);
         }
         while let Some(sdu) = line.outbox.front() {
@@ -406,6 +431,12 @@ impl Shared {
         Ok(true)
     }
 
+    /// How long channel `id` may wait: one poll, or less when the uplink has a packet due on it sooner.
+    fn pause(&self, id: usize) -> Duration {
+        let due = self.lock().uplink.wait(id, Instant::now());
+        due.map_or(POLL, |wait| wait.min(POLL))
+    }
+
     fn deaf(&self, id: usize) -> bool {
         self.lock()
             .lines
@@ -420,11 +451,15 @@ impl Shared {
             state.overflow(Overflow::Heard);
             return;
         }
+        let at = Instant::now();
         state.heard.push(Heard {
-            at: Instant::now(),
+            at,
             sdu: sdu.to_vec(),
         });
         let replies = state.model.on_host(fault, sdu);
+        if model::answers(fault) {
+            state.uplink.on_host(id, sdu, at);
+        }
         let queued = match state.lines.iter_mut().find(|line| line.id == id) {
             Some(line) => line.queue(replies),
             None => Ok(()),
