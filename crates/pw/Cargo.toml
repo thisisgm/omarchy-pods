@@ -1,15 +1,21 @@
 [package]
 name = "pods-pw"
-description = "The fenced binding to the system PipeWire library; so far the two parameter messages of a stream source node"
+description = "The fenced binding: one stream source node on the system PipeWire library"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+rustix.workspace = true
+thiserror.workspace = true
+
 [dev-dependencies]
 pods-pwrig = { path = "../pwrig" }
 proptest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 
 # Cargo cannot inherit the workspace table and change one line, so this is that table with unsafe_code at deny.
 [lints.rust]

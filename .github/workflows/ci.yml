@@ -113,6 +113,26 @@ jobs:
       - run: cargo xtask pw-ffi
       - run: git diff --exit-code crates/pw/src/ffi.rs
 
+  sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: -Zsanitizer=address
+      # Whole allocation stacks with their function names (from addr2line where no llvm-symbolizer is installed), which the suppression file matches.
+      ASAN_OPTIONS: fast_unwind_on_malloc=0:allow_addr2line=1
+      LSAN_OPTIONS: suppressions=${{ github.workspace }}/crates/pw/lsan.supp:print_suppressions=0
+      NEXTEST_SUCCESS_OUTPUT: final
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-nextest
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pipewire pipewire-bin
+      - run: rustup toolchain install nightly-2026-11-20 --profile minimal
+      - run: cargo +nightly-2026-11-20 nextest run -p pods-pw --locked --target x86_64-unknown-linux-gnu
+
   deny:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -137,7 +157,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [fmt, clippy, test, slow, pw-ffi, deny, zizmor]
+    needs: [fmt, clippy, test, slow, pw-ffi, sanitize, deny, zizmor]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
