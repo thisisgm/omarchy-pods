@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use super::rig::{ABSENT_GRACE, Device, Rig, assert_gap, not_before};
+use super::rig::{ABSENT_GRACE, Device, Rig, assert_gap};
 use super::{HANG_LIMIT, Session, pause, wait_within};
 
 /// How long a hung stand-in sleeps before it exits by itself, under the 10 s a stand-in may live.
@@ -188,7 +188,7 @@ pub(crate) fn loss_is_announced(rig: &Rig, device: &Device) {
         "the notice after the pods went",
         down,
         Instant::now(),
-        &not_before(ABSENT_GRACE),
+        &(ABSENT_GRACE..),
     );
     assert_eq!(calls, [DISCONNECT_NOTICE]);
     rig.omarchy().none_for(RECORDED_WITHIN);

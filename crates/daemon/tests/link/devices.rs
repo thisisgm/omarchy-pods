@@ -9,8 +9,7 @@ use serde_json::Value;
 use zbus::OwnedVariant;
 
 use crate::support::rig::{
-    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, named, not_before,
-    serve,
+    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, named, serve,
 };
 use crate::support::{HANG_LIMIT, pause};
 
@@ -85,7 +84,7 @@ fn pods_gone_for_good_are_cleared_after_the_grace() {
         "the cleared line after the pods went",
         down,
         cleared.at,
-        &not_before(ABSENT_GRACE),
+        &(ABSENT_GRACE..),
     );
     assert_eq!(cleared.state["reconnect_failures_total"], failures + 1);
     rig.finish();
@@ -112,7 +111,7 @@ fn a_second_pair_is_dialled_only_after_the_first_is_reset() {
         "the dial to the second pair after the first went",
         down,
         dials[1].at,
-        &not_before(ABSENT_GRACE),
+        &(ABSENT_GRACE..),
     );
     rig.wait_status("the second pair's name", |status| {
         status["device_name"] == SECOND_NAME

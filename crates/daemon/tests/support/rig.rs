@@ -1,8 +1,9 @@
 //! The built daemon under the trap, a private system bus with the fake BlueZ, a private session bus and the fake pods, joined.
 
+use std::fmt::Debug;
 use std::fs::File;
 use std::mem;
-use std::ops::RangeInclusive;
+use std::ops::{RangeBounds, RangeInclusive};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
@@ -754,7 +755,12 @@ pub(crate) fn not_before(wanted: Duration) -> RangeInclusive<Duration> {
     clippy::print_stderr,
     reason = "the gap a time check saw goes into the test's output"
 )]
-pub(crate) fn assert_gap(what: &str, from: Instant, to: Instant, range: &RangeInclusive<Duration>) {
+pub(crate) fn assert_gap(
+    what: &str,
+    from: Instant,
+    to: Instant,
+    range: &(impl RangeBounds<Duration> + Debug),
+) {
     let gap = to.checked_duration_since(from);
     eprintln!("{what}: {gap:?}, wanted {range:?}");
     assert!(

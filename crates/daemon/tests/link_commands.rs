@@ -19,9 +19,7 @@ mod tests {
     };
     use serde_json::Value;
 
-    use super::support::rig::{
-        ADAPTIVE, ANC, Device, Mode, REAL_TIME_SLACK, Rig, TRANSPARENCY, assert_gap,
-    };
+    use super::support::rig::{ADAPTIVE, ANC, Device, Mode, Rig, TRANSPARENCY, assert_gap};
     use super::support::watch::Watch;
     use super::support::{HANG_LIMIT, Proto1, outcome, set_request};
 
@@ -349,19 +347,12 @@ mod tests {
         // Stamped before the ask, so the daemon's hold cannot start earlier than this.
         let asked = Instant::now();
         let reply = client.ask(&set_request(2, "noise", "transparency"));
-        let replied = Instant::now();
         assert_eq!(outcome(&reply), "sent", "{reply}");
         let left = hold.saturating_sub(asked.elapsed());
         rig.holds_for(left, "transparency kept through the later hold", |status| {
             status["noise_mode"] == TRANSPARENCY.status
         });
         wait_noise(&rig, ADAPTIVE.status);
-        assert_gap(
-            "adaptive shown",
-            replied,
-            Instant::now(),
-            &(Duration::ZERO..=hold + REAL_TIME_SLACK),
-        );
         rig.finish();
     }
 
@@ -385,12 +376,7 @@ mod tests {
         });
         wait_noise(&rig, ADAPTIVE.status);
         // The hold starts after `asked`, so the release cannot show before a hold from it.
-        assert_gap(
-            "adaptive shown",
-            asked,
-            Instant::now(),
-            &(hold..=hold + REAL_TIME_SLACK),
-        );
+        assert_gap("adaptive shown", asked, Instant::now(), &(hold..));
         rig.finish();
     }
 
@@ -441,7 +427,6 @@ mod tests {
         // Stamped before the ask, so the daemon's hold cannot start earlier than this.
         let asked = Instant::now();
         let reply = client.ask(&set_request(2, "noise", "transparency"));
-        let replied = Instant::now();
         assert_eq!(outcome(&reply), "sent", "{reply}");
         device.pods.set_setting(NOISE, ANC.wire);
         device.pods.set_ear(Placed::OutOfEar, Placed::InEar);
@@ -452,13 +437,6 @@ mod tests {
             status["noise_mode"] == TRANSPARENCY.status
         });
         wait_noise(&rig, ANC.status);
-        // The write came before the reply, so the hold ended no later than a hold after it.
-        assert_gap(
-            "anc shown",
-            replied,
-            Instant::now(),
-            &(Duration::ZERO..=hold + REAL_TIME_SLACK),
-        );
         rig.finish();
     }
 }

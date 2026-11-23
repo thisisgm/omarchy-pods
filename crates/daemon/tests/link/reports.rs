@@ -402,7 +402,7 @@ fn the_notification_request_is_repeated_once_without_a_battery_report() {
         "the second notification request after the features",
         features[0].at,
         heard[1].at,
-        &not_before(NOTIFY_REREQUEST),
+        &(NOTIFY_REREQUEST..),
     );
     let third = device.pods.wait_heard(&request, 3, NO_THIRD_FOR);
     assert!(third.is_err(), "a third request: {third:?}");

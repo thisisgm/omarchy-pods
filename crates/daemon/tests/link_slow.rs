@@ -21,7 +21,7 @@ mod tests {
     use super::support::parked::{climb_to_parked, refused_pods};
     use super::support::rig::{
         ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, REAL_TIME_SLACK, Rig, assert_gap,
-        connected, not_before, total,
+        connected, total,
     };
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for, wait_within};
 
@@ -62,7 +62,7 @@ mod tests {
             "the parked dial after the eleventh",
             dials[10].at,
             dials[11].at,
-            &not_before(PARKED_RETRY),
+            &(PARKED_RETRY..),
         );
         let last = rig.wait_status("two failures after the twelfth dial", |status| {
             status["reconnect_failures_total"] == 2
