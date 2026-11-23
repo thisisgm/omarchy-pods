@@ -37,6 +37,18 @@ mod tests {
     /// The primary byte of 75 percent and charging.
     const PRIMARY_75_CHARGING: u8 = 0xcb;
     const PRIMARY_AT: usize = 1;
+    const SECONDARY_AT: usize = 2;
+    const CASE_PAYLOAD_AT: usize = 3;
+    /// The decrypted payload's marker of a level it does not know.
+    const UNKNOWN_LEVEL: u8 = 0x7f;
+    /// One past the highest level a battery can read.
+    const PAST_FULL: u8 = 101;
+    /// The decrypted case byte of 50 percent and not charging.
+    const CASE_50: u8 = 0x32;
+    /// The header byte of the case's tenths and charging flag.
+    const CASE_AT: usize = 7;
+    /// The case charging at the unknown 15 tenths, so the case comes from the decrypted payload instead.
+    const CASE_UNKNOWN: u8 = 0x4f;
     const OTHER_IDENTITY: [u8; 16] = [0x11; 16];
     /// The most an advert may take to reach `librepods status`, polling included.
     const SEEN_WITHIN: Duration = Duration::from_secs(1);
@@ -247,6 +259,30 @@ mod tests {
             picked(status) == filled()
         });
         assert_eq!(rig.bluez().calls(), registration(rig.adapter()));
+        rig.finish();
+    }
+
+    #[test]
+    fn an_advert_with_unknown_levels_keeps_the_last_reading() {
+        let rig = listening();
+        let first = ours(HEADER, PAYLOAD);
+        let advertiser = rig.bluez().advertise(&first.address, &first.data);
+        rig.wait_status("the first advert", |status| picked(status) == filled());
+        let mut header = HEADER;
+        header[CASE_AT] = CASE_UNKNOWN;
+        let mut payload = PAYLOAD;
+        payload[PRIMARY_AT] = UNKNOWN_LEVEL;
+        payload[SECONDARY_AT] = PAST_FULL;
+        payload[CASE_PAYLOAD_AT] = CASE_50;
+        advertiser.update(&ours(header, payload).data);
+        let mut wanted = filled();
+        wanted["case"] = json!({"available": true, "charging": false, "level": 50});
+        rig.wait_status("the second advert's case", |status| {
+            status["case"] == wanted["case"]
+        });
+        let [status, state_file, ..] = surfaces(&rig);
+        assert_eq!(status, wanted);
+        assert_eq!(state_file, wanted);
         rig.finish();
     }
 

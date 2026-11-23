@@ -22,6 +22,7 @@ mod tests {
     use pods_proto::packets::CONTROL_PSM;
     use pods_trap::Answer;
     use rustix::io::Errno;
+    use serde_json::Value;
     use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
     use tokio::time::timeout;
     use zbus::connection::Builder;
@@ -286,6 +287,43 @@ mod tests {
         rig.bluez().set(&device.path, "UUIDs", uuids(&[AAP_UUID]));
         rig.wait_dials(1, DIAL_WAIT);
         up(&rig);
+        rig.finish();
+    }
+
+    /// The status less the `*_total` counters a link raises and `model_number`, which a forget keeps as the C++ `DeviceInfo::reset` does.
+    fn device_fields(mut status: Value) -> Value {
+        status
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| !key.ends_with("_total") && key != "model_number");
+        status
+    }
+
+    #[test]
+    fn forgotten_pods_paired_again_are_dialled_when_their_uuids_arrive() {
+        let mut rig = Rig::new();
+        let device = rig.add_pods(Profile::default());
+        rig.start();
+        let no_device = device_fields(rig.status());
+        rig.link_up(&device);
+        rig.wait_dials(1, DIAL_WAIT);
+        rig.wait_filled();
+        rig.bluez().remove(&device.path);
+        device.pods.wait_closed(1, CLOSE_WAIT).unwrap();
+        rig.wait_status("no device after the forget", |status| {
+            device_fields(status.clone()) == no_device
+        });
+        let path = rig
+            .bluez()
+            .add_device(rig.adapter(), device.address, &[], false);
+        assert_eq!(path, device.path);
+        rig.link_up(&device);
+        rig.no_dial_for(QUIET);
+        assert_eq!(device_fields(rig.status()), no_device);
+        rig.bluez().set(&device.path, "UUIDs", uuids(&[AAP_UUID]));
+        let dials = rig.wait_dials(2, DIAL_WAIT);
+        assert_eq!(dials[1].device, device.address);
+        rig.wait_filled();
         rig.finish();
     }
 
