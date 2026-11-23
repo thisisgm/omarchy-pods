@@ -107,6 +107,39 @@ fn a_stop_nobody_asked_for_restores_and_starts_again_only_after_the_want_went() 
 }
 
 #[test]
+fn a_recorder_kept_through_a_stop_nobody_asked_for_starts_again_only_once_it_left() {
+    let state = linked(Column::Auto);
+    let id = OpenId(0);
+    let mut mic = Mic::default();
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
+    assert_eq!(
+        requests(&mic.step(&state, &Fact::Mic(MicFact::Up(id)), SENT)),
+        NOTHING
+    );
+    let linked = Fact::Mic(MicFact::Recording(id, true));
+    assert_eq!(requests(&mic.step(&state, &linked, SENT)), START);
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    assert_eq!(requests(&mic.step(&state, &running, SENT)), NOTHING);
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    assert_eq!(requests(&mic.step(&state, &stopped, SENT)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    let mut left_early = mic;
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    assert_eq!(requests(&mic.step(&state, &restored, SENT)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Unasked);
+    let left = Fact::Mic(MicFact::Recording(id, false));
+    assert_eq!(requests(&mic.step(&state, &left, SENT)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Stopped);
+    assert_eq!(requests(&mic.step(&state, &linked, SENT)), START);
+    // The recorder gone before the restore ends spends the mark there instead.
+    assert_eq!(requests(&left_early.step(&state, &left, SENT)), NOTHING);
+    assert_eq!(kind(left_early.phase), Kind::Restoring);
+    assert_eq!(requests(&left_early.step(&state, &restored, SENT)), NOTHING);
+    assert_eq!(kind(left_early.phase), Kind::Stopped);
+    assert_eq!(requests(&left_early.step(&state, &linked, SENT)), START);
+}
+
+#[test]
 fn a_sleep_stops_a_running_uplink_with_no_restore_and_the_wake_starts_it_again() {
     let state = linked(Column::AlwaysKnown);
     let mut mic = mic(phase(Kind::Running));

@@ -255,6 +255,8 @@ a_bud_out_while_recording_keeps_the_node Recording BudOut
 a_bud_out_while_recording_keeps_the_node RecordingOut PausedOut
 turns_of_the_setting_while_an_open_hangs_end_on_the_last Opening Off
 turns_of_the_setting_while_an_open_hangs_end_on_the_last Closed Changed
+a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again Recording Paused
+a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again Up Streaming
 ";
 
 /// The tests of the source suites that no cell holds: the daemon's exit and its log.
