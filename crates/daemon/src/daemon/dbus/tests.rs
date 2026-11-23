@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use pods_core::command::AdaptiveLevel;
-use pods_core::state::EarDetectionBehavior;
+use pods_core::state::{EarDetectionBehavior, MicCounts};
 use pods_core::status::to_status_line;
 use pods_proto::battery::{Batteries, Charge};
 use pods_proto::ear::{EarPlacement, EarReport};
@@ -115,8 +115,11 @@ const INTROSPECTED: &str = r#"
   <property name="EarDetection" type="s" access="read"/>
   <property name="InEar" type="a{sb}" access="read"/>
   <property name="Mic" type="s" access="read"/>
+  <property name="MicConcealed" type="u" access="read"/>
+  <property name="MicDecodeErrors" type="u" access="read"/>
   <property name="MicSource" type="s" access="read"/>
   <property name="MicStartFailures" type="u" access="read"/>
+  <property name="MicUnderruns" type="u" access="read"/>
   <property name="Microphone" type="s" access="read"/>
   <property name="ModelName" type="s" access="read"/>
   <property name="NoiseMode" type="s" access="read"/>
@@ -240,6 +243,13 @@ fn text(value: &OwnedVariant) -> String {
     String::try_from(value.try_clone().unwrap()).unwrap()
 }
 
+/// Three counts apart, so a property read from the wrong count shows.
+const FOLDED: MicCounts = MicCounts {
+    underruns: 3,
+    concealed: 5,
+    decode_errors: 7,
+};
+
 fn populated() -> State {
     let mut state = State {
         connected: true,
@@ -270,6 +280,7 @@ fn populated() -> State {
         ..State::default()
     };
     state.counters.ear_detection_changes = 4;
+    state.microphone.fold(FOLDED);
     state
 }
 
@@ -277,7 +288,9 @@ fn populated() -> State {
 fn properties_reflect_the_state() {
     run(async {
         let peer = peer(Running::new()).await;
+        let mut stream = MessageStream::from(&peer.client);
         peer.hub.replace(populated());
+        let changed = next_change(&mut stream).await;
         let all = get_all(&peer.client).await;
         let value = |name: &str| all[name].try_clone().unwrap();
         assert_eq!(u32::try_from(value("ApiVersion")).unwrap(), 1);
@@ -310,6 +323,13 @@ fn properties_reflect_the_state() {
             "one_bud_anc",
         ];
         assert_eq!(capabilities, expected_capabilities);
+        // The read and the change signal take the counts by two paths, so each is checked.
+        for read in [&all, &changed] {
+            let count = |name: &str| u32::try_from(read[name].try_clone().unwrap()).unwrap();
+            assert_eq!(count("MicUnderruns"), FOLDED.underruns);
+            assert_eq!(count("MicConcealed"), FOLDED.concealed);
+            assert_eq!(count("MicDecodeErrors"), FOLDED.decode_errors);
+        }
         let status_json = text(&value("StatusJson"));
         assert_eq!(format!("{status_json}\n"), to_status_line(&populated()));
         let status: Value = serde_json::from_str(&status_json).unwrap();

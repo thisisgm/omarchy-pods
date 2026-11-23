@@ -1,10 +1,12 @@
 //! The private `PipeWire` server a source suite starts in the session's runtime directory, where the daemon finds it, and the daemon's node as `pw-dump` shows it.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use pods_fake::Profile;
-use pods_pwrig::{Recorder, Server, node_names};
+use pods_pwrig::{Recorder, Server, node_names, states_latency};
 use pods_samples::MODEL_NUMBER;
+use rustix::process::Pid;
 use serde_json::Value;
 
 use super::HANG_LIMIT;
@@ -26,6 +28,12 @@ pub(crate) fn ready() -> (Rig, Device, Server) {
     wait_node(&pipewire);
     wait_mic(&rig, "ready");
     (rig, device, pipewire)
+}
+
+/// Whether the library the daemon mapped states a process latency.
+pub(crate) fn daemon_states_latency(daemon: Pid) -> bool {
+    let maps = format!("/proc/{}/maps", daemon.as_raw_nonzero());
+    states_latency(&PathBuf::from(maps))
 }
 
 /// The node the daemon makes for the sample pods.

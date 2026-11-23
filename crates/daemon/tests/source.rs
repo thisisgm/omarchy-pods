@@ -10,19 +10,17 @@ mod support;
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use pods_core::policy::mic::{SOURCE_UP_LINE, STOPPED_BY_THE_PODS_LINE, withdrawn_line};
     use pods_fake::Profile;
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ};
-    use pods_pwrig::states_latency;
     use pods_samples::{MODEL_NUMBER, NAME, Placed};
     use pulseaudio::protocol::SinkState;
     use serde_json::{Value, json};
 
     use super::support::pipewire::{
-        links_of, node_name, ready, record, start, wait_no_node, wait_node,
+        daemon_states_latency, links_of, node_name, ready, record, start, wait_no_node, wait_node,
     };
     use super::support::rig::REAL_TIME_SLACK;
     use super::support::settings::set;
@@ -75,11 +73,7 @@ mod tests {
             "{format}"
         );
         // An older library keeps the parameter to itself and shows an empty list, measured on 1.0.5.
-        let maps = PathBuf::from(format!(
-            "/proc/{}/maps",
-            rig.daemon().pid().as_raw_nonzero()
-        ));
-        let (stated, times) = if states_latency(&maps) {
+        let (stated, times) = if daemon_states_latency(rig.daemon().pid()) {
             (json!([{"quantum": 0.0, "rate": 0, "ns": latency_ns()}]), 1)
         } else {
             (json!([]), 0)

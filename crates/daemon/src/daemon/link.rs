@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::future::{self, poll_fn};
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::thread;
 use std::time::Duration;
@@ -19,12 +20,14 @@ use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
 use pods_core::policy::{
     Effect, Era, Fact, MicFact, MicRequest, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge,
+    UplinkRequest,
 };
 use pods_core::prefs::Prefs;
-use pods_core::state::State;
+use pods_core::state::{MicCounts, State};
 use pods_proto::addr::BdAddr;
 use pods_proto::keys::ProximityKeys;
 use pods_proto::model::Model;
+use pods_proto::uplink::UplinkPacket;
 use pods_sys::l2cap::{Channel, ChannelError};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{self, JoinHandle};
@@ -53,6 +56,8 @@ pub(super) const STOP_WAIT_MS: u64 = MIC_EXIT_MS + 500;
 const CONNECT_THREAD: &str = "link-connect";
 
 const EXIT_BEFORE_RESTORE_LINE: &str = "mic: exit before restore";
+const DECODER_RESET_LINE: &str = "mic: decoder reset";
+const RECORDER_LINKED_LINE: &str = "mic: recorder linked";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum DeviceEvent {
@@ -103,6 +108,8 @@ pub(super) struct Outlets {
     pub(super) monitor: watch::Sender<bool>,
     /// The latest source request; a watch, so turns of the setting while an open hangs never drop the last.
     pub(super) mic: watch::Sender<MicRequest>,
+    /// Where the uplink's audio goes, shared with the source's node.
+    pub(super) tap: Arc<mic::Tap>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -159,6 +166,7 @@ pub(super) async fn drive(
         fed_back: VecDeque::new(),
         announced: false,
         exit: None,
+        resets: 0,
     };
     for effect in driver.policy.start() {
         driver.route(effect);
@@ -170,9 +178,9 @@ pub(super) async fn drive(
         };
         match turn {
             Turn::Input(input) => driver.take(input),
-            Turn::Read(Some(sdu)) => driver.step(Event::Packet(&sdu)),
+            Turn::Read(Some(sdu)) => driver.packet(&sdu),
             Turn::Read(None) => driver.take(Input::Ended(End::Closed)),
-            Turn::Tick => driver.step(Event::Tick),
+            Turn::Tick => driver.tick(),
         }
         if let Some(done) = driver.exited() {
             driver.step(Event::Shutdown);
@@ -213,6 +221,8 @@ struct Driver {
     /// `STATE_POPULATED_LINE` was logged since the link last came up.
     announced: bool,
     exit: Option<Exit>,
+    /// The decoder resets counted at the last tick.
+    resets: u32,
 }
 
 /// A shutdown held until the uplink's exit is done or `by` passes, on the clock of `started`.
@@ -284,6 +294,58 @@ impl Driver {
         }
     }
 
+    /// An audio SDU goes to the tap and nowhere else; every other packet steps the link machine.
+    fn packet(&mut self, sdu: &[u8]) {
+        let Ok(Some(UplinkPacket::Audio(audio))) = UplinkPacket::parse(sdu) else {
+            self.step(Event::Packet(sdu));
+            return;
+        };
+        if self.outlets.tap.audio(&audio) {
+            self.observe(Fact::Mic(MicFact::FirstAudio));
+        }
+    }
+
+    /// The clock's step, then the stall check's count and a decoder reset since the last tick.
+    fn tick(&mut self) {
+        self.step(Event::Tick);
+        let resets = self
+            .outlets
+            .tap
+            .counters()
+            .decoder_resets
+            .load(Ordering::Relaxed);
+        if resets != self.resets {
+            log(DECODER_RESET_LINE);
+            self.resets = resets;
+        }
+        let packets = self.outlets.tap.packets();
+        self.observe(Fact::Mic(MicFact::Heard { packets }));
+    }
+
+    /// The tap's counters go into the state when `mic` changes or a recorder leaves, never for a packet; `recorder` is the edge of the node the policy holds open.
+    fn fold(&self, last: &State, next: &mut State, recorder: Option<bool>) {
+        if recorder == Some(true) {
+            log(RECORDER_LINKED_LINE);
+        }
+        let left = recorder == Some(false);
+        if !left && next.microphone.code() == last.microphone.code() {
+            return;
+        }
+        let counters = self.outlets.tap.counters();
+        let counts = MicCounts {
+            underruns: counters.underruns.load(Ordering::Relaxed),
+            concealed: counters.concealed.load(Ordering::Relaxed),
+            decode_errors: counters.decode_errors.load(Ordering::Relaxed),
+        };
+        next.microphone.fold(counts);
+        if left {
+            log(&format!(
+                "mic: recorder left (underruns {}, concealed {})",
+                counts.underruns, counts.concealed
+            ));
+        }
+    }
+
     /// The held shutdown's answer, once the uplink's exit is done or out of time.
     fn exited(&mut self) -> Option<oneshot::Sender<()>> {
         let exit = self.exit.take()?;
@@ -330,6 +392,7 @@ impl Driver {
             .flat_map(|fact| self.policy.step(&next, fact, now))
             .collect();
         self.policy.show_mic(&mut next);
+        self.fold(&last, &mut next, None);
         let prefs = Prefs::of(&next);
         self.outlets.prefs.send_if_modified(|kept| {
             let changed = *kept != prefs;
@@ -354,11 +417,16 @@ impl Driver {
         next.audio_server = server_after(next.audio_server, &fact);
         self.policy.apply(&mut next, &fact);
         let now = self.started.elapsed();
+        let linked = self.policy.mic_recording();
         let mut effects = self.policy.step(&next, fact, now);
         if next != last {
             effects.extend(self.policy.step(&next, Fact::Changed, now));
         }
+        // The node's own view, so a fact of an earlier open is no edge.
+        let recording = self.policy.mic_recording();
+        let recorder = (recording != linked).then_some(recording);
         self.policy.show_mic(&mut next);
+        self.fold(&last, &mut next, recorder);
         self.hub.publish(next);
         for effect in effects {
             self.route(effect);
@@ -374,7 +442,12 @@ impl Driver {
             Effect::StoreKeys(keys) => keys::offer(&self.outlets.keys, keys),
             Effect::Media(request) => self.outlets.media.offer(request),
             Effect::Monitor(wanted) => drop(self.outlets.monitor.send_replace(wanted)),
-            Effect::Uplink(request) => self.send(request.sdu()),
+            Effect::Uplink(request) => {
+                if request == UplinkRequest::Start {
+                    self.outlets.tap.arm();
+                }
+                self.send(request.sdu());
+            }
             Effect::Mic(request) => mic::offer(&self.outlets.mic, request),
             Effect::Log(line) => log(&line),
             Effect::Exited => {

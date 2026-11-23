@@ -23,6 +23,8 @@ pub const MARK_LINE: u16 = 30;
 pub const DEFAULT_LEVEL: u8 = 176;
 /// The audio packets that still go out after a STOP.
 const STOP_TAIL_PACKETS: u32 = 2;
+/// Where a new fake's garbled bytes start, so every test that garbles the same packets gets the same bytes.
+const NOISE_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
 /// The test's hand on the uplink of one pair of pods; every clone is the same uplink.
 #[derive(Debug, Clone)]
@@ -86,6 +88,11 @@ impl Uplink {
         self.shared.uplink(|uplink| uplink.lost = packets);
     }
 
+    /// The next `packets` packets hold units of seeded random bytes, each as long as the tone unit it stands for.
+    pub fn garble(&self, packets: u32) {
+        self.shared.uplink(|uplink| uplink.garbled = packets);
+    }
+
     /// From the answer to a START until both stopped markers have gone out.
     #[must_use]
     pub fn running(&self) -> bool {
@@ -115,6 +122,8 @@ pub(crate) struct Machine {
     level: u8,
     marked: u32,
     lost: u32,
+    garbled: u32,
+    noise: u64,
     stall: Option<Duration>,
     run: Option<Run>,
     sent_packets: u64,
@@ -159,6 +168,8 @@ impl Machine {
             level: DEFAULT_LEVEL,
             marked: 0,
             lost: 0,
+            garbled: 0,
+            noise: NOISE_SEED,
             stall: None,
             run: None,
             sent_packets: 0,
@@ -298,11 +309,34 @@ impl Machine {
             self.largest_gap = self.largest_gap.max(gap);
         }
         self.sent_packets = self.sent_packets.saturating_add(1);
+        let garbled = self.garbled > 0;
+        self.garbled = self.garbled.saturating_sub(1);
+        let tone = tone_unit(line, self.level);
         let units: Vec<Vec<u8>> = (0..UNITS_PER_PACKET)
-            .map(|_| tone_unit(line, self.level))
+            .map(|_| {
+                if garbled {
+                    self.noise(tone.len())
+                } else {
+                    tone.clone()
+                }
+            })
             .collect();
         let stamp = slot.wrapping_mul(UNITS_PER_PACKET.wrapping_mul(STAMP_STEP));
         Some(audio_sdu(stamp, &units))
+    }
+}
+
+impl Machine {
+    /// `len` bytes of a xorshift sequence that goes on from the last call.
+    fn noise(&mut self, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                self.noise ^= self.noise << 13;
+                self.noise ^= self.noise >> 7;
+                self.noise ^= self.noise << 17;
+                self.noise.to_le_bytes()[0]
+            })
+            .collect()
     }
 }
 
@@ -458,6 +492,22 @@ mod tests {
         let after = [packet_of(1, MARK_LINE, 170), packet_of(2, TONE_LINE, 170)];
         assert_eq!(machine.due(LINE, true, start + ms(90)), after);
         assert_eq!(machine.sent_packets, 2);
+    }
+
+    #[test]
+    fn a_garbled_packet_keeps_its_stamp_and_its_lengths_and_holds_other_bytes() {
+        let (mut machine, start) = running();
+        machine.garbled = 1;
+        let [garbled, after] = machine.due(LINE, true, start + ms(60)).try_into().unwrap();
+        assert_eq!(after, tone(1));
+        let tone_unit = tone_unit(TONE_LINE, DEFAULT_LEVEL);
+        let mut twin = Machine::new();
+        let units: Vec<Vec<u8>> = (0..UNITS_PER_PACKET)
+            .map(|_| twin.noise(tone_unit.len()))
+            .collect();
+        assert_eq!(garbled, audio_sdu(0, &units));
+        assert!(units.iter().all(|unit| *unit != tone_unit));
+        assert_ne!(units[0], units[1]);
     }
 
     #[test]

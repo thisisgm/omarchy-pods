@@ -181,9 +181,19 @@ A reply carries the request's `id` and `ok`.
   on the audio server, and empty otherwise. The source is wanted while the
   link is up, the model's uplink has answered once, the setting is not `off`,
   and a bud is worn or was taken out less than a few seconds ago; while a
-  program records from it, it stays through a bud taken out. It carries
-  silence until the AirPods' audio reaches it. A program that records from it
-  wants the uplink as `always` does, while a bud is worn. Its `audio_server` is `idle` while no AirPods
+  program records from it, it stays through a bud taken out. It carries the
+  AirPods' microphone, held a fixed delay behind the audio as it arrives, and
+  silence while none comes. A program that records from it
+  wants the uplink as `always` does, while a bud is worn. A wanted running
+  uplink that sends no audio for about a second while a bud is worn is sent
+  START again, each such stall counted in `mic_start_failures` as an unanswered
+  try, and once the tries are spent the uplink is stopped and `mic` reads `failed`. Its `mic_underruns` counts the times the source
+  ran out of audio under a recorder, `mic_concealed` the units of audio written
+  in place of audio lost or refused, and `mic_decode_errors` the units the
+  decoder refused or that came past the eight one packet may carry, each since
+  the daemon started and updated only when `mic` changes or a recorder leaves.
+  A unit is one frame of the AirPods' microphone codec, 480 samples at 64 kHz,
+  7.5 ms of audio. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and
   `down` while it cannot reach it. Its
   `advert_intake` is `listening` once BlueZ accepted the daemon's advert

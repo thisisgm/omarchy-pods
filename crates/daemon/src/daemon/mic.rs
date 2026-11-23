@@ -1,5 +1,7 @@
 //! The pods' microphone as a source node on the desktop's audio server: opened and closed as the driver asks, what becomes of it told back, and tried again on the audio ladder while it is wanted.
 
+mod tap;
+
 use std::future::{self, poll_fn};
 use std::path::PathBuf;
 use std::pin::pin;
@@ -9,8 +11,8 @@ use std::task::Poll;
 use std::time::Duration;
 
 use pods_core::policy::{MicFact, MicRequest, OpenId};
-use pods_mic::{NODE_LATENCY_MS, RATE_HZ};
-use pods_pw::{Event, Fill, OpenError, Source, Spec};
+use pods_mic::{NODE_LATENCY_MS, RATE_HZ, Resync};
+use pods_pw::{Event, OpenError, Source, Spec};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::{Instant, sleep_until, timeout};
@@ -18,6 +20,7 @@ use tokio::time::{Instant, sleep_until, timeout};
 use super::audio::AUDIO_RETRY_MS;
 use super::link::{Input, STOP_WAIT_MS};
 use super::log;
+pub(super) use tap::Tap;
 
 /// The node's `priority.session`, which the design sets.
 pub(super) const NODE_PRIORITY: u32 = 3100;
@@ -36,6 +39,7 @@ const LOST: u8 = 2;
 const ADAPTER_GONE: &str = "mic: the adapter has ended; request dropped";
 /// Logged once an outage, and before every library failure, with the reason after it.
 const OPEN_FAILED: &str = "mic: source could not open: ";
+const REFUSED_CONFIG: &str = "the decoder refused the uplink's configuration";
 
 /// Replaces the request the adapter has not read yet, so the latest is the one served; an ended adapter drops it with a log line.
 pub(super) fn offer(requests: &watch::Sender<MicRequest>, request: MicRequest) {
@@ -49,10 +53,12 @@ pub(super) async fn run(
     mut requests: watch::Receiver<MicRequest>,
     inputs: mpsc::Sender<Input>,
     runtime_dir: PathBuf,
+    tap: Arc<Tap>,
 ) {
     let (wake, mut wakes) = mpsc::channel(MIC_EVENT_QUEUE);
     let mut adapter = Adapter {
         socket: runtime_dir.join(SOCKET),
+        tap,
         wake,
         wanted: None,
         opened: None,
@@ -129,16 +135,6 @@ async fn next(
     .await
 }
 
-/// Silence until the reader of the pods' audio takes its place.
-struct Silence;
-
-impl Fill for Silence {
-    fn fill(&mut self, out: &mut [f32]) -> f64 {
-        out.fill(0.0);
-        1.0
-    }
-}
-
 struct Opened {
     id: OpenId,
     source: Source,
@@ -150,6 +146,7 @@ struct Opened {
 
 struct Adapter {
     socket: PathBuf,
+    tap: Arc<Tap>,
     wake: mpsc::Sender<()>,
     /// The open last asked for, with its node's name and description, until a close.
     wanted: Option<(OpenId, String, String)>,
@@ -185,9 +182,13 @@ impl Adapter {
     async fn open(&mut self) -> Option<MicFact> {
         self.retry_at = None;
         let (id, name, description) = self.wanted.clone()?;
+        let Some((chain, feed, resync)) = self.tap.chain() else {
+            return Some(self.broken(&REFUSED_CONFIG));
+        };
         let events = Arc::new(AtomicU8::new(PAUSED));
-        let watch = watcher(Arc::clone(&events), self.wake.clone());
+        let watch = watcher(Arc::clone(&events), self.wake.clone(), resync);
         let socket = self.socket.clone();
+        let tap = Arc::clone(&self.tap);
         let opened = spawn_blocking(move || {
             let spec = Spec {
                 remote: &socket,
@@ -197,7 +198,7 @@ impl Adapter {
                 latency_ns: u64::from(NODE_LATENCY_MS).saturating_mul(NANOS_PER_MILLI),
                 priority: NODE_PRIORITY,
             };
-            Source::open(&spec, Box::new(Silence), watch)
+            tap.open(chain, || Source::open(&spec, Box::new(feed), watch))
         })
         .await;
         match opened {
@@ -260,15 +261,24 @@ impl Adapter {
         let Some(opened) = self.opened.take() else {
             return;
         };
-        if let Err(error) = spawn_blocking(move || drop(opened.source)).await {
+        let tap = Arc::clone(&self.tap);
+        let closed = spawn_blocking(move || tap.close(opened.source));
+        if let Err(error) = closed.await {
             log(&format!("mic: the source's drop ended abnormally: {error}"));
         }
     }
 }
 
-/// Runs on the library's loop thread: the latest event in `events`, where a lost source stays lost, then a wake that may be dropped.
-fn watcher(events: Arc<AtomicU8>, wake: mpsc::Sender<()>) -> Box<dyn FnMut(Event) + Send> {
+/// Runs on the library's loop thread: a recorder that starts the stream restarts the reader at its target, the latest event goes in `events`, where a lost source stays lost, then a wake that may be dropped.
+fn watcher(
+    events: Arc<AtomicU8>,
+    wake: mpsc::Sender<()>,
+    resync: Resync,
+) -> Box<dyn FnMut(Event) + Send> {
     Box::new(move |event| {
+        if event == Event::Streaming {
+            resync.request();
+        }
         let word = match event {
             Event::Streaming => STREAMING,
             Event::Paused => PAUSED,

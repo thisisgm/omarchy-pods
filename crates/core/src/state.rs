@@ -177,6 +177,15 @@ pub struct Microphone {
     start_failures: u32,
     /// Whether the source node is on the audio server.
     source_up: bool,
+    counts: MicCounts,
+}
+
+/// What the microphone's chain counted since the daemon started, as last folded into the state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MicCounts {
+    pub underruns: u32,
+    pub concealed: u32,
+    pub decode_errors: u32,
 }
 
 impl Microphone {
@@ -187,6 +196,11 @@ impl Microphone {
             code: MicCode::resting(preference),
             start_failures: 0,
             source_up: false,
+            counts: MicCounts {
+                underruns: 0,
+                concealed: 0,
+                decode_errors: 0,
+            },
         }
     }
 
@@ -208,6 +222,15 @@ impl Microphone {
     #[must_use]
     pub const fn source_up(self) -> bool {
         self.source_up
+    }
+
+    #[must_use]
+    pub const fn counts(self) -> MicCounts {
+        self.counts
+    }
+
+    pub fn fold(&mut self, counts: MicCounts) {
+        self.counts = counts;
     }
 
     pub fn set_preference(&mut self, preference: MicPref) {

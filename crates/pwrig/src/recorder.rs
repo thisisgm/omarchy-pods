@@ -21,8 +21,8 @@ const CHANNELS: u16 = 1;
 
 /// How long a recorder may take to close its file after SIGINT.
 const FINISH_WITHIN: Duration = Duration::from_secs(5);
-/// pw-record writes only while its source plays (a 4 s tone left 4.05 s over 12 s), and no test here plays longer than 4 s.
-const LONGEST_RECORDING_SECONDS: u64 = 10;
+/// pw-record writes only while its source plays (a 4 s tone left 4.05 s over 12 s); the longest recording a test makes is ten minutes.
+pub const LONGEST_RECORDING: Duration = Duration::from_mins(11);
 
 #[derive(Debug)]
 pub struct Recorder<'server> {
@@ -96,7 +96,8 @@ impl<'server> Recorder<'server> {
     }
 
     /// The frames in the file, from its length alone, since pw-record writes a header of a fixed length.
-    fn frames_on_disk(&self) -> u64 {
+    #[must_use]
+    pub fn frames_on_disk(&self) -> u64 {
         let length = match fs::metadata(&self.file) {
             Ok(metadata) => metadata.len(),
             // pw-record makes its file before its node appears, so only a caller that did not wait for the node sees none.
@@ -148,7 +149,8 @@ impl<'server> Recorder<'server> {
 
 /// The most `finish` reads: the longest recording at the history rate, plus the header.
 fn recording_limit() -> u64 {
-    LONGEST_RECORDING_SECONDS
+    LONGEST_RECORDING
+        .as_secs()
         .saturating_mul(u64::from(HISTORY.1))
         .saturating_mul(u64::from(BYTES_PER_SAMPLE))
         .saturating_add(u64::from(HEADER_LEN))
