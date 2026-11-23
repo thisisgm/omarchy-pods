@@ -3,6 +3,7 @@
 mod driver;
 mod failures;
 mod ladders;
+mod settle;
 
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread::{self, JoinHandle};
@@ -18,7 +19,7 @@ use tokio::runtime::{Builder, Handle};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::timeout;
 
-use super::{Connector, DeviceEvent, Input, Outlets, REQUEST_QUEUE, drive, queue};
+use super::{Connector, DeviceEvent, Input, Outlets, REQUEST_QUEUE, Request, drive, queue};
 use crate::daemon::hub::Hub;
 use crate::daemon::{audio, keys, media, notify};
 
@@ -122,6 +123,7 @@ pub(in crate::daemon) struct Running {
     halt: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     runtime: Handle,
+    requests: Option<mpsc::Receiver<Request>>,
 }
 
 /// While alive, the paused clock of a `Running::paused` stands still; dropping it lets the clock move again.
@@ -150,6 +152,23 @@ impl Running {
         )
     }
 
+    /// Runs `script` on the driver's runtime, so its waits and stamps read the driver's clock.
+    pub(super) fn script<F>(&self, script: F) -> F::Output
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let task = self.runtime.spawn(script);
+        block_on(async { timeout(HANG_LIMIT, task).await })
+            .unwrap_or_else(|_| panic!("the script did not end within {HANG_LIMIT:?}"))
+            .unwrap()
+    }
+
+    /// The requests the driver hands BlueZ; only the first call has them.
+    pub(super) fn requests(&mut self) -> mpsc::Receiver<Request> {
+        self.requests.take().unwrap()
+    }
+
     /// The runtime holds a paused clock still while a blocking task runs, so real work on other threads cannot pass for time.
     pub(super) fn hold_clock(&self) -> ClockHold {
         let (release, held) = std_mpsc::channel::<()>();
@@ -165,9 +184,9 @@ impl Running {
         let shared = hub.clone();
         let runtime = builder.build().unwrap();
         let handle = runtime.handle().clone();
+        let (requests, unread) = mpsc::channel(REQUEST_QUEUE);
         let body = move || {
             runtime.block_on(async move {
-                let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
                 let feedback = match tap {
                     None => link,
                     Some(tap) => forward_through(tap, link),
@@ -202,6 +221,7 @@ impl Running {
             halt: Some(halt),
             thread: Some(thread),
             runtime: handle,
+            requests: Some(unread),
         }
     }
 

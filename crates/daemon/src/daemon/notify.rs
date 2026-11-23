@@ -185,11 +185,20 @@ async fn wait(child: &mut Child, stop: &mut oneshot::Receiver<()>) -> Run {
 
 #[cfg(test)]
 mod tests {
-    //! Support tests: the program and its arguments pinned to the C++ daemon's `Notifier`.
+    //! Support tests: the program and its arguments pinned to the C++ daemon's `Notifier`, and the wait for a run on a paused clock.
+
+    use std::time::Duration;
 
     use cpp_source::NOTIFIER;
+    use tokio::process::Command;
+    use tokio::sync::oneshot;
+    use tokio::time::Instant;
 
-    use super::{ARGS, PROGRAM};
+    use super::{ARGS, PROGRAM, Run, wait};
+    use crate::daemon::paused::on_paused_clock;
+
+    /// `NOTIFY_WAIT_MS`, written out so a drifted wait goes red.
+    const NOTIFY_WAIT: Duration = Duration::from_millis(5000);
 
     /// Each `QStringLiteral("...")` in `call`, a `\uXXXX` escape read as its character; sample input `{QStringLiteral("-g"), QStringLiteral(""), title, message}`.
     fn literals(call: &str) -> Vec<String> {
@@ -213,5 +222,21 @@ mod tests {
         assert_eq!(literals(call), ARGS);
         let program = NOTIFIER.find(None, "findExecutable(QStringLiteral(\"", '"');
         assert_eq!(program, PROGRAM);
+    }
+
+    #[test]
+    fn a_run_that_never_exits_is_hung_after_the_wait() {
+        on_paused_clock(async {
+            let mut child = Command::new("sleep")
+                .arg("600")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let (_stop, mut stopped) = oneshot::channel();
+            let started = Instant::now();
+            let run = wait(&mut child, &mut stopped).await;
+            assert!(matches!(run, Run::Hung), "the run ended otherwise");
+            assert_eq!(started.elapsed(), NOTIFY_WAIT);
+        });
     }
 }

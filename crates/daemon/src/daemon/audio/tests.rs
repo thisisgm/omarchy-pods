@@ -1,5 +1,7 @@
 //! Support tests: which sink is the device's and how its name starts; no user path yet for the sink it reports.
 
+mod waits;
+
 use pods_core::policy::audio::{Percent, SinkFact, sink_prefix};
 use pods_proto::addr::BdAddr;
 

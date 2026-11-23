@@ -15,7 +15,7 @@ mod tests {
     use super::support::children::{children, the_only_child};
     use super::support::omarchy::{DISCONNECT_NOTICE, Mood, NOTIFY_WAIT, RECORDED_WITHIN};
     use super::support::parked::{climb_to_parked, refused_pods};
-    use super::support::rig::{Rig, assert_gap, not_before};
+    use super::support::rig::{Rig, assert_gap};
     use super::support::{HANG_LIMIT, wait_within};
 
     #[test]
@@ -60,7 +60,7 @@ mod tests {
             "the kill after the loss",
             lost,
             Instant::now(),
-            &not_before(NOTIFY_WAIT),
+            &(NOTIFY_WAIT..),
         );
         let calls = rig.omarchy().wait_calls(2, HANG_LIMIT);
         assert_eq!(calls, [DISCONNECT_NOTICE, DISCONNECT_NOTICE]);

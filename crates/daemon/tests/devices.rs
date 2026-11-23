@@ -284,7 +284,9 @@ mod tests {
         });
         let asked = Instant::now();
         let fifth = CALLS_IN_FLIGHT_MAX + 1;
-        assert_eq!(outcome(&client.ask(&do_request(fifth, "connect"))), "sent");
+        // A fresh client: the daemon closes one left idle past its stall deadline.
+        let reply = Proto1::connect(rig.session()).ask(&do_request(fifth, "connect"));
+        assert_eq!(outcome(&reply), "sent");
         let failed = rig.wait_status("the fifth call failed", |status| {
             total(status, "connect_failures_total") == 1
         });
