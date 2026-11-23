@@ -94,6 +94,8 @@ struct Objects {
     fail: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
     sweeps: Vec<Instant>,
+    /// The path of each `GetAll` call, oldest first.
+    reads: Vec<String>,
     reactions: Option<SyncSender<Call>>,
 }
 
@@ -406,6 +408,11 @@ impl Bluez {
         self.lock().sweeps.clone()
     }
 
+    /// The path of each `GetAll` call, oldest first.
+    pub(crate) fn reads(&self) -> Vec<String> {
+        self.lock().reads.clone()
+    }
+
     /// Every `Device1` and `Adapter1` method call, oldest first.
     pub(crate) fn calls(&self) -> Vec<Call> {
         self.lock()
@@ -551,6 +558,11 @@ impl Objects {
         let header = call.header();
         if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
             self.sweeps.push(Instant::now());
+        }
+        if header.member().map(MemberName::as_str) == Some("GetAll")
+            && let Some(path) = header.path()
+        {
+            self.reads.push(path.to_string());
         }
         let recorded = record(call);
         if let Some(recorded) = &recorded {

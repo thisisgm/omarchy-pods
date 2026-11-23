@@ -44,9 +44,6 @@ mod tests {
     /// How long the late legacy client waits before its first byte, well inside the deadline.
     const FIRST_BYTE_AFTER: Duration = Duration::from_millis(600);
 
-    /// The deadline plus slack for a shared host, well short of a deadline started again at the first byte.
-    const LEGACY_CLOSED_BY: Duration = Duration::from_millis(1400);
-
     /// Subscriptions the gap test opens while another client changes the state.
     const SUBSCRIPTIONS: usize = 40;
 
@@ -723,17 +720,26 @@ mod tests {
         assert!(!log.contains("protocol 1 client closed"), "{log}");
     }
 
+    /// The socket's test on a paused clock proves the deadline counts from the accept, not from the first byte.
     #[test]
-    fn the_wait_for_the_first_byte_counts_toward_the_legacy_deadline() {
+    fn a_late_first_byte_is_closed_with_no_reply_and_never_before_the_legacy_deadline() {
         let session = Session::new();
         let _daemon = session.start();
         let mut stream = UnixStream::connect(session.socket()).unwrap();
         let connected = Instant::now();
         pause(FIRST_BYTE_AFTER);
-        stream.write_all(b"s").unwrap();
-        assert_eq!(read_to_close(&mut stream), b"");
+        // A host that held this thread to the deadline finds the connection closed, and the read then sees a reset.
+        drop(stream.write_all(b"s"));
+        stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+        let mut reply = Vec::new();
+        let read = stream.read_to_end(&mut reply);
+        assert!(
+            matches!(&read, Ok(0))
+                || matches!(&read, Err(error) if error.kind() == ErrorKind::ConnectionReset),
+            "{read:?}"
+        );
+        assert_eq!(reply, b"", "a reply came before the close");
         let waited = connected.elapsed();
         assert!(waited >= REQUEST_DEADLINE, "{waited:?}");
-        assert!(waited < LEGACY_CLOSED_BY, "{waited:?}");
     }
 }

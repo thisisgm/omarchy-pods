@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::io;
+use std::os::fd::OwnedFd;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,11 @@ pub enum Answer {
     Refuse {
         after: Duration,
         errno: Errno,
+    },
+    /// As `Accept`, but `connect` returns only once `release` reads ready, which the peer's close of its end makes it.
+    Held {
+        release: Arc<OwnedFd>,
+        serve: Serve,
     },
 }
 
@@ -259,6 +265,7 @@ impl fmt::Debug for Answer {
                 .field("after", after)
                 .field("errno", &format_args!("{}", Name(*errno)))
                 .finish(),
+            Self::Held { .. } => f.debug_struct("Held").finish_non_exhaustive(),
         }
     }
 }

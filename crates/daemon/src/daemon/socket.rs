@@ -214,6 +214,8 @@ mod tests {
     use tokio::runtime::Builder;
 
     use super::*;
+    use crate::daemon::link::tests::Running;
+    use crate::daemon::paused::on_paused_clock;
 
     /// A lock still being taken after this long has blocked the thread it runs on.
     const HANG_LIMIT: Duration = Duration::from_secs(10);
@@ -317,5 +319,25 @@ mod tests {
                 panic!("taking the lock held the runtime thread: {error}");
             }
         }
+    }
+
+    #[test]
+    fn a_late_first_byte_leaves_the_legacy_request_only_the_rest_of_its_deadline() {
+        // Well inside the deadline, so the byte lands before it ends.
+        const FIRST_BYTE_AFTER: Duration = Duration::from_millis(600);
+        let link = Running::new();
+        let hub = link.hub();
+        let closed = on_paused_clock(async {
+            let (served, mut client) = UnixStream::pair().unwrap();
+            let accepted = Instant::now();
+            let serving = tokio::spawn(serve_client(served, hub));
+            sleep(FIRST_BYTE_AFTER).await;
+            client.write_all(b"s").await.unwrap();
+            let mut rest = Vec::new();
+            client.read_to_end(&mut rest).await.unwrap();
+            serving.await.unwrap();
+            (accepted.elapsed(), rest)
+        });
+        assert_eq!(closed, (legacy_dialect::REQUEST_DEADLINE, Vec::new()));
     }
 }
