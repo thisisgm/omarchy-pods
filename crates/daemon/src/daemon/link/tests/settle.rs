@@ -10,8 +10,8 @@ use rustix::io::Errno;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use super::super::{Connector, Input, Request};
-use super::{Running, device_up};
+use super::super::{Connector, DeviceEvent, Input, Request};
+use super::{Running, device};
 
 /// `RESUME_SETTLE_MS`, written out so a drifted settle goes red.
 const SETTLE: Duration = Duration::from_millis(2000);
@@ -50,8 +50,9 @@ async fn sleep_and_wake(inputs: &mpsc::Sender<Input>) -> Instant {
 fn dial_after_a_wake(dials: usize) -> Duration {
     let (running, mut stamped) = refusing();
     let inputs = running.inputs().clone();
-    device_up(&inputs);
     running.script(async move {
+        let up = Input::Device(DeviceEvent::Up(device()));
+        inputs.send(up).await.unwrap();
         for _ in 0..dials {
             stamped.recv().await.unwrap();
         }
