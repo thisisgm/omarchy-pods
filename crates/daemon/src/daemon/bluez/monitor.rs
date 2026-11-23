@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pods_core::policy::{MonitorFact, Sighting};
 use pods_proto::addr::BdAddr;
 use pods_proto::proximity::{ADVERT_LEN, PROXIMITY_TYPE};
-use tokio::sync::mpsc;
+use tokio::sync::{Barrier, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::{Sleep, sleep, timeout};
 use zbus::{Array, Connection, Dict, ObjectPath, Variant};
@@ -318,10 +319,12 @@ impl Monitor {
 
     fn attempt(&mut self, connection: &Connection, adapters: BTreeSet<String>) {
         self.activated = false;
+        let unregistered = Arc::new(Barrier::new(adapters.len()));
         for adapter in adapters {
             let connection = connection.clone();
+            let unregistered = Arc::clone(&unregistered);
             self.calls.spawn(async move {
-                let answer = register(connection, &adapter).await;
+                let answer = register(connection, &adapter, &unregistered).await;
                 Some((adapter, answer))
             });
         }
@@ -392,11 +395,16 @@ pub(super) fn offer(inputs: &mpsc::Sender<Input>, sighting: Sighting) {
     }
 }
 
-/// `UnregisterMonitor` first, so a registration BlueZ still holds from before is dropped and read anew.
-async fn register(connection: Connection, adapter: &str) -> Result<(), String> {
+/// `UnregisterMonitor` first, so a registration BlueZ still holds from before is dropped and read anew; no adapter of the try registers until every one has unregistered, so their `Release`s all come before any `Activate`.
+async fn register(
+    connection: Connection,
+    adapter: &str,
+    unregistered: &Barrier,
+) -> Result<(), String> {
     unregister(connection.clone(), adapter.to_owned())
         .await
         .ok();
+    unregistered.wait().await;
     manager_call(&connection, adapter, "RegisterMonitor").await
 }
 

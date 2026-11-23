@@ -121,9 +121,10 @@ struct Adapter {
     powered: bool,
 }
 
-/// What the serving thread does with a call: send these messages in order, the reply last, send nothing, or read an application.
+/// What the serving thread does with a call: send these messages in order, the reply last, send them late, send nothing, or read an application.
 enum Answer {
     Send(Vec<Message>),
+    Late(Vec<Message>),
     Held,
     Register(Registration),
 }
@@ -782,6 +783,9 @@ fn run(
                     for message in messages {
                         connection.send(&message).await.unwrap();
                     }
+                }
+                Answer::Late(messages) => {
+                    registrations.spawn(monitor::answer_late(connection.clone(), messages));
                 }
                 Answer::Held => {}
                 Answer::Register(registration) => {

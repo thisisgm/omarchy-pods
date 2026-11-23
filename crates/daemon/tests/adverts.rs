@@ -21,7 +21,7 @@ mod tests {
     use zbus::OwnedVariant;
 
     use super::support::advert::{CHARGING, HEADER, PAYLOAD, RANDOM, keyed, keys, ours};
-    use super::support::bluez::monitor::{Registered, manager_call, registration};
+    use super::support::bluez::monitor::{LATE_BY, Registered, manager_call, registration};
     use super::support::bluez::{Call, DeviceMethod};
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
     use super::support::omarchy::{RECORDED_WITHIN, low_battery_notice};
@@ -54,6 +54,10 @@ mod tests {
     const SEEN_WITHIN: Duration = Duration::from_secs(1);
     /// Long enough for a monitor call the daemon wrongly makes to reach the fake BlueZ.
     const QUIET: Duration = Duration::from_millis(500);
+    /// The adapters offering monitors in the two adapter case.
+    const ADAPTERS: usize = 2;
+    /// The monitor calls of one try there: an unregistration and a registration on each adapter.
+    const TRY_CALLS: usize = 2 * ADAPTERS;
     /// The daemon's tries at the monitor before it reads unavailable.
     const MONITOR_TRIES: usize = 5;
     /// The daemon's wait between a refused try and the next.
@@ -499,6 +503,50 @@ mod tests {
         let mut wanted = registration(rig.adapter());
         wanted.extend(registration(rig.adapter()));
         assert_eq!(rig.bluez().calls(), wanted);
+        wait_intake(&rig, "listening");
+        rig.finish();
+    }
+
+    #[test]
+    fn a_release_from_a_slow_unregistration_on_a_second_adapter_is_not_a_drop() {
+        let mut rig = keyed();
+        let second = rig.bluez().add_adapter();
+        rig.bluez().add_monitor_manager(&second);
+        rig.start();
+        let registered = |calls: usize| {
+            wait_for(&format!("{calls} monitor calls and both monitors"), || {
+                let made = rig.bluez().calls().len() >= calls;
+                (made && rig.bluez().monitors().len() == ADAPTERS).then_some(())
+            });
+        };
+        registered(TRY_CALLS);
+        rig.bluez().power(rig.adapter(), false);
+        rig.bluez().answer_unregister_late(&second);
+        rig.bluez().power(rig.adapter(), true);
+        registered(2 * TRY_CALLS);
+        pause(QUIET);
+        let calls = rig.bluez().calls();
+        assert_eq!(calls.len(), 2 * TRY_CALLS, "{calls:?}");
+        let order = [
+            DeviceMethod::UnregisterMonitor,
+            DeviceMethod::RegisterMonitor,
+        ];
+        for one_try in calls.chunks(TRY_CALLS) {
+            for (both, method) in one_try.chunks(ADAPTERS).zip(order.clone()) {
+                for adapter in [rig.adapter(), &second] {
+                    let call = manager_call(adapter, method.clone());
+                    assert!(both.contains(&call), "{call:?} missing in {calls:?}");
+                }
+            }
+        }
+        let unregistered = rig.bluez().call_times(&DeviceMethod::UnregisterMonitor)[ADAPTERS];
+        let registered_at = rig.bluez().call_times(&DeviceMethod::RegisterMonitor)[ADAPTERS];
+        assert_gap(
+            "the try's first unregistration to its first registration",
+            unregistered,
+            registered_at,
+            &(LATE_BY..=LATE_BY.saturating_add(SEEN_WITHIN)),
+        );
         wait_intake(&rig, "listening");
         rig.finish();
     }
