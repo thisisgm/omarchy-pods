@@ -1,4 +1,4 @@
-//! What a device is, through the built daemon: the Off option the pods report, an unknown model, and Beats.
+//! What a device is, through the built daemon: the Off option the pods report, the models, an unknown model, and Beats.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -13,10 +13,12 @@ mod tests {
     use pods_core::state::State;
     use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT, to_status_object};
     use pods_fake::Profile;
+    use pods_samples::advert::{HEADER_LEN, PRODUCT_AT};
     use pods_samples::{ALLOW_OFF_OPTION, NOISE, setting};
     use serde_json::{Value, json};
     use zbus::{OwnedVariant, Str};
 
+    use super::support::advert::{HEADER, PAYLOAD, PRIMARY_LEVEL, keyed, ours};
     use super::support::rig::{ANC, DIAL_WAIT, Device, OFF, Rig, TRANSPARENCY, connected};
     use super::support::{HANG_LIMIT, Proto1, outcome, set_request, wait_for};
 
@@ -24,6 +26,8 @@ mod tests {
     const BEATS: &str = "bluetooth:v004Cp200Bd0001";
     /// Beats Studio Pro, product `0x2017`.
     const STUDIO_PRO: &str = "bluetooth:v004Cp2017d0001";
+    /// Beats Solo 4, product `0x2025`.
+    const SOLO_4: &str = "bluetooth:v004Cp2025d0001";
     /// An Apple product in neither list.
     const UNKNOWN_APPLE: &str = "bluetooth:v004Cp20FFd0001";
     /// The Powerbeats Pro product number under another vendor.
@@ -35,6 +39,25 @@ mod tests {
     /// AirPods Pro 2 (USB-C), whose table entry offers Off.
     const TABLE_WITH_OFF: &str = "A3048";
     const UNKNOWN_MODEL: &str = "A0000";
+    /// Modalias, which decides only the dial, the model number the pods report, then the name, `model_int` and headset flag it gives.
+    const NAMED_MODELS: [(&str, &str, &str, i64, bool); 4] = [
+        ("bluetooth:v004Cp2036d0001", "A3533", "AirPods 5", 13, false),
+        ("bluetooth:v004Cp2030d0001", "A3440", "AirPods 5", 14, false),
+        ("bluetooth:v004Cp2030d0001", "A3533", "AirPods 5", 13, false),
+        (
+            "bluetooth:v004Cp202Dd0001",
+            "A3454",
+            "AirPods Max 2",
+            12,
+            true,
+        ),
+    ];
+    /// The two product bytes of an advert, low byte first, then the name, `model_int` and headset flag the status shows.
+    const ADVERT_MODELS: [([u8; 2], &str, i64, bool); 3] = [
+        ([0x36, 0x20], "AirPods 5", 13, false),
+        ([0x30, 0x20], "AirPods 5", 14, false),
+        ([0x2d, 0x20], "AirPods Max 2", 12, true),
+    ];
     const OFFERED: u8 = 1;
     const NOT_OFFERED: u8 = 2;
     /// Pods of `model_number` in noise cancelling, so a change to Off is a real write.
@@ -176,8 +199,64 @@ mod tests {
     }
 
     #[test]
+    fn an_airpods_5_or_max_2_modalias_is_dialled_and_named_from_its_number() {
+        for (modalias, number, name, int, headset) in NAMED_MODELS {
+            let (rig, _device) = started(pods(number), Some(modalias));
+            let status = rig.wait_filled();
+            let wanted = json!({
+                "model_number": number,
+                "model_name": name,
+                "model_int": int,
+                "is_pro_series": false,
+                "is_headset": headset,
+                "supports_noise_off": true,
+                "supports_noise_control": true,
+                "supports_adaptive": true,
+                "supports_conversational_awareness": true,
+                "supports_one_bud_anc": !headset,
+            });
+            for (key, value) in wanted.as_object().unwrap() {
+                assert_eq!(&status[key], value, "{modalias} {number} {key}");
+            }
+            rig.finish();
+        }
+    }
+
+    #[test]
+    fn an_advert_names_airpods_5_and_max_2_while_the_link_is_down() {
+        for (word, name, int, headset) in ADVERT_MODELS {
+            let mut rig = keyed();
+            rig.add_pods(Profile::default());
+            rig.start();
+            rig.wait_status("advert_intake listening", |status| {
+                status["advert_intake"] == "listening"
+            });
+            let mut header: [u8; HEADER_LEN] = HEADER;
+            header[PRODUCT_AT..PRODUCT_AT + word.len()].copy_from_slice(&word);
+            let advert = ours(header, PAYLOAD);
+            let _advertiser = rig.bluez().advertise(&advert.address, &advert.data);
+            let status = rig.wait_status("the advert's battery", |status| {
+                status["left"]["available"] == true || status["headset"]["available"] == true
+            });
+            assert_eq!(status["model_name"], name, "{word:02x?}");
+            assert_eq!(status["model_int"], int, "{word:02x?}");
+            assert_eq!(status["headset"]["available"], headset, "{word:02x?}");
+            let primary = if headset { "headset" } else { "left" };
+            assert_eq!(status[primary]["level"], PRIMARY_LEVEL, "{word:02x?}");
+            for component in ["left", "right", "case"] {
+                assert_eq!(
+                    status[component]["available"], !headset,
+                    "{word:02x?} {component}"
+                );
+            }
+            assert!(!connected(&status), "{word:02x?}");
+            rig.finish();
+        }
+    }
+
+    #[test]
     fn a_beats_modalias_is_never_dialled() {
-        for modalias in [BEATS, STUDIO_PRO] {
+        for modalias in [BEATS, STUDIO_PRO, SOLO_4] {
             let (mut rig, _device) = started(pods(TABLE_WITH_OFF), Some(modalias));
             wait_for("a sweep", || {
                 (!rig.bluez().sweeps().is_empty()).then_some(())

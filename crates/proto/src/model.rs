@@ -3,7 +3,7 @@
 /// Declares `Model` and `Model::ALL` from one list of variants, so `ALL` cannot leave one out.
 macro_rules! models {
     ($($(#[$attr:meta])* $variant:ident,)+) => {
-        /// Named as the C++ `AirPodsModel` enum names it.
+        /// Named as the C++ `AirPodsModel` enum names those it holds.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
         pub enum Model {
             $($(#[$attr])* $variant,)+
@@ -32,6 +32,8 @@ models! {
     AirPods4ANC,
     AirPodsPro3,
     AirPodsMax2,
+    AirPods5,
+    AirPods5WirelessCase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -49,7 +51,7 @@ pub struct Capabilities {
     pub is_headset: bool,
 }
 
-/// Apple's published model numbers (support.apple.com/en-us/109525), in the order of the C++ map.
+/// Apple's published model numbers (support.apple.com/en-us/109525), in the order of the C++ map, then those it lacks.
 const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A1523", Model::AirPods1),
     ("A1722", Model::AirPods1),
@@ -77,6 +79,12 @@ const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A3063", Model::AirPodsPro3),
     ("A3064", Model::AirPodsPro3),
     ("A3065", Model::AirPodsPro3),
+    ("A3531", Model::AirPods5),
+    ("A3532", Model::AirPods5),
+    ("A3533", Model::AirPods5),
+    ("A3439", Model::AirPods5WirelessCase),
+    ("A3440", Model::AirPods5WirelessCase),
+    ("A3441", Model::AirPods5WirelessCase),
 ];
 
 /// What a product identifier names.
@@ -87,7 +95,7 @@ pub enum Product {
     Unknown,
 }
 
-/// Product identifiers as `Modalias` prints them, in the order of the C++ map, which keys each one byte swapped.
+/// Product identifiers as `Modalias` prints them, in the order of the C++ map, which keys each one byte swapped, then those it lacks.
 const AIRPODS_PRODUCTS: &[(u16, Model)] = &[
     (0x2002, Model::AirPods1),
     (0x200F, Model::AirPods2),
@@ -100,10 +108,31 @@ const AIRPODS_PRODUCTS: &[(u16, Model)] = &[
     (0x2014, Model::AirPodsPro2Lightning),
     (0x2024, Model::AirPodsPro2USBC),
     (0x2027, Model::AirPodsPro3),
+    (0x2036, Model::AirPods5),
+    (0x2030, Model::AirPods5WirelessCase),
+    (0x202D, Model::AirPodsMax2),
 ];
 
-/// Powerbeats Pro, Powerbeats Pro 2 (the keys `0x0B20` and `0x1D20` proposed for the C++ map, byte swapped), Beats Studio Pro.
-const BEATS_PRODUCTS: &[u16] = &[0x200B, 0x201D, 0x2017];
+/// Beats products under Apple's vendor identifier, as `Modalias` prints them.
+const BEATS_PRODUCTS: &[u16] = &[
+    0x2003, // Powerbeats 3
+    0x2005, // BeatsX
+    0x2006, // Beats Solo 3 Wireless
+    0x2009, // Beats Studio 3 Wireless
+    0x200B, // Powerbeats Pro
+    0x200C, // Beats Solo Pro
+    0x200D, // Powerbeats (4th generation)
+    0x2010, // Beats Flex
+    0x2011, // Beats Studio Buds
+    0x2012, // Beats Fit Pro
+    0x2016, // Beats Studio Buds +
+    0x2017, // Beats Studio Pro
+    0x201D, // Powerbeats Pro 2
+    0x2025, // Beats Solo 4
+    0x2026, // Beats Solo Buds
+    0x202F, // Powerbeats Fit
+    0x2038, // Beats 360
+];
 
 /// The Bluetooth SIG vendor source and Apple's company identifier `0x004C`.
 const APPLE_MODALIAS_PREFIX: &str = "bluetooth:v004Cp";
@@ -167,6 +196,8 @@ impl Model {
             Self::AirPods4ANC => 10,
             Self::AirPodsPro3 => 11,
             Self::AirPodsMax2 => 12,
+            Self::AirPods5 => 13,
+            Self::AirPods5WirelessCase => 14,
         }
     }
 
@@ -180,6 +211,7 @@ impl Model {
             Self::AirPods3 => "AirPods (3rd generation)",
             // The same name as the plain AirPods 4: the capability keys say which one it is.
             Self::AirPods4 | Self::AirPods4ANC => "AirPods 4",
+            Self::AirPods5 | Self::AirPods5WirelessCase => "AirPods 5",
             Self::AirPodsPro => "AirPods Pro",
             Self::AirPodsPro2Lightning => "AirPods Pro 2",
             Self::AirPodsPro2USBC => "AirPods Pro 2 (USB-C)",
@@ -218,7 +250,7 @@ impl Model {
                 is_headset: true,
                 ..h2_listening
             },
-            Self::AirPods4ANC => Capabilities {
+            Self::AirPods4ANC | Self::AirPods5 | Self::AirPods5WirelessCase => Capabilities {
                 one_bud_anc: true,
                 ..h2_listening
             },

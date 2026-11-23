@@ -20,7 +20,7 @@ mod tests {
     use serde_json::{Value, json};
     use zbus::OwnedVariant;
 
-    use super::support::advert::{HEADER, PAYLOAD, RANDOM, keyed, keys, ours};
+    use super::support::advert::{CHARGING, HEADER, PAYLOAD, RANDOM, keyed, keys, ours};
     use super::support::bluez::monitor::{Registered, manager_call, registration};
     use super::support::bluez::{Call, DeviceMethod};
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
@@ -56,8 +56,6 @@ mod tests {
     const WRONG_TYPE: u8 = 0x10;
     /// Bytes past the advert the daemon reads, which it ignores.
     const TRAILING: [u8; 4] = [0xee; 4];
-    /// The charging bit of a bud's battery byte.
-    const CHARGING: u8 = 0x80;
     /// Percent between one timed advert and the next.
     const LEVEL_STEP: u8 = 10;
     /// The random part of the flood's addresses, ahead of each address's own byte.

@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::battery::BatteryReport;
-use crate::model::{Model, Product, product};
+use crate::model::{Model, Product, product, product_of_modalias};
 use cpp_source::{BLE_MANAGER_SOURCE, BLE_UTILS};
-use pods_samples::advert::{HEADER_LEN, Keys, address_of, advert_of};
+use pods_samples::advert::{HEADER_LEN, Keys, PRODUCT_AT, address_of, advert_of};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
 use proptest::prelude::*;
 
@@ -90,11 +90,38 @@ fn the_sample_advert_parses_to_its_fields() {
 
 #[test]
 fn the_product_reads_little_endian_where_the_cpp_key_is_swapped() {
-    let advert = parse(&sample()).unwrap();
-    assert_eq!(
-        product(advert.product),
-        Product::AirPods(Model::AirPodsPro3)
-    );
+    for (word, modalias, model) in [
+        (
+            [0x27, 0x20],
+            "bluetooth:v004Cp2027d0000",
+            Model::AirPodsPro3,
+        ),
+        ([0x36, 0x20], "bluetooth:v004Cp2036d0000", Model::AirPods5),
+        (
+            [0x30, 0x20],
+            "bluetooth:v004Cp2030d0000",
+            Model::AirPods5WirelessCase,
+        ),
+        (
+            [0x2d, 0x20],
+            "bluetooth:v004Cp202Dd0000",
+            Model::AirPodsMax2,
+        ),
+    ] {
+        let mut data = sample();
+        data[PRODUCT_AT..PRODUCT_AT + word.len()].copy_from_slice(&word);
+        let advert = parse(&data).unwrap();
+        assert_eq!(
+            product(advert.product),
+            Product::AirPods(model),
+            "{word:02x?}"
+        );
+        assert_eq!(
+            product_of_modalias(modalias),
+            Some(advert.product),
+            "{modalias}"
+        );
+    }
     let cpp = BLE_MANAGER_SOURCE.find(None, "deviceInfo.modelName = getModelName(", ';');
     assert_eq!(
         cpp,

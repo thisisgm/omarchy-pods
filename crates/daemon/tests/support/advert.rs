@@ -12,6 +12,11 @@ pub(crate) const HEADER: [u8; HEADER_LEN] = [
 /// Primary 80 charging, secondary 60, case 40, then twelve zero bytes.
 pub(crate) const PAYLOAD: [u8; SEALED_LEN] =
     [0x00, 0xd0, 0x3c, 0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+/// The level of the primary bud, or of a headset, in `PAYLOAD`.
+pub(crate) const PRIMARY_LEVEL: u8 = 80;
+/// The charging bit of a bud's battery byte.
+pub(crate) const CHARGING: u8 = 0x80;
+const _: () = assert!(PAYLOAD[1] == CHARGING | PRIMARY_LEVEL);
 /// The synthetic random part of every advert address, made resolvable by `advert_of`.
 pub(crate) const RANDOM: [u8; 3] = [0x40, 0x00, 0x01];
 
