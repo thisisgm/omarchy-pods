@@ -115,7 +115,7 @@ mkdir -p target/release
 cat "$bench/stub/payload" > target/release/librepods
 "#;
 
-/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced or slowed it, writing `stub/settings` as its settings file when the case gave one.
+/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced or slowed it.
 /// A slowed `status` spends the client's 2 s worst case (connect, write and reply timeouts) before it fails.
 const PAYLOAD: &str = r#"
 log librepods "$@"
@@ -124,10 +124,6 @@ case "$1" in
 status)
     [ -e "$bench/stub/silent" ] && exit 1
     [ -e "$bench/stub/slow" ] && { sleep 2; exit 1; }
-    if [ -e "$bench/stub/settings" ]; then
-        mkdir -p "$HOME/.local/state/librepods"
-        cat "$bench/stub/settings" > "$HOME/.local/state/librepods/settings.json"
-    fi
     echo '{"connected":false,"schema_version":1}' ;;
 esac
 "#;

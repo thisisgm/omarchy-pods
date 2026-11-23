@@ -17,9 +17,6 @@ readonly old_icon_file="${HOME:-}/.local/share/icons/hicolor/scalable/apps/libre
 readonly old_catalog_file="${HOME:-}/.local/share/openpods/translations/openpods_tr.qm"
 readonly old_catalog_dir="${HOME:-}/.local/share/openpods/translations"
 readonly old_share_dir="${HOME:-}/.local/share/openpods"
-readonly old_config_file="${HOME:-}/.config/AirPodsTrayApp/AirPodsTrayApp.conf"
-readonly old_config_dir="${HOME:-}/.config/AirPodsTrayApp"
-readonly new_settings_file="${HOME:-}/.local/state/librepods/settings.json"
 readonly OLD_DESKTOP_SHA256=a485b2f5939e9f334fa8ffcdc0a37a292b1d349e9357ec1c710e5f712e5bed23
 readonly OLD_ICON_SHA256=8d3d2c7bd6ecbed70afe21c5530ce03e35811b5090087bf5b1ca2fffbf63ef19
 
@@ -233,13 +230,6 @@ remove_old_catalog() {
     fi
 }
 
-# The daemon writes its settings file once it has read the old one, so the old one goes only after that.
-remove_old_config() {
-    [ -f "$old_config_file" ] && [ -f "$new_settings_file" ] || return 0
-    remove_file "$old_config_file"
-    remove_dir_if_empty "$old_config_dir"
-}
-
 remove_old_build_tree() {
     [ -f "$old_build_dir/CMakeCache.txt" ] || return 0
     say_removing "$old_build_dir"
@@ -250,7 +240,6 @@ remove_old_install() {
     remove_if_checksum "$old_desktop_file" "$OLD_DESKTOP_SHA256"
     remove_if_checksum "$old_icon_file" "$OLD_ICON_SHA256"
     remove_old_catalog
-    remove_old_config
     remove_old_build_tree
 }
 

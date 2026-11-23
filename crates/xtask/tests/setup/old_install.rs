@@ -16,7 +16,6 @@ const TRANSLATIONS: &str = "home/.local/share/openpods/translations";
 const OPENPODS: &str = "home/.local/share/openpods";
 const OLD_CLIENT: &str = "home/.local/bin/librepods-ctl";
 const OLD_CONFIG: &str = "home/.config/AirPodsTrayApp/AirPodsTrayApp.conf";
-const OLD_CONFIG_DIR: &str = "home/.config/AirPodsTrayApp";
 const SETTINGS: &str = "home/.local/state/librepods/settings.json";
 const BUILD: &str = "plugin/daemon/build";
 const MANIFEST: &str = "plugin/daemon/build/install_manifest.txt";
@@ -82,7 +81,7 @@ fn plant_old_install(bench: &Bench) {
 /// The old config file and the settings the daemon writes on its first start after it read that file.
 fn plant_old_config(bench: &Bench) {
     plant(&bench.path(OLD_CONFIG), OLD_CONFIG_TEXT.as_bytes());
-    bench.set("settings", SETTINGS_TEXT);
+    plant(&bench.path(SETTINGS), SETTINGS_TEXT.as_bytes());
 }
 
 fn removing(bench: &Bench, name: &str) -> String {
@@ -178,7 +177,6 @@ fn an_install_without_them_removes_nothing_and_says_nothing() {
     let bench = Bench::new();
     plant(&bench.path("plugin/daemon/CMakeLists.txt"), b"project(x)\n");
     fs::create_dir_all(bench.path(TRANSLATIONS)).unwrap();
-    bench.set("settings", SETTINGS_TEXT);
     bench.record_removals();
     let ran = bench.run(&[]);
     ok(&ran);
@@ -349,28 +347,9 @@ fn the_files_beside_the_build_tree_are_never_touched() {
 }
 
 #[test]
-fn the_old_config_file_goes_only_after_the_new_settings_exist() {
+fn the_old_config_file_is_never_touched() {
     let bench = Bench::new();
     plant_old_config(&bench);
-    assert!(!exists(&bench, SETTINGS));
-    let ran = bench.run(&[]);
-    ok(&ran);
-    assert_eq!(
-        fs::read_to_string(bench.path(SETTINGS)).unwrap(),
-        SETTINGS_TEXT
-    );
-    assert!(
-        ran.stdout.starts_with(&removing(&bench, OLD_CONFIG)),
-        "{}",
-        ran.stdout
-    );
-    assert!(!exists(&bench, OLD_CONFIG));
-}
-
-#[test]
-fn it_stays_when_the_new_settings_are_missing() {
-    let bench = Bench::new();
-    plant(&bench.path(OLD_CONFIG), OLD_CONFIG_TEXT.as_bytes());
     bench.record_removals();
     let ran = bench.run(&[]);
     ok(&ran);
@@ -381,66 +360,6 @@ fn it_stays_when_the_new_settings_are_missing() {
         OLD_CONFIG_TEXT
     );
     assert_eq!(removed_leftovers(&bench), BTreeSet::new());
-}
-
-#[test]
-fn another_file_beside_it_is_never_touched_and_the_directory_stays() {
-    let bench = Bench::new();
-    plant_old_config(&bench);
-    let beside = format!("{OLD_CONFIG_DIR}/keys.conf");
-    plant(&bench.path(&beside), b"mine\n");
-    bench.record_removals();
-    let ran = bench.run(&[]);
-    ok(&ran);
-    assert!(!exists(&bench, OLD_CONFIG));
-    assert_eq!(fs::read(bench.path(&beside)).unwrap(), b"mine\n");
-    let mut touched = BTreeSet::new();
-    touched.insert(bench.path(OLD_CONFIG));
-    assert_eq!(removed_leftovers(&bench), touched);
-    assert!(exists(&bench, OLD_CONFIG_DIR));
-    assert!(
-        !ran.stdout.contains(&removing(&bench, OLD_CONFIG_DIR)),
-        "{}",
-        ran.stdout
-    );
-    assert!(!ran.stdout.contains("keys.conf") && !ran.stderr.contains("keys.conf"));
-}
-
-#[test]
-fn the_directory_goes_when_the_file_was_all_it_held() {
-    let bench = Bench::new();
-    plant_old_config(&bench);
-    ok(&bench.run(&[]));
-    assert!(!exists(&bench, OLD_CONFIG_DIR));
-    assert!(exists(&bench, "home/.config"));
-}
-
-#[test]
-fn a_linked_directory_stays_a_link() {
-    let bench = Bench::new();
-    let target = bench.path("home/dotfiles/AirPodsTrayApp");
-    fs::create_dir_all(&target).unwrap();
-    fs::create_dir_all(bench.path("home/.config")).unwrap();
-    std::os::unix::fs::symlink(&target, bench.path(OLD_CONFIG_DIR)).unwrap();
-    plant_old_config(&bench);
-    bench.record_removals();
-    let ran = bench.run(&[]);
-    ok(&ran);
-    assert!(!target.join("AirPodsTrayApp.conf").exists());
-    assert!(target.is_dir());
-    let mut touched = BTreeSet::new();
-    touched.insert(bench.path(OLD_CONFIG));
-    assert_eq!(removed_leftovers(&bench), touched);
-    assert!(
-        fs::symlink_metadata(bench.path(OLD_CONFIG_DIR))
-            .unwrap()
-            .is_symlink()
-    );
-    assert!(
-        !ran.stdout.contains(&removing(&bench, OLD_CONFIG_DIR)),
-        "{}",
-        ran.stdout
-    );
 }
 
 #[test]
@@ -462,19 +381,10 @@ fn every_removed_path_is_one_of_the_named_paths() {
     plant_old_config(&bench);
     bench.record_removals();
     ok(&bench.run(&[]));
-    let named: BTreeSet<PathBuf> = [
-        DESKTOP,
-        ICON,
-        CATALOG,
-        TRANSLATIONS,
-        OPENPODS,
-        OLD_CONFIG,
-        OLD_CONFIG_DIR,
-        BUILD,
-    ]
-    .iter()
-    .map(|name| bench.path(name))
-    .collect();
+    let named: BTreeSet<PathBuf> = [DESKTOP, ICON, CATALOG, TRANSLATIONS, OPENPODS, BUILD]
+        .iter()
+        .map(|name| bench.path(name))
+        .collect();
     assert_eq!(removed_leftovers(&bench), named);
     for path in removed_paths(&bench) {
         assert!(path.is_absolute(), "{}", path.display());
