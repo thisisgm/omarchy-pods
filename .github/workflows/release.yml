@@ -57,7 +57,7 @@ jobs:
   prove:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       LIBREPODS_TRAP_EXPECT_NO_RADIO: "1"
       NEXTEST_SUCCESS_OUTPUT: final
@@ -78,7 +78,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           chmod +x "dist/librepods-$VERSION-x86_64"
-          LIBREPODS_E2E_BINARY="$PWD/dist/librepods-$VERSION-x86_64" cargo nextest run -p librepods --locked
+          LIBREPODS_E2E_BINARY="$PWD/dist/librepods-$VERSION-x86_64" cargo nextest run -p librepods --locked --run-ignored all
 
   publish:
     if: github.ref_type == 'tag'
