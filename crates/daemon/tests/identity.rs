@@ -22,6 +22,8 @@ mod tests {
 
     /// Powerbeats Pro, product `0x200B`, as BlueZ prints it.
     const BEATS: &str = "bluetooth:v004Cp200Bd0001";
+    /// Beats Studio Pro, product `0x2017`.
+    const STUDIO_PRO: &str = "bluetooth:v004Cp2017d0001";
     /// An Apple product in neither list.
     const UNKNOWN_APPLE: &str = "bluetooth:v004Cp20FFd0001";
     /// The Powerbeats Pro product number under another vendor.
@@ -175,19 +177,22 @@ mod tests {
 
     #[test]
     fn a_beats_modalias_is_never_dialled() {
-        let (mut rig, _device) = started(pods(TABLE_WITH_OFF), Some(BEATS));
-        wait_for("a sweep", || {
-            (!rig.bluez().sweeps().is_empty()).then_some(())
-        });
-        wait_for("the line for the Beats", || {
-            rig.daemon().log().contains(NOT_AIRPODS_LOG).then_some(())
-        });
-        rig.no_dial_for(DIAL_WAIT);
-        assert_eq!(rig.dials().len(), 0);
-        let status = rig.status();
-        assert!(!connected(&status), "{status}");
-        assert_eq!(status["device_name"], "", "{status}");
-        rig.finish();
+        for modalias in [BEATS, STUDIO_PRO] {
+            let (mut rig, _device) = started(pods(TABLE_WITH_OFF), Some(modalias));
+            wait_for("a sweep", || {
+                (!rig.bluez().sweeps().is_empty()).then_some(())
+            });
+            wait_for("the line for the Beats", || {
+                assert_eq!(rig.dials().len(), 0, "{modalias} dialled");
+                rig.daemon().log().contains(NOT_AIRPODS_LOG).then_some(())
+            });
+            rig.no_dial_for(DIAL_WAIT);
+            assert_eq!(rig.dials().len(), 0, "{modalias}");
+            let status = rig.status();
+            assert!(!connected(&status), "{modalias} {status}");
+            assert_eq!(status["device_name"], "", "{modalias} {status}");
+            rig.finish();
+        }
     }
 
     #[test]

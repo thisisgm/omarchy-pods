@@ -412,13 +412,17 @@ fn the_lookup_takes_the_modalias_number_not_the_cpp_key() {
 }
 
 #[test]
-fn the_powerbeats_keys_of_the_proposed_cpp_entries_are_beats() {
+fn the_beats_list_is_the_proposed_powerbeats_keys_and_the_studio_pro() {
     let proposed_cpp_keys: [u16; 2] = [0x0B20, 0x1D20];
     for key in proposed_cpp_keys {
-        assert_eq!(product(key.swap_bytes()), Product::Beats, "{key:#06X}");
         assert_eq!(product(key), Product::Unknown, "{key:#06X}");
     }
-    assert_eq!(BEATS_PRODUCTS.len(), proposed_cpp_keys.len());
+    let [pro, pro_2] = proposed_cpp_keys.map(u16::swap_bytes);
+    let studio_pro = 0x2017;
+    assert_eq!(BEATS_PRODUCTS, [pro, pro_2, studio_pro]);
+    for &id in BEATS_PRODUCTS {
+        assert_eq!(product(id), Product::Beats, "{id:#06X}");
+    }
 }
 
 #[test]

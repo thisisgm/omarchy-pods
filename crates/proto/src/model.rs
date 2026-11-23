@@ -102,8 +102,8 @@ const AIRPODS_PRODUCTS: &[(u16, Model)] = &[
     (0x2027, Model::AirPodsPro3),
 ];
 
-/// Powerbeats Pro and Powerbeats Pro 2: the keys `0x0B20` and `0x1D20` proposed for the C++ map, byte swapped.
-const BEATS_PRODUCTS: &[u16] = &[0x200B, 0x201D];
+/// Powerbeats Pro, Powerbeats Pro 2 (the keys `0x0B20` and `0x1D20` proposed for the C++ map, byte swapped), Beats Studio Pro.
+const BEATS_PRODUCTS: &[u16] = &[0x200B, 0x201D, 0x2017];
 
 /// The Bluetooth SIG vendor source and Apple's company identifier `0x004C`.
 const APPLE_MODALIAS_PREFIX: &str = "bluetooth:v004Cp";
