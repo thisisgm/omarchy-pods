@@ -270,6 +270,12 @@ impl Reader {
         target.map_or(1.0, |target| self.steer(target, frames))
     }
 
+    /// How far the last read stood from its target, smoothed, in ms; above zero the reader is ahead.
+    #[must_use]
+    pub fn ahead_ms(&self) -> f64 {
+        self.ahead_ms
+    }
+
     /// The audio a jump leaves falls away while the new fades in.
     fn jump(&mut self, to: i64) {
         if let (Was::Sample, Some(run)) = (self.was, self.heard) {

@@ -235,3 +235,73 @@ Also written down in the same sitting:
   that key exists; whether `omarchy-refresh-config` removes files it did not
   write; and what `pactl list sinks short` shows for the pods' sink while
   paused, each second for eight seconds.
+
+## The microphone source and the lateness run
+
+`cargo xtask probe source --replay <sdu.log>` serves the audio of a capture as
+a microphone. It reads the `sdu.log` of a run that `cargo xtask probe capture`
+wrote, sends each audio packet through the decode chain at the time the log
+holds for it, on the monotonic clock, and offers the result as the node
+`omapods_input.probe`, described as `AirPods Microphone (probe)`. So the
+jitter a capture recorded is the jitter the node is fed. After the last
+packet the node stays for the latency it states, while the reader plays what
+it holds. A packet from the pods cut short before its fixed fields carries no
+audio; it is left out, and one line on standard error counts them.
+
+It opens no channel to the AirPods, stops no unit and writes no file. It needs
+only the session's audio server, whose socket it takes from
+`$XDG_RUNTIME_DIR`. The node links to nothing by itself: a recorder names it,
+as in `pw-record --target omapods_input.probe out.wav`. The command ends when
+the capture ends, or on SIGINT, SIGTERM, SIGHUP or SIGQUIT, and the node goes
+with it. It fails, before any node exists, on a file that is not the caller's
+own or holds no audio packet, and when no audio server answers.
+
+Every second, and once more at its end, it prints one line of fixed words and
+numbers on standard output:
+
+| Field | What it holds |
+|---|---|
+| `distance` | how far the reader stands from its target, smoothed, in ms; above zero it is ahead; `none` until a recorder first reads |
+| `rate` | the rate it asks of the server's converter, in parts per million away from 1; `none` until a recorder first reads |
+| `unsteered` | graph cycles in which the server gave it nothing to steer through |
+| `underruns` | times the buffer ran dry under a recorder |
+| `concealed` | units written in place of audio that was lost or refused |
+| `decode errors` | units the decoder refused |
+| `decoder resets` | times the decoder was replaced after a fault |
+
+A replay on the machine with the AirPods shows what no test server can:
+
+1. With a recorder linked for the whole of a capture of 10 minutes or more,
+   `underruns` must stay 0 and `unsteered` must stay 0. An underrun there is a
+   defect, not a figure to note; a rising `unsteered` means the server's
+   converter does not follow the rate. Note `distance` and `rate` as ranges.
+2. `pw-dump` must show the node's `ProcessLatency` with `ns` set, `quantum` 0
+   and `rate` 0, and no port may repeat that figure in a `Latency`.
+3. Note what a `pw-record` that names the node does when the command ends
+   while it records: whether it ends, hangs or moves to another source.
+
+The lateness run needs the AirPods connected and nobody at the machine. Record
+the uplink with `cargo xtask probe capture --script soak --minutes 2` first,
+with the AirPods as they lie. If `cargo xtask probe analyse` shows audio
+packets for the whole two minutes, record the long run the same way;
+otherwise one bud has to be worn for it. The long run is at least 30 minutes
+(`--minutes` takes up to 90), with music playing for half of it and the
+network in ordinary use.
+
+`cargo xtask probe analyse` then holds, for each start, how late each audio
+packet landed: its arrival, less the time the stamp of its last unit stands
+for, less the smallest such figure of the packets of about one second up to
+it. That is the lateness the reader's buffer has to cover.
+
+| Row | What it holds |
+|---|---|
+| `lateness_sdus` | the packets judged |
+| `lateness_p99_ms`, `lateness_p99_9_ms`, `lateness_p99_99_ms`, `lateness_max_ms` | the percentiles and the largest |
+| `lateness_bin_<n>_ms` | the packets from `n` ms up to 5 ms more; the last bin holds the rest |
+| `lateness_over_<n>_ms` | the packets a cover of `n` ms would not have covered |
+
+The largest lateness of every such run decides `JITTER_COVER_MS` in
+`crates/mic/src/lib.rs`: the cover is the largest lateness of all the runs on
+record plus a margin of 5 ms, rounded up to a multiple of 5 ms. A run whose
+lateness gives a larger cover by that rule raises it, in a change of its own,
+and the latency the node states follows it.

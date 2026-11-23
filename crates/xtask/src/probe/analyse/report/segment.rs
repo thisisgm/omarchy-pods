@@ -12,6 +12,7 @@ use super::super::coarse::{
     coarse_clock,
 };
 use super::super::input::Mark;
+use super::super::lateness;
 use super::super::lead::{Arrival, LEAD_MIN_PACKETS, LEAD_WINDOW_NS, lead};
 use super::super::load::{Loaded, UPLINK, Window, load, segment, tails, windows};
 use super::super::rates::{
@@ -98,6 +99,7 @@ pub(super) fn start_rows(records: &[Record], marks: &[Mark], whole: &Loaded) -> 
         rows.extend(start.band_rows());
         rows.extend(start.lead_rows());
         rows.extend(start.tail_rows());
+        rows.extend(lateness::rows(&start.label, &start.loaded.audio));
     }
     rows
 }

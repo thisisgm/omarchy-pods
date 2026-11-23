@@ -13,6 +13,7 @@ mod fixture;
 mod hci;
 mod oggfile;
 mod script;
+mod source;
 mod store;
 mod wav;
 mod xorshift;
@@ -107,6 +108,8 @@ enum ProbeCommand {
     },
     /// Measures the decoded audio of a run, alone or against a reference recording, and writes audio.tsv into it; with --whole, one decoded file as one window.
     Audio(audio::AudioArgs),
+    /// Serves the audio of a capture as a microphone: its packets go through the decode chain into the node `omapods_input.probe`, each at the time the log holds for it, until the capture ends or a signal comes; one status line a second on stdout.
+    Source(source::SourceArgs),
 }
 
 #[derive(Debug, Args)]
@@ -212,19 +215,32 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     };
     match command {
         ProbeCommand::Init { stamp } => init(&stamp, &home),
-        ProbeCommand::Capture(args) => match watch_signals() {
-            Ok(interrupted) => capture(&args, &mut host, &interrupted),
-            Err(error) => {
-                host.say(&error);
-                ExitCode::FAILURE
-            }
-        },
+        ProbeCommand::Capture(args) => watched(&mut host, |host, interrupted| {
+            capture(&args, host, interrupted)
+        }),
         ProbeCommand::Stop(args) => stop(&mut host, args.route),
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
         ProbeCommand::Analyse { run_dir } => print_table(analyse::analyse_run(&run_dir)),
         ProbeCommand::Decode { run_dir } => print_table(decode::decode_run(&run_dir)),
         ProbeCommand::DecodeOpus { run_dir } => print_table(decode_opus::decode_run(&run_dir)),
         ProbeCommand::Audio(args) => print_table(audio::audio_run(&args)),
+        ProbeCommand::Source(args) => watched(&mut host, |host, interrupted| {
+            source::serve(&args, host, interrupted)
+        }),
+    }
+}
+
+/// Runs a command that a signal ends early, with the flag the signal raises.
+fn watched(
+    host: &mut Host<'_>,
+    command: impl FnOnce(&mut Host<'_>, &AtomicBool) -> ExitCode,
+) -> ExitCode {
+    match watch_signals() {
+        Ok(interrupted) => command(host, &interrupted),
+        Err(error) => {
+            host.say(&error);
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -13,6 +13,7 @@ opuscule.workspace = true
 pods-core = { path = "../core" }
 pods-mic = { path = "../mic" }
 pods-proto.workspace = true
+pods-pw = { path = "../pw" }
 pods-sys.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }
 rusty_aac.workspace = true
@@ -25,6 +26,7 @@ thiserror.workspace = true
 [dev-dependencies]
 allocation-counter.workspace = true
 pods-fake = { path = "../fake" }
+pods-pwrig = { path = "../pwrig" }
 pods-samples = { path = "../samples" }
 pods-trap = { path = "../trap" }
 proptest.workspace = true

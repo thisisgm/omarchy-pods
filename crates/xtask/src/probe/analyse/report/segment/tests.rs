@@ -163,6 +163,8 @@ fn start_rows_of_a_short_segment() {
         .rows
         .iter()
         .skip_while(|row| row.key != "trial_control_ms")
+        // The lateness rows close a start, and their own tests hold them.
+        .take_while(|row| !row.key.starts_with("lateness_"))
         .map(shown)
         .collect();
     assert_eq!(from_trial, START_ROWS);
