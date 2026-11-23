@@ -205,6 +205,17 @@ impl Pods {
         })
     }
 
+    /// Returns once every open channel has sent all it queued.
+    pub fn wait_sent(&self, deadline: Duration) -> Result<(), Deadline> {
+        self.shared.wait_until(deadline, |state| {
+            state
+                .lines
+                .iter()
+                .all(|line| line.outbox.is_empty())
+                .then_some(())
+        })
+    }
+
     #[must_use]
     pub fn most_open_at_once(&self) -> usize {
         self.shared.lock().most_open
@@ -339,7 +350,8 @@ impl Shared {
             let Some(left) = deadline.checked_sub(waited) else {
                 return Err(Deadline { waited });
             };
-            state = self.wait(state, left);
+            // A drained outbox notifies nobody, so the wait is cut to one poll.
+            state = self.wait(state, left.min(POLL));
         }
     }
 
@@ -491,6 +503,8 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
 
     #[test]
@@ -550,6 +564,58 @@ mod tests {
         assert!(state.lines[0].hang_up);
         drop(state);
         assert_eq!(pods.finish().unwrap_err(), Overflow::Outbox.message());
+    }
+
+    #[test]
+    fn wait_sent_returns_once_the_host_can_read_the_change() {
+        const DEADLINE: Duration = Duration::from_secs(5);
+        let pods = Pods::new(Profile::default());
+        let (host, end) = crate::pair();
+        pods.serve(end);
+        pods.wait_sent(DEADLINE).unwrap();
+        let mut buffer = vec![0; RECV_BUFFER_LEN];
+        while matches!(host.try_recv(&mut buffer), Ok(Received::Sdu(_))) {}
+        pods.set_ear(Placed::InEar, Placed::OutOfEar);
+        pods.wait_sent(DEADLINE).unwrap();
+        assert!(matches!(host.try_recv(&mut buffer), Ok(Received::Sdu(_))));
+        pods.finish().unwrap();
+        drop(host);
+    }
+
+    #[test]
+    fn wait_sent_fails_at_the_deadline_while_a_packet_is_queued() {
+        let pods = pods_with_a_full_outbox();
+        let waited = pods.wait_sent(Duration::from_millis(50)).unwrap_err();
+        assert!(waited.waited >= Duration::from_millis(50), "{waited:?}");
+    }
+
+    #[test]
+    fn a_waiter_sees_an_outbox_drained_without_a_notify_within_a_poll() {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        const WAKE_SLACK: Duration = Duration::from_secs(1);
+        let pods = pods_with_a_full_outbox();
+        let checked = AtomicBool::new(false);
+        let started = Instant::now();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                while !checked.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+                // The waiter holds the lock until it sleeps, so this drain lands while it waits.
+                pods.shared.lock().lines[0].outbox.clear();
+            });
+            let seen = pods.shared.wait_until(DEADLINE, |state| {
+                checked.store(true, Ordering::Release);
+                state.lines[0].outbox.is_empty().then_some(())
+            });
+            assert_eq!(seen, Ok(()));
+        });
+        // Not after one poll plus the slack a loaded runner takes to wake a thread.
+        assert!(
+            started.elapsed() < POLL + WAKE_SLACK,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

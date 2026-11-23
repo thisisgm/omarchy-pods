@@ -535,14 +535,19 @@ impl Rig {
         self.wait_status("the name cleared", |status| status["device_name"] == "");
     }
 
-    /// Closes the control channel with every redial refused while BlueZ keeps `device` connected, then waits for the status to show it.
-    pub(crate) fn close_channel(&self, device: &Device) {
+    /// Closes the control channel with every redial refused while BlueZ keeps `device` connected.
+    pub(crate) fn hang_up_channel(&self, device: &Device) {
         let refused = Answer::Refuse {
             after: Duration::ZERO,
             errno: Errno::CONNREFUSED,
         };
         self.answer(device, refused);
         device.pods.hang_up();
+    }
+
+    /// `hang_up_channel`, then waits for the status to show it.
+    pub(crate) fn close_channel(&self, device: &Device) {
+        self.hang_up_channel(device);
         // A loss would clear the name, so a kept name shows the channel closed and the link was not lost.
         self.wait_status("the channel closed with the name kept", |status| {
             !connected(status) && status["device_name"] != ""
@@ -569,6 +574,15 @@ impl Rig {
                 .any(|logged| logged == line)
                 .then_some(())
         });
+    }
+
+    /// Fails unless the daemon has yet to log `line`; the daemon runs on one thread, so this orders `what` before the logged work's end.
+    pub(crate) fn assert_not_logged(&mut self, what: &str, line: &str) {
+        let log = self.daemon().log();
+        assert!(
+            !log.lines().any(|logged| logged == line),
+            "{what}: the daemon logged `{line}` already"
+        );
     }
 
     /// Waits for the link to have entered `phase` `times` times, from whichever phase the racing words of BlueZ and of the channel took it through.
@@ -723,6 +737,11 @@ pub(crate) fn named(status: &Value) -> bool {
 /// One `*_total` counter of a parsed status.
 pub(crate) fn total(status: &Value, counter: &str) -> u64 {
     status[counter].as_u64().unwrap()
+}
+
+/// The media adapter's line once a pause's work has ended and its report is queued.
+pub(crate) fn pause_ended(players: usize) -> String {
+    format!("media: the pause ended with {players} players paused")
 }
 
 /// From `wanted` to `wanted` plus `REAL_TIME_SLACK`, the range a real time check takes.
