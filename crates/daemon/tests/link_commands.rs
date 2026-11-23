@@ -85,6 +85,22 @@ mod tests {
         rig.wait_status("the noise mode", |current| current["noise_mode"] == status);
     }
 
+    /// Every state `watch` printed from the first in `kept` shows `kept`, up to adaptive, the held report.
+    fn assert_kept_until_adaptive(watch: &Watch, rig: &Rig, kept: Mode) {
+        let shown: Vec<Value> = watch
+            .lines_until(&rig.status())
+            .iter()
+            .map(|state| state["noise_mode"].clone())
+            .skip_while(|mode| *mode != kept.status)
+            .collect();
+        let held = shown.iter().position(|mode| *mode == ADAPTIVE.status);
+        let before = held.and_then(|at| shown.get(..at)).unwrap_or_default();
+        assert!(
+            held.is_some() && before.iter().all(|mode| *mode == kept.status),
+            "{shown:?}"
+        );
+    }
+
     /// Every frame the pods heard that carries the noise control identifier.
     fn noise_frames(device: &Device) -> Vec<Vec<u8>> {
         let noise = [0x09, 0x00, NOISE];
@@ -344,16 +360,17 @@ mod tests {
         assert_eq!(rig.status()["noise_mode"], ANC.status);
 
         let hold = Duration::from_millis(REPORT_HOLD_MS);
+        let watch = rig.watch();
+        watch.lines_until(&rig.status());
         // Stamped before the ask, so the daemon's hold cannot start earlier than this.
         let asked = Instant::now();
         // A fresh client: the daemon closes one left idle past its stall deadline.
         let reply = Proto1::connect(rig.session()).ask(&set_request(2, "noise", "transparency"));
         assert_eq!(outcome(&reply), "sent", "{reply}");
-        let left = hold.saturating_sub(asked.elapsed());
-        rig.holds_for(left, "transparency kept through the later hold", |status| {
-            status["noise_mode"] == TRANSPARENCY.status
-        });
         wait_noise(&rig, ADAPTIVE.status);
+        assert_kept_until_adaptive(&watch, &rig, TRANSPARENCY);
+        // The hold starts after `asked`, so the release cannot show before a hold from it.
+        assert_gap("adaptive shown", asked, Instant::now(), &(hold..));
         rig.finish();
     }
 
@@ -362,6 +379,8 @@ mod tests {
         let (rig, device) = up(in_transparency(), Fault::NeverConfirm);
         let mut client = Proto1::connect(rig.session());
         let hold = Duration::from_millis(REPORT_HOLD_MS);
+        let watch = rig.watch();
+        watch.lines_until(&rig.status());
         // Stamped before the ask, so the daemon's hold cannot start earlier than this.
         let asked = Instant::now();
         let reply = client.ask(&set_request(1, "noise", "anc"));
@@ -371,11 +390,8 @@ mod tests {
         // The bud taken out after both reports marks them read inside the hold.
         device.pods.set_ear(Placed::OutOfEar, Placed::InEar);
         rig.wait_status("a bud out", |status| in_ear(status) != [true, true]);
-        let left = hold.saturating_sub(asked.elapsed());
-        rig.holds_for(left, "anc kept through the hold", |status| {
-            status["noise_mode"] == ANC.status
-        });
         wait_noise(&rig, ADAPTIVE.status);
+        assert_kept_until_adaptive(&watch, &rig, ANC);
         // The hold starts after `asked`, so the release cannot show before a hold from it.
         assert_gap("adaptive shown", asked, Instant::now(), &(hold..));
         rig.finish();

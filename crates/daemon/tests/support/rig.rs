@@ -500,24 +500,20 @@ impl Rig {
         );
     }
 
-    /// Asks `librepods status` for `duration`, failing at the first answer inside it where `check` does not hold, or when none came inside it.
+    /// Asks `librepods status` for `duration`, failing at the first answer where `check` does not hold; the first is checked whenever it comes, as every caller's state outlasts the window.
     pub(crate) fn holds_for(&self, duration: Duration, what: &str, check: impl Fn(&Value) -> bool) {
         let started = Instant::now();
-        let mut checked_any = false;
-        while started.elapsed() < duration {
+        loop {
             let status = self.status();
-            // An answer that came after the window may show a state from past it.
-            if started.elapsed() >= duration {
-                break;
-            }
             assert!(
                 check(&status),
                 "{what} ended after {:?}: {status}",
                 started.elapsed()
             );
-            checked_any = true;
+            if started.elapsed() >= duration {
+                return;
+            }
         }
-        assert!(checked_any, "{what}: no answer came inside {duration:?}");
     }
 
     /// Waits for the link up and the pods' name in the status, which the burst brings after the batteries and the ears.
