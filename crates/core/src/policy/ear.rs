@@ -116,7 +116,7 @@ impl Ear {
         match signal {
             Signal::Up { .. } => self.ours = false,
             Signal::Down => self.settle = None,
-            Signal::Keys(_) => {}
+            Signal::Keys(_) | Signal::Uplink(_) => {}
             Signal::Lost { .. } => {
                 self.ours = false;
                 self.settle = None;

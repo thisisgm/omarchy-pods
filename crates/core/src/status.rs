@@ -19,6 +19,8 @@ pub const ADDITIVE_KEYS: &[&str] = &[
     "notifications_enabled",
     "audio_server",
     "advert_intake",
+    "microphone",
+    "mic",
 ];
 
 /// Keys in ascending byte order, as the C++ `QJsonObject` writes them.
@@ -127,6 +129,8 @@ pub fn to_status_object(state: &State) -> Value {
         ("notifications_enabled", Value::from(state.notifications)),
         ("audio_server", Value::from(state.audio_server.word())),
         ("advert_intake", Value::from(state.advert_intake.word())),
+        ("microphone", Value::from(state.microphone.word())),
+        ("mic", Value::from(state.mic.code.word())),
     ]))
 }
 

@@ -14,16 +14,50 @@ const EAR_DETECTION_KEY: &str = "ear_detection";
 
 const NOTIFICATIONS_KEY: &str = "notifications";
 
+const MICROPHONE_KEY: &str = "microphone";
+
 /// The group and key of `earDetection/setting` in the C++ `main.cpp`.
 const OLD_EAR_DETECTION: (&str, &str) = ("earDetection", "setting");
 
 /// The group and key of `notifications/enabled` in the C++ `main.cpp`.
 const OLD_NOTIFICATIONS: (&str, &str) = ("notifications", "enabled");
 
+/// Whether the daemon may use the pods' microphone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MicPref {
+    #[default]
+    Auto,
+    Always,
+    Off,
+}
+
+impl MicPref {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Always, Self::Off];
+
+    /// The word `set microphone` takes, the settings file keeps and the `microphone` status key shows.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Off => "off",
+        }
+    }
+
+    // Sample input: `always`.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|preference| preference.word() == word)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prefs {
     pub ear_detection: EarDetectionBehavior,
     pub notifications: bool,
+    pub microphone: MicPref,
 }
 
 impl Default for Prefs {
@@ -38,17 +72,20 @@ impl Prefs {
         Self {
             ear_detection: state.ear_detection_behavior,
             notifications: state.notifications,
+            microphone: state.microphone,
         }
     }
 
     /// A fresh state that carries these choices.
     #[must_use]
     pub fn into_state(self) -> State {
-        State {
+        let mut state = State {
             ear_detection_behavior: self.ear_detection,
             notifications: self.notifications,
             ..State::default()
-        }
+        };
+        state.set_microphone(self.microphone);
+        state
     }
 }
 
@@ -58,6 +95,7 @@ pub enum PrefsError {
     Version,
     EarDetection,
     Notifications,
+    Microphone,
 }
 
 impl fmt::Display for PrefsError {
@@ -67,11 +105,12 @@ impl fmt::Display for PrefsError {
             Self::Version => "no version 1",
             Self::EarDetection => "no ear_detection word",
             Self::Notifications => "no notifications switch",
+            Self::Microphone => "no microphone word",
         })
     }
 }
 
-// Sample input: `{"version":1,"ear_detection":"one","notifications":true}`.
+// Sample input: `{"version":1,"ear_detection":"one","notifications":true,"microphone":"auto"}`; a file may lack `microphone`.
 pub fn parse(text: &str) -> Result<Prefs, PrefsError> {
     let document: Option<Value> = serde_json::from_str(text).ok();
     let object = document
@@ -94,9 +133,18 @@ pub fn parse(text: &str) -> Result<Prefs, PrefsError> {
         .get(NOTIFICATIONS_KEY)
         .and_then(Value::as_bool)
         .ok_or(PrefsError::Notifications)?;
+    let microphone = match object.get(MICROPHONE_KEY) {
+        Some(word) => word
+            .as_str()
+            .and_then(MicPref::from_word)
+            .ok_or(PrefsError::Microphone)?,
+        // A file written before the daemon kept this choice.
+        None => MicPref::default(),
+    };
     Ok(Prefs {
         ear_detection,
         notifications,
+        microphone,
     })
 }
 
@@ -107,6 +155,7 @@ pub fn render(prefs: Prefs) -> String {
         VERSION_KEY: VERSION,
         EAR_DETECTION_KEY: prefs.ear_detection.word(),
         NOTIFICATIONS_KEY: prefs.notifications,
+        MICROPHONE_KEY: prefs.microphone.word(),
     });
     format!("{document}\n")
 }

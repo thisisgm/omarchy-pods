@@ -84,16 +84,18 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. The daemon keeps the choice and shows it; it does not use the microphone yet |
 
-`ear_detection` and `notifications` are kept across restarts in
+`ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
-file is absent, the daemon takes the two choices once from the older
+file is absent, the daemon takes the first two choices once from the older
 `${XDG_CONFIG_HOME:-$HOME/.config}/AirPodsTrayApp/AirPodsTrayApp.conf` and
-writes `settings.json`; it never changes the older file. A `settings.json` the
-daemon cannot read or parse, or finds larger than 65536 bytes, gives the
-defaults, `one` and `true`, and one line in the log; the next change replaces
-it unless it is a directory or a symbolic link, which stay in place.
-`notifications` has no verb in the older dialect.
+writes `settings.json`; it never changes the older file. A `settings.json`
+without `microphone` reads `auto`. A `settings.json` the daemon cannot read or
+parse, or finds larger than 65536 bytes, gives the defaults, `one`, `true` and
+`auto`, and one line in the log; the next change replaces it unless it is a
+directory or a symbolic link, which stay in place. `notifications` and
+`microphone` have no verb in the older dialect.
 
 ### `do`
 
@@ -136,9 +138,11 @@ A reply carries the request's `id` and `ok`.
 
 - `get` and `subscribe` reply with `state`, the same object `librepods status`
   prints and the state file holds. Besides the keys the older daemon wrote, it
-  carries `notifications_enabled`, the `notifications` setting. Its
-  `audio_server` is `idle` while no AirPods link is up, `up` while the daemon
-  reads the desktop's audio server, and `down` while it cannot reach it. Its
+  carries `notifications_enabled`, the `notifications` setting, and
+  `microphone`, the `microphone` setting. Its `mic` is `off` while that setting
+  is `off` and `idle` otherwise. Its `audio_server` is `idle` while no AirPods
+  link is up, `up` while the daemon reads the desktop's audio server, and
+  `down` while it cannot reach it. Its
   `advert_intake` is `listening` once BlueZ accepted the daemon's advert
   monitor, which reads the AirPods' battery, case, lid and ear state from their
   adverts while no link is up; `unavailable` while the monitor is wanted,
@@ -147,11 +151,12 @@ A reply carries the request's `id` and `ok`.
   try; and `paused` otherwise, while the link is up, the AirPods' keys are not
   kept or BlueZ has not accepted the registration yet.
 - `set` and `do` reply with `result`. `confirmed` means the state shows the
-  change and nothing had to be sent: `ear_detection`, and `connect` with the
-  link up. `sent` means the command was handed on and the reply does not wait
-  for its end. A setting of the AirPods that is not refused is written on
-  every ask while the link is up, even when the state already shows the value,
-  and is answered `sent` once the write is on the link; the state shows the
+  change and nothing had to be sent: `ear_detection`, `microphone`, and
+  `connect` with the link up. `sent` means the command was handed on and the
+  reply does not wait for its end. A setting of the AirPods that is not
+  refused is written on every ask while the link is up, even when the state
+  already shows the value, and is answered `sent` once the write is on the
+  link; the state shows the
   value written at once. The AirPods may report a queued write late, so for
   3 s after the last write of a setting, a report of it with another value is
   held back until they report the value last written; if the 3 s pass first,

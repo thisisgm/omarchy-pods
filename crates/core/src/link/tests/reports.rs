@@ -7,9 +7,11 @@ use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_proto::packet::{Incoming, classify};
 
+use pods_proto::uplink::UplinkState;
+use pods_samples::uplink::{session_marker, state_marker};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY, keys_of};
 
-use super::sim::{Input, NO_ACTIONS, Sim, ms};
+use super::sim::{Answer, Input, NO_ACTIONS, Sim, ms};
 use crate::command::tests::level;
 use crate::link::ladder::Attempt;
 use crate::link::{Phase, Signal};
@@ -350,6 +352,41 @@ fn an_adaptive_level_over_100_from_the_pods_is_ignored() {
     assert_eq!(sim.state.adaptive_noise_level, level(100));
     sim.feed(Input::Packet(report(ControlId::ADAPTIVE_NOISE_LEVEL, 0)));
     assert_eq!(sim.state.adaptive_noise_level, level(0));
+    sim.check();
+}
+
+#[test]
+fn the_marker_becomes_a_signal() {
+    let signals_from = |sim: &Sim, from: usize| -> Vec<Signal> {
+        let signals = sim.signals.iter().skip(from);
+        signals.map(|(_, signal)| signal.clone()).collect()
+    };
+    let running = Signal::Uplink(UplinkState::Running);
+    let stopped = Signal::Uplink(UplinkState::Stopped);
+    let mut sim = Sim::new();
+    sim.feed(Input::NextOpen(Answer::Open));
+    sim.feed(Input::Up(0));
+    // The pods' first burst holds a marker, which lands before the handshake ends.
+    sim.feed(Input::Packet(state_marker(false).to_vec()));
+    assert_eq!(signals_from(&sim, 0), std::slice::from_ref(&stopped));
+    sim.feed(Input::Packet(pods_samples::handshake_ack()));
+    sim.feed(Input::Packet(pods_samples::features_ack()));
+    let up = sim.signals.len();
+    let before = sim.state.clone();
+    for marker in [
+        state_marker(true).to_vec(),
+        session_marker(true).to_vec(),
+        state_marker(false).to_vec(),
+        session_marker(false).to_vec(),
+    ] {
+        sim.feed(Input::Packet(marker));
+        assert_eq!(sim.last(), NO_ACTIONS);
+    }
+    assert_eq!(
+        signals_from(&sim, up),
+        [running.clone(), running, stopped.clone(), stopped]
+    );
+    assert_eq!(sim.state, before);
     sim.check();
 }
 

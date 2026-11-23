@@ -11,6 +11,7 @@ use pods_proto::addr::BdAddr;
 use pods_proto::handshake::Handshake;
 use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS};
+use pods_proto::uplink::UplinkState;
 
 pub use commands::REPORT_HOLD_MS;
 
@@ -120,6 +121,8 @@ pub enum Signal {
     },
     /// The pods answered the proximity keys request.
     Keys(ProximityKeys),
+    /// The pods said whether their uplink runs, which they also do before the link is up.
+    Uplink(UplinkState),
 }
 
 /// Where the session is, with the data each state needs.

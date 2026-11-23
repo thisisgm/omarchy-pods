@@ -54,6 +54,10 @@ pub(super) fn disconnected(signal: &Signal, suspend: Suspend) -> Option<Notice> 
             down_at: Some(down_at),
             ..
         } if !suspend.covers(*down_at) => Some(Notice::Disconnected),
-        Signal::Lost { .. } | Signal::Up { .. } | Signal::Down | Signal::Keys(_) => None,
+        Signal::Lost { .. }
+        | Signal::Up { .. }
+        | Signal::Down
+        | Signal::Keys(_)
+        | Signal::Uplink(_) => None,
     }
 }

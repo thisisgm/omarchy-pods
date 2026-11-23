@@ -9,8 +9,8 @@ use std::task::Poll;
 
 use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
 use pods_core::settings::{
-    self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, NOISE, NOTIFICATIONS,
-    ONE_BUD_ANC,
+    self, ADAPTIVE_LEVEL, CONVERSATIONAL_AWARENESS, EAR_DETECTION, MICROPHONE, NOISE,
+    NOTIFICATIONS, ONE_BUD_ANC,
 };
 use pods_core::state::State;
 use pods_core::status::{battery_reading, in_ear, to_status_object};
@@ -177,6 +177,8 @@ struct Properties {
     status_json: String,
     audio_server: &'static str,
     advert_intake: &'static str,
+    microphone: &'static str,
+    mic: &'static str,
 }
 
 impl Properties {
@@ -215,10 +217,12 @@ impl Properties {
             status_json: status.to_string(),
             audio_server: state.audio_server.word(),
             advert_intake: state.advert_intake.word(),
+            microphone: state.microphone.word(),
+            mic: state.mic.code.word(),
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 14] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 16] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -237,6 +241,8 @@ impl Properties {
             ("StatusJson", Variant::from(self.status_json.as_str())),
             ("AudioServer", Variant::from(self.audio_server)),
             ("AdvertIntake", Variant::from(self.advert_intake)),
+            ("Microphone", Variant::from(self.microphone)),
+            ("Mic", Variant::from(self.mic)),
         ]
     }
 
@@ -356,6 +362,16 @@ impl Omapods {
         self.now().advert_intake
     }
 
+    #[zbus(property)]
+    fn microphone(&self) -> &'static str {
+        self.now().microphone
+    }
+
+    #[zbus(property)]
+    fn mic(&self) -> &'static str {
+        self.now().mic
+    }
+
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {
         self.set(NOISE, mode).await
     }
@@ -379,6 +395,10 @@ impl Omapods {
 
     async fn set_notifications(&self, enabled: bool) -> Result<&'static str, CallError> {
         self.set(NOTIFICATIONS, &enabled.to_string()).await
+    }
+
+    async fn set_microphone(&self, preference: &str) -> Result<&'static str, CallError> {
+        self.set(MICROPHONE, preference).await
     }
 
     async fn connect(&self) -> Result<&'static str, CallError> {

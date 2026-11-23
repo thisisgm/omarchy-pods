@@ -8,7 +8,10 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::command::tests::level;
-use crate::state::{AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState};
+use crate::prefs::MicPref;
+use crate::state::{
+    AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, MicCode, MicStatus,
+};
 
 fn status(state: &State) -> Value {
     serde_json::from_str(&to_status_line(state)).unwrap()
@@ -59,6 +62,8 @@ fn populated_state_lands_every_field_on_its_key() {
             reopen_calls: 13,
         },
         notifications: false,
+        microphone: MicPref::Off,
+        mic: MicStatus { code: MicCode::Off },
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
     };
@@ -84,6 +89,8 @@ fn populated_state_lands_every_field_on_its_key() {
         "is_pro_series": true,
         "left": {"available": true, "charging": true, "in_ear": false, "level": 80},
         "lid_state": 1,
+        "mic": "off",
+        "microphone": "off",
         "model_int": 6,
         "model_name": "AirPods Pro 2 (USB-C)",
         "model_number": "A3048",
@@ -223,5 +230,20 @@ fn every_audio_server_word_lands_on_its_key() {
             ..State::default()
         });
         assert_eq!(line["audio_server"], Value::from(word), "{server:?}");
+    }
+}
+
+#[test]
+fn every_microphone_word_lands_on_its_key() {
+    for preference in MicPref::ALL {
+        let mic = match preference {
+            MicPref::Off => "off",
+            MicPref::Auto | MicPref::Always => "idle",
+        };
+        let mut state = State::default();
+        state.set_microphone(preference);
+        let line = status(&state);
+        assert_eq!(line["microphone"], Value::from(preference.word()));
+        assert_eq!(line["mic"], Value::from(mic), "{preference:?}");
     }
 }

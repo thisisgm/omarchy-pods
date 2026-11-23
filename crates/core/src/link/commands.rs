@@ -251,6 +251,7 @@ fn handling(state: &State, noise_known: bool, command: Command) -> Handling {
         // Never reached for connect, disconnect and forget, which `step` answers in every phase.
         Command::SetEarDetection(_)
         | Command::SetNotifications(_)
+        | Command::SetMicrophone(_)
         | Command::Reopen
         | Command::Connect
         | Command::Disconnect

@@ -1,5 +1,6 @@
 //! A private `dbus-daemon` per bus a test needs, everything it reads or writes inside the session.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::future::poll_fn;
 use std::os::unix::net::UnixStream;
@@ -15,7 +16,7 @@ use zbus::export::futures_core::Stream;
 use zbus::export::serde::Serialize;
 use zbus::export::serde::de::DeserializeOwned;
 use zbus::zvariant::{DynamicType, Type};
-use zbus::{Connection, Message, MessageStream};
+use zbus::{Connection, Message, MessageStream, OwnedVariant};
 
 use super::players::PROPERTIES;
 use super::{Daemon, HANG_LIMIT, Session, binary, wait_for};
@@ -152,6 +153,21 @@ impl Listener {
             .client
             .call_method(Some(destination), path, Some(interface), member, body);
         in_time(&self.runtime, call)
+    }
+
+    /// A string property of the daemon's interface.
+    pub(crate) fn property(&self, name: &str) -> String {
+        let reply = self.call(BUS_NAME, OBJECT_PATH, PROPERTIES, "Get", &(INTERFACE, name));
+        let value: OwnedVariant = reply.unwrap().body().deserialize().unwrap();
+        String::try_from(value).unwrap()
+    }
+
+    /// What the next `PropertiesChanged` of the daemon's interface carries, by property.
+    pub(crate) fn next_change(&mut self) -> HashMap<String, OwnedVariant> {
+        let (interface, changed, _): (String, HashMap<String, OwnedVariant>, Vec<String>) =
+            self.next().body().deserialize().unwrap();
+        assert_eq!(interface, INTERFACE);
+        changed
     }
 
     /// Asks the bus daemon itself `method`.

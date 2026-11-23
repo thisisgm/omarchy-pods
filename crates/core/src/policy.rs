@@ -89,7 +89,9 @@ impl Policy {
             Fact::Monitor(monitor) if self.adverts.wanted() => {
                 state.advert_intake = monitor.intake();
             }
-            Fact::Link(Signal::Down | Signal::Lost { .. } | Signal::Keys(_))
+            Fact::Link(
+                Signal::Down | Signal::Lost { .. } | Signal::Keys(_) | Signal::Uplink(_),
+            )
             | Fact::Monitor(_)
             | Fact::Changed
             | Fact::Sleep(_)
