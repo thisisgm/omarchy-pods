@@ -52,7 +52,7 @@ pub struct Capabilities {
 }
 
 /// Apple's published model numbers (support.apple.com/en-us/109525), in the order of the C++ map, then those it lacks.
-const MODEL_NUMBERS: &[(&str, Model)] = &[
+pub const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A1523", Model::AirPods1),
     ("A1722", Model::AirPods1),
     ("A2032", Model::AirPods2),
