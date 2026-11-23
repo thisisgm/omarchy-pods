@@ -4,6 +4,7 @@
 
 pub mod advert;
 pub mod host;
+pub mod uplink;
 
 /// Starts every packet the pods send after the handshake; the opcode follows.
 const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];

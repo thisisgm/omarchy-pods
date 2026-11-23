@@ -9,6 +9,8 @@ mod tests {
     use pods_proto::metadata::Metadata;
     use pods_proto::noise::NoiseMode;
     use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
+    use pods_proto::uplink::UplinkPacket;
+    use pods_samples::uplink::{STAMP_STEP, audio_sdu};
     use pods_samples::{
         ADAPTIVE_LEVEL, CONVERSATION_AWARENESS, Cell, NOISE, ONE_BUD_ANC, Placed, battery_of,
         ear_of, host, metadata_of, setting,
@@ -102,6 +104,25 @@ mod tests {
             prop_assert_eq!(command, ControlCommand { id: ControlId(identifier), value: [value, 0, 0, 0] });
             let metadata = Metadata::parse(&metadata_of(&name, &model_number)).unwrap();
             prop_assert_eq!(metadata, Metadata { name, model_number, manufacturer: MANUFACTURER.to_owned() });
+        }
+
+        #[test]
+        fn an_audio_sdu_parses_back_to_its_units_and_stamps(
+            first_stamp in any::<u32>(),
+            units in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..=255), 0..=8),
+        ) {
+            let sdu = audio_sdu(first_stamp, &units);
+            let Ok(Some(UplinkPacket::Audio(audio))) = UplinkPacket::parse(&sdu) else {
+                panic!("not an audio SDU: {sdu:02x?}");
+            };
+            let mut parsed = audio.units();
+            let mut stamp = first_stamp;
+            for unit in &units {
+                let found = parsed.next().unwrap();
+                prop_assert_eq!((found.stamp, found.data), (stamp, unit.as_slice()));
+                stamp = stamp.wrapping_add(STAMP_STEP);
+            }
+            prop_assert_eq!((parsed.next(), parsed.trailing()), (None, 0));
         }
     }
 }

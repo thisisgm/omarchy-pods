@@ -12,6 +12,8 @@ publish.workspace = true
 # Seals a synthetic advert and builds its address with the AES block the C++ daemon uses.
 aes = { version = "0.9.4", default-features = false }
 cpp-source = { path = "../cpp-source" }
+# Its bit writer and its spectral codebooks write the synthetic audio units.
+rusty_aac.workspace = true
 
 [lints]
 workspace = true

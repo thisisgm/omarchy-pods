@@ -11,6 +11,7 @@ publish.workspace = true
 clap.workspace = true
 opuscule.workspace = true
 pods-core = { path = "../core" }
+pods-mic = { path = "../mic" }
 pods-proto.workspace = true
 pods-sys.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }

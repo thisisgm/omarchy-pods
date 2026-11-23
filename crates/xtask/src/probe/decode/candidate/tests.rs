@@ -17,8 +17,8 @@ fn faulty() -> Call {
         calls.set(calls.get().saturating_add(1));
         match calls.get() {
             2 => panic!("the stand-in decoder panics on its second call"),
-            4 => Err("the fourth call is an error".to_owned()),
-            _ => Ok(STAND_IN_FRAME.to_vec()),
+            4 => UnitResult::Error("the fourth call is an error".to_owned()),
+            _ => UnitResult::Samples(STAND_IN_FRAME.to_vec()),
         }
     })
 }

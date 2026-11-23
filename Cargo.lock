@@ -536,6 +536,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pods-mic"
+version = "0.0.0"
+dependencies = [
+ "allocation-counter",
+ "pods-samples",
+ "rusty_aac",
+]
+
+[[package]]
 name = "pods-proto"
 version = "0.0.0"
 dependencies = [
@@ -571,6 +580,7 @@ version = "0.0.0"
 dependencies = [
  "aes",
  "cpp-source",
+ "rusty_aac",
 ]
 
 [[package]]
@@ -1022,6 +1032,7 @@ dependencies = [
  "opuscule",
  "pods-core",
  "pods-fake",
+ "pods-mic",
  "pods-proto",
  "pods-samples",
  "pods-sys",
