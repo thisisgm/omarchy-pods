@@ -1,4 +1,4 @@
-//! The end of an uplink through the built daemon against the fake pods and the fake audio server: `off`, the restore after a STOP and the exit.
+//! The end of an uplink through the built daemon against the fake pods and the fake audio server: the linger, `off`, the restore after a STOP and the exit.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -26,8 +26,8 @@ mod tests {
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, not_before};
     use super::support::settings::set;
     use super::support::uplink::{
-        link, link_heard, lose, mic, move_sink, read_up_to_now, rig_with, rig_with_audio, starts,
-        stops, wait_mic, wait_restore, wait_starts, wait_stop,
+        assert_hold, link, link_heard, lose, mic, move_sink, read_up_to_now, rig_with,
+        rig_with_audio, starts, stops, wait_mic, wait_restore, wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
 
@@ -54,6 +54,21 @@ mod tests {
     }
 
     #[test]
+    fn two_dictations_inside_the_linger_send_one_start_and_no_stop() {
+        // A suspended sink opens the gate, so only the linger holds the STOP.
+        let (rig, device, audio) = live(SinkState::Suspended);
+        for preference in ["auto", "always", "auto", "always"] {
+            set(rig.session(), "microphone", preference);
+            assert_eq!(mic(&rig), "live");
+        }
+        read_up_to_now(&rig, &device);
+        assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
     fn setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound() {
         let (rig, device, audio) = live(SinkState::Running);
         let written = Instant::now();
@@ -66,7 +81,7 @@ mod tests {
             &at_once(),
         );
         let (suspended, resumed) = wait_restore(&audio, &device);
-        assert_gap("the hold", suspended, resumed, &not_before(HOLD));
+        assert_hold(suspended, resumed);
         let within = Duration::ZERO..=RESTORED_WITHIN;
         assert_gap("the resume after the write", written, resumed, &within);
         read_up_to_now(&rig, &device);

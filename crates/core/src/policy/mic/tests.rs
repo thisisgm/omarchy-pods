@@ -6,7 +6,7 @@ use pods_proto::ear::EarReport;
 use pods_samples::MODEL_NUMBER;
 
 use super::*;
-use crate::policy::tests::device;
+use crate::policy::tests::{device, sink_in};
 use crate::prefs::MicModels;
 use crate::state::Microphone;
 
@@ -14,9 +14,16 @@ use crate::state::Microphone;
 const SENT: Duration = Duration::from_secs(10);
 /// Inside every window.
 const SOON: Duration = Duration::from_millis(100);
-/// Past every window, the restore's being the longest.
-const LATER: Duration = Duration::from_millis(RESTORE_WAIT_MS);
-const _: () = assert!(RESTORE_WAIT_MS > START_ANSWER_MS && RESTORE_WAIT_MS > STOP_ANSWER_MS);
+/// The last bud out one grace before `SENT`, so its STOP is due at `SENT`.
+const LEFT: Duration = SENT.saturating_sub(Duration::from_millis(BUD_GRACE_MS));
+/// Past every window, the linger being the longest.
+const LATER: Duration = Duration::from_millis(UPLINK_LINGER_MS);
+const _: () = assert!(
+    UPLINK_LINGER_MS > RESTORE_WAIT_MS
+        && RESTORE_WAIT_MS > START_ANSWER_MS
+        && RESTORE_WAIT_MS > STOP_ANSWER_MS
+        && UPLINK_LINGER_MS > BUD_GRACE_MS
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Event {
@@ -29,6 +36,8 @@ enum Event {
     Changed,
     Restored,
     Exit,
+    /// The followed sink reported suspended.
+    Quiet,
 }
 
 /// The five states a cell is stepped in, a bud worn in each.
@@ -53,7 +62,11 @@ enum Kind {
     Starting,
     Owed,
     Running,
+    Lingering,
+    Waiting,
     Stopping,
+    /// A STOP the gate let out with a bud worn, which no restore follows.
+    StoppingQuiet,
     Restoring,
 }
 
@@ -71,7 +84,7 @@ const COLUMNS: [Column; 5] = [
     Column::Exit,
 ];
 
-const EVENTS: [Event; 8] = [
+const EVENTS: [Event; 9] = [
     Event::RunningMarker,
     Event::StoppedMarker,
     Event::Deadline,
@@ -80,30 +93,53 @@ const EVENTS: [Event; 8] = [
     Event::Changed,
     Event::Restored,
     Event::Exit,
+    Event::Quiet,
 ];
 
-const KINDS: [Kind; 8] = [
+const KINDS: [Kind; 11] = [
     Kind::Stopped,
     Kind::Failed,
     Kind::Unsupported,
     Kind::Starting,
     Kind::Owed,
     Kind::Running,
+    Kind::Lingering,
+    Kind::Waiting,
     Kind::Stopping,
+    Kind::StoppingQuiet,
     Kind::Restoring,
 ];
 
 /// Outcomes in the order of `COLUMNS`.
-const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
-    use Event::{Changed, Deadline, Down, Exit, Lost, Restored, RunningMarker, StoppedMarker};
-    use Kind::{Failed, Owed, Restoring, Running, Starting, Stopped, Stopping, Unsupported};
+const CELLS: [(Kind, Event, [Outcome; 5]); 99] = {
+    use Event::{
+        Changed, Deadline, Down, Exit, Lost, Quiet, Restored, RunningMarker, StoppedMarker,
+    };
+    use Kind::{
+        Failed, Lingering, Owed, Restoring, Running, Starting, Stopped, Stopping, StoppingQuiet,
+        Unsupported, Waiting,
+    };
     const fn same(kind: Kind) -> [Outcome; 5] {
         [(NOTHING, kind); 5]
     }
     const RUN: [Outcome; 5] = [
         (NOTHING, Running),
         (NOTHING, Running),
+        (NOTHING, Lingering),
+        (STOP, Stopping),
+        (STOP, Stopping),
+    ];
+    const WAIT: [Outcome; 5] = [
         (NOTHING, Running),
+        (NOTHING, Running),
+        (NOTHING, Waiting),
+        (STOP, Stopping),
+        (STOP, Stopping),
+    ];
+    const QUIET_WAIT: [Outcome; 5] = [
+        (NOTHING, Running),
+        (NOTHING, Running),
+        (STOP, StoppingQuiet),
         (STOP, Stopping),
         (STOP, Stopping),
     ];
@@ -138,6 +174,7 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Stopped, Lost, RESET),
         (Stopped, Changed, RESTART),
         (Stopped, Restored, RESTART),
+        (Stopped, Quiet, RESTART),
         (Stopped, Exit, same(Stopped)),
         (Failed, RunningMarker, RUN),
         (Failed, StoppedMarker, same(Failed)),
@@ -146,6 +183,7 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Failed, Lost, RESET),
         (Failed, Changed, same(Failed)),
         (Failed, Restored, same(Failed)),
+        (Failed, Quiet, same(Failed)),
         (Failed, Exit, same(Failed)),
         (Unsupported, RunningMarker, RUN),
         (Unsupported, StoppedMarker, same(Unsupported)),
@@ -154,6 +192,7 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Unsupported, Lost, RESET),
         (Unsupported, Changed, same(Unsupported)),
         (Unsupported, Restored, same(Unsupported)),
+        (Unsupported, Quiet, same(Unsupported)),
         (Unsupported, Exit, same(Unsupported)),
         (Starting, RunningMarker, RUN),
         (Starting, StoppedMarker, STARTING),
@@ -162,6 +201,7 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Starting, Lost, RESET),
         (Starting, Changed, STARTING),
         (Starting, Restored, STARTING),
+        (Starting, Quiet, STARTING),
         (Starting, Exit, same(Owed)),
         (Owed, RunningMarker, RUN),
         (Owed, StoppedMarker, same(Owed)),
@@ -170,6 +210,7 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Owed, Lost, RESET),
         (Owed, Changed, same(Owed)),
         (Owed, Restored, same(Owed)),
+        (Owed, Quiet, same(Owed)),
         (Owed, Exit, same(Owed)),
         (Running, RunningMarker, RUN),
         (Running, StoppedMarker, RESTART),
@@ -178,7 +219,26 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Running, Lost, RESET),
         (Running, Changed, RUN),
         (Running, Restored, RUN),
+        (Running, Quiet, RUN),
         (Running, Exit, STOPS),
+        (Lingering, RunningMarker, RUN),
+        (Lingering, StoppedMarker, RESTART),
+        (Lingering, Deadline, WAIT),
+        (Lingering, Down, RESET),
+        (Lingering, Lost, RESET),
+        (Lingering, Changed, RUN),
+        (Lingering, Restored, RUN),
+        (Lingering, Quiet, RUN),
+        (Lingering, Exit, STOPS),
+        (Waiting, RunningMarker, WAIT),
+        (Waiting, StoppedMarker, RESTART),
+        (Waiting, Deadline, WAIT),
+        (Waiting, Down, RESET),
+        (Waiting, Lost, RESET),
+        (Waiting, Changed, WAIT),
+        (Waiting, Restored, WAIT),
+        (Waiting, Quiet, QUIET_WAIT),
+        (Waiting, Exit, STOPS),
         (Stopping, RunningMarker, same(Stopping)),
         (Stopping, StoppedMarker, same(Restoring)),
         (Stopping, Deadline, same(Restoring)),
@@ -186,7 +246,17 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Stopping, Lost, RESET),
         (Stopping, Changed, same(Stopping)),
         (Stopping, Restored, same(Stopping)),
+        (Stopping, Quiet, same(Stopping)),
         (Stopping, Exit, same(Stopping)),
+        (StoppingQuiet, RunningMarker, same(StoppingQuiet)),
+        (StoppingQuiet, StoppedMarker, RESTART),
+        (StoppingQuiet, Deadline, RESTART),
+        (StoppingQuiet, Down, RESET),
+        (StoppingQuiet, Lost, RESET),
+        (StoppingQuiet, Changed, same(StoppingQuiet)),
+        (StoppingQuiet, Restored, same(StoppingQuiet)),
+        (StoppingQuiet, Quiet, same(StoppingQuiet)),
+        (StoppingQuiet, Exit, same(StoppingQuiet)),
         (Restoring, RunningMarker, same(Restoring)),
         (Restoring, StoppedMarker, same(Restoring)),
         (Restoring, Deadline, RESTART),
@@ -194,6 +264,7 @@ const CELLS: [(Kind, Event, [Outcome; 5]); 64] = {
         (Restoring, Lost, RESET),
         (Restoring, Changed, same(Restoring)),
         (Restoring, Restored, RESTART),
+        (Restoring, Quiet, same(Restoring)),
         (Restoring, Exit, same(Restoring)),
     ]
 };
@@ -219,6 +290,8 @@ a_stop_never_answered_is_logged_and_ends_stopping Stopping Deadline Off
 a_stop_never_answered_is_logged_and_ends_stopping Restoring Restored Off
 a_stop_never_answered_is_logged_and_ends_stopping Stopped Changed AlwaysKnown
 a_stop_never_answered_is_logged_and_ends_stopping Starting StoppedMarker AlwaysKnown
+two_dictations_inside_the_linger_send_one_start_and_no_stop Running Changed Auto
+two_dictations_inside_the_linger_send_one_start_and_no_stop Lingering Changed AlwaysKnown
 setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Running Changed Off
 setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Stopping StoppedMarker Off
 setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Restoring Restored Off
@@ -227,7 +300,7 @@ setting_off_while_starting_restores_after_the_owed_stop Owed RunningMarker Off
 setting_off_while_starting_restores_after_the_owed_stop Stopping StoppedMarker Off
 the_restore_waits_for_the_stopped_marker Stopping Changed Off
 the_restore_waits_for_the_stopped_marker Stopping StoppedMarker Off
-a_suspended_sink_is_left_alone_by_the_restore Stopping StoppedMarker Off
+a_suspended_sink_is_left_alone_by_the_restore Stopping Quiet Off
 an_idle_sink_is_suspended_and_resumed_with_no_hold Restoring Restored Off
 a_restore_with_no_audio_server_is_done_when_it_returns Restoring Restored Off
 a_resume_the_server_never_took_is_sent_when_it_returns Restoring Down Off
@@ -245,11 +318,24 @@ exit_with_the_server_lost_inside_the_restore_resumes_the_sink_before_it_ends Res
 a_restore_owed_while_the_server_was_down_is_dropped_by_a_newer_start Stopped Changed AlwaysKnown
 exit_with_the_uplink_stopped_is_answered_at_once Stopped Exit Auto
 a_link_lost_while_stopping_orders_no_restore Stopping Lost Off
+the_stop_waits_while_the_sink_is_not_suspended_and_a_bud_is_worn Lingering Deadline Auto
+an_idle_sink_still_holds_the_stop Waiting Changed Auto
+the_stop_goes_out_when_the_sink_is_suspended_and_no_restore_follows Waiting Quiet Auto
+the_stop_goes_out_when_the_sink_is_suspended_and_no_restore_follows StoppingQuiet StoppedMarker Auto
+the_linger_with_a_suspended_sink_ends_in_a_stop_and_no_restore Lingering Quiet Auto
+the_linger_with_a_suspended_sink_ends_in_a_stop_and_no_restore StoppingQuiet StoppedMarker Auto
+a_want_that_returns_while_the_stop_waits_sends_nothing Waiting Changed AlwaysKnown
+an_unknown_sink_state_holds_the_stop Lingering Deadline Auto
+the_stop_goes_out_with_a_restore_when_the_last_bud_leaves Stopping StoppedMarker AlwaysKnown
+the_stop_goes_out_with_a_restore_when_the_last_bud_leaves Restoring Restored AlwaysKnown
+a_bud_back_in_during_the_restore_starts_after_it Restoring Changed AlwaysKnown
+a_bud_back_in_during_the_restore_starts_after_it Restoring Restored AlwaysKnown
 ";
 
 /// The tests of the uplink suites whose case no column holds: no bud worn, no model number, the settings file.
-const OUTSIDE_THE_TABLE: [&str; 4] = [
+const OUTSIDE_THE_TABLE: [&str; 5] = [
     "no_bud_worn_sends_no_start",
+    "a_bud_taken_out_while_the_stop_waits_gets_the_grace",
     "always_sends_no_start_without_a_model_number",
     "a_settings_file_with_a_bad_model_entry_is_refused",
     "a_seventeenth_model_drops_the_oldest",
@@ -272,8 +358,20 @@ fn phase(kind: Kind) -> Phase {
             since: SENT,
             owed: true,
         },
-        Kind::Running => Phase::Running,
-        Kind::Stopping => Phase::Stopping { since: SENT },
+        Kind::Running => Phase::Running(Hold::Wanted),
+        Kind::Lingering => Phase::Running(Hold::Lingering {
+            since: SENT,
+            unworn: None,
+        }),
+        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }),
+        Kind::Stopping => Phase::Stopping {
+            since: SENT,
+            restore: true,
+        },
+        Kind::StoppingQuiet => Phase::Stopping {
+            since: SENT,
+            restore: false,
+        },
         Kind::Restoring => Phase::Restoring {
             since: SENT,
             id: RestoreId(0),
@@ -292,8 +390,11 @@ fn kind(phase: Phase) -> Kind {
         } => Kind::Unsupported,
         Phase::Starting { owed: false, .. } => Kind::Starting,
         Phase::Starting { owed: true, .. } => Kind::Owed,
-        Phase::Running => Kind::Running,
-        Phase::Stopping { .. } => Kind::Stopping,
+        Phase::Running(Hold::Wanted) => Kind::Running,
+        Phase::Running(Hold::Lingering { .. }) => Kind::Lingering,
+        Phase::Running(Hold::Waiting { .. }) => Kind::Waiting,
+        Phase::Stopping { restore: true, .. } => Kind::Stopping,
+        Phase::Stopping { restore: false, .. } => Kind::StoppingQuiet,
         Phase::Restoring { .. } => Kind::Restoring,
     }
 }
@@ -340,6 +441,7 @@ fn stepped(event: Event, column: Column) -> (Fact, Duration, State) {
         Event::Changed => (Fact::Changed, SOON),
         Event::Restored => (Fact::Audio(AudioFact::Restored(RestoreId(0))), SOON),
         Event::Exit => (Fact::Exit, SOON),
+        Event::Quiet => (sink_in(true, SinkState::Suspended), SOON),
     };
     if matches!(event, Event::Down | Event::Lost) {
         state.connected = false;
@@ -441,6 +543,7 @@ fn every_end_to_end_test_names_its_cell_or_stands_outside_the_table() {
     let suites = [
         include_str!("../../../../daemon/tests/uplink.rs"),
         include_str!("../../../../daemon/tests/uplink_stop.rs"),
+        include_str!("../../../../daemon/tests/uplink_slow.rs"),
     ];
     let cells: Vec<String> = CELLS
         .iter()
@@ -512,6 +615,7 @@ fn each_answer_window_ends_at_its_deadline_and_not_before() {
     for (from, window, to) in [
         (Kind::Owed, START_ANSWER_MS, Kind::Stopped),
         (Kind::Stopping, STOP_ANSWER_MS, Kind::Restoring),
+        (Kind::StoppingQuiet, STOP_ANSWER_MS, Kind::Stopped),
         (Kind::Restoring, RESTORE_WAIT_MS, Kind::Stopped),
     ] {
         let deadline = SENT.saturating_add(Duration::from_millis(window));
@@ -524,7 +628,7 @@ fn each_answer_window_ends_at_its_deadline_and_not_before() {
         drop(mic.step(&state, &Fact::Tick, deadline));
         assert_eq!(kind(mic.phase), to, "{from:?}");
     }
-    for from in [Kind::Stopped, Kind::Failed, Kind::Running] {
+    for from in [Kind::Stopped, Kind::Failed, Kind::Running, Kind::Waiting] {
         assert_eq!(mic(phase(from)).deadline(), None, "{from:?}");
     }
 }
@@ -563,7 +667,10 @@ fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_p
         (Kind::Starting, MicCode::Starting, MicCode::NotWorn),
         (Kind::Owed, MicCode::Starting, MicCode::NotWorn),
         (Kind::Running, MicCode::Live, MicCode::NotWorn),
+        (Kind::Lingering, MicCode::Live, MicCode::NotWorn),
+        (Kind::Waiting, MicCode::Live, MicCode::NotWorn),
         (Kind::Stopping, MicCode::Stopping, MicCode::Stopping),
+        (Kind::StoppingQuiet, MicCode::Stopping, MicCode::Stopping),
         (Kind::Restoring, MicCode::Stopping, MicCode::Stopping),
     ] {
         let mic = mic(phase(from));
@@ -577,6 +684,151 @@ fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_p
 fn the_requests_write_the_sample_bytes() {
     assert_eq!(UplinkRequest::Start.sdu(), pods_samples::uplink::START);
     assert_eq!(UplinkRequest::Stop.sdu(), pods_samples::uplink::STOP);
+}
+
+#[test]
+fn the_gate_lets_a_due_stop_out_only_with_no_bud_worn_or_a_quiet_sink() {
+    let absent = Fact::Audio(AudioFact::Sink(None));
+    let down = Fact::Audio(AudioFact::Down);
+    for (worn, fact, to) in [
+        (true, &Fact::Changed, Kind::Waiting),
+        (true, &sink_in(true, SinkState::Running), Kind::Waiting),
+        (true, &sink_in(true, SinkState::Idle), Kind::Waiting),
+        (true, &down, Kind::Waiting),
+        (
+            true,
+            &sink_in(true, SinkState::Suspended),
+            Kind::StoppingQuiet,
+        ),
+        (true, &absent, Kind::StoppingQuiet),
+        (false, &Fact::Changed, Kind::Stopping),
+        (false, &sink_in(true, SinkState::Running), Kind::Stopping),
+    ] {
+        let mut state = linked(Column::Auto);
+        state.ear = EarReport::from_in_ear(worn, false);
+        let unworn = (!worn).then_some(LEFT);
+        let mut mic = mic(Phase::Running(Hold::Waiting { unworn }));
+        let effects = mic.step(&state, fact, SENT);
+        assert_eq!(kind(mic.phase), to, "{worn} {fact:?}");
+        let sent = if to == Kind::Waiting { NOTHING } else { STOP };
+        assert_eq!(requests(&effects), sent, "{worn} {fact:?}");
+    }
+}
+
+#[test]
+fn a_quiet_sink_ends_the_linger_in_a_stop_and_a_server_gone_holds_it() {
+    let end = SENT.saturating_add(Duration::from_millis(UPLINK_LINGER_MS));
+    let state = linked(Column::Auto);
+    let quiet = sink_in(true, SinkState::Suspended);
+    let down = Fact::Audio(AudioFact::Down);
+    let playing = sink_in(true, SinkState::Running);
+    for (facts, sent, to) in [
+        (vec![quiet.clone()], STOP, Kind::StoppingQuiet),
+        (vec![quiet.clone(), down], NOTHING, Kind::Waiting),
+        (vec![quiet, playing], NOTHING, Kind::Waiting),
+    ] {
+        let mut mic = mic(phase(Kind::Lingering));
+        for fact in &facts {
+            assert_eq!(requests(&mic.step(&state, fact, SENT)), NOTHING);
+        }
+        assert_eq!(kind(mic.phase), Kind::Lingering, "{facts:?}");
+        assert_eq!(
+            requests(&mic.step(&state, &Fact::Tick, end)),
+            sent,
+            "{facts:?}"
+        );
+        assert_eq!(kind(mic.phase), to, "{facts:?}");
+    }
+}
+
+#[test]
+fn the_linger_counts_from_the_want_and_the_grace_from_the_last_bud() {
+    let linger = Duration::from_millis(UPLINK_LINGER_MS);
+    let grace = Duration::from_millis(BUD_GRACE_MS);
+    let mut mic = mic(phase(Kind::Running));
+    let mut state = linked(Column::Auto);
+    drop(mic.step(&state, &Fact::Changed, SENT));
+    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    let left = SENT.saturating_add(SOON);
+    state.ear = EarReport::default();
+    drop(mic.step(&state, &Fact::Changed, left));
+    assert_eq!(mic.deadline(), Some(left.saturating_add(grace)));
+    let early = left
+        .saturating_add(grace)
+        .saturating_sub(Duration::from_millis(1));
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, early)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Lingering);
+    state.ear = EarReport::from_in_ear(true, false);
+    drop(mic.step(&state, &Fact::Changed, left.saturating_add(SOON)));
+    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    let early = SENT
+        .saturating_add(linger)
+        .saturating_sub(Duration::from_millis(1));
+    assert_eq!(
+        lines(&mic.step(&state, &Fact::Tick, early)),
+        Vec::<&str>::new()
+    );
+    assert_eq!(kind(mic.phase), Kind::Lingering);
+    let effects = mic.step(&state, &Fact::Tick, SENT.saturating_add(linger));
+    assert_eq!(lines(&effects), [STOP_WAITS_LINE]);
+    assert_eq!(
+        lines(&mic.step(&state, &Fact::Changed, SENT)),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn a_bud_taken_out_while_the_stop_waits_gets_the_grace() {
+    let grace = Duration::from_millis(BUD_GRACE_MS);
+    let mut mic = mic(phase(Kind::Waiting));
+    let mut state = linked(Column::Auto);
+    state.ear = EarReport::default();
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Waiting);
+    let due = SENT.saturating_add(grace);
+    assert_eq!(mic.deadline(), Some(due));
+    let early = due.saturating_sub(Duration::from_millis(1));
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, early)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Waiting);
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, due)), STOP);
+    assert_eq!(kind(mic.phase), Kind::Stopping);
+}
+
+#[test]
+fn each_stop_logs_its_word_and_only_a_quiet_one_skips_the_restore() {
+    let mut unworn = linked(Column::Auto);
+    unworn.ear = EarReport::default();
+    for (column, state, fact, word) in [
+        (
+            Column::Auto,
+            linked(Column::Auto),
+            sink_in(true, SinkState::Suspended),
+            Word::Quiet,
+        ),
+        (Column::Auto, unworn, Fact::Changed, Word::NotWorn),
+        (Column::Off, linked(Column::Off), Fact::Changed, Word::Off),
+        (
+            Column::Exit,
+            linked(Column::Exit),
+            Fact::Changed,
+            Word::Exit,
+        ),
+    ] {
+        let unworn = (word == Word::NotWorn).then_some(LEFT);
+        let mut mic = Mic {
+            exiting: column == Column::Exit,
+            ..mic(Phase::Running(Hold::Waiting { unworn }))
+        };
+        assert_eq!(
+            lines(&mic.step(&state, &fact, SENT)),
+            [word.line()],
+            "{word:?}"
+        );
+        let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+        let effects = mic.step(&state, &marker, SENT);
+        let restore = effects.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0))));
+        assert_eq!(restore, word != Word::Quiet, "{word:?}");
+    }
 }
 
 #[test]

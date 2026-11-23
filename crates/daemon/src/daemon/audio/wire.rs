@@ -4,9 +4,9 @@ use std::fmt;
 use std::io::{self, ErrorKind};
 use std::iter;
 
-use pods_core::policy::audio::Percent;
+use pods_core::policy::audio::{Percent, SinkState};
 use pulseaudio::protocol::{
-    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SinkState, Volume, encode_descriptor,
+    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, Volume, encode_descriptor,
     read_descriptor,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -69,13 +69,13 @@ mod tag {
     pub(super) const FORMAT_INFO: u8 = Tag::FormatInfo as u8;
 }
 
-/// The crate's numbers for the two sink states the restore tells apart from running.
+/// The crate's numbers for the two sink states the gate tells apart from running.
 #[expect(
     clippy::as_conversions,
     reason = "the discriminant of a fieldless enum is the protocol's state number"
 )]
 mod state {
-    use super::SinkState;
+    use pulseaudio::protocol::SinkState;
 
     pub(super) const IDLE: u32 = SinkState::Idle as u32;
     pub(super) const SUSPENDED: u32 = SinkState::Suspended as u32;
@@ -356,7 +356,7 @@ impl<'a> Tags<'a> {
             .unwrap_or(Percent::FULL))
     }
 
-    /// A sink's state, any number past the protocol's three reading as running; sample `L 00000002`: suspended.
+    /// A sink's state, any number past the protocol's three reading as running, which keeps the gate shut; sample `L 00000002`: suspended.
     fn sink_state(&mut self) -> Result<SinkState, Malformed> {
         Ok(match self.u32()? {
             state::IDLE => SinkState::Idle,

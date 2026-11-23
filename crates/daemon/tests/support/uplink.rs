@@ -2,8 +2,9 @@
 
 use std::fs;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use pods_core::policy::audio::RESTORE_HOLD_MS;
 use pods_core::prefs::{self, MicPref, Prefs};
 use pods_fake::{Heard, Profile};
 use pods_samples::uplink::{START, STOP};
@@ -13,9 +14,12 @@ use serde_json::{Value, json};
 
 use super::audio::wire::sink_named;
 use super::audio::{Asked, FakeAudio, PERCENT, writes_of};
-use super::rig::{Device, Rig, connected};
+use super::rig::{Device, Rig, assert_gap, connected};
 use super::settings::plant_settings;
 use super::{HANG_LIMIT, Session, wait_for};
+
+/// How late the resume may come after the hold; both instants are the fake server's, so only the daemon's timer is in it.
+const HOLD_SLACK: Duration = Duration::from_millis(100);
 
 /// Two left levels no fixture starts with; a barrier moves to whichever the status does not show.
 const BARRIER_LEVELS: [u8; 2] = [42, 43];
@@ -74,6 +78,13 @@ pub(crate) fn link_heard(rig: &Rig, device: &Device) {
 pub(crate) fn move_sink(rig: &Rig, audio: &FakeAudio, device: &Device, state: SinkState) {
     audio.set_sink_state(&sink_named(device.address), state);
     rig.wait_sink_told();
+}
+
+/// Fails unless the resume came the whole restore hold after the suspend, and not `HOLD_SLACK` later.
+pub(crate) fn assert_hold(suspended: Instant, resumed: Instant) {
+    let hold = Duration::from_millis(RESTORE_HOLD_MS);
+    let range = hold..=hold.saturating_add(HOLD_SLACK);
+    assert_gap("the hold", suspended, resumed, &range);
 }
 
 /// The pods' sink suspended then resumed, and nothing more written before the daemon read again or left: when each was asked.

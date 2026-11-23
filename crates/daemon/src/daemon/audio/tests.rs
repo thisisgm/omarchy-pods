@@ -3,7 +3,7 @@
 mod restore;
 mod waits;
 
-use pods_core::policy::audio::{Percent, SinkFact, sink_prefix};
+use pods_core::policy::audio::{Percent, SinkFact, SinkState, sink_prefix};
 use pods_proto::addr::BdAddr;
 
 use super::wire::tests::{FIRST_INDEX, sink_list};
@@ -25,7 +25,12 @@ fn prefix() -> Vec<u8> {
 
 fn found(is_default: bool, percent: u8) -> SinkFact {
     let volume = Percent::new(percent).unwrap();
-    SinkFact { is_default, volume }
+    let state = SinkState::Idle;
+    SinkFact {
+        is_default,
+        volume,
+        state,
+    }
 }
 
 fn device_sink_of(default: Option<&[u8]>) -> Option<SinkFact> {

@@ -1,14 +1,20 @@
 //! The microphone uplink machine: when a START and a STOP go out, what the pods' markers move, the restore after a STOP and the exit; stepped only by facts and its own deadline.
 
+mod gate;
+
 use std::time::Duration;
 
 use pods_proto::uplink::{self, UplinkState};
 
-use super::audio::{AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId};
+use super::audio::{
+    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkState,
+};
 use super::{Effect, Fact};
 use crate::link::Signal;
 use crate::prefs::MicPref;
 use crate::state::{MicCode, State};
+pub use gate::{BUD_GRACE_MS, STOP_WAITS_LINE, UPLINK_LINGER_MS};
+use gate::{Hold, Next};
 
 /// About three times the slowest answer to a START measured on the pods.
 pub const START_ANSWER_MS: u64 = 1500;
@@ -51,10 +57,11 @@ enum Phase {
         since: Duration,
         owed: bool,
     },
-    Running,
-    /// A STOP went out at `since` and the pods have not said they stopped.
+    Running(Hold),
+    /// A STOP went out at `since` and the pods have not said they stopped; `restore` unless the gate let it out with a bud worn.
     Stopping {
         since: Duration,
+        restore: bool,
     },
     /// The sink's restore `id` was asked for at `since`.
     Restoring {
@@ -63,9 +70,11 @@ enum Phase {
     },
 }
 
-/// Why a STOP went out.
+/// Why a STOP went out; only `Quiet` needs no restore, as the sink of a worn bud was already suspended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Word {
+    Quiet,
+    NotWorn,
     Off,
     Exit,
 }
@@ -73,6 +82,8 @@ enum Word {
 impl Word {
     const fn line(self) -> &'static str {
         match self {
+            Self::Quiet => "mic: stop sent (quiet)",
+            Self::NotWorn => "mic: stop sent (not_worn)",
             Self::Off => "mic: stop sent (off)",
             Self::Exit => "mic: stop sent (exit)",
         }
@@ -90,6 +101,8 @@ enum Spent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Mic {
     phase: Phase,
+    /// The followed sink is known to be suspended or absent; unknown counts as running.
+    quiet: bool,
     exiting: bool,
     next_restore: u32,
 }
@@ -98,6 +111,7 @@ impl Default for Mic {
     fn default() -> Self {
         Self {
             phase: Phase::Stopped { spent: None },
+            quiet: false,
             exiting: false,
             next_restore: 0,
         }
@@ -109,8 +123,12 @@ impl Mic {
     pub(super) fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
         let mut effects = Vec::new();
         match fact {
-            Fact::Link(Signal::Down | Signal::Lost { .. }) => {
-                self.phase = Phase::Stopped { spent: None };
+            Fact::Link(Signal::Down) => self.phase = Phase::Stopped { spent: None },
+            Fact::Link(Signal::Lost { .. }) => {
+                *self = Self {
+                    exiting: self.exiting,
+                    ..Self::default()
+                };
             }
             Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
             Fact::Tick => self.tick(state, now, &mut effects),
@@ -133,24 +151,33 @@ impl Mic {
             (Phase::Starting { since, .. }, UplinkState::Running) => {
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("mic: uplink running after {after} ms")));
-                Phase::Running
+                Phase::Running(Hold::Wanted)
             }
-            (Phase::Stopped { .. }, UplinkState::Running) => Phase::Running,
-            (Phase::Stopping { since }, UplinkState::Stopped) => {
+            (Phase::Stopped { .. }, UplinkState::Running) => Phase::Running(Hold::Wanted),
+            (Phase::Stopping { since, restore }, UplinkState::Stopped) => {
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("mic: uplink stopped after {after} ms")));
-                self.restoring(now, effects)
+                self.stopped(restore, now, effects)
             }
-            (Phase::Running, UplinkState::Stopped) => Phase::Stopped { spent: None },
+            (Phase::Running(_), UplinkState::Stopped) => Phase::Stopped { spent: None },
             (phase, _) => phase,
         };
     }
 
     fn audio(&mut self, fact: AudioFact) {
-        if let (AudioFact::Restored(answered), Phase::Restoring { id, .. }) = (fact, self.phase)
-            && answered == id
-        {
-            self.phase = Phase::Stopped { spent: None };
+        match fact {
+            AudioFact::Up => {}
+            AudioFact::Down => self.quiet = false,
+            AudioFact::Sink(sink) => {
+                self.quiet = sink.is_none_or(|sink| sink.state == SinkState::Suspended);
+            }
+            AudioFact::Restored(answered) => {
+                if let Phase::Restoring { id, .. } = self.phase
+                    && answered == id
+                {
+                    self.phase = Phase::Stopped { spent: None };
+                }
+            }
         }
     }
 
@@ -165,12 +192,12 @@ impl Mic {
                     spent: unanswered(state, effects),
                 }
             }
-            Phase::Stopping { .. } => {
+            Phase::Stopping { restore, .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
-                self.restoring(now, effects)
+                self.stopped(restore, now, effects)
             }
             Phase::Restoring { .. } => Phase::Stopped { spent: None },
-            phase @ (Phase::Stopped { .. } | Phase::Running) => phase,
+            phase @ (Phase::Stopped { .. } | Phase::Running(_)) => phase,
         };
     }
 
@@ -195,21 +222,51 @@ impl Mic {
                 effects.push(log(STOP_OWED_LINE));
                 self.phase = Phase::Starting { since, owed: true };
             }
-            Phase::Running if off || self.exiting => {
-                let word = if off { Word::Off } else { Word::Exit };
-                effects.extend([Effect::Uplink(UplinkRequest::Stop), log(word.line())]);
-                self.phase = Phase::Stopping { since: now };
-            }
+            Phase::Running(hold) => self.running(hold, state, off, now, effects),
             Phase::Stopped { .. }
             | Phase::Starting { .. }
-            | Phase::Running
             | Phase::Stopping { .. }
             | Phase::Restoring { .. } => {}
         }
     }
 
-    /// The end of a STOP: the sink's restore, under an id no earlier restore had.
-    fn restoring(&mut self, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+    /// `off` and the exit stop at once; any other end of the want goes through the linger and the gate.
+    fn running(
+        &mut self,
+        hold: Hold,
+        state: &State,
+        off: bool,
+        now: Duration,
+        effects: &mut Vec<Effect>,
+    ) {
+        let next = if off {
+            Next::Stop(Word::Off)
+        } else if self.exiting {
+            Next::Stop(Word::Exit)
+        } else {
+            hold.follow(wanted(state), state.ear.any_in_ear(), self.quiet, now)
+        };
+        self.phase = match next {
+            Next::Hold(Hold::Waiting { unworn: None }) if !matches!(hold, Hold::Waiting { .. }) => {
+                effects.push(log(STOP_WAITS_LINE));
+                Phase::Running(Hold::Waiting { unworn: None })
+            }
+            Next::Hold(hold) => Phase::Running(hold),
+            Next::Stop(word) => {
+                effects.extend([Effect::Uplink(UplinkRequest::Stop), log(word.line())]);
+                Phase::Stopping {
+                    since: now,
+                    restore: word != Word::Quiet,
+                }
+            }
+        };
+    }
+
+    /// The end of a STOP: the restore it is owed, under an id no earlier restore had, or nothing.
+    fn stopped(&mut self, restore: bool, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+        if !restore {
+            return Phase::Stopped { spent: None };
+        }
         let id = RestoreId(self.next_restore);
         self.next_restore = self.next_restore.wrapping_add(1);
         effects.push(Effect::Audio(AudioRequest::Restore(id)));
@@ -221,13 +278,14 @@ impl Mic {
             Phase::Starting { since, .. } => {
                 Some(since.saturating_add(Duration::from_millis(START_ANSWER_MS)))
             }
-            Phase::Stopping { since } => {
+            Phase::Stopping { since, .. } => {
                 Some(since.saturating_add(Duration::from_millis(STOP_ANSWER_MS)))
             }
             Phase::Restoring { since, .. } => {
                 Some(since.saturating_add(Duration::from_millis(RESTORE_WAIT_MS)))
             }
-            Phase::Stopped { .. } | Phase::Running => None,
+            Phase::Running(hold) => hold.deadline(),
+            Phase::Stopped { .. } => None,
         }
     }
 
@@ -246,7 +304,7 @@ impl Mic {
             Phase::Stopping { .. } | Phase::Restoring { .. } => MicCode::Stopping,
             _ if !state.ear.any_in_ear() => MicCode::NotWorn,
             Phase::Starting { .. } => MicCode::Starting,
-            Phase::Running => MicCode::Live,
+            Phase::Running(_) => MicCode::Live,
             Phase::Stopped { spent: None } => MicCode::Idle,
         }
     }

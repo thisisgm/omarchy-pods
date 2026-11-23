@@ -84,7 +84,7 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
-| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn; `auto` starts it the same way on each link until the model's uplink has answered once, then not again for that model; `off` stops it at once |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn; `auto` starts it the same way on each link until the model's uplink has answered once, then not again for that model; `off` stops it at once; a stop of the daemon stops it too, and waits at most 2 seconds for the stop and the restore before it exits; any other end of the want while the link holds lets it linger, as the `mic` reply says |
 
 `ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
@@ -146,13 +146,21 @@ A reply carries the request's `id` and `ok`.
   is `off`; else `idle` while no link is up; `unsupported` once a model never
   confirmed left its START unanswered, and `failed` once a confirmed one did,
   each until the link is lost; `stopping` from a STOP until the sink's restore
-  after it is done or owed; `not_worn` while no bud is worn; `starting` from the
-  START until the AirPods say the uplink runs, then `live`; and `idle` when
-  nothing is wanted. After a STOP, while the link holds, the daemon suspends and
-  resumes the AirPods' sink unless it is already suspended, which reopens a
-  stream the uplink's end broke; with no audio server it owes that restore until
-  the server is back, and a newer START drops a restore not yet begun. At a stop
-  of the daemon a running uplink is stopped and its sink restored first,
+  after it is done or owed, or, for a STOP sent because the sink was suspended
+  or gone, until the AirPods say the uplink stopped; `not_worn` while no bud is
+  worn; `starting` from the START until the AirPods say the uplink runs, then
+  `live`; and `idle` when nothing is wanted. An uplink no longer wanted while
+  the link holds, other than by `off` or a stop of the daemon, lingers: it runs
+  on for a minute, or a few seconds once the last bud is out. Its STOP then
+  waits, with `mic` still `live`, while a bud is worn and the AirPods' sink is
+  not known to be suspended or gone, and goes out once the sink is, or once the
+  last bud has been out those few seconds. After a STOP, while the link holds,
+  the daemon suspends and resumes the AirPods' sink unless it is already
+  suspended or the STOP went out because it was suspended or gone, which
+  reopens a stream the uplink's end broke; with no audio server it owes that
+  restore until the server is back, and a newer START drops a restore not yet
+  begun. At a stop of the daemon a running uplink is stopped and its sink
+  restored first,
   within 2 s. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and
   `down` while it cannot reach it. Its
