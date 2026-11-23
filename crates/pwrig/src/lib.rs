@@ -12,8 +12,10 @@
     )
 )]
 
+pub mod pod;
 mod recorder;
 mod server;
+pub mod tone;
 mod wav;
 
 use std::fs::File;
@@ -28,7 +30,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal, kill_process};
 
 pub use recorder::Recorder;
-pub use server::{DRIVER_NODE, Server, node_names};
+pub use server::{DRIVER_NODE, Server, environment, node_names};
 pub use wav::write_wav;
 
 /// Every program the rig runs comes in this package, on Debian and on Ubuntu.
@@ -97,7 +99,8 @@ impl Process<'_> {
     }
 
     /// What the child wrote to its standard error, or why it cannot be read.
-    fn log(&self) -> String {
+    #[must_use]
+    pub fn log(&self) -> String {
         log_text(&self.log)
     }
 }
