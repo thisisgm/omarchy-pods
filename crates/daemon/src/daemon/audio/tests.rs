@@ -1,5 +1,6 @@
 //! Support tests: which sink is the device's and how its name starts; no user path yet for the sink it reports.
 
+mod restore;
 mod waits;
 
 use pods_core::policy::audio::{Percent, SinkFact, sink_prefix};
