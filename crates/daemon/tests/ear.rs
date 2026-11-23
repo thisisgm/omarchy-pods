@@ -17,7 +17,7 @@ mod tests {
     use pods_samples::{CASE, LEFT, Placed, RIGHT, battery_of};
 
     use super::support::audio::wire::sink_named;
-    use super::support::audio::{Asked as AudioAsked, FakeAudio, PERCENT};
+    use super::support::audio::{Asked as AudioAsked, FakeAudio, PERCENT, Volumes};
     use super::support::players::{Asked, CALL_TIMEOUT, FakePlayer, Playback};
     use super::support::rig::{
         ANSWERED_WITHIN, Device, REAL_TIME_SLACK, Rig, assert_gap, connected, not_before,
@@ -539,6 +539,34 @@ mod tests {
         let log = rig.daemon().log();
         assert!(!log.contains("refused the resume"), "{log}");
         staying.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn after_the_audio_server_restarts_a_bud_out_pauses_and_both_in_resumes() {
+        let (rig, device, audio) = Rig::with_audio(PERCENT);
+        let player = rig.player("one", Playback::Playing);
+        audio.stop();
+        rig.wait_audio_server("down");
+        // With the server down the daemon cannot know the pods' sink is the default, so a bud out pauses nothing.
+        place(&rig, &device, InEar, OutOfEar);
+        player.none_for(QUIET);
+        assert_eq!(player.asked(), []);
+        place(&rig, &device, InEar, InEar);
+        audio.restart(Volumes::Kept);
+        rig.wait_audio_server("up");
+        // A refresh after a change the pods' sink fact does not carry is asked only once the sink read at `up` was told.
+        let before = audio.requests().len();
+        audio.add_sink(SPEAKERS, PERCENT);
+        wait_for("a refresh after the speakers were added", || {
+            audio.requests()[before..]
+                .contains(&AudioAsked::ServerInfo)
+                .then_some(())
+        });
+        placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
+        placed_until(&device, InEar, InEar, &player, Asked::Play, HANG_LIMIT);
+        assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
+        player.leave();
         rig.finish();
     }
 
