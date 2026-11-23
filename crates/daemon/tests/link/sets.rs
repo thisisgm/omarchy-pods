@@ -61,7 +61,7 @@ fn set_racing_a_hang_up_always_gets_an_answer() {
     rig.finish();
 }
 
-/// The driver's test on a held clock proves no wait before the write; the gaps printed here are the 20 ms budget, measured on the box.
+/// The driver's test on a held clock proves no timer before the write; the 20 ms budget is measured from the gaps printed here, in a release build on the box.
 #[test]
 fn every_set_reaches_the_pods_after_its_request() {
     let mut rig = Rig::new();
