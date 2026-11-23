@@ -1,0 +1,148 @@
+//! The linger and the gate: when a due STOP goes out, and whether a restore follows it.
+
+use super::*;
+
+#[test]
+fn the_gate_lets_a_due_stop_out_only_with_no_bud_worn_or_a_quiet_sink() {
+    let absent = Fact::Audio(AudioFact::Sink(None));
+    let down = Fact::Audio(AudioFact::Down);
+    for (worn, fact, to) in [
+        (true, &Fact::Changed, Kind::Waiting),
+        (true, &sink_in(true, SinkState::Running), Kind::Waiting),
+        (true, &sink_in(true, SinkState::Idle), Kind::Waiting),
+        (true, &down, Kind::Waiting),
+        (
+            true,
+            &sink_in(true, SinkState::Suspended),
+            Kind::StoppingQuiet,
+        ),
+        (true, &absent, Kind::StoppingQuiet),
+        (false, &Fact::Changed, Kind::Stopping),
+        (false, &sink_in(true, SinkState::Running), Kind::Stopping),
+    ] {
+        let mut state = linked(Column::Auto);
+        state.ear = EarReport::from_in_ear(worn, false);
+        let unworn = (!worn).then_some(LEFT);
+        let mut mic = mic(Phase::Running(Hold::Waiting { unworn }));
+        let effects = mic.step(&state, fact, SENT);
+        assert_eq!(kind(mic.phase), to, "{worn} {fact:?}");
+        let sent = if to == Kind::Waiting { NOTHING } else { STOP };
+        assert_eq!(requests(&effects), sent, "{worn} {fact:?}");
+    }
+}
+
+#[test]
+fn a_quiet_sink_ends_the_linger_in_a_stop_and_a_server_gone_holds_it() {
+    let end = SENT.saturating_add(Duration::from_millis(UPLINK_LINGER_MS));
+    let state = linked(Column::Auto);
+    let quiet = sink_in(true, SinkState::Suspended);
+    let down = Fact::Audio(AudioFact::Down);
+    let playing = sink_in(true, SinkState::Running);
+    for (facts, sent, to) in [
+        (vec![quiet.clone()], STOP, Kind::StoppingQuiet),
+        (vec![quiet.clone(), down], NOTHING, Kind::Waiting),
+        (vec![quiet, playing], NOTHING, Kind::Waiting),
+    ] {
+        let mut mic = mic(phase(Kind::Lingering));
+        for fact in &facts {
+            assert_eq!(requests(&mic.step(&state, fact, SENT)), NOTHING);
+        }
+        assert_eq!(kind(mic.phase), Kind::Lingering, "{facts:?}");
+        assert_eq!(
+            requests(&mic.step(&state, &Fact::Tick, end)),
+            sent,
+            "{facts:?}"
+        );
+        assert_eq!(kind(mic.phase), to, "{facts:?}");
+    }
+}
+
+#[test]
+fn the_linger_counts_from_the_want_and_the_grace_from_the_last_bud() {
+    let linger = Duration::from_millis(UPLINK_LINGER_MS);
+    let grace = Duration::from_millis(BUD_GRACE_MS);
+    let mut mic = mic(phase(Kind::Running));
+    let mut state = linked(Column::Auto);
+    drop(mic.step(&state, &Fact::Changed, SENT));
+    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    let left = SENT.saturating_add(SOON);
+    state.ear = EarReport::default();
+    drop(mic.step(&state, &Fact::Changed, left));
+    assert_eq!(mic.deadline(), Some(left.saturating_add(grace)));
+    let early = left
+        .saturating_add(grace)
+        .saturating_sub(Duration::from_millis(1));
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, early)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Lingering);
+    state.ear = EarReport::from_in_ear(true, false);
+    drop(mic.step(&state, &Fact::Changed, left.saturating_add(SOON)));
+    assert_eq!(mic.deadline(), Some(SENT.saturating_add(linger)));
+    let early = SENT
+        .saturating_add(linger)
+        .saturating_sub(Duration::from_millis(1));
+    assert_eq!(
+        lines(&mic.step(&state, &Fact::Tick, early)),
+        Vec::<&str>::new()
+    );
+    assert_eq!(kind(mic.phase), Kind::Lingering);
+    let effects = mic.step(&state, &Fact::Tick, SENT.saturating_add(linger));
+    assert_eq!(lines(&effects), [STOP_WAITS_LINE]);
+    assert_eq!(
+        lines(&mic.step(&state, &Fact::Changed, SENT)),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn a_bud_taken_out_while_the_stop_waits_gets_the_grace() {
+    let grace = Duration::from_millis(BUD_GRACE_MS);
+    let mut mic = mic(phase(Kind::Waiting));
+    let mut state = linked(Column::Auto);
+    state.ear = EarReport::default();
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Waiting);
+    let due = SENT.saturating_add(grace);
+    assert_eq!(mic.deadline(), Some(due));
+    let early = due.saturating_sub(Duration::from_millis(1));
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, early)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Waiting);
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, due)), STOP);
+    assert_eq!(kind(mic.phase), Kind::Stopping);
+}
+
+#[test]
+fn each_stop_logs_its_word_and_only_a_quiet_one_skips_the_restore() {
+    let mut unworn = linked(Column::Auto);
+    unworn.ear = EarReport::default();
+    for (column, state, fact, word) in [
+        (
+            Column::Auto,
+            linked(Column::Auto),
+            sink_in(true, SinkState::Suspended),
+            Word::Quiet,
+        ),
+        (Column::Auto, unworn, Fact::Changed, Word::NotWorn),
+        (Column::Off, linked(Column::Off), Fact::Changed, Word::Off),
+        (
+            Column::Exit,
+            linked(Column::Exit),
+            Fact::Changed,
+            Word::Exit,
+        ),
+    ] {
+        let unworn = (word == Word::NotWorn).then_some(LEFT);
+        let mut mic = Mic {
+            exiting: column == Column::Exit,
+            ..mic(Phase::Running(Hold::Waiting { unworn }))
+        };
+        assert_eq!(
+            lines(&mic.step(&state, &fact, SENT)),
+            [word.line()],
+            "{word:?}"
+        );
+        let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+        let effects = mic.step(&state, &marker, SENT);
+        let restore = effects.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0))));
+        assert_eq!(restore, word != Word::Quiet, "{word:?}");
+    }
+}
