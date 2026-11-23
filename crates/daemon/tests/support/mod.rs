@@ -432,6 +432,9 @@ pub(crate) fn set_request(id: usize, key: &str, value: &str) -> String {
     format!(r#"{{"v":1,"id":{id},"op":"set","key":"{key}","value":"{value}"}}"#)
 }
 
+/// A protocol 1 `get`, answered with the state.
+pub(crate) const GET: &str = r#"{"v":1,"id":7,"op":"get"}"#;
+
 pub(crate) fn do_request(id: usize, action: &str) -> String {
     format!(r#"{{"v":1,"id":{id},"op":"do","action":"{action}"}}"#)
 }

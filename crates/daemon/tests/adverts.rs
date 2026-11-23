@@ -11,7 +11,7 @@ mod support;
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -651,23 +651,36 @@ mod tests {
                 advertiser.update(&advert_from(at, u8::try_from(round).unwrap()).data);
             }
         }
-        // Adverts keep coming until the status answers, so it answered during the flood.
+        // Asked once adverts are coming and answered before they stop, so it answered during the flood.
         let flooding = AtomicBool::new(true);
-        let status = thread::scope(|scope| {
-            scope.spawn(|| {
+        let sent = AtomicUsize::new(0);
+        let (status, stopped_by_status) = thread::scope(|scope| {
+            let flood = scope.spawn(|| {
                 let started = Instant::now();
                 let mut round = u8::try_from(rounds).unwrap();
-                while flooding.load(Ordering::Relaxed) && started.elapsed() < HANG_LIMIT {
+                while flooding.load(Ordering::Relaxed) {
+                    if started.elapsed() >= HANG_LIMIT {
+                        return false;
+                    }
                     for (at, advertiser) in (0..FLOOD_ADDRESSES).zip(&advertisers) {
                         advertiser.update(&advert_from(at, round).data);
+                        sent.fetch_add(1, Ordering::Relaxed);
                     }
                     round = round.wrapping_add(1);
                 }
+                true
+            });
+            wait_for("the flood under way", || {
+                (sent.load(Ordering::Relaxed) > 0).then_some(())
             });
             let status = rig.status();
             flooding.store(false, Ordering::Relaxed);
-            status
+            (status, flood.join().unwrap())
         });
+        assert!(
+            stopped_by_status,
+            "the flood's deadline ended it, not the status"
+        );
         assert_eq!(status["case"]["available"], false);
         let advert = ours(HEADER, PAYLOAD);
         let _ours = rig.bluez().advertise(&advert.address, &advert.data);
