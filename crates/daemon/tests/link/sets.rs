@@ -39,8 +39,9 @@ fn set_racing_a_hang_up_always_gets_an_answer() {
     rig.start();
     rig.link_up(&device);
     rig.wait_filled();
-    let mut client = Proto1::connect(rig.session());
     for round in 0..RACE_ROUNDS {
+        // A client per round: the daemon closes one left idle through the wait for the next link.
+        let mut client = Proto1::connect(rig.session());
         let offset = rng.random_range(-RACE_SPREAD_MS..=RACE_SPREAD_MS);
         let apart = Duration::from_millis(offset.unsigned_abs());
         if offset < 0 {

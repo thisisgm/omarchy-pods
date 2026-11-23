@@ -25,7 +25,7 @@ mod tests {
     use super::support::omarchy::{
         DISCONNECT_NOTICE, Mood, RECORDED_WITHIN, SLOW, low_battery_notice,
     };
-    use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
+    use super::support::rig::{Device, Rig};
     use super::support::settings::{
         plant_settings, set, status, stop, unreadable_lines, wait_settings,
     };
@@ -117,7 +117,7 @@ mod tests {
         let mut seen: usize = 0;
         let within = RETRY_PAUSE
             .saturating_mul(u32::try_from(tries).unwrap())
-            .saturating_add(REAL_TIME_SLACK);
+            .saturating_add(HANG_LIMIT);
         wait_within(&format!("{tries} failed tries"), within, || {
             let now = changed();
             let new_try = counted.is_none_or(|at| at.elapsed() >= ONE_TRY);
@@ -376,19 +376,11 @@ mod tests {
         wait_tries(&session, FAILED_TRIES);
         assert_eq!(cannot_write_lines(&daemon), 1, "{}", daemon.log());
         fs::remove_dir(session.settings_file()).unwrap();
-        let repaired = Instant::now();
         wait_for("the owed value in settings.json", || {
             let text = fs::read_to_string(session.settings_file()).ok()?;
             let settings: Value = serde_json::from_str(&text).ok()?;
             (settings["ear_detection"] == "off").then_some(())
         });
-        let range = Duration::ZERO..=RETRY_PAUSE.saturating_add(REAL_TIME_SLACK);
-        assert_gap(
-            "the owed value after the repair",
-            repaired,
-            Instant::now(),
-            &range,
-        );
         assert_eq!(cannot_write_lines(&daemon), 1, "{}", daemon.log());
         stop(&mut daemon);
         let mut again = session.start();

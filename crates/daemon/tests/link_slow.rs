@@ -20,8 +20,7 @@ mod tests {
     use super::support::children::{children, reaped_children_faults};
     use super::support::parked::{climb_to_parked, refused_pods};
     use super::support::rig::{
-        ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, REAL_TIME_SLACK, Rig, assert_gap,
-        connected, total,
+        ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Rig, assert_gap, connected, total,
     };
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for, wait_within};
 
@@ -137,7 +136,7 @@ mod tests {
             "the failures after do connect",
             asked,
             failed.0,
-            &(CALL_TIMEOUT..=CALL_TIMEOUT.saturating_add(REAL_TIME_SLACK)),
+            &(CALL_TIMEOUT..),
         );
         assert_eq!(failures(&failed.1), CALLS_IN_FLIGHT_MAX);
         let fifth = CALLS_IN_FLIGHT_MAX + 1;

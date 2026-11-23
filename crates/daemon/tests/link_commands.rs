@@ -346,7 +346,8 @@ mod tests {
         let hold = Duration::from_millis(REPORT_HOLD_MS);
         // Stamped before the ask, so the daemon's hold cannot start earlier than this.
         let asked = Instant::now();
-        let reply = client.ask(&set_request(2, "noise", "transparency"));
+        // A fresh client: the daemon closes one left idle past its stall deadline.
+        let reply = Proto1::connect(rig.session()).ask(&set_request(2, "noise", "transparency"));
         assert_eq!(outcome(&reply), "sent", "{reply}");
         let left = hold.saturating_sub(asked.elapsed());
         rig.holds_for(left, "transparency kept through the later hold", |status| {
@@ -426,7 +427,8 @@ mod tests {
 
         // Stamped before the ask, so the daemon's hold cannot start earlier than this.
         let asked = Instant::now();
-        let reply = client.ask(&set_request(2, "noise", "transparency"));
+        // A fresh client: the daemon closes one left idle past its stall deadline.
+        let reply = Proto1::connect(rig.session()).ask(&set_request(2, "noise", "transparency"));
         assert_eq!(outcome(&reply), "sent", "{reply}");
         device.pods.set_setting(NOISE, ANC.wire);
         device.pods.set_ear(Placed::OutOfEar, Placed::InEar);

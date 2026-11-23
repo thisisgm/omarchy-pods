@@ -12,7 +12,7 @@ mod support;
 mod tests {
     use super::support::HANG_LIMIT;
     use super::support::parked::{climb_to_parked, refused_pods};
-    use super::support::rig::{HELD_LADDER, assert_gap, not_before};
+    use super::support::rig::{HELD_LADDER, assert_gap};
     use super::support::sleep::{RESUME_SETTLE, sleep, wake};
 
     /// The first dial and one per held step; the next comes only from the parked wait or a wake.
@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     #[ignore = "minutes at real time; the slow job runs it"]
-    fn a_wake_retries_a_parked_device_within_the_settle_plus_slack() {
+    fn a_wake_retries_a_parked_device_after_the_settle() {
         let (mut rig, device) = refused_pods();
         rig.link_up(&device);
         climb_to_parked(&rig);
@@ -35,7 +35,7 @@ mod tests {
             "the parked dial after the wake",
             woke,
             retry,
-            &not_before(RESUME_SETTLE),
+            &(RESUME_SETTLE..),
         );
         rig.finish();
     }

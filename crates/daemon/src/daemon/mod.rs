@@ -10,6 +10,8 @@ mod link;
 mod media;
 mod notify;
 mod owner_file;
+#[cfg(test)]
+mod paused;
 pub(crate) mod prefs;
 mod proto1;
 mod signals;

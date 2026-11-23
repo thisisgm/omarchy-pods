@@ -1,6 +1,7 @@
-//! Support tests: the watcher's own guard on a call, for a race no end to end test can order.
+//! Support tests: the watcher's own guard on a call, for a race no end to end test can order, and its waits on a paused clock.
 
 use std::future::poll_fn;
+use std::ops::ControlFlow;
 use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::time::Duration;
@@ -8,21 +9,78 @@ use std::time::Duration;
 use pods_core::link::{Call, DeviceAction, Session};
 use pods_proto::addr::BdAddr;
 use tokio::runtime::Builder as RuntimeBuilder;
-use tokio::sync::mpsc;
-use tokio::time::timeout;
+use tokio::sync::{mpsc, watch};
+use tokio::time::{Instant, sleep, timeout};
 use zbus::connection::Builder;
 use zbus::export::futures_core::Stream;
-use zbus::{Guid, MessageStream};
+use zbus::{Connection, Guid, MessageStream};
 
-use super::calls::Calls;
+use super::calls::{self, Calls};
 use super::monitor::Monitor;
 use super::objects::{Candidates, Change, Kind, Properties};
-use super::{DeviceEvent, ErrorLog, Input, Watcher};
+use super::{DeviceEvent, ErrorLog, Input, Request, Watcher, wait_to_retry};
+use crate::daemon::paused::on_paused_clock;
 
 /// Long enough for a call the watcher wrongly made to reach the peer.
 const QUIET: Duration = Duration::from_millis(300);
 
+/// `SYSTEM_BUS_RETRY_MS`, written out so a drifted retry goes red.
+const BUS_RETRY: Duration = Duration::from_millis(5000);
+
+/// `CALL_TIMEOUT_MS` of the calls, written out like `BUS_RETRY`.
+const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `SWEEP_RETRY_MS`, written out like `BUS_RETRY`.
+const SWEEP_RETRY: Duration = Duration::from_millis(1000);
+
+/// Inside the retry pause, when the driver asks for a sweep.
+const SWEEP_ASKED: Duration = Duration::from_millis(1000);
+
 const PODS: &str = "/org/bluez/hci0/dev_02_00_00_00_00_01";
+
+/// The watcher's end of a peer to peer bus, and the peer's.
+async fn peers() -> (Connection, Connection) {
+    let (watcher_end, peer_end) = UnixStream::pair().unwrap();
+    let peer = tokio::spawn(
+        Builder::unix_stream(peer_end)
+            .server(Guid::generate())
+            .p2p()
+            .build(),
+    );
+    let connection = Builder::unix_stream(watcher_end)
+        .p2p()
+        .build()
+        .await
+        .unwrap();
+    (connection, peer.await.unwrap().unwrap())
+}
+
+/// What a watcher borrows across connections, kept by the test.
+#[derive(Default)]
+struct Kept {
+    errors: ErrorLog,
+    calls: Calls,
+    monitor: Monitor,
+}
+
+impl Kept {
+    fn watcher<'a>(
+        &'a mut self,
+        connection: Connection,
+        inputs: &'a mpsc::Sender<Input>,
+        candidates: Candidates,
+    ) -> Watcher<'a> {
+        Watcher {
+            connection,
+            inputs,
+            candidates,
+            errors: &mut self.errors,
+            retry: None,
+            calls: &mut self.calls,
+            monitor: &mut self.monitor,
+        }
+    }
+}
 
 #[test]
 fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
@@ -31,19 +89,7 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let (watcher_end, peer_end) = UnixStream::pair().unwrap();
-        let peer = tokio::spawn(
-            Builder::unix_stream(peer_end)
-                .server(Guid::generate())
-                .p2p()
-                .build(),
-        );
-        let connection = Builder::unix_stream(watcher_end)
-            .p2p()
-            .build()
-            .await
-            .unwrap();
-        let peer = peer.await.unwrap().unwrap();
+        let (connection, peer) = peers().await;
         let mut reaching_peer = MessageStream::from(&peer);
         let device = BdAddr::from([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
         let mut candidates = Candidates::default();
@@ -61,18 +107,8 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
             path: PODS.to_owned(),
         });
         let (inputs, mut events) = mpsc::channel(1);
-        let mut errors = ErrorLog::default();
-        let mut calls = Calls::default();
-        let mut monitor = Monitor::default();
-        let mut watcher = Watcher {
-            connection,
-            inputs: &inputs,
-            candidates,
-            errors: &mut errors,
-            retry: None,
-            calls: &mut calls,
-            monitor: &mut monitor,
-        };
+        let mut kept = Kept::default();
+        let mut watcher = kept.watcher(connection, &inputs, candidates);
         let call = Call {
             action: DeviceAction::Connect,
             session: Session::default(),
@@ -89,4 +125,81 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
             "a message reached the peer"
         );
     });
+}
+
+#[test]
+fn a_lost_bus_is_dialled_again_the_retry_after_even_when_a_sweep_is_asked_meanwhile() {
+    let waited = on_paused_clock(async {
+        let (inputs, _driver) = mpsc::channel(1);
+        let (asks, mut requests) = mpsc::channel(1);
+        let (_wants, mut wanted) = watch::channel(false);
+        tokio::spawn(async move {
+            sleep(SWEEP_ASKED).await;
+            asks.send(Request::Sweep).await.unwrap();
+            // Held open, so the pause never reads a driver that is gone.
+            std::future::pending::<()>().await;
+        });
+        let started = Instant::now();
+        let flow = wait_to_retry(
+            &inputs,
+            &mut requests,
+            &mut wanted,
+            &mut Calls::default(),
+            &mut Monitor::default(),
+        )
+        .await;
+        assert_eq!(flow, ControlFlow::Continue(()));
+        started.elapsed()
+    });
+    assert_eq!(waited, BUS_RETRY);
+}
+
+#[test]
+fn a_call_bluez_never_answers_fails_after_the_call_timeout() {
+    let (waited, made) = on_paused_clock(async {
+        let (connection, _peer) = peers().await;
+        let started = Instant::now();
+        let made = calls::run(connection, PODS.to_owned(), DeviceAction::Connect).await;
+        (started.elapsed(), made)
+    });
+    assert_eq!(waited, CALL_TIMEOUT);
+    assert!(made.is_err(), "the call was answered");
+}
+
+#[test]
+fn a_sweep_bluez_refuses_at_once_arms_the_sweep_retry() {
+    let (spent, waits) = on_paused_clock(async {
+        let (connection, peer) = peers().await;
+        let mut calls = MessageStream::from(&peer);
+        // BlueZ owns its name on the bus but fails every sweep.
+        tokio::spawn(async move {
+            while let Some(Ok(call)) =
+                poll_fn(|context| Pin::new(&mut calls).poll_next(context)).await
+            {
+                let header = call.header();
+                if header
+                    .member()
+                    .is_some_and(|member| member == "NameHasOwner")
+                {
+                    peer.reply(&header, &true).await.unwrap();
+                } else {
+                    peer.reply_error(&header, "org.bluez.Error.Failed", &())
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        let (inputs, _events) = mpsc::channel(1);
+        let mut kept = Kept::default();
+        let mut watcher = kept.watcher(connection, &inputs, Candidates::default());
+        let started = Instant::now();
+        assert!(watcher.sweep().await.is_continue());
+        let retry = watcher.retry.as_ref().map(|retry| retry.deadline());
+        (
+            started.elapsed(),
+            retry.map(|due| due.duration_since(Instant::now())),
+        )
+    });
+    assert_eq!(spent, Duration::ZERO, "the sweep waited out its call");
+    assert_eq!(waits, Some(SWEEP_RETRY));
 }

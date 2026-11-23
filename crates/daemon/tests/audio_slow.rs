@@ -15,7 +15,7 @@ mod tests {
     use pulseaudio::protocol::MAX_VERSION;
 
     use super::support::audio::{Asked, CALL_TIMEOUT, LADDER_MS, PERCENT, Volumes};
-    use super::support::rig::{Rig, assert_gap, not_before};
+    use super::support::rig::{Rig, assert_gap};
     use super::support::{HANG_LIMIT, pause};
 
     /// One attempt after each step of the ladder, and one more after the repeated last step.
@@ -71,7 +71,7 @@ mod tests {
                 ),
                 *earlier,
                 *later,
-                &not_before(wanted),
+                &(wanted..),
             );
         }
         let auth = Asked::Auth {

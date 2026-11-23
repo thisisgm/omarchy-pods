@@ -18,9 +18,7 @@ mod tests {
     use super::support::logind::SLEEP_SIGNAL;
     use super::support::omarchy::{DISCONNECT_NOTICE, RECORDED_WITHIN, loss_is_announced};
     use super::support::parked::refused_pods;
-    use super::support::rig::{
-        ABSENT_GRACE, HELD_LADDER, REAL_TIME_SLACK, Rig, assert_gap, not_before,
-    };
+    use super::support::rig::{ABSENT_GRACE, HELD_LADDER, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::sleep::{
         RESUME_SETTLE, SLEEPING, SYSTEM_BUS_RETRY, WATCHING, WOKE, logged, sleep, wake,
     };
@@ -43,7 +41,7 @@ mod tests {
             "the sweep after the wake",
             woke,
             sweeps[count],
-            &not_before(RESUME_SETTLE),
+            &(RESUME_SETTLE..),
         );
     }
 
@@ -66,6 +64,20 @@ mod tests {
         assert!(
             settled < ABSENT_GRACE,
             "the wake came {since:?} after the loss, so the grace of {ABSENT_GRACE:?} could end inside the settle"
+        );
+    }
+
+    /// Checks the sleep watcher scheduled its retry at `SYSTEM_BUS_RETRY` by its log line; sample input `sleep: logind's signals ended; handing the driver a wake and subscribing again in 5000 ms`.
+    fn assert_retry_logged(rig: &mut Rig) {
+        let retry = format!(
+            "; handing the driver a wake and subscribing again in {} ms",
+            SYSTEM_BUS_RETRY.as_millis()
+        );
+        let log = rig.daemon().log();
+        assert!(
+            log.lines()
+                .any(|line| line.starts_with("sleep: ") && line.ends_with(&retry)),
+            "the sleep watcher logged no retry of {SYSTEM_BUS_RETRY:?}"
         );
     }
 
@@ -108,12 +120,7 @@ mod tests {
             RESUME_SETTLE.saturating_add(HANG_LIMIT),
         );
         let next = dials.last().unwrap().at;
-        assert_gap(
-            "the dial after the wake",
-            woke,
-            next,
-            &not_before(RESUME_SETTLE),
-        );
+        assert_gap("the dial after the wake", woke, next, &(RESUME_SETTLE..));
         let held = HELD_LADDER[DIALS_BEFORE_THE_WAKE.saturating_sub(1)];
         assert!(
             next.duration_since(last) < held,
@@ -246,7 +253,7 @@ mod tests {
             (rig.bluez().sweeps().len() > sweeps).then(Instant::now)
         });
         // Each watcher is back the retry after the cut, so the loss below comes past the settle.
-        let again = not_before(SYSTEM_BUS_RETRY);
+        let again = SYSTEM_BUS_RETRY..;
         assert_gap(
             "the sleep watcher back after the cut",
             cut,
@@ -254,6 +261,7 @@ mod tests {
             &again,
         );
         assert_gap("the BlueZ watcher back after the cut", cut, swept, &again);
+        assert_retry_logged(&mut rig);
         rig.wait_filled();
         loss_is_announced(&rig, &device);
         assert_eq!(logged(&mut rig, WOKE), 0, "a wake edge reached the daemon");

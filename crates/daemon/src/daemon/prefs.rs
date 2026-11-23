@@ -129,3 +129,6 @@ pub(super) async fn follow(mut changes: watch::Receiver<Prefs>, settings: PathBu
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
