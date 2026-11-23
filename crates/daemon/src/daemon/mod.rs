@@ -97,7 +97,7 @@ async fn serve(
     };
 
     let (link, inputs) = link::queue();
-    let hub = Hub::new(link.clone(), loaded.into_state());
+    let hub = Hub::new(link.clone(), loaded.clone().into_state());
     let (requests, watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
     let connector: link::Connector =
         Arc::new(|device| l2cap::connect(device, CONTROL_PSM, link::CONNECT_TIMEOUT));

@@ -89,13 +89,13 @@ fn migrate(settings: &Path, old: &Path) -> Prefs {
     };
     let taken = prefs::from_old_conf(&text);
     // A failed save needs no retry here: the next start reads the settings file if the rename landed, else the old file again.
-    if let Err(unsaved) = store(settings, taken) {
+    if let Err(unsaved) = store(settings, &taken) {
         log(&unsaved.to_string());
     }
     taken
 }
 
-fn store(settings: &Path, prefs: Prefs) -> Result<(), Unsaved> {
+fn store(settings: &Path, prefs: &Prefs) -> Result<(), Unsaved> {
     owner_file::write(settings, prefs::render(prefs).as_bytes()).map_err(|step| Unsaved {
         path: settings.to_path_buf(),
         step,
@@ -118,9 +118,9 @@ pub(super) async fn follow(mut changes: watch::Receiver<Prefs>, settings: PathBu
         if !open && !failures.failing() {
             return;
         }
-        let prefs = *changes.borrow_and_update();
+        let prefs = changes.borrow_and_update().clone();
         let path = settings.clone();
-        match spawn_blocking(move || store(&path, prefs)).await {
+        match spawn_blocking(move || store(&path, &prefs)).await {
             Ok(result) => failures.note(result),
             Err(error) => log(&format!("prefs: the write did not finish: {error}")),
         }

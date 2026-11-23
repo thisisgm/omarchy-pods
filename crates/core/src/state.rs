@@ -4,7 +4,7 @@ use pods_proto::model::{Capabilities, Model};
 use pods_proto::noise::NoiseMode;
 
 use crate::command::AdaptiveLevel;
-use crate::prefs::MicPref;
+use crate::prefs::{MicModels, MicPref};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
@@ -34,6 +34,8 @@ pub struct State {
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
     pub microphone: Microphone,
+    /// The models whose uplink answered, which `auto` does not start again.
+    pub mic_models: MicModels,
     pub audio_server: AudioServer,
     pub advert_intake: AdvertIntake,
 }
@@ -59,6 +61,7 @@ impl Default for State {
             // The C++ `Notifier` starts enabled.
             notifications: true,
             microphone: Microphone::default(),
+            mic_models: MicModels::default(),
             audio_server: AudioServer::Idle,
             advert_intake: AdvertIntake::Paused,
         }
@@ -177,6 +180,14 @@ impl Microphone {
     pub fn set_preference(&mut self, preference: MicPref) {
         *self = Self::new(preference);
     }
+
+    /// Shows the uplink machine's `code`, except that `off` is shown exactly while the preference is `off`.
+    pub fn show(&mut self, code: MicCode) {
+        self.code = match (self.preference, code) {
+            (MicPref::Off, _) | (_, MicCode::Off) => MicCode::resting(self.preference),
+            (MicPref::Auto | MicPref::Always, code) => code,
+        };
+    }
 }
 
 impl Default for Microphone {
@@ -189,6 +200,11 @@ impl Default for Microphone {
 pub enum MicCode {
     Off,
     Idle,
+    NotWorn,
+    Unsupported,
+    Starting,
+    Live,
+    Failed,
 }
 
 impl MicCode {
@@ -204,6 +220,11 @@ impl MicCode {
         match self {
             Self::Off => "off",
             Self::Idle => "idle",
+            Self::NotWorn => "not_worn",
+            Self::Unsupported => "unsupported",
+            Self::Starting => "starting",
+            Self::Live => "live",
+            Self::Failed => "failed",
         }
     }
 }

@@ -8,6 +8,12 @@ use crate::state::{EarDetectionBehavior, Microphone, State};
 
 pub const VERSION: u32 = 1;
 
+/// More models than Apple sells.
+pub const MAX_CONFIRMED_MODELS: usize = 16;
+
+/// A model number is a letter and four digits today; eight bounds the file with room.
+pub const MODEL_NUMBER_MAX: usize = 8;
+
 const VERSION_KEY: &str = "version";
 
 const EAR_DETECTION_KEY: &str = "ear_detection";
@@ -15,6 +21,8 @@ const EAR_DETECTION_KEY: &str = "ear_detection";
 const NOTIFICATIONS_KEY: &str = "notifications";
 
 const MICROPHONE_KEY: &str = "microphone";
+
+const MIC_MODELS_KEY: &str = "mic_models";
 
 /// The group and key of `earDetection/setting` in the C++ `main.cpp`.
 const OLD_EAR_DETECTION: (&str, &str) = ("earDetection", "setting");
@@ -53,11 +61,56 @@ impl MicPref {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The model numbers whose pods answered a START, oldest first, none twice.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MicModels(Vec<String>);
+
+impl MicModels {
+    #[must_use]
+    pub fn contains(&self, number: &str) -> bool {
+        self.0.iter().any(|kept| kept == number)
+    }
+
+    /// Keeps `number` unless it is kept already or is no model number, dropping the oldest past `MAX_CONFIRMED_MODELS`.
+    pub fn confirm(&mut self, number: &str) {
+        if self.contains(number) || !is_model_number(number) {
+            return;
+        }
+        if self.0.len() == MAX_CONFIRMED_MODELS {
+            self.0.remove(0);
+        }
+        self.0.push(number.to_owned());
+    }
+
+    // Sample input: `["A3063","A2084"]`.
+    fn parse(value: &Value) -> Option<Self> {
+        let entries = value.as_array()?;
+        let mut models = Self::default();
+        for entry in entries {
+            let number = entry.as_str().filter(|number| is_model_number(number))?;
+            if models.contains(number) || models.0.len() == MAX_CONFIRMED_MODELS {
+                return None;
+            }
+            models.0.push(number.to_owned());
+        }
+        Some(models)
+    }
+}
+
+/// One to `MODEL_NUMBER_MAX` characters of `A` to `Z` and `0` to `9`.
+fn is_model_number(text: &str) -> bool {
+    (1..=MODEL_NUMBER_MAX).contains(&text.len())
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prefs {
     pub ear_detection: EarDetectionBehavior,
     pub notifications: bool,
     pub microphone: MicPref,
+    pub mic_models: MicModels,
 }
 
 impl Default for Prefs {
@@ -73,6 +126,7 @@ impl Prefs {
             ear_detection: state.ear_detection_behavior,
             notifications: state.notifications,
             microphone: state.microphone.preference(),
+            mic_models: state.mic_models.clone(),
         }
     }
 
@@ -83,6 +137,7 @@ impl Prefs {
             ear_detection_behavior: self.ear_detection,
             notifications: self.notifications,
             microphone: Microphone::new(self.microphone),
+            mic_models: self.mic_models,
             ..State::default()
         }
     }
@@ -95,6 +150,7 @@ pub enum PrefsError {
     EarDetection,
     Notifications,
     Microphone,
+    MicModels,
 }
 
 impl fmt::Display for PrefsError {
@@ -105,11 +161,12 @@ impl fmt::Display for PrefsError {
             Self::EarDetection => "no ear_detection word",
             Self::Notifications => "no notifications switch",
             Self::Microphone => "no microphone word",
+            Self::MicModels => "no mic_models list",
         })
     }
 }
 
-// Sample input: `{"version":1,"ear_detection":"one","notifications":true,"microphone":"auto"}`; a file may lack `microphone`.
+// Sample input: `{"version":1,"ear_detection":"one","notifications":true,"microphone":"auto","mic_models":["A3063"]}`; a file may lack the last two.
 pub fn parse(text: &str) -> Result<Prefs, PrefsError> {
     let document: Option<Value> = serde_json::from_str(text).ok();
     let object = document
@@ -140,21 +197,27 @@ pub fn parse(text: &str) -> Result<Prefs, PrefsError> {
         // A file written before the daemon kept this choice.
         None => MicPref::default(),
     };
+    let mic_models = match object.get(MIC_MODELS_KEY) {
+        Some(list) => MicModels::parse(list).ok_or(PrefsError::MicModels)?,
+        None => MicModels::default(),
+    };
     Ok(Prefs {
         ear_detection,
         notifications,
         microphone,
+        mic_models,
     })
 }
 
 /// One line of JSON with its newline.
 #[must_use]
-pub fn render(prefs: Prefs) -> String {
+pub fn render(prefs: &Prefs) -> String {
     let document = json!({
         VERSION_KEY: VERSION,
         EAR_DETECTION_KEY: prefs.ear_detection.word(),
         NOTIFICATIONS_KEY: prefs.notifications,
         MICROPHONE_KEY: prefs.microphone.word(),
+        MIC_MODELS_KEY: prefs.mic_models.0,
     });
     format!("{document}\n")
 }
