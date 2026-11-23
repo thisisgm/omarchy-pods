@@ -12,6 +12,7 @@ use std::fmt::Display;
 use std::io;
 use std::path::Path;
 
+pub(crate) use pods_mic::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};
 use pods_proto::sdulog::{Direction, Record};
 use pods_proto::uplink::UplinkPacket;
 
@@ -27,10 +28,6 @@ use compare::{
 use label::{Label, LabelError};
 use oracle::{OracleError, OracleRun, Refusal, STDERR_FILE, oracle};
 
-/// The configuration the host supplies for the stream: AAC-ELD, mono, 480 sample frames, declared at 48 kHz.
-pub(crate) const EXPECTED_CONFIG: [u8; 4] = [0xf8, 0xe6, 0x30, 0x00];
-/// The samples one unit decodes to under that configuration.
-pub(crate) const SAMPLES_PER_UNIT: u16 = 480;
 /// The table of figures, which is also what the command prints.
 const DECODE_FILE: &str = "decode.tsv";
 /// What the candidate decoded, as a WAV file of floats.

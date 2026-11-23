@@ -1,0 +1,18 @@
+[package]
+name = "pods-mic"
+description = "Decodes the microphone uplink of the pods into samples a real time reader takes at a held delay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusty_aac.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+pods-samples = { path = "../samples" }
+
+[lints]
+workspace = true

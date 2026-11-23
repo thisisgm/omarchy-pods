@@ -30,6 +30,7 @@ mod tests {
     use std::process::Output;
 
     use pods_proto::sdulog::{Direction, Record};
+    use pods_samples::uplink;
     use tempfile::TempDir;
 
     use super::fixture::{TONE_UNIT, ffprobe, installed};
@@ -336,6 +337,13 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_units_are_the_units_of_the_pin() {
+        // The pin's tone holds its one line at the last place of the first band, under scale factor 0xb4.
+        assert_eq!(uplink::tone_unit(3, 0xb4), TONE_UNIT);
+        assert_eq!(uplink::silent_unit(), SILENT_UNIT);
+    }
+
+    #[test]
     fn a_control_that_shows_nothing_says_the_comparison_proves_nothing() {
         if !installed("ffmpeg") {
             return;
@@ -634,6 +642,9 @@ mod tests {
         ] {
             assert_eq!(row(&table, key).0, value, "{key}");
         }
+        // The reason is the one the chain's decoder gives, which keeps none of the library's.
+        let (_, said) = row(&table, "candidate_errors");
+        assert!(said.contains("the decoder refused the unit"), "{said}");
         let not_every_unit = "did not decode every unit";
         let not_whole = "one of the two decodes is not whole";
         for (key, why) in [
