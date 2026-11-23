@@ -258,7 +258,7 @@ fn absent_grace_resets_the_device_after_7750_ms() {
     reset.reset_device();
     assert_eq!(sim.state, reset);
     assert_eq!(sim.state.device_name, "");
-    assert_eq!(sim.state.model_number, "A3063");
+    assert_eq!(sim.state.model_number, "");
     assert_eq!(sim.state.batteries, Batteries::default());
     assert_eq!(sim.state.counters.reconnect_failures, 1);
     assert!(sim.machine.active.is_none());

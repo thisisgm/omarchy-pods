@@ -290,12 +290,12 @@ mod tests {
         rig.finish();
     }
 
-    /// The status less the `*_total` counters a link raises and `model_number`, which a forget keeps as the C++ `DeviceInfo::reset` does.
+    /// The status less the `*_total` counters a link raises.
     fn device_fields(mut status: Value) -> Value {
         status
             .as_object_mut()
             .unwrap()
-            .retain(|key, _| !key.ends_with("_total") && key != "model_number");
+            .retain(|key, _| !key.ends_with("_total"));
         status
     }
 

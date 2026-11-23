@@ -497,7 +497,7 @@ const CPP_RESET: [(&str, &str); 8] = [
 ];
 
 #[test]
-fn reset_device_matches_the_cpp_reset() {
+fn reset_device_covers_the_cpp_reset() {
     let statements: Vec<&str> = DEVICE_INFO
         .body("void reset()")
         .lines()
@@ -554,6 +554,7 @@ fn reset_device_matches_the_cpp_reset() {
         state,
         State {
             device_name: defaults.device_name,
+            model_number: defaults.model_number,
             model: Model::Unknown,
             noise_mode: NoiseMode::Off,
             noise_off: None,
