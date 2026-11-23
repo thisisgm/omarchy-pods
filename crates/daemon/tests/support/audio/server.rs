@@ -7,13 +7,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use pulseaudio::protocol::{
     AuthReply, ChannelVolume, Command, CommandTag, DEFAULT_SINK, GetCardInfo, GetSinkInfo,
     MAX_VERSION, PulseError, ServerInfo, SetCardProfileParams, SetClientNameReply,
     SetDeviceVolumeParams, SinkInfo, SinkState, SubscriptionEvent, SubscriptionEventFacility,
-    SubscriptionEventType, SubscriptionMask, Volume,
+    SubscriptionEventType, SubscriptionMask, SuspendParams, Volume,
 };
 
 use super::Asked;
@@ -27,12 +27,14 @@ const CLIENTS_MAX: usize = 16;
 const REQUESTS_MAX: usize = 4096;
 /// Messages kept for one client while replies are held.
 const HELD_MAX: usize = 64;
+/// Past a frame's 20 byte descriptor, so a reader is left inside the payload.
+const SPLIT_AT: usize = 24;
 /// A client that reads nothing for this long is stuck, and the fake records a fault.
 const WRITE_LIMIT: Duration = Duration::from_secs(2);
 /// Stereo, as `SinkInfo::new_dummy` describes every sink.
 const SINK_CHANNELS: usize = 2;
 /// The commands the fake answers; any other is refused with `PulseError::Command`.
-const UNDERSTOOD: [CommandTag; 12] = [
+const UNDERSTOOD: [CommandTag; 13] = [
     CommandTag::Auth,
     CommandTag::SetClientName,
     CommandTag::GetServerInfo,
@@ -45,6 +47,7 @@ const UNDERSTOOD: [CommandTag; 12] = [
     CommandTag::SetCardProfile,
     CommandTag::GetSourceInfoList,
     CommandTag::GetSourceOutputInfoList,
+    CommandTag::SuspendSink,
 ];
 
 pub(super) struct Shared {
@@ -58,7 +61,9 @@ struct Sink {
     volume: Volume,
     added: Volume,
     monitor: u32,
-    running: bool,
+    /// What its streams make of it; a client's suspend overrides it until the resume.
+    state: SinkState,
+    suspended: bool,
 }
 
 struct Client {
@@ -153,15 +158,16 @@ impl Sink {
         for _ in 0..SINK_CHANNELS {
             cvolume.push(self.volume);
         }
+        let state = if self.suspended {
+            SinkState::Suspended
+        } else {
+            self.state
+        };
         let monitor = monitor_name(&self.name.to_string_lossy());
         SinkInfo {
             name: self.name.clone(),
             cvolume,
-            state: if self.running {
-                SinkState::Running
-            } else {
-                SinkState::Idle
-            },
+            state,
             monitor_source_index: Some(self.monitor),
             monitor_source_name: Some(CString::new(monitor).unwrap()),
             ..SinkInfo::new_dummy(self.index)
@@ -269,7 +275,8 @@ impl State {
             volume,
             added: volume,
             monitor,
-            running: false,
+            state: SinkState::Idle,
+            suspended: false,
         });
         self.announce(
             SubscriptionEventFacility::Sink,
@@ -331,17 +338,11 @@ impl State {
         }
     }
 
-    pub(super) fn set_sink_running(&mut self, name: &str, running: bool) {
+    pub(super) fn set_sink_state(&mut self, name: &str, state: SinkState) {
         let position = self.named(name);
-        let sink = &mut self.sinks[position];
-        if sink.running != running {
-            sink.running = running;
-            let index = sink.index;
-            self.announce(
-                SubscriptionEventFacility::Sink,
-                SubscriptionEventType::Changed,
-                Some(index),
-            );
+        if self.sinks[position].state != state {
+            self.sinks[position].state = state;
+            self.announce_sink(position);
         }
     }
 
@@ -379,6 +380,15 @@ impl State {
         );
     }
 
+    fn announce_sink(&mut self, position: usize) {
+        let index = self.sinks[position].index;
+        self.announce(
+            SubscriptionEventFacility::Sink,
+            SubscriptionEventType::Changed,
+            Some(index),
+        );
+    }
+
     fn announce_card(&mut self, index: u32) {
         self.announce(
             SubscriptionEventFacility::Card,
@@ -403,6 +413,26 @@ impl State {
             for bytes in mem::take(&mut client.held) {
                 faults.extend(client.write(&bytes).err());
             }
+        }
+        for fault in faults {
+            self.fail(fault);
+        }
+    }
+
+    /// Writes the head of a sink change event to every client and holds its tail, and every later message, for the release of `hold`.
+    pub(super) fn send_split_event(&mut self) {
+        self.hold = true;
+        let event = Command::SubscribeEvent(SubscriptionEvent {
+            event_facility: SubscriptionEventFacility::Sink,
+            event_type: SubscriptionEventType::Changed,
+            index: self.default,
+        });
+        let mut faults = Vec::new();
+        for client in &mut self.clients {
+            let mut head = wire::event(&event, client.version());
+            let tail = head.split_off(SPLIT_AT);
+            faults.extend(client.write(&head).err());
+            client.held.push(tail);
         }
         for fault in faults {
             self.fail(fault);
@@ -457,7 +487,7 @@ impl State {
     )]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "the fake answers twelve of the protocol's commands and refuses every other alike"
+        reason = "the fake answers thirteen of the protocol's commands and refuses every other alike"
     )]
     fn answer(&mut self, id: u32, frame: &[u8]) -> Result<(), String> {
         let (channel, command, seq) = wire::header(frame)?;
@@ -474,7 +504,11 @@ impl State {
         }
         let version = self.client(id).version;
         let parsed = wire::command(frame, version.unwrap_or(MAX_VERSION))?;
-        self.record(asked(command, &parsed));
+        let recorded = asked(command, &parsed, |index| {
+            let sink = self.sinks.iter().find(|sink| sink.index == index);
+            sink.map(|sink| sink.name.to_string_lossy().into_owned())
+        });
+        self.record(recorded);
         if let Command::Auth(params) = &parsed {
             let version = params.version.min(MAX_VERSION);
             self.client(id).version = Some(version);
@@ -493,17 +527,7 @@ impl State {
             Command::SetClientName(_) => {
                 wire::reply(seq, &SetClientNameReply { client_id: id }, version)
             }
-            Command::GetServerInfo => {
-                let default_sink_name = self
-                    .default
-                    .and_then(|index| self.sinks.iter().find(|sink| sink.index == index))
-                    .map(|sink| sink.name.clone());
-                let info = ServerInfo {
-                    default_sink_name,
-                    ..ServerInfo::default()
-                };
-                wire::reply(seq, &info, version)
-            }
+            Command::GetServerInfo => wire::reply(seq, &self.server_info(), version),
             Command::GetSinkInfo(GetSinkInfo {
                 index: None,
                 name: Some(name),
@@ -547,10 +571,40 @@ impl State {
             Command::GetSourceOutputInfoList => {
                 wire::reply(seq, &self.capture.recorders(), version)
             }
+            Command::SuspendSink(SuspendParams {
+                device_index: Some(index),
+                device_name: None,
+                suspend,
+            }) => {
+                self.suspend(id, seq, index, suspend);
+                return Ok(());
+            }
             _ => wire::error(seq, PulseError::Command),
         };
         self.send(id, bytes);
         Ok(())
+    }
+
+    fn server_info(&self) -> ServerInfo {
+        let default_sink_name = self
+            .default
+            .and_then(|index| self.sinks.iter().find(|sink| sink.index == index))
+            .map(|sink| sink.name.clone());
+        ServerInfo {
+            default_sink_name,
+            ..ServerInfo::default()
+        }
+    }
+
+    /// The ack goes out before the change event, as a real server sends them.
+    fn suspend(&mut self, id: u32, seq: u32, index: u32, suspend: bool) {
+        let Some(position) = self.sinks.iter().position(|sink| sink.index == index) else {
+            self.send(id, wire::error(seq, PulseError::NoEntity));
+            return;
+        };
+        self.send(id, wire::ack(seq));
+        self.sinks[position].suspended = suspend;
+        self.announce_sink(position);
     }
 
     /// The ack goes out before the change event, as a real server sends them.
@@ -582,12 +636,12 @@ impl State {
     }
 }
 
-/// What the test sees of a command the fake understands; one addressed by index is not understood.
+/// What the test sees of a command the fake understands; only a suspend is addressed by index, and `named` gives that sink's name.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the fake names twelve of the protocol's commands and records every other by number"
+    reason = "the fake names thirteen of the protocol's commands and records every other by number"
 )]
-fn asked(command: u32, parsed: &Command) -> Asked {
+fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<String>) -> Asked {
     match parsed {
         Command::Auth(params) => Asked::Auth {
             version: params.version,
@@ -627,6 +681,15 @@ fn asked(command: u32, parsed: &Command) -> Asked {
         },
         Command::GetSourceInfoList => Asked::SourceList,
         Command::GetSourceOutputInfoList => Asked::RecorderList,
+        Command::SuspendSink(SuspendParams {
+            device_index: Some(index),
+            device_name: None,
+            suspend,
+        }) => Asked::Suspend {
+            name: named(*index),
+            suspend: *suspend,
+            at: Instant::now(),
+        },
         _ => Asked::Unknown { command },
     }
 }

@@ -20,6 +20,12 @@ pub fn sink_prefix(device: BdAddr) -> String {
     format!("{SINK_PREFIX}{}", groups.join("_"))
 }
 
+/// A judgment: a server slower than this is treated as gone.
+pub const AUDIO_CALL_TIMEOUT_MS: u64 = 2000;
+
+/// The measured form of the pause between a sink's suspend and its resume.
+pub const RESTORE_HOLD_MS: u64 = 300;
+
 /// A volume as the desktop shows it, 0 to 100.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Percent(u8);
@@ -50,6 +56,8 @@ pub enum AudioFact {
     Down,
     /// `None`: the followed device has no sink.
     Sink(Option<SinkFact>),
+    /// The restore asked for is done, or kept owed while the server is down.
+    Restored,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +70,10 @@ pub struct SinkFact {
 pub enum AudioRequest {
     /// `None` closes the connection.
     Follow(Option<BdAddr>),
+    /// Suspends and resumes the followed device's sink, so a stream the uplink's end broke is opened again.
+    Restore,
+    /// A START went out, so a restore still owed is dropped: the newest intent wins.
+    CancelRestore,
 }
 
 /// The connection follows a device from its link coming up to the device's reset, so a channel retry keeps it.
@@ -88,7 +100,8 @@ pub fn server_after(was: AudioServer, fact: &Fact) -> AudioServer {
         | Fact::Changed
         | Fact::Sleep(_)
         | Fact::Tick
-        | Fact::Paused(..) => was,
+        | Fact::Paused(..)
+        | Fact::Exit => was,
     }
 }
 

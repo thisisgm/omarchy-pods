@@ -41,6 +41,8 @@ pub enum Fact {
     Paused(Era, Vec<PlayerOwner>),
     Advert(Sighting),
     Monitor(MonitorFact),
+    /// The daemon is stopping; it waits for `Effect::Exited` within its bound.
+    Exit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub enum Effect {
     Uplink(UplinkRequest),
     /// A line for the daemon's log.
     Log(String),
+    /// The uplink is stopped and its sink restored, so the daemon may stop.
+    Exited,
 }
 
 /// Lives as long as the driver, so a latch outlives the link that set it.
@@ -112,7 +116,8 @@ impl Policy {
             | Fact::Sleep(_)
             | Fact::Tick
             | Fact::Audio(_)
-            | Fact::Paused(..) => {}
+            | Fact::Paused(..)
+            | Fact::Exit => {}
         }
     }
 
@@ -154,7 +159,7 @@ impl Policy {
             Fact::Paused(era, players) => {
                 Vec::from_iter(self.ear.paused(era, players).map(Effect::Media))
             }
-            Fact::Advert(_) | Fact::Monitor(_) => Vec::new(),
+            Fact::Advert(_) | Fact::Monitor(_) | Fact::Exit => Vec::new(),
         };
         effects.extend(monitor);
         effects.extend(mic);

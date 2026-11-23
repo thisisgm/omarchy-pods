@@ -72,6 +72,7 @@ fn mic_shows_off_exactly_while_the_preference_is_off() {
         MicCode::Unsupported,
         MicCode::Starting,
         MicCode::Live,
+        MicCode::Stopping,
         MicCode::Failed,
     ];
     for preference in MicPref::ALL {
