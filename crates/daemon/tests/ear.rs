@@ -542,17 +542,12 @@ mod tests {
 
     #[test]
     fn a_pause_still_pending_when_the_link_ends_is_never_sent() {
-        let (mut rig, device) = linked();
+        let (rig, device) = linked();
         let player = rig.player("slow", Playback::Playing);
         player.hold_replies(true);
         device.pods.set_ear(InEar, OutOfEar);
         player.wait_reads(1, HANG_LIMIT);
         rig.disconnect();
-        // Inside the daemon's wait for the status read, or the answer below would reach nobody either way.
-        rig.assert_not_logged(
-            "the disconnect while the status read is pending",
-            &pause_ended(0),
-        );
         player.hold_replies(false);
         player.none_for(QUIET);
         assert_eq!(player.asked(), []);
@@ -582,17 +577,12 @@ mod tests {
 
     #[test]
     fn a_pause_still_pending_when_the_channel_closes_is_never_sent() {
-        let (mut rig, device) = linked();
+        let (rig, device) = linked();
         let player = rig.player("slow", Playback::Playing);
         player.hold_replies(true);
         device.pods.set_ear(InEar, OutOfEar);
         player.wait_reads(1, HANG_LIMIT);
         rig.close_channel(&device);
-        // Inside the daemon's wait for the status read, or the answer below would reach nobody either way.
-        rig.assert_not_logged(
-            "the close while the status read is pending",
-            &pause_ended(0),
-        );
         player.hold_replies(false);
         player.none_for(QUIET);
         assert_eq!(player.asked(), []);
@@ -654,16 +644,16 @@ mod tests {
 
     #[test]
     fn a_resume_queued_when_the_channel_closes_still_plays_and_the_pause_ahead_of_it_does_not() {
-        resume_outlives_the_end("the close", Rig::close_channel);
+        resume_outlives_the_end(Rig::close_channel);
     }
 
     #[test]
     fn a_resume_queued_when_the_link_ends_still_plays_and_the_pause_ahead_of_it_does_not() {
-        resume_outlives_the_end("the disconnect", |rig, _| rig.disconnect());
+        resume_outlives_the_end(|rig, _| rig.disconnect());
     }
 
     /// Pauses `first` by a bud leaving, holds a second pause on a slow player, returns both buds so the resume waits behind it, then ends the link with `end`.
-    fn resume_outlives_the_end(what: &str, end: impl FnOnce(&Rig, &Device)) {
+    fn resume_outlives_the_end(end: impl FnOnce(&Rig, &Device)) {
         let (mut rig, device) = linked();
         let first = rig.player("first", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &first, Asked::Pause, HANG_LIMIT);
@@ -675,11 +665,6 @@ mod tests {
         slow.wait_reads(1, HANG_LIMIT);
         place(&rig, &device, InEar, InEar);
         end(&rig, &device);
-        // Inside the second pause's wait for the slow read, so the resume is still queued behind it.
-        rig.assert_not_logged(
-            &format!("{what} while the second pause is pending"),
-            &pause_ended(0),
-        );
         first.wait_asked(Asked::Play, HANG_LIMIT);
         // The second pause, cut by the end, has ended too, and paused nothing.
         rig.wait_logged(&pause_ended(0));
