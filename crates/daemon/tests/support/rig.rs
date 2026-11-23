@@ -17,8 +17,8 @@ use rustix::io::Errno;
 use rustix::process::{Signal, kill_process};
 use serde_json::Value;
 
-use super::audio::FakeAudio;
 use super::audio::wire::sink_named;
+use super::audio::{Asked as AudioAsked, FakeAudio, PERCENT};
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, bus_socket, start_bus};
 use super::logind::{FakeLogind, Impostor};
@@ -31,6 +31,8 @@ use super::{
 };
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
+/// A sink no test names, added and removed to make the audio adapter refresh without changing the pods' sink.
+const PASSING_SINK: &str = "alsa_output.passing";
 /// A dial may leave just as `Connected` falls.
 pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
 /// The most a reply or a status may take while a BlueZ call hangs.
@@ -473,6 +475,30 @@ impl Rig {
         self.wait_status(&format!("audio_server {word}"), |status| {
             status["audio_server"] == word
         })
+    }
+
+    /// Waits for `up`, for a refresh after a sink came and went (asked only once the sink read at `up` was queued), then for the driver to apply it.
+    pub(crate) fn wait_sink_told(&self) {
+        self.wait_audio_server("up");
+        let audio = self.audio.as_ref().expect("the fake audio server runs");
+        let before = audio.requests().len();
+        audio.add_sink(PASSING_SINK, PERCENT);
+        audio.remove_sink(PASSING_SINK);
+        wait_for("a refresh after a sink came and went", || {
+            audio.requests()[before..]
+                .contains(&AudioAsked::ServerInfo)
+                .then_some(())
+        });
+        self.wait_queued_inputs_applied();
+    }
+
+    /// Returns once the driver applied every input queued before the call, as a command is answered from that queue and a status from the published state; `reopen` only counts `reopen_calls_total`.
+    pub(crate) fn wait_queued_inputs_applied(&self) {
+        let reply = self.session.ask(b"reopen");
+        assert!(
+            !reply.is_empty(),
+            "reopen, the barrier behind the queued inputs: no reply, so the driver did not answer it"
+        );
     }
 
     /// Asks `librepods status` for `duration`, failing at the first answer inside it where `check` does not hold, or when none came inside it.

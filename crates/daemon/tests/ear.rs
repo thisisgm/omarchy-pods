@@ -87,8 +87,8 @@ mod tests {
         player.none_for(left.max(QUIET));
     }
 
-    /// Two volume changes, then the refresh after each: the second is asked only once the first was told to the driver.
-    fn told(audio: &FakeAudio, sink: &str) {
+    /// Two volume changes and the refresh after each, the second asked only once the first was queued, then the driver past both.
+    fn told(rig: &Rig, audio: &FakeAudio, sink: &str) {
         for step in 1..=2 {
             let before = audio.requests().len();
             audio.set_volume(sink, PERCENT.saturating_add(step));
@@ -98,6 +98,14 @@ mod tests {
                     .then_some(())
             });
         }
+        rig.wait_queued_inputs_applied();
+    }
+
+    /// `Rig::with_audio`, past the sink read at `up` as well, so the first bud is read with the pods' sink the default.
+    fn linked() -> (Rig, Device) {
+        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        rig.wait_sink_told();
+        (rig, device)
     }
 
     /// The battery packet with the left bud first, which makes it the primary.
@@ -110,7 +118,7 @@ mod tests {
 
     #[test]
     fn one_bud_out_pauses_the_playing_player_and_both_in_resumes_it() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let player = rig.player("one", Playback::Playing);
         let (out, paused) =
             placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
@@ -135,7 +143,7 @@ mod tests {
 
     #[test]
     fn with_both_removed_one_bud_out_pauses_nothing() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "both", 1);
         let player = rig.player("one", Playback::Playing);
         place(&rig, &device, InEar, OutOfEar);
@@ -156,7 +164,7 @@ mod tests {
 
     #[test]
     fn both_out_pauses_after_the_settle_and_one_in_resumes() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "both", 1);
         let player = rig.player("one", Playback::Playing);
         let within = SETTLE.saturating_add(HANG_LIMIT);
@@ -183,7 +191,7 @@ mod tests {
 
     #[test]
     fn a_bud_back_inside_the_settle_cancels_the_pause() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "both", 1);
         let player = rig.player("one", Playback::Playing);
         let out = Instant::now();
@@ -211,7 +219,7 @@ mod tests {
 
     #[test]
     fn ear_detection_off_pauses_nothing() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "off", 2);
         let player = rig.player("one", Playback::Playing);
         let out = Instant::now();
@@ -228,7 +236,7 @@ mod tests {
 
     #[test]
     fn a_player_already_paused_gets_no_pause_and_no_play() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let playing = rig.player("playing", Playback::Playing);
         let paused = rig.player("paused", Playback::Paused);
         placed_until(&device, InEar, OutOfEar, &playing, Asked::Pause, HANG_LIMIT);
@@ -244,7 +252,7 @@ mod tests {
 
     #[test]
     fn a_player_the_user_paused_is_never_resumed() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let ours = rig.player("ours", Playback::Playing);
         let users = rig.player("users", Playback::Paused);
         placed_until(&device, InEar, OutOfEar, &ours, Asked::Pause, HANG_LIMIT);
@@ -264,7 +272,7 @@ mod tests {
 
     #[test]
     fn two_players_playing_are_both_paused_and_both_resumed() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let first = rig.player("first", Playback::Playing);
         let second = rig.player("second", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &first, Asked::Pause, HANG_LIMIT);
@@ -299,7 +307,7 @@ mod tests {
         assert_eq!(player.asked(), []);
         // The same daemon pauses once the pods' sink is the default.
         audio.set_default_sink(&sink);
-        told(&audio, &sink);
+        told(&rig, &audio, &sink);
         place(&rig, &device, InEar, InEar);
         placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
         player.leave();
@@ -324,7 +332,7 @@ mod tests {
         audio.add_sink(&sink, PERCENT);
         audio.set_default_sink(&sink);
         rig.wait_audio_server("up");
-        told(&audio, &sink);
+        told(&rig, &audio, &sink);
         place(&rig, &device, InEar, InEar);
         placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
         player.leave();
@@ -333,7 +341,7 @@ mod tests {
 
     #[test]
     fn the_primary_bud_changing_is_followed_in_status() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let player = rig.player("one", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
         wait_worn(&rig, true, false);
@@ -352,7 +360,7 @@ mod tests {
 
     #[test]
     fn flapping_buds_and_a_preference_change_leave_no_stale_pause() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "both", 1);
         let player = rig.player("one", Playback::Playing);
         let start = Instant::now();
@@ -382,7 +390,7 @@ mod tests {
 
     #[test]
     fn a_pending_pause_dies_with_the_link() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "both", 1);
         let player = rig.player("one", Playback::Playing);
         let out = Instant::now();
@@ -392,13 +400,13 @@ mod tests {
         quiet_until(&player, out + SETTLE + REAL_TIME_SLACK);
         // Linked again, the same daemon pauses, and what it paused is forgotten with the next loss.
         rig.relink(&device);
-        rig.wait_audio_server("up");
+        rig.wait_sink_told();
         place(&rig, &device, InEar, InEar);
         let within = SETTLE.saturating_add(HANG_LIMIT);
         placed_until(&device, OutOfEar, OutOfEar, &player, Asked::Pause, within);
         rig.disconnect();
         rig.relink(&device);
-        rig.wait_audio_server("up");
+        rig.wait_sink_told();
         // From both out, so one bud back is the resume's own trigger in this mode.
         place(&rig, &device, OutOfEar, OutOfEar);
         place(&rig, &device, InEar, OutOfEar);
@@ -410,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_hung_player_delays_no_other_player_and_status_still_answers() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let first = rig.player("first", Playback::Playing);
         let second = rig.player("second", Playback::Playing);
         // Each hangs in turn and the bus lists the same names in the same order, so a serial daemon meets the hung one first once.
@@ -452,7 +460,7 @@ mod tests {
 
     #[test]
     fn a_pause_answered_after_the_timeout_is_still_resumed() {
-        let (mut rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (mut rig, device) = linked();
         let slow = rig.player("slow", Playback::Playing);
         slow.hold_asked(true);
         placed_until(&device, InEar, OutOfEar, &slow, Asked::Pause, HANG_LIMIT);
@@ -473,7 +481,7 @@ mod tests {
 
     #[test]
     fn more_players_than_the_bound_are_cut_off() {
-        let (mut rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (mut rig, device) = linked();
         let players: Vec<FakePlayer> = (0..PLAYERS_ON_A_BUSY_BUS)
             .map(|index| rig.player(&format!("busy{index}"), Playback::Playing))
             .collect();
@@ -519,7 +527,7 @@ mod tests {
 
     #[test]
     fn a_player_that_left_before_the_resume_is_skipped() {
-        let (mut rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (mut rig, device) = linked();
         let staying = rig.player("staying", Playback::Playing);
         let leaving = rig.player("leaving", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &staying, Asked::Pause, HANG_LIMIT);
@@ -554,15 +562,7 @@ mod tests {
         assert_eq!(player.asked(), []);
         place(&rig, &device, InEar, InEar);
         audio.restart(Volumes::Kept);
-        rig.wait_audio_server("up");
-        // A refresh after a change the pods' sink fact does not carry is asked only once the sink read at `up` was told.
-        let before = audio.requests().len();
-        audio.add_sink(SPEAKERS, PERCENT);
-        wait_for("a refresh after the speakers were added", || {
-            audio.requests()[before..]
-                .contains(&AudioAsked::ServerInfo)
-                .then_some(())
-        });
+        rig.wait_sink_told();
         placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
         placed_until(&device, InEar, InEar, &player, Asked::Play, HANG_LIMIT);
         assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn a_pause_still_pending_when_the_link_ends_is_never_sent() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let player = rig.player("slow", Playback::Playing);
         player.hold_replies(true);
         device.pods.set_ear(InEar, OutOfEar);
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_player_reopened_under_the_same_name_is_not_started() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let staying = rig.player("staying", Playback::Playing);
         let closed = rig.player("reopened", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &staying, Asked::Pause, HANG_LIMIT);
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn a_pause_still_pending_when_the_channel_closes_is_never_sent() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let player = rig.player("slow", Playback::Playing);
         player.hold_replies(true);
         let out = Instant::now();
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn a_settle_pending_when_the_channel_closes_pauses_nothing() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         prefer(&rig, "both", 1);
         let player = rig.player("one", Playback::Playing);
         let out = Instant::now();
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn a_channel_closing_with_the_buds_in_keeps_them_worn_and_pauses_nothing() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let player = rig.player("one", Playback::Playing);
         place(&rig, &device, InEar, InEar);
         rig.close_channel(&device);
@@ -675,13 +675,13 @@ mod tests {
 
     #[test]
     fn a_player_paused_before_the_channel_closed_is_played_when_it_reopens_with_the_buds_back() {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (rig, device) = linked();
         let player = rig.player("one", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
         rig.close_channel(&device);
         rig.accept(&device);
         rig.wait_filled();
-        rig.wait_audio_server("up");
+        rig.wait_sink_told();
         placed_until(&device, InEar, InEar, &player, Asked::Play, HANG_LIMIT);
         assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
         player.leave();
@@ -700,11 +700,11 @@ mod tests {
 
     /// Pauses `first` by a bud leaving, holds a second pause on a slow player, returns both buds so the resume waits behind it, then ends the link with `end`.
     fn resume_outlives_the_end(what: &str, end: impl FnOnce(&Rig, &Device)) {
-        let (rig, device, _audio) = Rig::with_audio(PERCENT);
+        let (mut rig, device) = linked();
         let first = rig.player("first", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &first, Asked::Pause, HANG_LIMIT);
-        // Time for the first pause's work to end, as the gap below counts from `out`; nothing reports that end.
-        pause(QUIET);
+        // The first pause's work has ended, as the gap below counts from `out`.
+        rig.wait_logged("media: the pause ended with 1 players paused");
         let slow = rig.player("slow", Playback::Playing);
         slow.hold_replies(true);
         let out = Instant::now();
@@ -720,6 +720,8 @@ mod tests {
             &(Duration::ZERO..=CALL_TIMEOUT),
         );
         first.wait_asked(Asked::Play, HANG_LIMIT);
+        // The second pause, cut by the end, has ended too, and paused nothing.
+        rig.wait_logged("media: the pause ended with 0 players paused");
         slow.hold_replies(false);
         slow.none_for(QUIET);
         assert_eq!(slow.asked(), []);

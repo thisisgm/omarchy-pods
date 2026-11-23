@@ -137,9 +137,14 @@ async fn serve(
     match request {
         MediaRequest::PauseAll(era) => {
             let paused = pause_playing(session, since).await;
+            let count = paused.len();
             if !paused.is_empty() && inputs.send(Input::Media(era, paused)).await.is_err() {
                 return ControlFlow::Break(());
             }
+            // After the report is queued, so any input that follows this line reaches the policy behind it.
+            log(&format!(
+                "media: the pause ended with {count} players paused"
+            ));
         }
         MediaRequest::Play(players) => {
             let answers = ask_each(players, |player| play(session, player)).await;
