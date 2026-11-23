@@ -39,7 +39,7 @@ const UNITS_PER_PACKET: u32 = 4;
 /// Two packets: a larger hole in the stamps is a new run, so no stamp can make the chain write silence without end.
 const MAX_GAP_UNITS: u32 = 2 * UNITS_PER_PACKET;
 /// About one second of packets: the earliest arrival in it is the pods' own cadence without the radio's delay.
-const ARRIVAL_WINDOW: usize = 32;
+pub const ARRIVAL_WINDOW: usize = 32;
 const FRAMES_PER_MS: u16 = 64;
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const _: () = assert!(
@@ -72,9 +72,30 @@ pub fn chain(counters: Arc<Counters>) -> Option<(Chain, Reader, Resync)> {
         counters,
         expected: None,
         faded: true,
-        arrivals: VecDeque::with_capacity(ARRIVAL_WINDOW),
+        arrivals: Arrivals::default(),
     };
     Some((chain, reader, resync))
+}
+
+/// The arrivals of the last `ARRIVAL_WINDOW` packets of a run, each its landing less the time its audio stands for, in ns.
+#[derive(Debug)]
+pub struct Arrivals(VecDeque<i64>);
+
+impl Default for Arrivals {
+    fn default() -> Self {
+        Self(VecDeque::with_capacity(ARRIVAL_WINDOW))
+    }
+}
+
+impl Arrivals {
+    /// Takes the arrival of the run's next packet and gives the earliest of the window, the packet's own among them.
+    pub fn push(&mut self, arrival: i64) -> i64 {
+        if self.0.len() == ARRIVAL_WINDOW {
+            self.0.pop_front();
+        }
+        self.0.push_back(arrival);
+        self.0.iter().copied().fold(arrival, i64::min)
+    }
 }
 
 /// The writer's half: it lives on the thread that reads the socket.
@@ -88,7 +109,7 @@ pub struct Chain {
     /// Whether the last unit written was no audio: none yet in this run, or a concealed one.
     faded: bool,
     /// What `Ring::arrival_at` gave for the last packets of the run.
-    arrivals: VecDeque<i64>,
+    arrivals: Arrivals,
 }
 
 impl Chain {
@@ -105,13 +126,8 @@ impl Chain {
             .decode_errors
             .fetch_add(dropped, Ordering::Relaxed);
         if wrote {
-            if self.arrivals.len() == ARRIVAL_WINDOW {
-                self.arrivals.pop_front();
-            }
-            self.arrivals.push_back(self.ring.arrival_at(now));
-            if let Some(earliest) = self.arrivals.iter().copied().min() {
-                self.ring.publish(earliest);
-            }
+            let earliest = self.arrivals.push(self.ring.arrival_at(now));
+            self.ring.publish(earliest);
         }
     }
 
@@ -119,7 +135,7 @@ impl Chain {
     pub fn reset(&mut self) {
         self.renew_decoder();
         self.ring.start_run();
-        self.arrivals.clear();
+        self.arrivals = Arrivals::default();
         self.expected = None;
         self.faded = true;
     }

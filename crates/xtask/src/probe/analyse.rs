@@ -7,6 +7,7 @@ mod bands;
 mod census;
 pub(crate) mod coarse;
 pub(crate) mod input;
+mod lateness;
 mod lead;
 pub(crate) mod load;
 mod rates;

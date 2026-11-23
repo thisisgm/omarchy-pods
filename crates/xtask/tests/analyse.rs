@@ -25,7 +25,7 @@ mod tests {
         DEVICE_INFO, OWNER_FILE, PERMISSION_BITS, PRIVATE, RATE_HZ, SAMPLES_PER_UNIT, SHORT_RUN_S,
         UNITS_PER_SDU, log_text, make_run, names_in, probe, row, run_path, soak,
     };
-    use super::synth::{OPAQUE, shows};
+    use super::synth::{NS_PER_MS, OPAQUE, shows, synth};
 
     /// The status the command exits with when it refuses; a panic would exit with 101.
     const REFUSED: i32 = 1;
@@ -44,6 +44,18 @@ mod tests {
     const TOO_FEW_FOR_A_LEAD: &str = "fewer than 50 packets with a whole unit in the first 10 s";
     /// Two packets from the pods too short for an opcode, and one sent to the pods, which no count from the pods reads.
     const NO_OPCODE_LOG: &str = "1 < 01\n2 < 010004\n3 > 040004000600\n";
+
+    /// The SDU the lateness test holds back, far from both ends of the short run.
+    const LATE_SDU: usize = 500;
+    /// How long it is held back: over one interval, so the SDU due meanwhile lands with it, 10 ms late.
+    const HELD_BACK_MS: u64 = 40;
+    /// A peer 312 parts per million slow: the nearest whole rate past 300.
+    const SLOW_HZ: u32 = 63_980;
+    /// Arrivals with no delay at all, so every lateness in the table is one the test planted.
+    const NO_JITTER_MS: u32 = 0;
+    const SEED: u64 = 1;
+    /// A clock 312 parts per million slow drifts about 0.3 ms over one window of about a second, so a lateness of 1 ms is past it.
+    const WINDOW_DRIFT_LIMIT_MS: f64 = 1.0;
 
     /// With the signal ignored a write past the cap fails as it does on a full disk; `$0` is the command, `$1` the run, `$2` the cap.
     const NO_ROOM: &str = r#"trap '' XFSZ; ulimit -f "$2"; exec "$0" probe analyse "$1""#;
@@ -309,5 +321,63 @@ mod tests {
         let error = String::from_utf8(not_a_run.stderr).unwrap();
         assert!(error.contains("is not a run directory"), "{error}");
         assert_eq!(fs::read_dir(empty.path()).unwrap().count(), 0);
+    }
+
+    /// The analysis table of a run that holds `records`.
+    fn table_of(name: &str, records: &[Record]) -> String {
+        let home = tempfile::tempdir().unwrap();
+        let run = make_run(&home, name, &log_text(records));
+        let done = probe(&home, "analyse", &run).output().unwrap();
+        assert!(done.status.success(), "{done:?}");
+        String::from_utf8(done.stdout).unwrap()
+    }
+
+    #[test]
+    fn the_lateness_table_finds_one_planted_late_packet() {
+        let mut records = synth(
+            RATE_HZ,
+            SAMPLES_PER_UNIT,
+            UNITS_PER_SDU,
+            SHORT_RUN_S,
+            NO_JITTER_MS,
+            SEED,
+        );
+        let landed_ns = records[LATE_SDU].at_ns + HELD_BACK_MS * NS_PER_MS;
+        records[LATE_SDU].at_ns = landed_ns;
+        records[LATE_SDU + 1].at_ns = landed_ns;
+        let table = table_of("late", &records);
+        let value = |key: &str| row(&table, key).0.to_owned();
+
+        assert_eq!(value("lateness_sdus"), records.len().to_string());
+        assert_eq!(value("lateness_max_ms"), format!("{HELD_BACK_MS}.000"));
+        assert_eq!(value("lateness_p99_ms"), "0.000");
+        assert_eq!(value("lateness_p99_99_ms"), value("lateness_max_ms"));
+        assert_eq!(value("lateness_over_30_ms"), "1");
+        assert_eq!(value("lateness_over_35_ms"), "1");
+        assert_eq!(value("lateness_over_45_ms"), "0");
+        assert_eq!(value("lateness_bin_40_ms"), "1");
+        assert_eq!(value("lateness_bin_10_ms"), "1");
+        let on_time = records.len() - 2;
+        assert_eq!(value("lateness_bin_0_ms"), on_time.to_string());
+    }
+
+    #[test]
+    fn a_slow_clock_alone_is_no_lateness() {
+        let records = synth(
+            SLOW_HZ,
+            SAMPLES_PER_UNIT,
+            UNITS_PER_SDU,
+            TEN_MINUTES_S,
+            NO_JITTER_MS,
+            SEED,
+        );
+        let table = table_of("slow", &records);
+        assert_eq!(row(&table, "lateness_sdus").0, records.len().to_string());
+        let largest: f64 = row(&table, "lateness_max_ms").0.parse().unwrap();
+        assert!(
+            largest > 0.0 && largest < WINDOW_DRIFT_LIMIT_MS,
+            "{largest}"
+        );
+        assert_eq!(row(&table, "lateness_over_30_ms").0, "0");
     }
 }

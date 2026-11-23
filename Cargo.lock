@@ -1039,6 +1039,8 @@ dependencies = [
  "pods-fake",
  "pods-mic",
  "pods-proto",
+ "pods-pw",
+ "pods-pwrig",
  "pods-samples",
  "pods-sys",
  "pods-trap",
