@@ -1,0 +1,16 @@
+# What the pods say to a stop written before they answered the start: three starts, each stopped at once.
+control 04000400580000000900000182000000049600
+control 040004005800000002000301
+wait 3000
+cue "controller: restore now"
+wait 5000
+control 04000400580000000900000182000000049600
+control 040004005800000002000301
+wait 3000
+cue "controller: restore now"
+wait 5000
+control 04000400580000000900000182000000049600
+control 040004005800000002000301
+wait 3000
+cue "controller: restore now"
+wait 5000

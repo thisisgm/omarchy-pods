@@ -221,6 +221,7 @@ fn the_summary_of_a_dictation_run_adds_the_attribute_counts() {
         audio_sdus: 4,
         starts: 3,
         stops: 5,
+        uplink_running: false,
         truncated: 7,
         att_pdus_in: 11,
         audio_notifications: 8,

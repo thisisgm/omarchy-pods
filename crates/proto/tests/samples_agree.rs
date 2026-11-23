@@ -9,8 +9,8 @@ mod tests {
     use pods_proto::metadata::Metadata;
     use pods_proto::noise::NoiseMode;
     use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
-    use pods_proto::uplink::UplinkPacket;
-    use pods_samples::uplink::{STAMP_STEP, audio_sdu};
+    use pods_proto::uplink::{self, UplinkPacket};
+    use pods_samples::uplink::{STAMP_STEP, START, STOP, audio_sdu};
     use pods_samples::{
         ADAPTIVE_LEVEL, CONVERSATION_AWARENESS, Cell, NOISE, ONE_BUD_ANC, Placed, battery_of,
         ear_of, host, metadata_of, setting,
@@ -57,6 +57,12 @@ mod tests {
         ] {
             assert_eq!(frame, daemon, "{symbol}");
         }
+    }
+
+    #[test]
+    fn the_uplink_start_and_stop_equal_the_packets_the_protocol_crate_sends() {
+        assert_eq!(START, uplink::START);
+        assert_eq!(STOP, uplink::STOP);
     }
 
     #[test]

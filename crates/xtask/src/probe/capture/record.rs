@@ -89,6 +89,8 @@ pub(crate) enum Mark {
     Start,
     Stop,
     Cue,
+    /// The line that answered a cue of a step file.
+    Answer,
     Side,
     Truncated,
     /// What the walk of the attribute table found.
@@ -120,6 +122,7 @@ impl Mark {
             Self::Start => "start",
             Self::Stop => "stop",
             Self::Cue => "cue",
+            Self::Answer => "answer",
             Self::Side => "side",
             Self::Truncated => "truncated",
             Self::Handles => "handles",
@@ -177,6 +180,8 @@ pub(super) struct Recorder<'o> {
     pub(super) audio_sdus: u64,
     pub(super) starts: u32,
     pub(super) stops: u32,
+    /// A START left and no STOP has left since.
+    pub(super) uplink_running: bool,
     pub(super) truncated: u32,
     pub(super) att_pdus_in: u64,
     /// Those of them that are audio notifications of the dictation stream.
@@ -208,6 +213,7 @@ impl<'o> Recorder<'o> {
             audio_sdus: 0,
             starts: 0,
             stops: 0,
+            uplink_running: false,
             truncated: 0,
             att_pdus_in: 0,
             audio_notifications: 0,

@@ -170,7 +170,9 @@ fn every_script_that_starts_dictation_also_stops_it() {
                         panic!("{name} changes the microphone side")
                     }
                     Action::Cue(_) | Action::MarkActive | Action::MarkIdle => {}
-                    Action::Step { .. } => panic!("{name} sends a packet of a step file"),
+                    Action::Step { .. } | Action::Hold(_) => {
+                        panic!("{name} holds a step of a step file")
+                    }
                 }
             }
             assert_eq!(
@@ -213,7 +215,9 @@ fn every_active_marker_has_an_idle_marker() {
                 | Action::Cue(_)
                 | Action::SetSide(_)
                 | Action::RestoreSide => {}
-                Action::Step { .. } => panic!("{name} sends a packet of a step file"),
+                Action::Step { .. } | Action::Hold(_) => {
+                    panic!("{name} holds a step of a step file")
+                }
             }
         }
         let marks = offsets(&script, &Action::MarkActive).len();

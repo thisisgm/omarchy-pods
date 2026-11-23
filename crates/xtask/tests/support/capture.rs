@@ -164,6 +164,13 @@ impl Running {
         kill_process(Pid::from_child(&self.child), Signal::INT).unwrap();
     }
 
+    /// Writes one line to the command's standard input, which the command must have been given as a pipe.
+    pub(crate) fn type_line(&mut self) {
+        let stdin = self.child.stdin.as_mut();
+        let stdin = stdin.expect("the command was started with no pipe on its standard input");
+        stdin.write_all(b"\n").unwrap();
+    }
+
     pub(crate) fn finish(mut self) -> Ran {
         let status = wait_within(HANG_LIMIT, "exit", || self.child.try_wait().unwrap());
         let stdout = text_of(self.child.stdout.take());
@@ -212,6 +219,44 @@ pub(crate) fn files_of(run: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// Waits until the marks file of `run` holds `shown` cue marks, so the command is known to wait at its cue, and returns the stamp of the last of them.
+pub(crate) fn wait_for_cue(run: &Path, shown: usize) -> u64 {
+    wait_within(HANG_LIMIT, "cue", || {
+        let marks = fs::read_to_string(run.join("marks.tsv")).unwrap_or_default();
+        let cues: Vec<u64> = whole_lines(&marks)
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let stamp = fields.next()?.parse().ok()?;
+                (fields.next() == Some("cue")).then_some(stamp)
+            })
+            .collect();
+        (cues.len() >= shown)
+            .then(|| cues.last().copied())
+            .flatten()
+    })
+}
+
+/// Waits until the packet log of `run` holds `count` packets from the pods stamped after `after_ns`, and returns the stamp of the last of them.
+pub(crate) fn wait_for_packets_after(run: &Path, after_ns: u64, count: usize) -> u64 {
+    wait_within(HANG_LIMIT, "packets from the pods", || {
+        let log = fs::read_to_string(run.join("sdu.log")).unwrap_or_default();
+        let records = whole_lines(&log).map(|line| sdulog::parse_line(line).unwrap());
+        let later: Vec<u64> = records
+            .filter(|record| record.direction == Direction::FromPods)
+            .map(|record| record.at_ns)
+            .filter(|at_ns| *at_ns > after_ns)
+            .collect();
+        later.get(count.checked_sub(1)?).copied()
+    })
+}
+
+/// The lines of a file a running command is still writing, without a last line whose end has not been written yet.
+// Sample input: `12\tgate\tear\n34\tcue\tre`, which holds one whole line.
+fn whole_lines(text: &str) -> impl Iterator<Item = &str> {
+    let lines = text.split_inclusive('\n');
+    lines.filter_map(|line| line.strip_suffix('\n'))
 }
 
 fn text_of(stream: Option<impl Read>) -> String {

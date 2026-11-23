@@ -251,7 +251,7 @@ fn each_handshake_request_restarts_the_wait_for_its_answer() {
         acked.unwrap();
         match engine.phase {
             Phase::Handshaking { asked_at_ns, .. } => Some(asked_at_ns),
-            Phase::Settling { .. } | Phase::Scripted { .. } => None,
+            Phase::Settling { .. } | Phase::Scripted { .. } | Phase::Held { .. } => None,
         }
     });
 

@@ -122,6 +122,114 @@ fn a_read_of_a_stream_handle_and_a_wait_of_nothing_are_steps_like_any() {
     assert_eq!(events, expected);
 }
 
+fn hold(text: &str) -> Action {
+    Action::Hold(text.to_owned())
+}
+
+#[test]
+fn a_cue_holds_its_text_at_the_sum_of_the_waits_above_it() {
+    let events =
+        parse_steps(b"wait 20\n  cue \"controller: restore now\"\nwait 5\ncue \"\"\n").unwrap();
+    let expected = [
+        at(20, hold("controller: restore now")),
+        at(25, hold("")),
+        at(25, Action::End),
+    ];
+    assert_eq!(events, expected);
+    let longest = "\u{e9}".repeat(MAX_CUE_CHARS);
+    let events = parse_steps(format!("cue \"{longest}\"").as_bytes()).unwrap();
+    assert_eq!(events, [at(0, hold(&longest)), at(0, Action::End)]);
+}
+
+#[test]
+fn a_cue_without_quotes_with_an_open_quote_or_past_the_bound_is_no_step() {
+    let too_long = format!("cue \"{}\"", "a".repeat(MAX_CUE_CHARS + 1));
+    let refused = [
+        "cue",
+        "cue restore now",
+        "cue \"restore now",
+        "cue restore now\"",
+        "cue \"",
+        "cue  \"two spaces\"",
+        "cue\t\"a tab\"",
+        "cue \"a quote \" inside\"",
+        "cue \"a tab\tinside\"",
+        "cue \"an escape \u{1b}[2J inside\"",
+        "cue \"text\" 5",
+        "cue\"no space\"",
+        too_long.as_str(),
+    ];
+    for line in refused {
+        let (line_number, fault) = (1, Fault::UnknownStep);
+        let expected = StepsError {
+            line: line_number,
+            fault,
+        };
+        assert_eq!(parse_steps(line.as_bytes()), Err(expected), "{line}");
+    }
+}
+
+/// The step file `name` of this crate, as the sitting runs it.
+fn step_file(name: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("steps");
+    std::fs::read(path.join(name)).unwrap()
+}
+
+#[test]
+fn all_four_files_load_and_name_no_unknown_step() {
+    let now = || hold("controller: restore now");
+    let revive = vec![
+        at(0, hold("music playing, both buds in")),
+        at(0, Action::Start),
+        at(10_000, Action::Stop),
+        at(11_500, hold("is one bud silent?")),
+        at(16_500, Action::Start),
+        at(21_500, hold("did sound come back in both buds?")),
+        at(26_500, Action::Stop),
+        at(28_000, now()),
+        at(28_000, Action::End),
+    ];
+    let mut restore: Vec<Event> = (0..8_u32)
+        .flat_map(|cycle| {
+            let from = cycle * 21_500;
+            let form = hold(&format!("controller: restore form {}", cycle + 1));
+            [
+                at(from, Action::Start),
+                at(from + 5_000, Action::Stop),
+                at(from + 6_500, form),
+            ]
+        })
+        .collect();
+    restore.push(at(172_000, Action::End));
+    let mut stop_early: Vec<Event> = (0..3_u32)
+        .flat_map(|cycle| {
+            let from = cycle * 8_000;
+            [
+                at(from, Action::Start),
+                at(from, Action::Stop),
+                at(from + 3_000, now()),
+            ]
+        })
+        .collect();
+    stop_early.push(at(24_000, Action::End));
+    let start_twice = vec![
+        at(0, Action::Start),
+        at(3_000, Action::Start),
+        at(6_000, Action::Stop),
+        at(7_500, now()),
+        at(7_500, Action::End),
+    ];
+    let files = [
+        ("revive", revive),
+        ("restore", restore),
+        ("stop-early", stop_early),
+        ("start-twice", start_twice),
+    ];
+    for (name, expected) in files {
+        assert_eq!(parse_steps(&step_file(name)), Ok(expected), "{name}");
+    }
+}
+
 /// Arbitrary bytes, and lines built from the step names and their fields, which arbitrary bytes almost never are.
 fn near_steps() -> impl Strategy<Value = Vec<u8>> {
     let word = prop_oneof![
@@ -130,6 +238,8 @@ fn near_steps() -> impl Strategy<Value = Vec<u8>> {
         Just("read".to_owned()),
         Just("control".to_owned()),
         Just("wait".to_owned()),
+        Just("cue".to_owned()),
+        "\"[a-z \"]{0,8}\"?",
         Just("#".to_owned()),
         "0x[0-9a-fA-F]{0,6}",
         "[0-9a-f]{0,12}",

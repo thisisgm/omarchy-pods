@@ -317,6 +317,8 @@ pub(crate) enum Action {
     Stop,
     /// A line shown to the owner.
     Cue(&'static str),
+    /// A cue of a step file: shown, and the events after it wait for a line on standard input.
+    Hold(String),
     SetSide(MicSide),
     /// Puts the microphone side back to the value the pods reported.
     RestoreSide,

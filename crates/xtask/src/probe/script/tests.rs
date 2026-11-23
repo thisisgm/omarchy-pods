@@ -131,7 +131,9 @@ fn every_script_that_starts_also_stops() {
                 | Action::MarkIdle
                 | Action::DictationStart
                 | Action::DictationStop => panic!("{name} touches the dictation stream"),
-                Action::Step { .. } => panic!("{name} sends a packet of a step file"),
+                Action::Step { .. } | Action::Hold(_) => {
+                    panic!("{name} holds a step of a step file")
+                }
             }
         }
         assert!(ended, "{name} never ends");

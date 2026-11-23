@@ -1,0 +1,8 @@
+# What the pods say to a start while the uplink already runs: two starts, then one stop.
+control 04000400580000000900000182000000049600
+wait 3000
+control 04000400580000000900000182000000049600
+wait 3000
+control 040004005800000002000301
+wait 1500
+cue "controller: restore now"

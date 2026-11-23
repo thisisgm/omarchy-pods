@@ -1,4 +1,4 @@
-//! Synthetic uplink audio: AAC low delay units written bit by bit, and the SDU that carries them.
+//! Synthetic uplink packets: the start and the stop, the pods' two markers, and AAC low delay units written bit by bit in the SDU that carries them.
 
 use rusty_aac::encode::{BitWriter, spectral_emit};
 
@@ -29,6 +29,32 @@ const BAND_EDGES: [u16; 36] = [
     0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 108, 120, 132,
     144, 156, 172, 188, 212, 240, 272, 304, 336, 368, 400, 432, 480,
 ];
+
+/// The packet a host starts the uplink with.
+pub const START: [u8; 19] = [
+    0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x82, 0x00, 0x00, 0x00,
+    0x04, 0x96, 0x00,
+];
+/// The packet a host stops the uplink with.
+pub const STOP: [u8; 12] = [
+    0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 0x01,
+];
+
+/// `04 00 04 00 0e 00`, six synthetic bytes no parser reads, then `22` while the uplink runs and `02` once it has stopped.
+#[must_use]
+pub fn state_marker(running: bool) -> [u8; 13] {
+    let state = if running { 0x22 } else { 0x02 };
+    [
+        0x04, 0x00, 0x04, 0x00, 0x0e, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01, state,
+    ]
+}
+
+/// `04 00 04 00 55 00 01 01 00`, then `32` while the uplink runs and `19` once it has stopped.
+#[must_use]
+pub fn session_marker(running: bool) -> [u8; 10] {
+    let state = if running { 0x32 } else { 0x19 };
+    [0x04, 0x00, 0x04, 0x00, 0x55, 0x00, 0x01, 0x01, 0x00, state]
+}
 
 /// `00 00`: a gain of 0, no band and no noise shaping, which decodes to silence.
 #[must_use]
@@ -106,6 +132,21 @@ mod tests {
         assert_eq!(tone_unit(480, 0xb4), silent_unit());
         assert_eq!(tone_unit(u16::MAX, 0xb4), silent_unit());
         assert_ne!(tone_unit(479, 0xb4), silent_unit());
+    }
+
+    #[test]
+    fn the_start_and_the_stop_carry_the_uplink_opcode_and_a_marker_says_its_state_in_its_last_byte()
+    {
+        let header = packet(OPCODE_UPLINK, &[]);
+        assert!(START.starts_with(&header) && STOP.starts_with(&header));
+        let (running, stopped) = (state_marker(true), state_marker(false));
+        assert_eq!(running[..12], stopped[..12]);
+        assert_eq!(running[..6], packet(0x000e, &[]));
+        assert_eq!((running[12], stopped[12]), (0x22, 0x02));
+        let (running, stopped) = (session_marker(true), session_marker(false));
+        assert_eq!(running[..9], packet(0x0055, &[0x01, 0x01, 0x00]));
+        assert_eq!(running[..9], stopped[..9]);
+        assert_eq!((running[9], stopped[9]), (0x32, 0x19));
     }
 
     #[test]
