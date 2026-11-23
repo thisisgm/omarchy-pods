@@ -13,6 +13,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_fake::Profile;
+    use serde_json::Value;
 
     use super::support::bus::Listener;
     use super::support::logind::SLEEP_SIGNAL;
@@ -144,16 +145,22 @@ mod tests {
     #[test]
     fn a_wake_with_the_link_up_changes_nothing() {
         let (mut rig, _device) = Rig::with_linked_pods();
-        let before = rig.status();
+        let before = without_mic(rig.status());
         let dials = rig.dials().len();
         sleep(&mut rig);
         let count = rig.bluez().sweeps().len();
         let woke = wake(&mut rig);
         wait_wake_sweep(&rig, count, woke);
         rig.omarchy().never_ran(RECORDED_WITHIN);
-        assert_eq!(rig.status(), before);
+        assert_eq!(without_mic(rig.status()), before);
         assert_eq!(rig.dials().len(), dials);
         rig.finish();
+    }
+
+    /// `status` without the `mic` key, which the uplink's stop at a sleep and start at the wake move, as the uplink suites check.
+    fn without_mic(mut status: Value) -> Value {
+        status.as_object_mut().unwrap().remove("mic");
+        status
     }
 
     #[test]

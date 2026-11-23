@@ -16,9 +16,9 @@ pub(crate) const WATCHING: &str = "sleep: watching logind for a suspend";
 pub(crate) const SLEEPING: &str = "sleep: the system is going to sleep";
 pub(crate) const WOKE: &str = "sleep: the system woke";
 
-/// logind's edge into sleep, once the daemon has queued it for the driver.
-pub(crate) fn sleep(rig: &mut Rig) {
-    edge(rig, true, SLEEPING);
+/// logind's edge into sleep, once the daemon has queued it for the driver; gives the moment just before the edge went out.
+pub(crate) fn sleep(rig: &mut Rig) -> Instant {
+    edge(rig, true, SLEEPING)
 }
 
 /// logind's wake edge, once the daemon has queued it; gives the moment just before the edge went out.

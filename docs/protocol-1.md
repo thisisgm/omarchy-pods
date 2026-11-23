@@ -144,8 +144,8 @@ A reply carries the request's `id` and `ok`.
   carries `notifications_enabled`, the `notifications` setting, and
   `microphone`, the `microphone` setting. Its `mic` is `off` while that setting
   is `off`; else `idle` while no link is up; `unsupported` once a model never
-  confirmed left its START unanswered, and `failed` once a confirmed one did,
-  each until the link is lost; `stopping` from a STOP until the sink's restore
+  confirmed left its START unanswered three times, and `failed` once a
+  confirmed one did, each until the link is lost; `stopping` from a STOP until the sink's restore
   after it is done or owed, or, for a STOP sent because the sink was suspended
   or gone, until the AirPods say the uplink stopped; `not_worn` while no bud is
   worn; `starting` from the START until the AirPods say the uplink runs, then
@@ -161,7 +161,17 @@ A reply carries the request's `id` and `ok`.
   restore until the server is back, and a newer START drops a restore not yet
   begun. At a stop of the daemon a running uplink is stopped and its sink
   restored first,
-  within 2 s. Its `audio_server` is `idle` while no AirPods
+  within 2 s. A START the AirPods leave unanswered is sent again, three tries
+  in all, unless the want or the link is gone or the daemon is stopping, and
+  no STOP is sent while one waits for its answer. An uplink the AirPods say
+  runs while nothing wants it, such as a late answer, is stopped as one whose
+  linger has passed. A STOP the AirPods do not confirm in time is taken as
+  done, and a later START still goes out. An uplink the AirPods stop on their
+  own gets the restore at once, and starts again only once the want has gone
+  and come back. At the edge into sleep a running uplink is stopped with no
+  restore and a START waiting for its answer is dropped; after the wake the
+  uplink starts again while it is wanted. Its `mic_start_failures` counts every
+  START left unanswered, each try once, since the daemon started. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and
   `down` while it cannot reach it. Its
   `advert_intake` is `listening` once BlueZ accepted the daemon's advert

@@ -78,7 +78,7 @@ fn mic_shows_off_exactly_while_the_preference_is_off() {
     for preference in MicPref::ALL {
         for code in codes {
             let mut microphone = Microphone::new(preference);
-            microphone.show(code);
+            microphone.show(code, 2);
             let shown = match (preference, code) {
                 (MicPref::Off, _) => MicCode::Off,
                 (_, MicCode::Off) => MicCode::Idle,
@@ -90,6 +90,8 @@ fn mic_shows_off_exactly_while_the_preference_is_off() {
                 preference,
                 "{preference:?} {code:?}"
             );
+            microphone.set_preference(MicPref::Always);
+            assert_eq!(microphone.start_failures(), 2, "{preference:?} {code:?}");
         }
     }
 }

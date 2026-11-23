@@ -10,7 +10,7 @@ use super::*;
 use crate::command::tests::level;
 use crate::prefs::{MicModels, MicPref};
 use crate::state::{
-    AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, Microphone,
+    AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, MicCode, Microphone,
 };
 
 fn status(state: &State) -> Value {
@@ -23,6 +23,8 @@ fn charge(level: u8, charging: bool) -> Charge {
 
 #[test]
 fn populated_state_lands_every_field_on_its_key() {
+    let mut microphone = Microphone::new(MicPref::Off);
+    microphone.show(MicCode::Off, 14);
     let state = State {
         connected: true,
         device_name: "Desk pods".to_owned(),
@@ -62,12 +64,12 @@ fn populated_state_lands_every_field_on_its_key() {
             reopen_calls: 13,
         },
         notifications: false,
-        microphone: Microphone::new(MicPref::Off),
+        microphone,
         mic_models: MicModels::default(),
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
     };
-    let expected = json!({
+    let mut expected = json!({
         "adaptive_level_changes_total": 11,
         "adaptive_noise_level": 37,
         "advert_intake": "listening",
@@ -110,6 +112,8 @@ fn populated_state_lands_every_field_on_its_key() {
         "supports_noise_off": false,
         "supports_one_bud_anc": true,
     });
+    // Past the json macro's recursion limit.
+    expected["mic_start_failures"] = json!(14);
     assert_eq!(status(&state), expected);
 }
 

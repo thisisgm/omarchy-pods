@@ -323,7 +323,7 @@ impl Driver {
             .into_iter()
             .flat_map(|fact| self.policy.step(&next, fact, now))
             .collect();
-        next.microphone.show(self.policy.mic(&next));
+        self.policy.show_mic(&mut next);
         let prefs = Prefs::of(&next);
         self.outlets.prefs.send_if_modified(|kept| {
             let changed = *kept != prefs;
@@ -352,7 +352,7 @@ impl Driver {
         if next != last {
             effects.extend(self.policy.step(&next, Fact::Changed, now));
         }
-        next.microphone.show(self.policy.mic(&next));
+        self.policy.show_mic(&mut next);
         self.hub.publish(next);
         for effect in effects {
             self.route(effect);

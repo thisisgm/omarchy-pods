@@ -15,6 +15,8 @@ pub const STOP_WAITS_LINE: &str = "mic: stop waits for playback";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hold {
     Wanted,
+    /// The pods said they run with no START out, so the want and its linger are over already.
+    Late,
     /// Unwanted from `since`, and no bud worn from `unworn`.
     Lingering {
         since: Duration,
@@ -40,6 +42,7 @@ impl Hold {
             return Next::Hold(Self::Wanted);
         }
         let hold = match self {
+            Self::Late => return gate(worn, quiet),
             Self::Wanted => Self::Lingering {
                 since: now,
                 unworn: (!worn).then_some(now),
@@ -54,25 +57,32 @@ impl Hold {
         };
         if hold.deadline().is_some_and(|deadline| now < deadline) {
             Next::Hold(hold)
-        } else if !worn {
-            Next::Stop(Word::NotWorn)
-        } else if quiet {
-            Next::Stop(Word::Quiet)
         } else {
-            Next::Hold(Self::Waiting { unworn: None })
+            gate(worn, quiet)
         }
     }
 
     pub(super) fn deadline(self) -> Option<Duration> {
         let grace = |left: Duration| left.saturating_add(Duration::from_millis(BUD_GRACE_MS));
         match self {
-            Self::Wanted => None,
+            Self::Wanted | Self::Late => None,
             Self::Lingering { since, unworn } => {
                 let linger = since.saturating_add(Duration::from_millis(UPLINK_LINGER_MS));
                 Some(unworn.map_or(linger, |left| grace(left).min(linger)))
             }
             Self::Waiting { unworn } => unworn.map(grace),
         }
+    }
+}
+
+/// A due STOP goes out with no bud worn or with the sink quiet, and waits otherwise.
+fn gate(worn: bool, quiet: bool) -> Next {
+    if !worn {
+        Next::Stop(Word::NotWorn)
+    } else if quiet {
+        Next::Stop(Word::Quiet)
+    } else {
+        Next::Hold(Hold::Waiting { unworn: None })
     }
 }
 

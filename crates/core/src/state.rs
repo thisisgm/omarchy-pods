@@ -151,11 +151,12 @@ impl LidState {
     }
 }
 
-/// The microphone preference and what the `mic` status key shows, held together so neither moves without the other.
+/// The microphone preference and what the `mic` status keys show, held together so neither moves without the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Microphone {
     preference: MicPref,
     code: MicCode,
+    start_failures: u32,
 }
 
 impl Microphone {
@@ -164,6 +165,7 @@ impl Microphone {
         Self {
             preference,
             code: MicCode::resting(preference),
+            start_failures: 0,
         }
     }
 
@@ -177,12 +179,19 @@ impl Microphone {
         self.code
     }
 
-    pub fn set_preference(&mut self, preference: MicPref) {
-        *self = Self::new(preference);
+    #[must_use]
+    pub const fn start_failures(self) -> u32 {
+        self.start_failures
     }
 
-    /// Shows the uplink machine's `code`, except that `off` is shown exactly while the preference is `off`.
-    pub fn show(&mut self, code: MicCode) {
+    pub fn set_preference(&mut self, preference: MicPref) {
+        self.preference = preference;
+        self.code = MicCode::resting(preference);
+    }
+
+    /// Shows the uplink machine's `code` and `start_failures`, except that `off` is shown exactly while the preference is `off`.
+    pub fn show(&mut self, code: MicCode, start_failures: u32) {
+        self.start_failures = start_failures;
         self.code = match (self.preference, code) {
             (MicPref::Off, _) | (_, MicCode::Off) => MicCode::resting(self.preference),
             (MicPref::Auto | MicPref::Always, code) => code,
