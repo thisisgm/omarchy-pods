@@ -1,0 +1,2 @@
+# The library's modules, loaded while the context is made, are unloaded with allocations of theirs still standing; no other leak is let through.
+leak:pw_context_load_module

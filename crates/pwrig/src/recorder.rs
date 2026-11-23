@@ -72,6 +72,12 @@ impl<'server> Recorder<'server> {
         self.node
     }
 
+    /// The rate the recorder asks for, which its samples are at.
+    #[must_use]
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
     /// Waits for the file to hold `frames` frames, failing once `within` passes.
     pub fn wait_frames(&self, frames: usize, within: Duration) {
         let wanted = u64::try_from(frames).unwrap_or(u64::MAX);
