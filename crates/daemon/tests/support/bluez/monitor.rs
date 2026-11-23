@@ -65,6 +65,7 @@ pub(super) struct Monitors {
     devices: Vec<Advertised>,
     /// An address and its next advert, shown just ahead of the reply to the next `GetAll` of its device.
     at_read: Option<(String, Vec<u8>)>,
+    release_at_activation: bool,
 }
 
 /// What BlueZ tells applications apart by: the adapter, the owner's unique name and the root path.
@@ -170,6 +171,11 @@ impl Bluez {
     pub(crate) fn release_monitors(&self) {
         let releases = self.lock().monitors.release_all();
         self.send(releases);
+    }
+
+    /// As `release_monitors`, sent right after the `Activate` of the next registration's monitors.
+    pub(crate) fn release_at_activation(&self) {
+        self.lock().monitors.release_at_activation = true;
     }
 }
 
@@ -524,12 +530,23 @@ pub(super) async fn register(
     for message in messages {
         connection.send(&message).await.unwrap();
     }
-    let mut state = lock();
-    if let Some(index) = state.monitors.registered(&registration) {
+    let releases = {
+        let mut state = lock();
+        let Some(index) = state.monitors.registered(&registration) else {
+            return;
+        };
         let app = &mut state.monitors.apps[index];
         app.monitors
             .iter_mut()
             .for_each(|monitor| monitor.active = true);
+        if mem::take(&mut state.monitors.release_at_activation) {
+            state.monitors.release_all()
+        } else {
+            Vec::new()
+        }
+    };
+    for message in releases {
+        connection.send(&message).await.unwrap();
     }
 }
 

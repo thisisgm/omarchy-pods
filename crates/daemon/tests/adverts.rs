@@ -491,6 +491,19 @@ mod tests {
     }
 
     #[test]
+    fn a_release_right_after_the_activation_registers_again() {
+        let mut rig = keyed();
+        rig.bluez().release_at_activation();
+        rig.start();
+        rig.bluez().wait_monitors(1, HANG_LIMIT);
+        let mut wanted = registration(rig.adapter());
+        wanted.extend(registration(rig.adapter()));
+        assert_eq!(rig.bluez().calls(), wanted);
+        wait_intake(&rig, "listening");
+        rig.finish();
+    }
+
+    #[test]
     fn no_manager_interface_reads_unavailable() {
         let mut rig = Rig::new();
         rig.session().store_sample_keys();

@@ -310,7 +310,11 @@ impl Watcher<'_> {
                 }
                 return ControlFlow::Continue(());
             }
-            Some("Activate" | "DeviceLost") => return ControlFlow::Continue(()),
+            Some("Activate") => {
+                self.monitor.activated();
+                return ControlFlow::Continue(());
+            }
+            Some("DeviceLost") => return ControlFlow::Continue(()),
             _ if message
                 .primary_header()
                 .flags()
