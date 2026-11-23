@@ -6,6 +6,49 @@ use proptest::prelude::*;
 
 type Flag = fn(Capabilities) -> bool;
 
+/// A row the Rust table holds and the C++ sources do not, named by why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BeyondCpp {
+    ReleasedAfter(Model),
+    IdPublishedAfter(u16),
+    BeatsKeptOut(u16),
+}
+use BeyondCpp::{BeatsKeptOut, IdPublishedAfter, ReleasedAfter};
+
+/// The C++ comparisons leave out the model and identifier rows, and the Beats rows pin the Beats list, which C++ lacks.
+const BEYOND_CPP: &[BeyondCpp] = &[
+    ReleasedAfter(Model::AirPods5),
+    ReleasedAfter(Model::AirPods5WirelessCase),
+    IdPublishedAfter(0x2036),
+    IdPublishedAfter(0x2030),
+    IdPublishedAfter(0x202D),
+    BeatsKeptOut(0x2003),
+    BeatsKeptOut(0x2005),
+    BeatsKeptOut(0x2006),
+    BeatsKeptOut(0x2009),
+    BeatsKeptOut(0x200B),
+    BeatsKeptOut(0x200C),
+    BeatsKeptOut(0x200D),
+    BeatsKeptOut(0x2010),
+    BeatsKeptOut(0x2011),
+    BeatsKeptOut(0x2012),
+    BeatsKeptOut(0x2016),
+    BeatsKeptOut(0x2017),
+    BeatsKeptOut(0x201D),
+    BeatsKeptOut(0x2025),
+    BeatsKeptOut(0x2026),
+    BeatsKeptOut(0x202F),
+    BeatsKeptOut(0x2038),
+];
+
+fn in_cpp(model: Model) -> bool {
+    !BEYOND_CPP.contains(&ReleasedAfter(model))
+}
+
+fn id_in_cpp(id: u16) -> bool {
+    !BEYOND_CPP.contains(&IdPublishedAfter(id))
+}
+
 /// The C++ enumerator name, which the Rust variant name copies.
 fn cpp_name(model: Model) -> String {
     format!("{model:?}")
@@ -33,7 +76,7 @@ fn rust_true_cases(flag: Flag) -> Vec<String> {
     Model::ALL
         .iter()
         .copied()
-        .filter(|model| flag(model.capabilities()))
+        .filter(|&model| in_cpp(model) && flag(model.capabilities()))
         .map(cpp_name)
         .collect()
 }
@@ -60,6 +103,12 @@ fn parse_model_number_matches_apple_support_list() {
         ("A3064", Model::AirPodsPro3),
         ("A3063", Model::AirPodsPro3),
         ("A3065", Model::AirPodsPro3),
+        ("A3531", Model::AirPods5),
+        ("A3532", Model::AirPods5),
+        ("A3533", Model::AirPods5),
+        ("A3439", Model::AirPods5WirelessCase),
+        ("A3440", Model::AirPods5WirelessCase),
+        ("A3441", Model::AirPods5WirelessCase),
         // Apple publishes none of these four, so the dropped guesses must not answer Pro 3.
         ("A3066", Model::Unknown),
         ("A3334", Model::Unknown),
@@ -105,6 +154,8 @@ fn model_display_name_exhaustive() {
     // Both AirPods 4 variants say AirPods 4 on purpose, so the match is not a slip.
     assert_eq!(Model::AirPods4.display_name(), "AirPods 4");
     assert_eq!(Model::AirPods4ANC.display_name(), "AirPods 4");
+    assert_eq!(Model::AirPods5.display_name(), "AirPods 5");
+    assert_eq!(Model::AirPods5WirelessCase.display_name(), "AirPods 5");
 }
 
 #[test]
@@ -123,6 +174,8 @@ fn model_ints_are_stable() {
         (Model::AirPods4ANC, 10),
         (Model::AirPodsPro3, 11),
         (Model::AirPodsMax2, 12),
+        (Model::AirPods5, 13),
+        (Model::AirPods5WirelessCase, 14),
     ] {
         assert_eq!(model.as_int(), int, "{model:?}");
     }
@@ -142,6 +195,8 @@ fn is_model_headset_only_max() {
         Model::AirPodsPro,
         Model::AirPodsPro2USBC,
         Model::AirPods4ANC,
+        Model::AirPods5,
+        Model::AirPods5WirelessCase,
         Model::Unknown,
     ] {
         assert!(!model.capabilities().is_headset, "{model:?}");
@@ -167,6 +222,8 @@ fn is_pro_series_covers_all_pro_gens() {
         Model::AirPodsMaxLightning,
         Model::AirPodsMaxUSBC,
         Model::AirPodsMax2,
+        Model::AirPods5,
+        Model::AirPods5WirelessCase,
         Model::Unknown,
     ] {
         assert!(!model.capabilities().is_pro_series, "{model:?}");
@@ -189,6 +246,8 @@ fn capabilities_match_apple_compare_table() {
         (Model::AirPodsMaxLightning, true, false, false, false),
         (Model::AirPodsMaxUSBC, true, false, false, false),
         (Model::AirPodsMax2, true, true, true, false),
+        (Model::AirPods5, true, true, true, true),
+        (Model::AirPods5WirelessCase, true, true, true, true),
         // Unknown fails open on modes: an unmapped model keeps what it had and gains nothing else.
         (Model::Unknown, true, false, false, false),
     ];
@@ -258,6 +317,7 @@ fn model_numbers_match_the_cpp_model_number_map() {
         .collect();
     let rust: Vec<(String, String)> = MODEL_NUMBERS
         .iter()
+        .filter(|&&(_, model)| in_cpp(model))
         .map(|&(number, model)| (number.to_owned(), cpp_name(model)))
         .collect();
     assert_eq!(rust, cpp);
@@ -276,7 +336,12 @@ fn model_ints_match_the_cpp_enum_order() {
         .filter(|line| !line.is_empty() && *line != "{" && !line.starts_with("//"))
         .map(|line| line.trim_end_matches(','))
         .collect();
-    let rust: Vec<String> = Model::ALL.iter().copied().map(cpp_name).collect();
+    let rust: Vec<String> = Model::ALL
+        .iter()
+        .copied()
+        .filter(|&model| in_cpp(model))
+        .map(cpp_name)
+        .collect();
     assert_eq!(rust, cpp);
     for (int, &model) in Model::ALL.iter().enumerate() {
         assert_eq!(model.as_int(), i64::try_from(int).unwrap(), "{model:?}");
@@ -286,7 +351,7 @@ fn model_ints_match_the_cpp_enum_order() {
 #[test]
 fn display_names_match_the_cpp_switch() {
     let body = ENUMS.scope("inline QString modelDisplayName(AirPodsModel model)");
-    for &model in Model::ALL {
+    for &model in Model::ALL.iter().filter(|&&model| in_cpp(model)) {
         let name = cpp_name(model);
         // Sample input: `case AirPodsModel::AirPods1:   return QStringLiteral("AirPods");`
         let (_, rest) = body
@@ -348,7 +413,7 @@ fn capabilities_match_the_cpp_switches() {
     let rust_without_off: Vec<String> = Model::ALL
         .iter()
         .copied()
-        .filter(|model| !model.capabilities().noise_off)
+        .filter(|&model| in_cpp(model) && !model.capabilities().noise_off)
         .map(cpp_name)
         .collect();
     assert_eq!(rust_without_off, [without_off]);
@@ -392,6 +457,7 @@ fn product_identifiers_are_the_cpp_model_map_byte_swapped() {
         .collect();
     let rust: Vec<(u16, String)> = AIRPODS_PRODUCTS
         .iter()
+        .filter(|&&(id, _)| id_in_cpp(id))
         .map(|&(id, model)| (id.swap_bytes(), cpp_name(model)))
         .collect();
     assert_eq!(rust, cpp);
@@ -412,16 +478,50 @@ fn the_lookup_takes_the_modalias_number_not_the_cpp_key() {
 }
 
 #[test]
-fn the_beats_list_is_the_proposed_powerbeats_keys_and_the_studio_pro() {
-    let proposed_cpp_keys: [u16; 2] = [0x0B20, 0x1D20];
-    for key in proposed_cpp_keys {
-        assert_eq!(product(key), Product::Unknown, "{key:#06X}");
-    }
-    let [pro, pro_2] = proposed_cpp_keys.map(u16::swap_bytes);
-    let studio_pro = 0x2017;
-    assert_eq!(BEATS_PRODUCTS, [pro, pro_2, studio_pro]);
+fn the_beats_list_is_the_beats_kept_out() {
+    let kept_out: Vec<u16> = BEYOND_CPP
+        .iter()
+        .filter_map(|&row| match row {
+            BeatsKeptOut(id) => Some(id),
+            ReleasedAfter(_) | IdPublishedAfter(_) => None,
+        })
+        .collect();
+    assert_eq!(BEATS_PRODUCTS, kept_out);
     for &id in BEATS_PRODUCTS {
         assert_eq!(product(id), Product::Beats, "{id:#06X}");
+    }
+}
+
+#[test]
+fn every_identifier_published_after_the_cpp_map_names_airpods() {
+    for &row in BEYOND_CPP {
+        if let IdPublishedAfter(id) = row {
+            assert!(
+                matches!(product(id), Product::AirPods(model) if model != Model::Unknown),
+                "{id:#06X}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_identifier_is_listed_once_and_never_byte_swapped() {
+    let ids: Vec<u16> = AIRPODS_PRODUCTS
+        .iter()
+        .map(|&(id, _)| id)
+        .chain(BEATS_PRODUCTS.iter().copied())
+        .collect();
+    for &(id, model) in AIRPODS_PRODUCTS {
+        assert_eq!(product(id), Product::AirPods(model), "{id:#06X}");
+    }
+    for &id in &ids {
+        let listed = ids.iter().filter(|&&other| other == id).count();
+        assert_eq!(listed, 1, "{id:#06X}");
+        assert_eq!(
+            product(id.swap_bytes()),
+            Product::Unknown,
+            "{id:#06X} byte swapped"
+        );
     }
 }
 

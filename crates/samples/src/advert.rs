@@ -7,6 +7,8 @@ use aes::cipher::{BlockCipherEncrypt, KeyInit};
 
 /// `data[0]` to `data[10]`, from the type byte `07` to the connection state.
 pub const HEADER_LEN: usize = 11;
+/// `data[3]` and `data[4]`, the product identifier low byte first.
+pub const PRODUCT_AT: usize = 3;
 /// The block `decryptLastBytes` opens, the last 16 bytes.
 pub const SEALED_LEN: usize = 16;
 /// `proximityPairingBytes`.
@@ -84,7 +86,7 @@ fn encrypt(key: &[u8; 16], block: [u8; 16]) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use super::{ADVERT_LEN, HEADER_LEN, Keys, SEALED_LEN, advert_of};
+    use super::{ADVERT_LEN, HEADER_LEN, Keys, PRODUCT_AT, SEALED_LEN, advert_of};
     use cpp_source::BLE_MANAGER_SOURCE;
 
     /// The sample of `onDeviceDiscovered`: `07 19 01 27 20 21 88 8F 11 00 04`.
@@ -124,6 +126,15 @@ mod tests {
         assert_eq!(total, format!("{HEADER_LEN} + {SEALED_LEN}"));
         let sealed = BLE_MANAGER_SOURCE.find(None, "data.mid(data.size() - ", ')');
         assert_eq!(sealed, SEALED_LEN.to_string());
+    }
+
+    #[test]
+    fn the_product_sits_where_the_cpp_reads_it() {
+        // Sample input: `static_cast<quint16>(data[4]) | (static_cast<quint8>(data[3]) << 8))`.
+        let read = BLE_MANAGER_SOURCE.find(None, "deviceInfo.modelName = getModelName(", ';');
+        for at in [PRODUCT_AT, PRODUCT_AT + 1] {
+            assert!(read.contains(&format!("(data[{at}])")), "{read}");
+        }
     }
 
     #[test]
