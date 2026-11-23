@@ -12,11 +12,23 @@ readonly us_per_s=1000000
 readonly ASSET_SUFFIX=-x86_64
 readonly sha256_hex_digits=64
 readonly lock_separator="  "
+readonly old_desktop_file="${HOME:-}/.local/share/applications/me.kavishdevar.librepods.desktop"
+readonly old_icon_file="${HOME:-}/.local/share/icons/hicolor/scalable/apps/librepods.svg"
+readonly old_catalog_file="${HOME:-}/.local/share/openpods/translations/openpods_tr.qm"
+readonly old_catalog_dir="${HOME:-}/.local/share/openpods/translations"
+readonly old_share_dir="${HOME:-}/.local/share/openpods"
+readonly old_config_file="${HOME:-}/.config/AirPodsTrayApp/AirPodsTrayApp.conf"
+readonly old_config_dir="${HOME:-}/.config/AirPodsTrayApp"
+readonly new_settings_file="${HOME:-}/.local/state/librepods/settings.json"
+readonly OLD_DESKTOP_SHA256=a485b2f5939e9f334fa8ffcdc0a37a292b1d349e9357ec1c710e5f712e5bed23
+readonly OLD_ICON_SHA256=8d3d2c7bd6ecbed70afe21c5530ce03e35811b5090087bf5b1ca2fffbf63ef19
 
 plugin_dir=$(cd "$(dirname "$0")/.." && pwd)
 readonly plugin_dir
 readonly lock_file="$plugin_dir/packaging/librepods.sha256"
 readonly unit_file="$plugin_dir/packaging/systemd/librepods.service"
+readonly old_build_dir="$plugin_dir/daemon/build"
+readonly old_manifest="$old_build_dir/install_manifest.txt"
 
 from_source=false
 lock_line=
@@ -154,6 +166,94 @@ report_running() {
         "Keep it visible: omarchy bar set io.github.thisisgm.omapods hideWhenDisconnected false --json"
 }
 
+say_removing() {
+    [[ $1 == /?* ]] || fail "refusing to remove a path that is not absolute" "$1"
+    printf 'Removing %s\n' "$1"
+}
+
+remove_file() {
+    say_removing "$1"
+    rm -f -- "$1" || fail "could not remove the old file" "$1"
+}
+
+dir_is_empty() {
+    local entries
+    entries=$(shopt -s nullglob dotglob && printf '%s' "$1"/*)
+    [ -z "$entries" ]
+}
+
+remove_dir_if_empty() {
+    [ -d "$1" ] && [ ! -L "$1" ] && dir_is_empty "$1" || return 0
+    say_removing "$1"
+    rmdir -- "$1" || fail "could not remove the empty directory" "$1"
+}
+
+leave() {
+    printf 'setup: left %s: it is not the file version 1.3 installed.\n' "$1" >&2
+}
+
+is_plain_file() {
+    [ -f "$1" ] && [ ! -L "$1" ]
+}
+
+# Sample input: `a485b2f5939e9f334fa8ffcdc0a37a292b1d349e9357ec1c710e5f712e5bed23  -`
+remove_if_checksum() {
+    local path=$1 expected=$2 line
+    [ -e "$path" ] || [ -L "$path" ] || return 0
+    if is_plain_file "$path"; then
+        line=$(sha256sum < "$path") || fail "sha256sum could not read the old file" "$path"
+        if [ "${line:0:sha256_hex_digits}" = "$expected" ]; then
+            remove_file "$path"
+            return 0
+        fi
+    fi
+    leave "$path"
+}
+
+# Sample input: `/home/u/.local/share/openpods/translations/openpods_tr.qm`, one absolute path per line.
+old_manifest_lists() {
+    local line
+    [ -f "$old_manifest" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ "$line" != "$1" ] || return 0
+    done < "$old_manifest"
+    return 1
+}
+
+# cmake writes its manifest after it installs, so a catalog changed or put there later is newer than it.
+remove_old_catalog() {
+    [ -e "$old_catalog_file" ] || [ -L "$old_catalog_file" ] || return 0
+    if is_plain_file "$old_catalog_file" && old_manifest_lists "$old_catalog_file" &&
+        [ ! "$old_catalog_file" -nt "$old_manifest" ]; then
+        remove_file "$old_catalog_file"
+        remove_dir_if_empty "$old_catalog_dir"
+        remove_dir_if_empty "$old_share_dir"
+    else
+        leave "$old_catalog_file"
+    fi
+}
+
+# The daemon writes its settings file once it has read the old one, so the old one goes only after that.
+remove_old_config() {
+    [ -f "$old_config_file" ] && [ -f "$new_settings_file" ] || return 0
+    remove_file "$old_config_file"
+    remove_dir_if_empty "$old_config_dir"
+}
+
+remove_old_build_tree() {
+    [ -f "$old_build_dir/CMakeCache.txt" ] || return 0
+    say_removing "$old_build_dir"
+    rm -rf -- "$old_build_dir" || fail "could not remove the old build tree" "$old_build_dir"
+}
+
+remove_old_install() {
+    remove_if_checksum "$old_desktop_file" "$OLD_DESKTOP_SHA256"
+    remove_if_checksum "$old_icon_file" "$OLD_ICON_SHA256"
+    remove_old_catalog
+    remove_old_config
+    remove_old_build_tree
+}
+
 remove_scratch() {
     [ -n "$scratch" ] || return 0
     if [[ $scratch == "$XDG_RUNTIME_DIR"/omapods-setup.* ]]; then
@@ -175,6 +275,7 @@ main() {
     install_binary
     install_unit
     start_service
+    remove_old_install
     report_running
 }
 
