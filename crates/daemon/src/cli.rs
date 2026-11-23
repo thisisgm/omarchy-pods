@@ -93,6 +93,7 @@ fn legacy(program: &'static str, words: &[OsString]) -> Result<Invocation, clap:
 mod tests {
     use std::ffi::{OsStr, OsString};
     use std::os::unix::ffi::OsStringExt;
+    use std::path::Path;
 
     use clap::error::ErrorKind;
 
@@ -175,6 +176,20 @@ mod tests {
             let parsed = parse(OsStr::new("librepods"), &args(&words));
             assert_eq!(parsed.unwrap(), Invocation::Daemon, "{words:?}");
         }
+    }
+
+    #[test]
+    fn the_packaged_unit_starts_the_daemon() {
+        let unit = include_str!("../../../packaging/systemd/librepods.service");
+        // Sample input: `ExecStart=%h/.local/bin/librepods daemon`.
+        let line = unit
+            .lines()
+            .find_map(|line| line.strip_prefix("ExecStart="))
+            .unwrap();
+        let mut words = line.split_whitespace();
+        let program = Path::new(words.next().unwrap()).file_name().unwrap();
+        let rest: Vec<&str> = words.collect();
+        assert_eq!(parse(program, &args(&rest)).unwrap(), Invocation::Daemon);
     }
 
     #[test]

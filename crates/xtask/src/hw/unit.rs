@@ -22,18 +22,16 @@ pub(crate) const UNDER_TEST: &str = "librepods-hw.service";
 const UNDER_TEST_NAME: &str = "librepods-hw";
 
 /// Read at build time so the run's hardening cannot drift from it.
-const SERVICE_FILE: &str = include_str!("../../../../daemon/librepods.service");
+const SERVICE_FILE: &str = include_str!("../../../../packaging/systemd/librepods.service");
 
 /// Where the hardening block the test unit copies begins.
 const FIRST_HARDENING_DIRECTIVE: &str = "UMask";
 
-/// Directives the test unit leaves out: five name the installed daemon's real directories, and `PrivateTmp` would hide the run directory under `/tmp`.
-const REPLACED_DIRECTIVES: [&str; 6] = [
+/// Directives the test unit leaves out: three name the installed daemon's real directories, and `PrivateTmp` would hide the run directory under `/tmp`.
+const REPLACED_DIRECTIVES: [&str; 4] = [
     "PrivateTmp",
     "StateDirectory",
     "StateDirectoryMode",
-    "ConfigurationDirectory",
-    "ConfigurationDirectoryMode",
     "ReadWritePaths",
 ];
 

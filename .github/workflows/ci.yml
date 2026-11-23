@@ -60,6 +60,19 @@ jobs:
       - run: test ! -e /usr/lib/x86_64-linux-gnu/libpipewire-0.3.so
       - run: cargo nextest run --workspace --locked
       - run: cargo test --doc --workspace
+      # verify needs the ExecStart program to exist and a runtime directory, so both live in a temporary home.
+      - run: |
+          systemd-analyze --version
+          home=$(mktemp -d)
+          mkdir -p "$home/.local/bin"
+          printf '#!/bin/sh\n' > "$home/.local/bin/librepods"
+          chmod +x "$home/.local/bin/librepods"
+          log="$home/verify.log"
+          # verify only warns about an unknown key or a bad value and still exits 0, so any output fails the step.
+          if ! HOME="$home" XDG_RUNTIME_DIR="$home" systemd-analyze --user verify packaging/systemd/librepods.service > "$log" 2>&1 || [ -s "$log" ]; then
+            cat "$log"
+            exit 1
+          fi
 
   slow:
     runs-on: ubuntu-24.04

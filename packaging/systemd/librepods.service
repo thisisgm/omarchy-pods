@@ -1,0 +1,42 @@
+[Unit]
+Description=librepods AirPods daemon
+# The AAP link needs BlueZ and a session bus, both of which arrive with the graphical session.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/librepods daemon
+Restart=on-failure
+RestartSec=5
+
+# The state directory holds the AirPods identity and pairing keys, so nothing the daemon creates is world-readable.
+UMask=0077
+# systemd bind-mounts this one writable, which is what carves it out of the read-only home.
+StateDirectory=librepods
+StateDirectoryMode=0700
+ProtectSystem=strict
+# read-only rather than yes, so the one read of the old settings file still works.
+ProtectHome=read-only
+# The daemon creates its control socket under %t, which strict makes read-only.
+ReadWritePaths=%t
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# BlueZ takes AF_BLUETOOTH, everything else is a local socket.
+RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH
+# The pairing keys are held in memory, so no core file may be written.
+LimitCORE=0
+
+[Install]
+WantedBy=graphical-session.target
