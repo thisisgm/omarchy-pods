@@ -311,6 +311,16 @@ mod tests {
         let status = rig.exited(MIC_EXIT.saturating_add(REAL_TIME_SLACK));
         assert!(status.success(), "{status}");
         wait_restore(&audio, &device);
+        let requests = audio.requests();
+        let resume = requests
+            .iter()
+            .position(|asked| matches!(asked, Asked::Suspend { suspend: false, .. }));
+        let reconnected = requests[..resume.unwrap()]
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Auth { .. }))
+            .count();
+        assert_eq!(reconnected, 2, "{requests:?}");
+        rig.finish();
     }
 
     #[test]
