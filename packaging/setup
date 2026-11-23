@@ -291,8 +291,9 @@ find_state_dir() {
         return 0
     fi
     local named=$state_dir
-    state_dir=$(readlink -m -- "$named") && inside_home "$named" "$state_dir" ||
+    if ! state_dir=$(readlink -m -- "$named") || ! inside_home "$named" "$state_dir"; then
         fail "refusing to remove a state directory outside the home" "$named"
+    fi
     # The checked target is what gets removed, so a linked state directory is not left behind its link.
     [ ! -L "$named" ] || state_link=$named
 }
