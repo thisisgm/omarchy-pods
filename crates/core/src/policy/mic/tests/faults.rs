@@ -20,6 +20,8 @@ fn an_unanswered_start_is_sent_three_times_and_each_try_is_counted() {
         for _ in 0..START_TRIES {
             at = at.saturating_add(answer);
             assert_eq!(mic.deadline(), Some(at), "{column:?}");
+            let early = at.saturating_sub(Duration::from_millis(1));
+            assert_eq!(mic.step(&state, &Fact::Tick, early), [], "{column:?}");
             effects.extend(mic.step(&state, &Fact::Tick, at));
         }
         let mut wanted = Vec::new();
@@ -86,6 +88,8 @@ fn a_stop_nobody_asked_for_restores_and_starts_again_only_after_the_want_went() 
     assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
     let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
     assert_eq!(requests(&mic.step(&state, &restored, SENT)), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Unasked);
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
     assert_eq!(kind(mic.phase), Kind::Unasked);
     assert_eq!(requests(&mic.step(&unworn, &Fact::Changed, SENT)), NOTHING);
     assert_eq!(kind(mic.phase), Kind::Stopped);

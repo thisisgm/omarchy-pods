@@ -383,7 +383,6 @@ impl Mic {
         }
     }
 
-    /// Hands `Microphone::show` the code `mic` shows and the failures `mic_start_failures` counts.
     pub(super) fn show(&self, state: &mut State) {
         let code = self.code(state);
         state.microphone.show(code, self.start_failures);
