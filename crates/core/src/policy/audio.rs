@@ -56,9 +56,13 @@ pub enum AudioFact {
     Down,
     /// `None`: the followed device has no sink.
     Sink(Option<SinkFact>),
-    /// The restore asked for is done, or kept owed while the server is down.
-    Restored,
+    /// The restore asked for under this id is done, or kept owed while the server is down.
+    Restored(RestoreId),
 }
+
+/// Which restore an answer is for, so a late answer to an earlier one finishes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreId(pub(super) u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SinkFact {
@@ -71,7 +75,7 @@ pub enum AudioRequest {
     /// `None` closes the connection.
     Follow(Option<BdAddr>),
     /// Suspends and resumes the followed device's sink, so a stream the uplink's end broke is opened again.
-    Restore,
+    Restore(RestoreId),
     /// A START went out, so a restore still owed is dropped: the newest intent wins.
     CancelRestore,
 }

@@ -274,7 +274,10 @@ fn phase(kind: Kind) -> Phase {
         },
         Kind::Running => Phase::Running,
         Kind::Stopping => Phase::Stopping { since: SENT },
-        Kind::Restoring => Phase::Restoring { since: SENT },
+        Kind::Restoring => Phase::Restoring {
+            since: SENT,
+            id: RestoreId(0),
+        },
     }
 }
 
@@ -335,7 +338,7 @@ fn stepped(event: Event, column: Column) -> (Fact, Duration, State) {
             SOON,
         ),
         Event::Changed => (Fact::Changed, SOON),
-        Event::Restored => (Fact::Audio(AudioFact::Restored), SOON),
+        Event::Restored => (Fact::Audio(AudioFact::Restored(RestoreId(0))), SOON),
         Event::Exit => (Fact::Exit, SOON),
     };
     if matches!(event, Event::Down | Event::Lost) {
@@ -591,7 +594,7 @@ fn the_exit_is_answered_once_the_uplink_is_stopped_and_restored() {
     assert!(!effects.contains(&Effect::Exited));
     let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
     assert!(!live.step(&state, &marker, SENT).contains(&Effect::Exited));
-    let restored = Fact::Audio(AudioFact::Restored);
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
     assert!(live.step(&state, &restored, SENT).contains(&Effect::Exited));
     let lost = Fact::Link(Signal::Lost {
         device: device(),
@@ -618,4 +621,29 @@ fn the_restore_window_opens_when_the_stop_ends() {
         let restored_by = at.saturating_add(Duration::from_millis(RESTORE_WAIT_MS));
         assert_eq!(stopping.deadline(), Some(restored_by), "{fact:?}");
     }
+}
+
+#[test]
+fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
+    let always = linked(Column::AlwaysKnown);
+    let off = linked(Column::Off);
+    let mut mic = mic(phase(Kind::Stopping));
+    let marker = |state| Fact::Link(Signal::Uplink(state));
+    let mut at = SENT;
+    let first = mic.step(&off, &marker(UplinkState::Stopped), at);
+    at = at.saturating_add(LATER);
+    drop(mic.step(&off, &Fact::Tick, at));
+    assert_eq!(requests(&mic.step(&always, &Fact::Changed, at)), START);
+    drop(mic.step(&always, &marker(UplinkState::Running), at));
+    assert_eq!(requests(&mic.step(&off, &Fact::Changed, at)), STOP);
+    drop(mic.step(&off, &marker(UplinkState::Stopped), at));
+    let late = first.iter().find_map(|effect| {
+        if let Effect::Audio(AudioRequest::Restore(id)) = effect {
+            Some(AudioFact::Restored(*id))
+        } else {
+            None
+        }
+    });
+    drop(mic.step(&off, &Fact::Audio(late.unwrap()), at));
+    assert_eq!(kind(mic.phase), Kind::Restoring);
 }
