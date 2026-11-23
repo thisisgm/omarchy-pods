@@ -20,8 +20,9 @@ mod tests {
     use serde_json::Value;
 
     use super::support::rig::{
-        ADAPTIVE, ANC, Device, Mode, REAL_TIME_SLACK, Rig, TRANSPARENCY, Watch, assert_gap,
+        ADAPTIVE, ANC, Device, Mode, REAL_TIME_SLACK, Rig, TRANSPARENCY, assert_gap,
     };
+    use super::support::watch::Watch;
     use super::support::{HANG_LIMIT, Proto1, outcome, set_request};
 
     /// A noise value no mode has, which the daemon must refuse wherever it lands.
