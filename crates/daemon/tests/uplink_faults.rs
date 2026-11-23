@@ -158,6 +158,27 @@ mod tests {
     }
 
     #[test]
+    fn a_want_gone_and_back_during_the_unasked_restore_starts_after_it() {
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        audio.hold_replies(true);
+        device.pods.uplink().stop_unasked();
+        rig.wait_logged(STOPPED_BY_THE_PODS_LINE);
+        set(rig.session(), "microphone", "off");
+        wait_mic(&rig, "off");
+        set(rig.session(), "microphone", "always");
+        wait_mic(&rig, "stopping");
+        audio.hold_replies(false);
+        let (_, resumed) = wait_restore(&audio, &device);
+        let again = wait_starts(&device, 2)[1].at;
+        assert!(again > resumed, "the START before the resume");
+        wait_mic(&rig, "live");
+        rig.finish();
+    }
+
+    #[test]
     fn sleep_while_running_sends_stop_before_the_suspend_and_no_restore() {
         let (mut rig, device, audio) =
             rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
