@@ -4,8 +4,6 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::mem;
 use std::ops::{RangeBounds, RangeInclusive};
-use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
@@ -19,7 +17,6 @@ use pods_trap::{Answer, Dial, Route, Trap, TrapError};
 use rustix::io::Errno;
 use rustix::process::{Signal, kill_process};
 use serde_json::Value;
-use zbus::{OwnedVariant, Variant};
 
 use super::audio::wire::sink_named;
 use super::audio::{Asked as AudioAsked, FakeAudio, PERCENT};
@@ -41,9 +38,6 @@ const PASSING_SINK: &str = "alsa_output.passing";
 pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
 /// BlueZ method calls the daemon leaves unanswered at once before it fails the next.
 pub(crate) const CALLS_IN_FLIGHT_MAX: usize = 4;
-/// Past every pods address a rig hands out, so the stranger it names is only ever a barrier.
-const STRANGER: u8 = 0xf0;
-
 /// A dial that should come at once.
 pub(crate) const DIAL_WAIT: Duration = Duration::from_secs(1);
 /// The wait after each failed dial to pods BlueZ holds connected, the C++ `delayMs(1..=10)` without its jitter.
@@ -497,22 +491,6 @@ impl Rig {
         self.wait_queued_inputs_applied();
     }
 
-    /// Returns once the daemon took every BlueZ signal sent before the call: a stranger's `UUIDs` change is read back behind them, then the driver's queue drains.
-    pub(crate) fn wait_bluez_signals_taken(&self) {
-        let before = self.bluez().reads().len();
-        let stranger = self
-            .bluez()
-            .add_device(self.adapter(), test_address(STRANGER), &[], false);
-        let no_uuids = OwnedVariant::try_from(Variant::from(Vec::<String>::new())).unwrap();
-        self.bluez().set(&stranger, "UUIDs", no_uuids);
-        wait_for("the stranger read behind the signals", || {
-            self.bluez().reads()[before..]
-                .contains(&stranger.0)
-                .then_some(())
-        });
-        self.wait_queued_inputs_applied();
-    }
-
     /// Returns once the driver applied every input queued before the call, as a command is answered from that queue and a status from the published state; `reopen` only counts `reopen_calls_total`.
     pub(crate) fn wait_queued_inputs_applied(&self) {
         let reply = self.session.ask(b"reopen");
@@ -706,11 +684,11 @@ fn lock(devices: &Mutex<Vec<Device>>) -> MutexGuard<'_, Vec<Device>> {
 }
 
 fn link_up(bluez: &Bluez, path: &DevicePath) {
-    bluez.set(path, "Connected", OwnedVariant::from(true));
+    bluez.set(path, "Connected", zbus::OwnedVariant::from(true));
 }
 
 fn link_down(bluez: &Bluez, path: &DevicePath, pods: &Pods) {
-    bluez.set(path, "Connected", OwnedVariant::from(false));
+    bluez.set(path, "Connected", zbus::OwnedVariant::from(false));
     pods.hang_up();
 }
 
@@ -750,17 +728,6 @@ pub(crate) fn serve(pods: &Pods, after: Duration) -> Answer {
         after,
         serve: Arc::new(move |channel| pods.serve(channel)),
     }
-}
-
-/// Answers a dial with the pods only once the returned end is dropped.
-pub(crate) fn held(pods: &Pods) -> (Answer, UnixStream) {
-    let (release, held) = UnixStream::pair().unwrap();
-    let pods = pods.clone();
-    let answer = Answer::Held {
-        release: Arc::new(OwnedFd::from(held)),
-        serve: Arc::new(move |channel| pods.serve(channel)),
-    };
-    (answer, release)
 }
 
 pub(crate) fn connected(status: &Value) -> bool {

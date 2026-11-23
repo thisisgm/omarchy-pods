@@ -8,8 +8,9 @@ use rustix::io::Errno;
 use serde_json::Value;
 use zbus::OwnedVariant;
 
+use crate::support::held::held;
 use crate::support::rig::{
-    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, held, named,
+    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, named,
 };
 use crate::support::{HANG_LIMIT, pause};
 
@@ -174,7 +175,8 @@ fn flaps_ending_false_while_a_dial_is_in_flight_leave_no_link() {
     let (answer, release) = held(&device.pods);
     rig.answer(&device, answer);
     flap(&rig, &device, false);
-    rig.wait_bluez_signals_taken();
+    rig.bluez().wait_signals_taken();
+    rig.wait_queued_inputs_applied();
     drop(release);
     device
         .pods
@@ -194,7 +196,8 @@ fn flaps_ending_true_while_a_dial_is_in_flight_leave_one_link() {
     let (answer, release) = held(&device.pods);
     rig.answer(&device, answer);
     flap(&rig, &device, true);
-    rig.wait_bluez_signals_taken();
+    rig.bluez().wait_signals_taken();
+    rig.wait_queued_inputs_applied();
     drop(release);
     let status = rig.wait_filled();
     assert_eq!(status["device_name"], Profile::default().name);
