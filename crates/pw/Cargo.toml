@@ -11,5 +11,84 @@ publish.workspace = true
 pods-pwrig = { path = "../pwrig" }
 proptest.workspace = true
 
-[lints]
-workspace = true
+# Cargo cannot inherit the workspace table and change one line, so this is that table with unsafe_code at deny.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+dead_code_pub_in_binary = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+let_underscore_drop = "warn"
+trivial_numeric_casts = "warn"
+elided_lifetimes_in_paths = "warn"
+raw_borrows_via_references = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+
+# peer input can never panic
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+get_unwrap = "deny"
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+as_conversions = "warn"
+unchecked_time_subtraction = "deny"
+panic_in_result_fn = "deny"
+unwrap_in_result = "deny"
+host_endian_bytes = "deny"
+missing_asserts_for_indexing = "warn"
+
+# state machines stay total
+wildcard_enum_match_arm = "warn"
+match_wildcard_for_single_variants = "warn"
+
+# async hygiene on a single-thread runtime
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+let_underscore_future = "deny"
+let_underscore_must_use = "deny"
+large_futures = "warn"
+unused_async = "warn"
+
+# the unsafe fence (these bite only in the crates that allow unsafe code)
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+missing_safety_doc = "deny"
+ptr_as_ptr = "warn"
+borrow_as_ptr = "warn"
+cast_ptr_alignment = "deny"
+fn_to_numeric_cast_any = "deny"
+mem_forget = "deny"
+
+# no silent escape hatches
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+dbg_macro = "deny"
+exit = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+map_err_ignore = "warn"
+iter_over_hash_type = "warn"
+
+[lints.cargo]
+unused_dependencies = "warn"

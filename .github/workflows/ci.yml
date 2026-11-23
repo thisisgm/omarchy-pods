@@ -56,6 +56,8 @@ jobs:
           tool: cargo-nextest
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pipewire pipewire-bin
       - run: pipewire --version
+      # No development files here, so this build is the proof that pods-pw links the library by its soname alone.
+      - run: test ! -e /usr/lib/x86_64-linux-gnu/libpipewire-0.3.so
       - run: cargo nextest run --workspace --locked
       - run: cargo test --doc --workspace
 
@@ -77,6 +79,26 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pipewire pipewire-bin
       - run: pipewire --version
       - run: cargo nextest run -p librepods -p xtask --locked --run-ignored only
+
+  pw-ffi:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # The generator reads the headers with this libclang, whatever other versions the image holds.
+      LIBCLANG_PATH: /usr/lib/llvm-18/lib
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends libpipewire-0.3-dev libclang-18-dev
+      # The committed file is what the 1.0.5 headers give: a later Ubuntu revision of 1.0.5 passes, another version stops here.
+      - run: dpkg-query --show --showformat='${Version}\n' libpipewire-0.3-dev | grep --quiet '^1\.0\.5-'
+      - run: cargo install --locked bindgen-cli@0.73.2
+      - run: cargo xtask pw-ffi
+      - run: git diff --exit-code crates/pw/src/ffi.rs
 
   deny:
     runs-on: ubuntu-24.04
@@ -102,7 +124,7 @@ jobs:
 
   ci-ok:
     if: always()
-    needs: [fmt, clippy, test, slow, deny, zizmor]
+    needs: [fmt, clippy, test, slow, pw-ffi, deny, zizmor]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

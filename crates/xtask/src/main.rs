@@ -2,6 +2,7 @@
 
 mod hw;
 mod probe;
+mod pw_ffi;
 
 use std::env;
 use std::ffi::OsString;
@@ -63,9 +64,10 @@ fn main() -> ExitCode {
         },
         Some(command) if command == "probe" => probe::run(env::args_os().skip(1)),
         Some(command) if command == "hw" => hw::run(env::args_os().skip(1)),
+        Some(command) if command == "pw-ffi" && env::args_os().nth(2).is_none() => pw_ffi::run(),
         _ => {
             report(
-                "usage: cargo xtask ci [gate]... | cargo xtask probe <command> | cargo xtask hw link --binary <path>",
+                "usage: cargo xtask ci [gate]... | cargo xtask probe <command> | cargo xtask hw link --binary <path> | cargo xtask pw-ffi",
             );
             ExitCode::FAILURE
         }
@@ -220,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_unsafe_crates_match_the_workspace_lints_except_unsafe_code() {
+    fn the_fenced_crates_match_the_workspace_lints_except_unsafe_code() {
         let workspace = lint_lines("../../Cargo.toml", "workspace.");
         let forbids = workspace.iter().filter(|line| *line == FORBID_UNSAFE);
         assert_eq!(forbids.count(), 1, "the workspace forbids unsafe code once");
@@ -228,7 +230,11 @@ mod tests {
             .iter()
             .map(|line| line.replace(FORBID_UNSAFE, DENY_UNSAFE))
             .collect();
-        for manifest in ["../sys/Cargo.toml", "../trap/Cargo.toml"] {
+        for manifest in [
+            "../sys/Cargo.toml",
+            "../trap/Cargo.toml",
+            "../pw/Cargo.toml",
+        ] {
             assert_eq!(lint_lines(manifest, ""), expected, "{manifest}");
         }
     }
