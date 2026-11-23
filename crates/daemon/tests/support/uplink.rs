@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use pods_core::policy::audio::RESTORE_HOLD_MS;
+use pods_core::policy::mic::{START_ANSWER_MS, START_TRIES, STOP_ANSWER_MS};
 use pods_core::prefs::{self, MicPref, Prefs};
 use pods_fake::{Heard, Profile};
 use pods_samples::uplink::{START, STOP};
@@ -14,12 +15,23 @@ use serde_json::{Value, json};
 
 use super::audio::wire::sink_named;
 use super::audio::{Asked, FakeAudio, PERCENT, writes_of};
-use super::rig::{Device, Rig, assert_gap, connected};
+use super::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, connected};
 use super::settings::plant_settings;
 use super::{HANG_LIMIT, Session, wait_for};
 
 /// How late the resume may come after the hold; both instants are the fake server's, so only the daemon's timer is in it.
 const HOLD_SLACK: Duration = Duration::from_millis(100);
+
+/// How long a START waits for the running marker before the next try.
+pub(crate) const START_ANSWER: Duration = Duration::from_millis(START_ANSWER_MS);
+/// How long a STOP waits for the stopped marker before the restore goes ahead.
+pub(crate) const STOP_ANSWER: Duration = Duration::from_millis(STOP_ANSWER_MS);
+/// The least gap two STARTs' receive stamps may show, as each carries the fake's own read latency.
+pub(crate) const TRY_SPACING: Duration = START_ANSWER.saturating_sub(REAL_TIME_SLACK);
+const _: () = assert!(
+    !TRY_SPACING.is_zero(),
+    "the slack would leave no spacing to check"
+);
 
 /// Two left levels no fixture starts with; a barrier moves to whichever the status does not show.
 const BARRIER_LEVELS: [u8; 2] = [42, 43];
@@ -140,6 +152,16 @@ pub(crate) fn read_up_to_now(rig: &Rig, device: &Device) {
     rig.wait_status("the barrier's battery level", |status| {
         status["left"]["level"] == level
     });
+}
+
+/// The STARTs one want sends before it gives up.
+pub(crate) fn all_tries() -> usize {
+    usize::try_from(START_TRIES).unwrap()
+}
+
+/// The STARTs the status counts as gone unanswered.
+pub(crate) fn start_failures(rig: &Rig) -> u64 {
+    rig.status()["mic_start_failures"].as_u64().unwrap()
 }
 
 pub(crate) fn mic(rig: &Rig) -> String {

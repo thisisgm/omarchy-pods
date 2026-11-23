@@ -38,6 +38,9 @@ enum Event {
     Exit,
     /// The followed sink reported suspended.
     Quiet,
+    Sleep,
+    /// The wake after a sleep.
+    Wake,
 }
 
 /// The five states a cell is stepped in, a bud worn in each.
@@ -59,7 +62,11 @@ enum Kind {
     Stopped,
     Failed,
     Unsupported,
+    /// Stopped by the pods, the want not yet absent since.
+    Unasked,
     Starting,
+    /// The last try's START out.
+    LastTry,
     Owed,
     Running,
     Lingering,
@@ -68,6 +75,10 @@ enum Kind {
     /// A STOP the gate let out with a bud worn, which no restore follows.
     StoppingQuiet,
     Restoring,
+    /// The restore after a stop the pods made on their own.
+    RestoringUnasked,
+    /// Stopped from logind's edge into sleep until the wake.
+    Asleep,
 }
 
 type Outcome = (&'static [UplinkRequest], Kind);
@@ -84,7 +95,7 @@ const COLUMNS: [Column; 5] = [
     Column::Exit,
 ];
 
-const EVENTS: [Event; 9] = [
+const EVENTS: [Event; 11] = [
     Event::RunningMarker,
     Event::StoppedMarker,
     Event::Deadline,
@@ -94,13 +105,17 @@ const EVENTS: [Event; 9] = [
     Event::Restored,
     Event::Exit,
     Event::Quiet,
+    Event::Sleep,
+    Event::Wake,
 ];
 
-const KINDS: [Kind; 11] = [
+const KINDS: [Kind; 15] = [
     Kind::Stopped,
     Kind::Failed,
     Kind::Unsupported,
+    Kind::Unasked,
     Kind::Starting,
+    Kind::LastTry,
     Kind::Owed,
     Kind::Running,
     Kind::Lingering,
@@ -108,254 +123,35 @@ const KINDS: [Kind; 11] = [
     Kind::Stopping,
     Kind::StoppingQuiet,
     Kind::Restoring,
-];
-
-/// Outcomes in the order of `COLUMNS`.
-const CELLS: [(Kind, Event, [Outcome; 5]); 99] = {
-    use Event::{
-        Changed, Deadline, Down, Exit, Lost, Quiet, Restored, RunningMarker, StoppedMarker,
-    };
-    use Kind::{
-        Failed, Lingering, Owed, Restoring, Running, Starting, Stopped, Stopping, StoppingQuiet,
-        Unsupported, Waiting,
-    };
-    const fn same(kind: Kind) -> [Outcome; 5] {
-        [(NOTHING, kind); 5]
-    }
-    const RUN: [Outcome; 5] = [
-        (NOTHING, Running),
-        (NOTHING, Running),
-        (NOTHING, Lingering),
-        (STOP, Stopping),
-        (STOP, Stopping),
-    ];
-    const WAIT: [Outcome; 5] = [
-        (NOTHING, Running),
-        (NOTHING, Running),
-        (NOTHING, Waiting),
-        (STOP, Stopping),
-        (STOP, Stopping),
-    ];
-    const QUIET_WAIT: [Outcome; 5] = [
-        (NOTHING, Running),
-        (NOTHING, Running),
-        (STOP, StoppingQuiet),
-        (STOP, Stopping),
-        (STOP, Stopping),
-    ];
-    const RESTART: [Outcome; 5] = [
-        (START, Starting),
-        (START, Starting),
-        (NOTHING, Stopped),
-        (NOTHING, Stopped),
-        (NOTHING, Stopped),
-    ];
-    const RESET: [Outcome; 5] = same(Stopped);
-    const STOPS: [Outcome; 5] = [(STOP, Stopping); 5];
-    const UNANSWERED: [Outcome; 5] = [
-        (NOTHING, Unsupported),
-        (NOTHING, Failed),
-        (NOTHING, Failed),
-        (NOTHING, Stopped),
-        (NOTHING, Failed),
-    ];
-    const STARTING: [Outcome; 5] = [
-        (NOTHING, Starting),
-        (NOTHING, Starting),
-        (NOTHING, Starting),
-        (NOTHING, Owed),
-        (NOTHING, Owed),
-    ];
-    [
-        (Stopped, RunningMarker, RUN),
-        (Stopped, StoppedMarker, RESTART),
-        (Stopped, Deadline, RESTART),
-        (Stopped, Down, RESET),
-        (Stopped, Lost, RESET),
-        (Stopped, Changed, RESTART),
-        (Stopped, Restored, RESTART),
-        (Stopped, Quiet, RESTART),
-        (Stopped, Exit, same(Stopped)),
-        (Failed, RunningMarker, RUN),
-        (Failed, StoppedMarker, same(Failed)),
-        (Failed, Deadline, same(Failed)),
-        (Failed, Down, RESET),
-        (Failed, Lost, RESET),
-        (Failed, Changed, same(Failed)),
-        (Failed, Restored, same(Failed)),
-        (Failed, Quiet, same(Failed)),
-        (Failed, Exit, same(Failed)),
-        (Unsupported, RunningMarker, RUN),
-        (Unsupported, StoppedMarker, same(Unsupported)),
-        (Unsupported, Deadline, same(Unsupported)),
-        (Unsupported, Down, RESET),
-        (Unsupported, Lost, RESET),
-        (Unsupported, Changed, same(Unsupported)),
-        (Unsupported, Restored, same(Unsupported)),
-        (Unsupported, Quiet, same(Unsupported)),
-        (Unsupported, Exit, same(Unsupported)),
-        (Starting, RunningMarker, RUN),
-        (Starting, StoppedMarker, STARTING),
-        (Starting, Deadline, UNANSWERED),
-        (Starting, Down, RESET),
-        (Starting, Lost, RESET),
-        (Starting, Changed, STARTING),
-        (Starting, Restored, STARTING),
-        (Starting, Quiet, STARTING),
-        (Starting, Exit, same(Owed)),
-        (Owed, RunningMarker, RUN),
-        (Owed, StoppedMarker, same(Owed)),
-        (Owed, Deadline, UNANSWERED),
-        (Owed, Down, RESET),
-        (Owed, Lost, RESET),
-        (Owed, Changed, same(Owed)),
-        (Owed, Restored, same(Owed)),
-        (Owed, Quiet, same(Owed)),
-        (Owed, Exit, same(Owed)),
-        (Running, RunningMarker, RUN),
-        (Running, StoppedMarker, RESTART),
-        (Running, Deadline, RUN),
-        (Running, Down, RESET),
-        (Running, Lost, RESET),
-        (Running, Changed, RUN),
-        (Running, Restored, RUN),
-        (Running, Quiet, RUN),
-        (Running, Exit, STOPS),
-        (Lingering, RunningMarker, RUN),
-        (Lingering, StoppedMarker, RESTART),
-        (Lingering, Deadline, WAIT),
-        (Lingering, Down, RESET),
-        (Lingering, Lost, RESET),
-        (Lingering, Changed, RUN),
-        (Lingering, Restored, RUN),
-        (Lingering, Quiet, RUN),
-        (Lingering, Exit, STOPS),
-        (Waiting, RunningMarker, WAIT),
-        (Waiting, StoppedMarker, RESTART),
-        (Waiting, Deadline, WAIT),
-        (Waiting, Down, RESET),
-        (Waiting, Lost, RESET),
-        (Waiting, Changed, WAIT),
-        (Waiting, Restored, WAIT),
-        (Waiting, Quiet, QUIET_WAIT),
-        (Waiting, Exit, STOPS),
-        (Stopping, RunningMarker, same(Stopping)),
-        (Stopping, StoppedMarker, same(Restoring)),
-        (Stopping, Deadline, same(Restoring)),
-        (Stopping, Down, RESET),
-        (Stopping, Lost, RESET),
-        (Stopping, Changed, same(Stopping)),
-        (Stopping, Restored, same(Stopping)),
-        (Stopping, Quiet, same(Stopping)),
-        (Stopping, Exit, same(Stopping)),
-        (StoppingQuiet, RunningMarker, same(StoppingQuiet)),
-        (StoppingQuiet, StoppedMarker, RESTART),
-        (StoppingQuiet, Deadline, RESTART),
-        (StoppingQuiet, Down, RESET),
-        (StoppingQuiet, Lost, RESET),
-        (StoppingQuiet, Changed, same(StoppingQuiet)),
-        (StoppingQuiet, Restored, same(StoppingQuiet)),
-        (StoppingQuiet, Quiet, same(StoppingQuiet)),
-        (StoppingQuiet, Exit, same(StoppingQuiet)),
-        (Restoring, RunningMarker, same(Restoring)),
-        (Restoring, StoppedMarker, same(Restoring)),
-        (Restoring, Deadline, RESTART),
-        (Restoring, Down, RESET),
-        (Restoring, Lost, RESET),
-        (Restoring, Changed, same(Restoring)),
-        (Restoring, Restored, RESTART),
-        (Restoring, Quiet, same(Restoring)),
-        (Restoring, Exit, same(Restoring)),
-    ]
-};
-
-/// The cell each test of the uplink suites drives through the built daemon: the test, the phase, the fact and the column.
-const COVERED: &str = "
-always_and_a_bud_worn_starts_the_uplink_once Stopped Changed AlwaysNew
-the_preference_off_sends_no_start_and_reads_off Stopped Changed Off
-auto_with_a_confirmed_model_sends_nothing Stopped Changed Auto
-an_unconfirmed_model_is_started_once_and_stored Starting RunningMarker AlwaysNew
-the_running_marker_not_the_start_moves_the_state Starting RunningMarker AlwaysNew
-setting_off_while_live_sends_stop_at_once Running Changed Off
-setting_off_while_live_sends_stop_at_once Stopping StoppedMarker Off
-setting_off_while_starting_sends_no_stop_until_the_start_is_answered Starting Changed Off
-setting_off_while_starting_sends_no_stop_until_the_start_is_answered Owed RunningMarker Off
-setting_off_while_starting_and_never_answered_sends_nothing Owed Deadline Off
-a_late_answer_after_off_is_stopped_at_once Stopped RunningMarker Off
-a_link_lost_while_live_sends_nothing Running Down AlwaysNew
-a_model_that_never_answers_is_unsupported_and_not_stored Starting Deadline AlwaysNew
-a_model_that_never_answers_is_unsupported_and_not_stored Unsupported Down AlwaysNew
-a_confirmed_model_that_never_answers_reads_failed Starting Deadline AlwaysKnown
-a_stop_never_answered_is_logged_and_ends_stopping Stopping Deadline Off
-a_stop_never_answered_is_logged_and_ends_stopping Restoring Restored Off
-a_stop_never_answered_is_logged_and_ends_stopping Stopped Changed AlwaysKnown
-a_stop_never_answered_is_logged_and_ends_stopping Starting StoppedMarker AlwaysKnown
-two_dictations_inside_the_linger_send_one_start_and_no_stop Running Changed Auto
-two_dictations_inside_the_linger_send_one_start_and_no_stop Lingering Changed AlwaysKnown
-setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Running Changed Off
-setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Stopping StoppedMarker Off
-setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Restoring Restored Off
-setting_off_with_a_suspended_sink_stops_at_once_and_touches_no_sink Restoring Restored Off
-setting_off_while_starting_restores_after_the_owed_stop Owed RunningMarker Off
-setting_off_while_starting_restores_after_the_owed_stop Stopping StoppedMarker Off
-the_restore_waits_for_the_stopped_marker Stopping Changed Off
-the_restore_waits_for_the_stopped_marker Stopping StoppedMarker Off
-a_suspended_sink_is_left_alone_by_the_restore Stopping Quiet Off
-an_idle_sink_is_suspended_and_resumed_with_no_hold Restoring Restored Off
-a_restore_with_no_audio_server_is_done_when_it_returns Restoring Restored Off
-a_resume_the_server_never_took_is_sent_when_it_returns Restoring Down Off
-a_suspend_left_by_a_lost_resume_is_undone_after_a_newer_start Stopped Changed AlwaysKnown
-an_event_cut_by_the_restore_is_still_read_whole Restoring Restored Off
-exit_while_running_stops_and_restores_inside_the_bound Running Exit AlwaysKnown
-exit_while_running_stops_and_restores_inside_the_bound Stopping StoppedMarker Exit
-exit_while_running_stops_and_restores_inside_the_bound Restoring Restored Exit
-exit_while_starting_waits_for_the_marker_then_stops_and_restores Starting Exit AlwaysNew
-exit_while_starting_waits_for_the_marker_then_stops_and_restores Owed RunningMarker Exit
-exit_while_starting_and_never_answered_sends_nothing_and_ends_at_the_start_deadline Owed Deadline Exit
-exit_with_the_stop_and_the_restore_stalled_ends_at_the_bound Running Exit AlwaysKnown
-exit_with_the_stop_and_the_restore_stalled_ends_at_the_bound Stopping Deadline Exit
-exit_with_the_server_lost_inside_the_restore_resumes_the_sink_before_it_ends Restoring Restored Exit
-a_restore_owed_while_the_server_was_down_is_dropped_by_a_newer_start Stopped Changed AlwaysKnown
-exit_with_the_uplink_stopped_is_answered_at_once Stopped Exit Auto
-a_link_lost_while_stopping_orders_no_restore Stopping Lost Off
-the_stop_waits_while_the_sink_is_not_suspended_and_a_bud_is_worn Lingering Deadline Auto
-an_idle_sink_still_holds_the_stop Waiting Changed Auto
-the_stop_goes_out_when_the_sink_is_suspended_and_no_restore_follows Waiting Quiet Auto
-the_stop_goes_out_when_the_sink_is_suspended_and_no_restore_follows StoppingQuiet StoppedMarker Auto
-the_linger_with_a_suspended_sink_ends_in_a_stop_and_no_restore Lingering Quiet Auto
-the_linger_with_a_suspended_sink_ends_in_a_stop_and_no_restore StoppingQuiet StoppedMarker Auto
-a_want_that_returns_while_the_stop_waits_sends_nothing Waiting Changed AlwaysKnown
-an_unknown_sink_state_holds_the_stop Lingering Deadline Auto
-the_stop_goes_out_with_a_restore_when_the_last_bud_leaves Stopping StoppedMarker AlwaysKnown
-the_stop_goes_out_with_a_restore_when_the_last_bud_leaves Restoring Restored AlwaysKnown
-a_bud_back_in_during_the_restore_starts_after_it Restoring Changed AlwaysKnown
-a_bud_back_in_during_the_restore_starts_after_it Restoring Restored AlwaysKnown
-";
-
-/// The tests of the uplink suites whose case no column holds: no bud worn, no model number, the settings file.
-const OUTSIDE_THE_TABLE: [&str; 5] = [
-    "no_bud_worn_sends_no_start",
-    "a_bud_taken_out_while_the_stop_waits_gets_the_grace",
-    "always_sends_no_start_without_a_model_number",
-    "a_settings_file_with_a_bad_model_entry_is_refused",
-    "a_seventeenth_model_drops_the_oldest",
+    Kind::RestoringUnasked,
+    Kind::Asleep,
 ];
 
 fn phase(kind: Kind) -> Phase {
     match kind {
-        Kind::Stopped => Phase::Stopped { spent: None },
+        Kind::Stopped | Kind::Asleep => Phase::Stopped { spent: None },
         Kind::Failed => Phase::Stopped {
             spent: Some(Spent::Failed),
         },
         Kind::Unsupported => Phase::Stopped {
             spent: Some(Spent::Unsupported),
         },
+        Kind::Unasked => Phase::Stopped {
+            spent: Some(Spent::Unasked),
+        },
         Kind::Starting => Phase::Starting {
             since: SENT,
+            tried: Try::FIRST,
+            owed: false,
+        },
+        Kind::LastTry => Phase::Starting {
+            since: SENT,
+            tried: last_try(),
             owed: false,
         },
         Kind::Owed => Phase::Starting {
             since: SENT,
+            tried: Try::FIRST,
             owed: true,
         },
         Kind::Running => Phase::Running(Hold::Wanted),
@@ -375,8 +171,22 @@ fn phase(kind: Kind) -> Phase {
         Kind::Restoring => Phase::Restoring {
             since: SENT,
             id: RestoreId(0),
+            unasked: false,
+        },
+        Kind::RestoringUnasked => Phase::Restoring {
+            since: SENT,
+            id: RestoreId(0),
+            unasked: true,
         },
     }
+}
+
+fn last_try() -> Try {
+    let mut tried = Try::FIRST;
+    while let Some(next) = tried.next() {
+        tried = next;
+    }
+    tried
 }
 
 fn kind(phase: Phase) -> Kind {
@@ -388,14 +198,31 @@ fn kind(phase: Phase) -> Kind {
         Phase::Stopped {
             spent: Some(Spent::Unsupported),
         } => Kind::Unsupported,
+        Phase::Stopped {
+            spent: Some(Spent::Unasked),
+        } => Kind::Unasked,
+        Phase::Starting {
+            owed: false, tried, ..
+        } if tried.next().is_none() => Kind::LastTry,
         Phase::Starting { owed: false, .. } => Kind::Starting,
         Phase::Starting { owed: true, .. } => Kind::Owed,
-        Phase::Running(Hold::Wanted) => Kind::Running,
+        Phase::Running(Hold::Wanted | Hold::Late) => Kind::Running,
         Phase::Running(Hold::Lingering { .. }) => Kind::Lingering,
         Phase::Running(Hold::Waiting { .. }) => Kind::Waiting,
         Phase::Stopping { restore: true, .. } => Kind::Stopping,
         Phase::Stopping { restore: false, .. } => Kind::StoppingQuiet,
-        Phase::Restoring { .. } => Kind::Restoring,
+        Phase::Restoring { unasked: false, .. } => Kind::Restoring,
+        Phase::Restoring { unasked: true, .. } => Kind::RestoringUnasked,
+    }
+}
+
+/// The kind of `mic`, a stop while asleep told apart from one awake.
+fn kind_of(mic: &Mic) -> Kind {
+    let kind = kind(mic.phase);
+    if kind == Kind::Stopped && mic.asleep {
+        Kind::Asleep
+    } else {
+        kind
     }
 }
 
@@ -442,6 +269,8 @@ fn stepped(event: Event, column: Column) -> (Fact, Duration, State) {
         Event::Restored => (Fact::Audio(AudioFact::Restored(RestoreId(0))), SOON),
         Event::Exit => (Fact::Exit, SOON),
         Event::Quiet => (sink_in(true, SinkState::Suspended), SOON),
+        Event::Sleep => (Fact::Sleep(SleepEdge::Sleeping), SOON),
+        Event::Wake => (Fact::Sleep(SleepEdge::Woke), SOON),
     };
     if matches!(event, Event::Down | Event::Lost) {
         state.connected = false;
@@ -482,93 +311,21 @@ fn mic(phase: Phase) -> Mic {
     }
 }
 
-fn run(from: Phase, event: Event, column: Column) -> (Vec<Effect>, Mic) {
+fn run(from: Kind, event: Event, column: Column) -> (Vec<Effect>, Mic) {
     let mut mic = Mic {
         exiting: column == Column::Exit,
-        ..mic(from)
+        asleep: from == Kind::Asleep || event == Event::Wake,
+        ..mic(phase(from))
     };
     let (fact, now, state) = stepped(event, column);
     (mic.step(&state, &fact, now), mic)
 }
 
 #[test]
-fn every_phase_against_every_fact() {
-    for (from, event, outcomes) in CELLS {
-        for (column, (sent, to)) in COLUMNS.into_iter().zip(outcomes) {
-            let (effects, mic) = run(phase(from), event, column);
-            let cell = format!("{from:?}, {event:?}, {column:?}");
-            assert_eq!(requests(&effects), sent, "{cell}");
-            assert_eq!(kind(mic.phase), to, "{cell}");
-            let exiting = column == Column::Exit || event == Event::Exit;
-            let stopped = matches!(to, Kind::Stopped | Kind::Failed | Kind::Unsupported);
-            let answered = exiting && stopped;
-            assert_eq!(effects.contains(&Effect::Exited), answered, "{cell}");
-        }
-    }
-}
-
-#[test]
-fn the_table_holds_each_phase_and_fact_once() {
-    for from in KINDS {
-        for event in EVENTS {
-            let rows = CELLS
-                .iter()
-                .filter(|(kind, fact, _)| *kind == from && *fact == event);
-            assert_eq!(rows.count(), 1, "{from:?}, {event:?}");
-        }
-    }
-}
-
-/// The name of every `#[test]` in `suite`.
-// Sample input: "    #[test]\n    #[ignore = \"slow\"]\n    fn no_bud_worn_sends_no_start() {".
-fn test_names(suite: &str) -> Vec<&str> {
-    let mut names = Vec::new();
-    let mut lines = suite.lines();
-    while let Some(line) = lines.next() {
-        if line.trim() != "#[test]" {
-            continue;
-        }
-        let item = lines
-            .find(|line| line.trim().starts_with("fn "))
-            .unwrap()
-            .trim();
-        let name = item.strip_prefix("fn ").unwrap().split_once('(').unwrap().0;
-        names.push(name);
-    }
-    names
-}
-
-#[test]
-fn every_end_to_end_test_names_its_cell_or_stands_outside_the_table() {
-    let suites = [
-        include_str!("../../../../daemon/tests/uplink.rs"),
-        include_str!("../../../../daemon/tests/uplink_stop.rs"),
-        include_str!("../../../../daemon/tests/uplink_slow.rs"),
-    ];
-    let cells: Vec<String> = CELLS
-        .iter()
-        .flat_map(|(from, event, _)| COLUMNS.map(|column| format!("{from:?} {event:?} {column:?}")))
-        .collect();
-    let mut named = Vec::from(OUTSIDE_THE_TABLE);
-    // Sample input: `a_link_lost_while_live_sends_nothing Running Down AlwaysNew`.
-    for line in COVERED.lines().filter(|line| !line.is_empty()) {
-        let (test, cell) = line.split_once(' ').unwrap();
-        assert!(cells.iter().any(|known| known == cell), "{line}");
-        assert!(!OUTSIDE_THE_TABLE.contains(&test), "{test}");
-        named.push(test);
-    }
-    named.sort_unstable();
-    named.dedup();
-    let mut tests: Vec<&str> = suites.into_iter().flat_map(test_names).collect();
-    tests.sort_unstable();
-    assert_eq!(named, tests);
-}
-
-#[test]
 fn a_start_and_its_answer_log_their_lines_and_the_time_it_took() {
     let mut mic = Mic::default();
     let (fact, _, state) = stepped(Event::Changed, Column::AlwaysNew);
-    assert_eq!(lines(&mic.step(&state, &fact, SENT)), [START_SENT_LINE]);
+    assert_eq!(lines(&mic.step(&state, &fact, SENT)), [start_sent_line(1)]);
     let (fact, _, state) = stepped(Event::RunningMarker, Column::AlwaysNew);
     let effects = mic.step(&state, &fact, SENT.saturating_add(SOON));
     assert_eq!(lines(&effects), ["mic: uplink running after 100 ms"]);
@@ -593,20 +350,21 @@ fn the_owed_stop_is_logged_once_per_start() {
 }
 
 #[test]
-fn an_unanswered_start_logs_why_it_is_spent() {
+fn an_unanswered_last_try_logs_why_it_is_spent() {
+    let last = unanswered_line(START_TRIES);
     for (column, wanted) in [
-        (Column::AlwaysNew, vec![UNANSWERED_LINE, NO_UPLINK_LINE]),
-        (Column::AlwaysKnown, vec![UNANSWERED_LINE, FAILED_LINE]),
-        (Column::Off, vec![UNANSWERED_LINE]),
+        (Column::AlwaysNew, vec![last.as_str(), NO_UPLINK_LINE]),
+        (Column::AlwaysKnown, vec![last.as_str(), FAILED_LINE]),
+        (Column::Off, vec![last.as_str()]),
     ] {
-        let (effects, _) = run(phase(Kind::Starting), Event::Deadline, column);
+        let (effects, _) = run(Kind::LastTry, Event::Deadline, column);
         assert_eq!(lines(&effects), wanted, "{column:?}");
     }
 }
 
 #[test]
 fn an_unanswered_stop_logs_that_it_is_not_confirmed() {
-    let (effects, _) = run(phase(Kind::Stopping), Event::Deadline, Column::Off);
+    let (effects, _) = run(Kind::Stopping, Event::Deadline, Column::Off);
     assert_eq!(lines(&effects), [STOP_UNCONFIRMED_LINE]);
 }
 
@@ -664,7 +422,9 @@ fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_p
             MicCode::Unsupported,
             MicCode::Unsupported,
         ),
+        (Kind::Unasked, MicCode::Idle, MicCode::NotWorn),
         (Kind::Starting, MicCode::Starting, MicCode::NotWorn),
+        (Kind::LastTry, MicCode::Starting, MicCode::NotWorn),
         (Kind::Owed, MicCode::Starting, MicCode::NotWorn),
         (Kind::Running, MicCode::Live, MicCode::NotWorn),
         (Kind::Lingering, MicCode::Live, MicCode::NotWorn),
@@ -672,6 +432,7 @@ fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_p
         (Kind::Stopping, MicCode::Stopping, MicCode::Stopping),
         (Kind::StoppingQuiet, MicCode::Stopping, MicCode::Stopping),
         (Kind::Restoring, MicCode::Stopping, MicCode::Stopping),
+        (Kind::RestoringUnasked, MicCode::Stopping, MicCode::Stopping),
     ] {
         let mic = mic(phase(from));
         assert_eq!(mic.code(&worn), on_worn, "{from:?}");
@@ -755,4 +516,6 @@ fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
     assert_eq!(kind(mic.phase), Kind::Restoring);
 }
 
+mod faults;
 mod linger;
+mod table;

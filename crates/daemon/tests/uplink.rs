@@ -14,8 +14,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::mic::{
-        FAILED_LINE, NO_UPLINK_LINE, START_ANSWER_MS, STOP_ANSWER_MS, STOP_OWED_LINE,
-        STOP_UNCONFIRMED_LINE, UNANSWERED_LINE,
+        FAILED_LINE, NO_UPLINK_LINE, START_ANSWER_MS, START_TRIES, STOP_OWED_LINE,
+        STOP_UNCONFIRMED_LINE, unanswered_line,
     };
     use pods_core::prefs::{MAX_CONFIRMED_MODELS, PrefsError};
     use pods_fake::Profile;
@@ -27,13 +27,11 @@ mod tests {
         UNREADABLE, plant_settings, set, status, stop, unreadable_lines,
     };
     use super::support::uplink::{
-        kept_models, link, lose, mic, read_up_to_now, rig_with, starts, stops, wait_kept_models,
-        wait_mic, wait_starts, wait_stop,
+        START_ANSWER, STOP_ANSWER, all_tries, kept_models, link, lose, mic, read_up_to_now,
+        rig_with, starts, stops, wait_kept_models, wait_mic, wait_starts, wait_stop,
     };
     use super::support::{Session, wait_for};
 
-    const START_ANSWER: Duration = Duration::from_millis(START_ANSWER_MS);
-    const STOP_ANSWER: Duration = Duration::from_millis(STOP_ANSWER_MS);
     /// Well inside `START_ANSWER_MS` after the START, so a held START is still unanswered at its end.
     const STILL_STARTING: Duration = Duration::from_millis(START_ANSWER_MS / 3);
 
@@ -160,7 +158,7 @@ mod tests {
         let stop = wait_stop(&device);
         assert_gap("the STOP after the answer", released, stop.at, &at_once());
         let log = rig.daemon().log();
-        assert!(!log.lines().any(|line| line == UNANSWERED_LINE), "{log}");
+        assert!(!log.lines().any(|line| line == unanswered_line(1)), "{log}");
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
         assert_eq!(mic(&rig), "off");
         rig.finish();
@@ -174,7 +172,7 @@ mod tests {
         wait_starts(&device, 1);
         set(rig.session(), "microphone", "off");
         assert_eq!(mic(&rig), "off");
-        rig.wait_logged(UNANSWERED_LINE);
+        rig.wait_logged(&unanswered_line(1));
         read_up_to_now(&rig, &device);
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
@@ -191,7 +189,7 @@ mod tests {
         device.pods.set_ear(Placed::InEar, Placed::InCase);
         wait_starts(&device, 1);
         set(rig.session(), "microphone", "off");
-        rig.wait_logged(UNANSWERED_LINE);
+        rig.wait_logged(&unanswered_line(1));
         let window = not_before(START_ANSWER);
         assert_gap(
             "the unanswered line after a bud went in",
@@ -280,7 +278,7 @@ mod tests {
         device.pods.set_ear(Placed::InEar, Placed::InCase);
         wait_starts(&device, 1);
         wait_mic(&rig, "unsupported");
-        let window = not_before(START_ANSWER);
+        let window = not_before(START_ANSWER.saturating_mul(START_TRIES));
         assert_gap(
             "unsupported after a bud went in",
             worn,
@@ -289,11 +287,16 @@ mod tests {
         );
         rig.wait_logged(NO_UPLINK_LINE);
         read_up_to_now(&rig, &device);
-        assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        assert_eq!(
+            starts(&device).len(),
+            all_tries(),
+            "{:?}",
+            device.pods.heard()
+        );
         assert_eq!(kept_models(rig.session()), json!([]));
         lose(&rig, &device);
         link(&rig, &device);
-        wait_starts(&device, 2);
+        wait_starts(&device, all_tries().saturating_add(1));
         wait_mic(&rig, "starting");
         rig.finish();
     }
@@ -307,7 +310,12 @@ mod tests {
         wait_mic(&rig, "failed");
         rig.wait_logged(FAILED_LINE);
         read_up_to_now(&rig, &device);
-        assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        assert_eq!(
+            starts(&device).len(),
+            all_tries(),
+            "{:?}",
+            device.pods.heard()
+        );
         assert_eq!(kept_models(rig.session()), json!([MODEL_NUMBER]));
         rig.finish();
     }

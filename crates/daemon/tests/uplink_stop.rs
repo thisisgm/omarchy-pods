@@ -15,7 +15,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::audio::RESTORE_HOLD_MS;
-    use pods_core::policy::mic::{START_ANSWER_MS, STOP_OWED_LINE, STOP_UNCONFIRMED_LINE};
+    use pods_core::policy::mic::{STOP_OWED_LINE, STOP_UNCONFIRMED_LINE};
     use pods_fake::Profile;
     use pods_samples::MODEL_NUMBER;
     use pulseaudio::protocol::SinkState;
@@ -26,7 +26,7 @@ mod tests {
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, not_before};
     use super::support::settings::set;
     use super::support::uplink::{
-        assert_hold, link, link_heard, lose, mic, move_sink, read_up_to_now, rig_with,
+        START_ANSWER, assert_hold, link, link_heard, mic, move_sink, read_up_to_now, rig_with,
         rig_with_audio, starts, stops, wait_mic, wait_restore, wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
@@ -38,7 +38,6 @@ mod tests {
     /// Into the exit when a held START is answered.
     const ANSWERED_INTO_THE_EXIT: Duration = Duration::from_millis(300);
     const HOLD: Duration = Duration::from_millis(RESTORE_HOLD_MS);
-    const START_ANSWER: Duration = Duration::from_millis(START_ANSWER_MS);
     const RESTORE_SKIPPED_LINE: &str = "mic: restore skipped, sink suspended";
 
     fn at_once() -> RangeInclusive<Duration> {
@@ -358,20 +357,6 @@ mod tests {
             Instant::now(),
             &at_once(),
         );
-        rig.finish();
-    }
-
-    #[test]
-    fn a_link_lost_while_stopping_orders_no_restore() {
-        let (rig, device, audio) = live(SinkState::Running);
-        device.pods.uplink().hold_stops(true);
-        set(rig.session(), "microphone", "off");
-        wait_stop(&device);
-        lose(&rig, &device);
-        device.pods.uplink().release_stop();
-        link(&rig, &device);
-        rig.wait_sink_told();
-        assert!(audio.writes().is_empty(), "{:?}", audio.writes());
         rig.finish();
     }
 

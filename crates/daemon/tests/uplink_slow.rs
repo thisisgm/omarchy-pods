@@ -1,4 +1,4 @@
-//! The linger and the gate at real time through the built daemon against the fake pods and the fake audio server: a minute for the linger, seconds for a bud taken out.
+//! The linger, the gate and the answer windows at real time through the built daemon against the fake pods and the fake audio server: a minute for the linger, seconds for a bud taken out or a try.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -13,7 +13,11 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
-    use pods_core::policy::mic::{BUD_GRACE_MS, STOP_WAITS_LINE, UPLINK_LINGER_MS};
+    use pods_core::policy::mic::{
+        BUD_GRACE_MS, FAILED_LINE, START_TRIES, STOP_UNCONFIRMED_LINE, STOP_WAITS_LINE,
+        UPLINK_LINGER_MS, unanswered_line,
+    };
+    use pods_fake::Profile;
     use pods_samples::uplink::{START, STOP};
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
@@ -22,9 +26,11 @@ mod tests {
     use super::support::audio::{FakeAudio, Volumes};
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::settings::set;
+    use super::support::sleep::logged;
     use super::support::uplink::{
-        assert_hold, link_heard, move_sink, read_up_to_now, rig_with_audio, starts, stops,
-        wait_mic, wait_restore, wait_stop,
+        START_ANSWER, STOP_ANSWER, TRY_SPACING, all_tries, assert_hold, link, link_heard,
+        move_sink, read_up_to_now, rig_with, rig_with_audio, start_failures, starts, stops,
+        wait_mic, wait_restore, wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, wait_within};
 
@@ -226,6 +232,138 @@ mod tests {
         let again = device.pods.wait_heard(&START, 2, HANG_LIMIT).unwrap()[1].at;
         assert!(again > resumed, "the START before the resume");
         wait_mic(&rig, "live");
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "the spacing of the tries at real time; the slow job runs it"]
+    #[expect(
+        clippy::print_stderr,
+        reason = "the spacings the run saw go into the test's output"
+    )]
+    fn an_unanswered_start_is_tried_three_times_then_failed() {
+        let (mut rig, device) = rig_with("always", &[MODEL_NUMBER], Profile::default());
+        device.pods.uplink().never_answer(true);
+        let linked = Instant::now();
+        link(&rig, &device);
+        let tries = wait_starts(&device, all_tries());
+        wait_mic(&rig, "failed");
+        let failed = Instant::now();
+        let mut ends: Vec<Instant> = tries.iter().skip(1).map(|heard| heard.at).collect();
+        ends.push(failed);
+        let spacings: Vec<Duration> = tries
+            .iter()
+            .zip(&ends)
+            .map(|(heard, end)| end.saturating_duration_since(heard.at))
+            .collect();
+        let (shortest, longest) = (spacings.iter().min(), spacings.iter().max());
+        eprintln!("the three spacings: {shortest:?} to {longest:?}");
+        for (tried, end) in (1..=START_TRIES).zip(&ends) {
+            let window = START_ANSWER.saturating_mul(tried)..;
+            assert_gap("the end of a try after the link", linked, *end, &window);
+        }
+        assert_eq!(spacings.len(), all_tries(), "{spacings:?}");
+        for (tried, spacing) in (1..=START_TRIES).zip(&spacings) {
+            assert!(*spacing >= TRY_SPACING, "try {tried} lasted {spacing:?}");
+        }
+        read_up_to_now(&rig, &device);
+        let sent = starts(&device).len();
+        assert_eq!(sent, all_tries(), "{:?}", device.pods.heard());
+        assert_eq!(start_failures(&rig), u64::from(START_TRIES));
+        for tried in 1..=START_TRIES {
+            assert_eq!(logged(&mut rig, &unanswered_line(tried)), 1, "try {tried}");
+        }
+        assert_eq!(logged(&mut rig, FAILED_LINE), 1);
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "the STOP's answer window at real time; the slow job runs it"]
+    fn a_stop_never_confirmed_after_off_still_restores() {
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        device.pods.uplink().hold_stops(true);
+        let asked = Instant::now();
+        set(rig.session(), "microphone", "off");
+        wait_stop(&device);
+        let (suspended, resumed) = wait_restore(&audio, &device);
+        assert_gap(
+            "the suspend after off was set",
+            asked,
+            suspended,
+            &(STOP_ANSWER..),
+        );
+        assert_hold(suspended, resumed);
+        rig.wait_logged(STOP_UNCONFIRMED_LINE);
+        read_up_to_now(&rig, &device);
+        assert_eq!(audio.writes().len(), 2, "{:?}", audio.writes());
+        assert_eq!(stops(&device).len(), 1, "{:?}", device.pods.heard());
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "the STOP's answer window at real time; the slow job runs it"]
+    fn a_stop_never_confirmed_through_the_gate_restores_nothing() {
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Suspended);
+        device.pods.uplink().hold_starts(true);
+        link_heard(&rig, &device);
+        wait_starts(&device, 1);
+        set(rig.session(), "microphone", "auto");
+        rig.wait_logged(&unanswered_line(1));
+        device.pods.uplink().hold_stops(true);
+        let released = Instant::now();
+        device.pods.uplink().release_start();
+        wait_stop(&device);
+        rig.wait_logged("mic: stop sent (quiet)");
+        rig.wait_logged(STOP_UNCONFIRMED_LINE);
+        assert_gap(
+            "the unconfirmed line after the START was released",
+            released,
+            Instant::now(),
+            &(STOP_ANSWER..),
+        );
+        wait_mic(&rig, "idle");
+        read_up_to_now(&rig, &device);
+        audio.assert_only_reads();
+        let log = rig.daemon().log();
+        assert!(
+            !log.lines().any(|line| line.starts_with("mic: restore")),
+            "{log}"
+        );
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "a START's answer window at real time; the slow job runs it"]
+    fn a_start_is_still_sent_after_a_stop_never_confirmed() {
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        device.pods.uplink().hold_stops(true);
+        set(rig.session(), "microphone", "off");
+        wait_stop(&device);
+        let (_, resumed) = wait_restore(&audio, &device);
+        rig.wait_logged(STOP_UNCONFIRMED_LINE);
+        let asked = Instant::now();
+        set(rig.session(), "microphone", "always");
+        let second = wait_starts(&device, 2)[1].at;
+        assert!(second > resumed, "the START before the resume");
+        device.pods.uplink().release_stop();
+        let third = wait_starts(&device, 3)[2].at;
+        assert_gap(
+            "the next try after always was set",
+            asked,
+            third,
+            &(START_ANSWER..),
+        );
+        wait_mic(&rig, "live");
+        read_up_to_now(&rig, &device);
+        assert_eq!(stops(&device).len(), 1, "{:?}", device.pods.heard());
+        assert_eq!(start_failures(&rig), 1);
         rig.finish();
     }
 }

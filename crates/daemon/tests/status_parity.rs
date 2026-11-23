@@ -15,11 +15,12 @@ mod tests {
 
     use cpp_source::MAIN;
     use pods_core::command::NoiseTarget;
+    use pods_core::policy::mic::START_TRIES;
     use pods_core::state::{EarDetectionBehavior, State};
     use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT, to_status_object};
     use pods_fake::Profile;
     use pods_proto::noise::NoiseMode;
-    use pods_samples::NAME;
+    use pods_samples::{MODEL_NUMBER, NAME};
     use serde_json::Value;
     use zbus::{OwnedVariant, Variant};
 
@@ -27,6 +28,7 @@ mod tests {
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
     use super::support::players::PROPERTIES;
     use super::support::rig::{Rig, connected, named};
+    use super::support::uplink::{link, rig_with, wait_mic};
     use super::support::wait_for;
 
     /// The mark in the sample name, which every surface must carry as raw UTF-8.
@@ -103,6 +105,12 @@ mod tests {
                 .and_then(|number| u8::try_from(number).ok())
                 .unwrap_or(u8::MAX)
         };
+        let count = |value: &Value| {
+            value
+                .as_u64()
+                .and_then(|number| u32::try_from(number).ok())
+                .unwrap_or(u32::MAX)
+        };
         let battery = |side: &Value| {
             (
                 flag(&side["available"]),
@@ -164,6 +172,10 @@ mod tests {
             ("AdvertIntake", Variant::from(word("advert_intake"))),
             ("Microphone", Variant::from(word("microphone"))),
             ("Mic", Variant::from(word("mic"))),
+            (
+                "MicStartFailures",
+                Variant::from(count(&document["mic_start_failures"])),
+            ),
         ])
     }
 
@@ -276,6 +288,17 @@ mod tests {
         });
         let (document, _) = agreed(&rig);
         assert_eq!(document["left"]["available"], false, "{document}");
+        rig.finish();
+    }
+
+    #[test]
+    fn they_agree_after_starts_left_unanswered() {
+        let (rig, device) = rig_with("always", &[MODEL_NUMBER], Profile::default());
+        device.pods.uplink().never_answer(true);
+        link(&rig, &device);
+        wait_mic(&rig, "failed");
+        let (document, _) = agreed(&rig);
+        assert_eq!(document["mic_start_failures"], START_TRIES, "{document}");
         rig.finish();
     }
 

@@ -93,7 +93,10 @@ fn an_uplink_marker_asks_nothing_and_leaves_the_reading() {
     for said in [UplinkState::Running, UplinkState::Stopped] {
         let marker = || Fact::Link(Signal::Uplink(said));
         let effects = Policy::default().step(&State::default(), marker(), Duration::ZERO);
-        assert_eq!(effects, [], "{said:?}");
+        let asked = effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Audio(_)));
+        assert!(!asked, "{said:?}: {effects:?}");
         for was in SERVERS {
             assert_eq!(server_after(was, &marker()), was, "{said:?} {was:?}");
         }

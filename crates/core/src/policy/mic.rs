@@ -1,6 +1,7 @@
 //! The microphone uplink machine: when a START and a STOP go out, what the pods' markers move, the restore after a STOP and the exit; stepped only by facts and its own deadline.
 
 mod gate;
+mod tries;
 
 use std::time::Duration;
 
@@ -9,12 +10,14 @@ use pods_proto::uplink::{self, UplinkState};
 use super::audio::{
     AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkState,
 };
-use super::{Effect, Fact};
+use super::{Effect, Fact, SleepEdge};
 use crate::link::Signal;
 use crate::prefs::MicPref;
 use crate::state::{MicCode, State};
 pub use gate::{BUD_GRACE_MS, STOP_WAITS_LINE, UPLINK_LINGER_MS};
 use gate::{Hold, Next};
+use tries::Try;
+pub use tries::{START_TRIES, start_sent_line, unanswered_line};
 
 /// About three times the slowest answer to a START measured on the pods.
 pub const START_ANSWER_MS: u64 = 1500;
@@ -23,12 +26,11 @@ pub const STOP_ANSWER_MS: u64 = 1500;
 /// The restore is two audio server calls with the hold between them.
 pub const RESTORE_WAIT_MS: u64 = 2 * AUDIO_CALL_TIMEOUT_MS + RESTORE_HOLD_MS;
 
-pub const UNANSWERED_LINE: &str = "mic: start unanswered (try 1 of 1)";
 pub const FAILED_LINE: &str = "mic: failed, the pods did not answer";
 pub const NO_UPLINK_LINE: &str = "mic: this model has no uplink";
 pub const STOP_OWED_LINE: &str = "mic: stop owed, the start is unanswered";
 pub const STOP_UNCONFIRMED_LINE: &str = "mic: stop not confirmed";
-const START_SENT_LINE: &str = "mic: start sent (try 1)";
+pub const STOPPED_BY_THE_PODS_LINE: &str = "mic: stopped by the pods";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UplinkRequest {
@@ -48,13 +50,14 @@ impl UplinkRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// `spent` says why no START goes out again before the link is lost.
+    /// `spent` says why no START goes out again.
     Stopped {
         spent: Option<Spent>,
     },
-    /// A START went out at `since` and the pods have not said they run; `owed` once `off` or the exit asked for its STOP.
+    /// The START of try `tried` went out at `since` and the pods have not said they run; `owed` once `off` or the exit asked for its STOP.
     Starting {
         since: Duration,
+        tried: Try,
         owed: bool,
     },
     Running(Hold),
@@ -63,10 +66,11 @@ enum Phase {
         since: Duration,
         restore: bool,
     },
-    /// The sink's restore `id` was asked for at `since`.
+    /// The sink's restore `id` was asked for at `since`; `unasked` when the pods stopped on their own.
     Restoring {
         since: Duration,
         id: RestoreId,
+        unasked: bool,
     },
 }
 
@@ -76,6 +80,7 @@ enum Word {
     Quiet,
     NotWorn,
     Off,
+    Sleep,
     Exit,
 }
 
@@ -85,6 +90,7 @@ impl Word {
             Self::Quiet => "mic: stop sent (quiet)",
             Self::NotWorn => "mic: stop sent (not_worn)",
             Self::Off => "mic: stop sent (off)",
+            Self::Sleep => "mic: stop sent (sleep)",
             Self::Exit => "mic: stop sent (exit)",
         }
     }
@@ -92,10 +98,12 @@ impl Word {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Spent {
-    /// A confirmed model did not answer.
+    /// A confirmed model did not answer; until the link is lost.
     Failed,
-    /// A model never confirmed did not answer.
+    /// A model never confirmed did not answer; until the link is lost.
     Unsupported,
+    /// The pods stopped on their own; until the want is absent once.
+    Unasked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +113,10 @@ pub(super) struct Mic {
     quiet: bool,
     exiting: bool,
     next_restore: u32,
+    /// From logind's edge into sleep until its wake.
+    asleep: bool,
+    /// Every START whose answer deadline passed since the daemon started.
+    start_failures: u32,
 }
 
 impl Default for Mic {
@@ -114,6 +126,8 @@ impl Default for Mic {
             quiet: false,
             exiting: false,
             next_restore: 0,
+            asleep: false,
+            start_failures: 0,
         }
     }
 }
@@ -125,18 +139,16 @@ impl Mic {
         match fact {
             Fact::Link(Signal::Down) => self.phase = Phase::Stopped { spent: None },
             Fact::Link(Signal::Lost { .. }) => {
-                *self = Self {
-                    exiting: self.exiting,
-                    ..Self::default()
-                };
+                self.phase = Phase::Stopped { spent: None };
+                self.quiet = false;
             }
             Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
             Fact::Tick => self.tick(state, now, &mut effects),
             Fact::Audio(fact) => self.audio(*fact),
+            Fact::Sleep(edge) => self.sleep(*edge),
             Fact::Exit => self.exiting = true,
             Fact::Link(Signal::Up { .. } | Signal::Keys(_))
             | Fact::Changed
-            | Fact::Sleep(_)
             | Fact::Paused(..)
             | Fact::Advert(_)
             | Fact::Monitor(_) => {}
@@ -153,15 +165,27 @@ impl Mic {
                 effects.push(Effect::Log(format!("mic: uplink running after {after} ms")));
                 Phase::Running(Hold::Wanted)
             }
-            (Phase::Stopped { .. }, UplinkState::Running) => Phase::Running(Hold::Wanted),
+            (Phase::Stopped { .. }, UplinkState::Running) => Phase::Running(Hold::Late),
             (Phase::Stopping { since, restore }, UplinkState::Stopped) => {
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("mic: uplink stopped after {after} ms")));
                 self.stopped(restore, now, effects)
             }
-            (Phase::Running(_), UplinkState::Stopped) => Phase::Stopped { spent: None },
+            // A pod is silent already, so the restore runs whatever the gate says.
+            (Phase::Running(_), UplinkState::Stopped) => {
+                effects.push(log(STOPPED_BY_THE_PODS_LINE));
+                self.restore(true, now, effects)
+            }
             (phase, _) => phase,
         };
+    }
+
+    /// A START out at the edge into sleep is dropped unanswered, as the suspend comes before its answer could.
+    fn sleep(&mut self, edge: SleepEdge) {
+        self.asleep = edge == SleepEdge::Sleeping;
+        if self.asleep && matches!(self.phase, Phase::Starting { .. }) {
+            self.phase = Phase::Stopped { spent: None };
+        }
     }
 
     fn audio(&mut self, fact: AudioFact) {
@@ -172,10 +196,10 @@ impl Mic {
                 self.quiet = sink.is_none_or(|sink| sink.state == SinkState::Suspended);
             }
             AudioFact::Restored(answered) => {
-                if let Phase::Restoring { id, .. } = self.phase
+                if let Phase::Restoring { id, unasked, .. } = self.phase
                     && answered == id
                 {
-                    self.phase = Phase::Stopped { spent: None };
+                    self.phase = restored(unasked);
                 }
             }
         }
@@ -186,17 +210,16 @@ impl Mic {
             return;
         }
         self.phase = match self.phase {
-            Phase::Starting { .. } => {
-                effects.push(log(UNANSWERED_LINE));
-                Phase::Stopped {
-                    spent: unanswered(state, effects),
-                }
+            Phase::Starting { tried, .. } => {
+                effects.push(Effect::Log(unanswered_line(tried.number())));
+                self.start_failures = self.start_failures.saturating_add(1);
+                self.unanswered(state, tried, now, effects)
             }
             Phase::Stopping { restore, .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
                 self.stopped(restore, now, effects)
             }
-            Phase::Restoring { .. } => Phase::Stopped { spent: None },
+            Phase::Restoring { unasked, .. } => restored(unasked),
             phase @ (Phase::Stopped { .. } | Phase::Running(_)) => phase,
         };
     }
@@ -206,21 +229,24 @@ impl Mic {
         let off = state.microphone.preference() == MicPref::Off;
         match self.phase {
             Phase::Stopped { .. } if self.exiting => effects.push(Effect::Exited),
-            Phase::Stopped { spent: None } if wanted(state) => {
-                effects.extend([
-                    Effect::Uplink(UplinkRequest::Start),
-                    Effect::Audio(AudioRequest::CancelRestore),
-                    log(START_SENT_LINE),
-                ]);
-                self.phase = Phase::Starting {
-                    since: now,
-                    owed: false,
-                };
+            Phase::Stopped {
+                spent: Some(Spent::Unasked),
+            } if !wanted(state) => self.phase = Phase::Stopped { spent: None },
+            Phase::Stopped { spent: None } if wanted(state) && !self.asleep => {
+                self.phase = start(Try::FIRST, now, effects);
             }
             // No STOP is ever written while a START is unanswered: the running marker sends it.
-            Phase::Starting { since, owed: false } if off || self.exiting => {
+            Phase::Starting {
+                since,
+                tried,
+                owed: false,
+            } if off || self.exiting => {
                 effects.push(log(STOP_OWED_LINE));
-                self.phase = Phase::Starting { since, owed: true };
+                self.phase = Phase::Starting {
+                    since,
+                    tried,
+                    owed: true,
+                };
             }
             Phase::Running(hold) => self.running(hold, state, off, now, effects),
             Phase::Stopped { .. }
@@ -230,7 +256,7 @@ impl Mic {
         }
     }
 
-    /// `off` and the exit stop at once; any other end of the want goes through the linger and the gate.
+    /// `off`, the exit and a sleep stop at once; any other end of the want goes through the linger and the gate.
     fn running(
         &mut self,
         hold: Hold,
@@ -243,6 +269,8 @@ impl Mic {
             Next::Stop(Word::Off)
         } else if self.exiting {
             Next::Stop(Word::Exit)
+        } else if self.asleep {
+            Next::Stop(Word::Sleep)
         } else {
             hold.follow(wanted(state), state.ear.any_in_ear(), self.quiet, now)
         };
@@ -252,6 +280,11 @@ impl Mic {
                 Phase::Running(Hold::Waiting { unworn: None })
             }
             Next::Hold(hold) => Phase::Running(hold),
+            // The suspend comes before any answer could, so nothing waits for one.
+            Next::Stop(Word::Sleep) => {
+                effects.extend([Effect::Uplink(UplinkRequest::Stop), log(Word::Sleep.line())]);
+                Phase::Stopped { spent: None }
+            }
             Next::Stop(word) => {
                 effects.extend([Effect::Uplink(UplinkRequest::Stop), log(word.line())]);
                 Phase::Stopping {
@@ -262,15 +295,43 @@ impl Mic {
         };
     }
 
-    /// The end of a STOP: the restore it is owed, under an id no earlier restore had, or nothing.
+    /// The end of a STOP: the restore it is owed, or nothing.
     fn stopped(&mut self, restore: bool, now: Duration, effects: &mut Vec<Effect>) -> Phase {
         if !restore {
             return Phase::Stopped { spent: None };
         }
+        self.restore(false, now, effects)
+    }
+
+    /// A restore under an id no earlier restore had.
+    fn restore(&mut self, unasked: bool, now: Duration, effects: &mut Vec<Effect>) -> Phase {
         let id = RestoreId(self.next_restore);
         self.next_restore = self.next_restore.wrapping_add(1);
         effects.push(Effect::Audio(AudioRequest::Restore(id)));
-        Phase::Restoring { since: now, id }
+        Phase::Restoring {
+            since: now,
+            id,
+            unasked,
+        }
+    }
+
+    /// Another try while the want holds and one is left; else the tries end, spent only after the last.
+    fn unanswered(
+        &self,
+        state: &State,
+        tried: Try,
+        now: Duration,
+        effects: &mut Vec<Effect>,
+    ) -> Phase {
+        if !wanted(state) || self.exiting {
+            return Phase::Stopped { spent: None };
+        }
+        match tried.next() {
+            Some(next) => start(next, now, effects),
+            None => Phase::Stopped {
+                spent: Some(spent(state, effects)),
+            },
+        }
     }
 
     pub(super) fn deadline(&self) -> Option<Duration> {
@@ -305,8 +366,16 @@ impl Mic {
             _ if !state.ear.any_in_ear() => MicCode::NotWorn,
             Phase::Starting { .. } => MicCode::Starting,
             Phase::Running(_) => MicCode::Live,
-            Phase::Stopped { spent: None } => MicCode::Idle,
+            Phase::Stopped {
+                spent: None | Some(Spent::Unasked),
+            } => MicCode::Idle,
         }
+    }
+
+    /// Hands `Microphone::show` the code `mic` shows and the failures `mic_start_failures` counts.
+    pub(super) fn show(&self, state: &mut State) {
+        let code = self.code(state);
+        state.microphone.show(code, self.start_failures);
     }
 }
 
@@ -320,17 +389,33 @@ fn wanted(state: &State) -> bool {
     preferred && !state.model_number.is_empty() && state.connected && state.ear.any_in_ear()
 }
 
-/// Why a START that `off` did not cancel went unanswered, and its line.
-fn unanswered(state: &State, effects: &mut Vec<Effect>) -> Option<Spent> {
-    if state.microphone.preference() == MicPref::Off {
-        return None;
+fn start(tried: Try, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+    effects.extend([
+        Effect::Uplink(UplinkRequest::Start),
+        Effect::Audio(AudioRequest::CancelRestore),
+        Effect::Log(start_sent_line(tried.number())),
+    ]);
+    Phase::Starting {
+        since: now,
+        tried,
+        owed: false,
     }
+}
+
+fn restored(unasked: bool) -> Phase {
+    Phase::Stopped {
+        spent: unasked.then_some(Spent::Unasked),
+    }
+}
+
+/// Why the last try went unanswered, and its line.
+fn spent(state: &State, effects: &mut Vec<Effect>) -> Spent {
     if state.mic_models.contains(&state.model_number) {
         effects.push(log(FAILED_LINE));
-        Some(Spent::Failed)
+        Spent::Failed
     } else {
         effects.push(log(NO_UPLINK_LINE));
-        Some(Spent::Unsupported)
+        Spent::Unsupported
     }
 }
 

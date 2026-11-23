@@ -14,7 +14,7 @@ use pods_proto::keys::ProximityKeys;
 use pods_proto::uplink::UplinkState;
 
 use crate::link::Signal;
-use crate::state::{AdvertIntake, MicCode, State};
+use crate::state::{AdvertIntake, State};
 use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
 use audio::{AudioFact, AudioRequest};
@@ -190,10 +190,9 @@ impl Policy {
             .min()
     }
 
-    /// What the `mic` status key shows unless the preference is `off`; the driver hands it to `Microphone::show` before each publish.
-    #[must_use]
-    pub fn mic(&self, state: &State) -> MicCode {
-        self.mic.code(state)
+    /// What the `mic` status keys show, which the driver writes into the state before each publish.
+    pub fn show_mic(&self, state: &mut State) {
+        self.mic.show(state);
     }
 }
 
