@@ -255,14 +255,20 @@ fn wrong_usage_exits_2() {
 }
 
 /// The `[Service]` keys above `UMask` that start and restart the daemon rather than confine it.
-const LIFECYCLE_KEYS: [&str; 5] = ["Type", "Environment", "ExecStart", "Restart", "RestartSec"];
+const LIFECYCLE_KEYS: [&str; 4] = ["Type", "ExecStart", "Restart", "RestartSec"];
 /// Well under the service file's count of hardening directives, so a parse that finds almost none fails.
-const FEWEST_DIRECTIVES: usize = 20;
+const FEWEST_DIRECTIVES: usize = 10;
 
-/// The directives of the installed unit's `[Service]` section from `UMask` on, as the test reads the file itself; sample input `UMask=0077` through `RestrictAddressFamilies=AF_UNIX AF_BLUETOOTH AF_NETLINK`, then `[Install]`.
+/// The unit the package installs, as the test reads the file itself.
+fn packaged_unit() -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/librepods.service");
+    fs::read_to_string(path).unwrap()
+}
+
+/// The directives of the packaged unit's `[Service]` section from `UMask` on; sample input `UMask=0077` through `LimitCORE=0`, then `[Install]`.
 fn service_directives() -> Vec<String> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../daemon/librepods.service");
-    let text = fs::read_to_string(path).unwrap();
+    let text = packaged_unit();
     let service = text
         .split("[Service]")
         .nth(1)
@@ -287,7 +293,7 @@ fn service_directives() -> Vec<String> {
 }
 
 #[test]
-fn the_unit_gets_every_hardening_directive_of_the_service_file() {
+fn the_test_unit_copies_the_hardening_of_the_packaged_unit() {
     let bench = Bench::new();
     let output = bench.run(&[]);
     assert_eq!(output.status.code(), Some(0));
@@ -305,8 +311,6 @@ fn the_unit_gets_every_hardening_directive_of_the_service_file() {
         "PrivateTmp=",
         "StateDirectory=",
         "StateDirectoryMode=",
-        "ConfigurationDirectory=",
-        "ConfigurationDirectoryMode=",
         "ReadWritePaths=",
     ];
     let directives = service_directives();
@@ -344,6 +348,23 @@ fn the_unit_gets_every_hardening_directive_of_the_service_file() {
             "--headless".to_owned()
         ]
     );
+}
+
+#[test]
+fn the_packaged_unit_names_no_directory_of_the_old_daemon() {
+    let text = packaged_unit();
+    assert!(!text.contains("AirPodsTrayApp"), "{text}");
+    assert!(!text.contains("QT_"), "{text}");
+}
+
+#[test]
+fn the_packaged_unit_starts_the_daemon_subcommand() {
+    let text = packaged_unit();
+    let starts: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("ExecStart"))
+        .collect();
+    assert_eq!(starts, ["ExecStart=%h/.local/bin/librepods daemon"]);
 }
 
 #[test]

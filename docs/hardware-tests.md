@@ -49,11 +49,11 @@ off and on and every Bluetooth device on the machine drops once.
    failed check, a panic, SIGINT, SIGTERM, SIGHUP, or a tool the run needs
    that fails or hangs and is killed at its timeout.
 3. It starts the binary under test as the transient user unit `librepods-hw`,
-   with every hardening directive of `daemon/librepods.service` from `UMask`
-   on, except the ones naming the installed daemon's own directories. Its
-   runtime and state directories are a private temporary directory, so the
-   run never touches the real socket or state file. It uses the real system
-   bus and the real session bus.
+   with every hardening directive of `packaging/systemd/librepods.service`
+   from `UMask` on, except the ones naming the installed daemon's own
+   directories. Its runtime and state directories are a private temporary
+   directory, so the run never touches the real socket or state file. It uses
+   the real system bus and the real session bus.
 4. After the checks it stops `librepods-hw`, runs C8 with no daemon
    running, and starts `librepods.service` again if it was running before.
 
