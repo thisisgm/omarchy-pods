@@ -76,6 +76,8 @@ pub(super) struct Monitor {
     refused: BTreeSet<String>,
     /// Some adapter accepted since the last cause.
     accepted: bool,
+    /// An `Activate` came since the last try began, so BlueZ has answered a registration of this try.
+    activated: bool,
     /// Tries since the last cause that ended with a refusal.
     refusals: u32,
     retry: Option<Pin<Box<Sleep>>>,
@@ -170,9 +172,13 @@ impl Monitor {
         (self.wanted && self.managers.is_empty()).then_some(MonitorFact::Unavailable)
     }
 
-    /// A `Release` while no call is under way is BlueZ dropping the monitor on its own, a cause.
+    pub(super) fn activated(&mut self) {
+        self.activated = true;
+    }
+
+    /// A `Release` after an `Activate` or while no call is under way is BlueZ dropping the monitor on its own, a cause.
     pub(super) fn released(&mut self, connection: &Connection) -> Option<MonitorFact> {
-        if self.calls.is_empty() {
+        if self.activated || self.calls.is_empty() {
             self.cause(connection)
         } else {
             None
@@ -311,6 +317,7 @@ impl Monitor {
     }
 
     fn attempt(&mut self, connection: &Connection, adapters: BTreeSet<String>) {
+        self.activated = false;
         for adapter in adapters {
             let connection = connection.clone();
             self.calls.spawn(async move {
