@@ -27,7 +27,7 @@ mod tests {
 
     use super::support::bus::NO_SESSION_LOG;
     use super::support::{
-        BINARY, Daemon, HANG_LIMIT, Session, log_lines, pause, read_to_close, wait_for, wait_within,
+        Daemon, HANG_LIMIT, Session, binary, log_lines, pause, read_to_close, wait_for, wait_within,
     };
 
     /// Half the daemon's 1000 ms request deadline: a reply slower than this waited on the silent client.
@@ -527,7 +527,7 @@ mod tests {
         let mut daemon = {
             let log = session.dir.path().join("daemon.log");
             let child = session
-                .command(Path::new(BINARY), &["daemon"])
+                .command(Path::new(binary()), &["daemon"])
                 .env_remove("XDG_RUNTIME_DIR")
                 .stderr(File::create(&log).unwrap())
                 .spawn()
@@ -545,7 +545,7 @@ mod tests {
         let missing = session.dir.path().join("gone");
         let log = session.dir.path().join("daemon.log");
         let child = session
-            .command(Path::new(BINARY), &["daemon"])
+            .command(Path::new(binary()), &["daemon"])
             .env("XDG_RUNTIME_DIR", &missing)
             .stderr(File::create(&log).unwrap())
             .spawn()
@@ -698,11 +698,11 @@ mod tests {
         let session = Session::new();
         let _daemon = session.start();
         let link = session.dir.path().join("librepods-ctl");
-        symlink(BINARY, &link).unwrap();
+        symlink(binary(), &link).unwrap();
         for verb in every_verb() {
             let expected_status = session.status();
             for (program, args) in [
-                (Path::new(BINARY), vec!["ctl", verb]),
+                (Path::new(binary()), vec!["ctl", verb]),
                 (link.as_path(), vec![verb]),
             ] {
                 let out = session.run_client(program, &args);
@@ -729,11 +729,11 @@ mod tests {
         let session = Session::new();
         let mut daemon = session.start();
         assert_eq!(session.status(), to_status_line(&State::default()));
-        let set = session.run_client(Path::new(BINARY), &["set", "ear_detection", "both"]);
+        let set = session.run_client(Path::new(binary()), &["set", "ear_detection", "both"]);
         assert!(set.status.success(), "{set:?}");
         let printed = session.dir.path().join("watch.out");
         let child = session
-            .command(Path::new(BINARY), &["watch"])
+            .command(Path::new(binary()), &["watch"])
             .stdin(Stdio::null())
             .stdout(File::create(&printed).unwrap())
             .stderr(Stdio::null())

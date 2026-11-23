@@ -3,9 +3,11 @@
 mod hw;
 mod probe;
 mod pw_ffi;
+mod release;
 
 use std::env;
 use std::ffi::OsString;
+use std::path::Path;
 use std::process::{Command, ExitCode};
 
 /// One gate: `cargo <name> <args>`.
@@ -65,13 +67,21 @@ fn main() -> ExitCode {
         Some(command) if command == "probe" => probe::run(env::args_os().skip(1)),
         Some(command) if command == "hw" => hw::run(env::args_os().skip(1)),
         Some(command) if command == "pw-ffi" && env::args_os().nth(2).is_none() => pw_ffi::run(),
-        _ => {
-            report(
-                "usage: cargo xtask ci [gate]... | cargo xtask probe <command> | cargo xtask hw link --binary <path> | cargo xtask pw-ffi",
-            );
-            ExitCode::FAILURE
+        Some(command) if command == "release-check" => {
+            match env::args_os().skip(2).collect::<Vec<_>>().as_slice() {
+                [file, version] => release::run(Path::new(file), version),
+                _ => usage(),
+            }
         }
+        _ => usage(),
     }
+}
+
+fn usage() -> ExitCode {
+    report(
+        "usage: cargo xtask ci [gate]... | cargo xtask probe <command> | cargo xtask hw link --binary <path> | cargo xtask pw-ffi | cargo xtask release-check <file> <version>",
+    );
+    ExitCode::FAILURE
 }
 
 /// The gates named, each once and in their usual order, or every gate when none is; the error is the first name that is no gate.

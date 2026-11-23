@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use super::{BINARY, Daemon, HANG_LIMIT, Session};
+use super::{Daemon, HANG_LIMIT, Session, binary};
 
 const WATCH_LOG_NAME: &str = "watch.log";
 
@@ -33,7 +33,7 @@ impl Watch {
     pub(crate) fn start(session: &Session) -> Self {
         let log = File::create(session.dir.path().join(WATCH_LOG_NAME)).unwrap();
         let mut child = session
-            .command(Path::new(BINARY), &["watch"])
+            .command(Path::new(binary()), &["watch"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(log)

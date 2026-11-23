@@ -19,7 +19,7 @@ mod tests {
 
     use cpp_source::{CTL, IPC_PATH, MAIN};
 
-    use super::support::{BINARY, Session, run_to_end};
+    use super::support::{Session, binary, run_to_end};
 
     /// The client's 1000 ms reply timeout, less slack for scheduling.
     const REPLY_TIMEOUT_FLOOR: Duration = Duration::from_millis(900);
@@ -101,12 +101,12 @@ mod tests {
     }
 
     fn run_ctl(session: &Session, verb: &str) -> Output {
-        session.run_client(Path::new(BINARY), &["ctl", verb])
+        session.run_client(Path::new(binary()), &["ctl", verb])
     }
 
     /// `librepods ctl status` with `XDG_RUNTIME_DIR` set to `runtime_dir`, or unset when it is `None`.
     fn status_with_runtime_dir(session: &Session, runtime_dir: Option<&str>) -> Output {
-        let mut command = session.command(Path::new(BINARY), &["ctl", "status"]);
+        let mut command = session.command(Path::new(binary()), &["ctl", "status"]);
         match runtime_dir {
             Some(dir) => command.env("XDG_RUNTIME_DIR", dir),
             None => command.env_remove("XDG_RUNTIME_DIR"),
@@ -117,7 +117,7 @@ mod tests {
     /// A link named `librepods-ctl` to the built binary, the way an install provides the old name.
     fn legacy_link(session: &Session) -> PathBuf {
         let link = session.dir.path().join("librepods-ctl");
-        std::os::unix::fs::symlink(BINARY, &link).unwrap();
+        std::os::unix::fs::symlink(binary(), &link).unwrap();
         link
     }
 
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn usage_when_no_verb() {
         let session = Session::new();
-        let out = session.run_client(Path::new(BINARY), &["ctl"]);
+        let out = session.run_client(Path::new(binary()), &["ctl"]);
         assert_eq!(out.status.code(), Some(1));
         assert_eq!(text(&out.stdout), "");
         assert_eq!(

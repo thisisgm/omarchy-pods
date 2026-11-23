@@ -29,7 +29,7 @@ mod tests {
     use super::support::players::PROPERTIES;
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::{
-        BINARY, DAEMON_LOG, DIR_MODE, Daemon, FILE_MODE, HANG_LIMIT, Proto1, Session, set_request,
+        DAEMON_LOG, DIR_MODE, Daemon, FILE_MODE, HANG_LIMIT, Proto1, Session, binary, set_request,
         wait_for, wait_within,
     };
 
@@ -160,7 +160,7 @@ mod tests {
     }
 
     fn set(session: &Session, key: &str, value: &str) {
-        let output = session.run_client(Path::new(BINARY), &["set", key, value]);
+        let output = session.run_client(Path::new(binary()), &["set", key, value]);
         assert!(output.status.success(), "set {key} {value}: {output:?}");
     }
 
@@ -319,7 +319,7 @@ mod tests {
             let file: Value = serde_json::from_str(&text).ok()?;
             (file["notifications_enabled"] == enabled).then_some(())
         });
-        let output = session.run_client(Path::new(BINARY), &["status"]);
+        let output = session.run_client(Path::new(binary()), &["status"]);
         let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["notifications_enabled"], enabled, "{printed}");
         assert_eq!(status(session)["notifications_enabled"], enabled);
@@ -482,7 +482,7 @@ mod tests {
     fn set_notifications_maybe_is_bad_value() {
         let session = Session::new();
         let mut daemon = session.start();
-        let output = session.run_client(Path::new(BINARY), &["set", "notifications", "maybe"]);
+        let output = session.run_client(Path::new(binary()), &["set", "notifications", "maybe"]);
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(
             String::from_utf8(output.stderr).unwrap(),

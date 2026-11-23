@@ -61,6 +61,13 @@ The plugin's `Model.js` has its own suite, which the hosted `plugin` job runs:
 real Quickshell through [tests/harness](tests/harness/README.md), against a state
 directory the run makes; it needs a desktop session.
 
+A release build of the daemon must pass
+`cargo xtask release-check target/release/librepods <version>`, which the release
+workflow runs: the version it prints, the libraries it needs, the newest glibc it
+needs and its line tables. `LIBREPODS_E2E_BINARY=<absolute path> cargo nextest run
+-p librepods` runs the end to end suite against such a file in place of the build's
+own binary.
+
 A green suite is not evidence that a fix works. See the next section.
 
 ## Prove it, then send it

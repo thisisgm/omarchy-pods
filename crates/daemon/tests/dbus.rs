@@ -26,7 +26,7 @@ mod tests {
         bus_address, changes_rule, owned_connection, start_bus, start_daemon,
     };
     use super::support::players::PROPERTIES;
-    use super::support::{BINARY, HANG_LIMIT, Session, log_lines, wait_for};
+    use super::support::{HANG_LIMIT, Session, binary, log_lines, wait_for};
 
     /// How the daemon's line about a taken name starts, from `serve` in `src/daemon/dbus.rs`.
     const NO_BUS_LOG: &str =
@@ -42,7 +42,7 @@ mod tests {
 
     /// What `librepods <args>` prints, after checking that it exited 0.
     fn client(session: &Session, args: &[&str]) -> String {
-        let output = session.run_client(Path::new(BINARY), args);
+        let output = session.run_client(Path::new(binary()), args);
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
     }

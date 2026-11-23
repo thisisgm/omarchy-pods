@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["librepods-*"]
+  pull_request:
+    # The release profile lives in the workspace manifest.
+    paths:
+      - .github/workflows/release.yml
+      - crates/xtask/src/release.rs
+      - Cargo.toml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pipewire pipewire-bin
+      - id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then
+            version="${REF_NAME#librepods-}"
+          else
+            # Sample input: path+file:///home/runner/work/omarchy-pods/omarchy-pods/crates/daemon#librepods@0.0.0
+            pkgid="$(cargo pkgid --package librepods)"
+            version="${pkgid##*@}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: cargo build --release --locked -p librepods
+      - env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: cargo xtask release-check target/release/librepods "$VERSION"
+      - env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          cp target/release/librepods "dist/librepods-$VERSION-x86_64"
+          cd dist
+          sha256sum "librepods-$VERSION-x86_64" > "librepods-$VERSION-x86_64.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: librepods
+          path: dist/
+          if-no-files-found: error
+
+  prove:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      LIBREPODS_TRAP_EXPECT_NO_RADIO: "1"
+      NEXTEST_SUCCESS_OUTPUT: final
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-nextest
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pipewire pipewire-bin
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: librepods
+          path: dist
+      # An artifact does not keep the file's mode, so the execute bit is set again here.
+      - env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          chmod +x "dist/librepods-$VERSION-x86_64"
+          LIBREPODS_E2E_BINARY="$PWD/dist/librepods-$VERSION-x86_64" cargo nextest run -p librepods --locked
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [build, prove]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: librepods
+          path: dist
+      - env:
+          VERSION: ${{ needs.build.outputs.version }}
+        working-directory: dist
+        run: sha256sum --check "librepods-$VERSION-x86_64.sha256"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/librepods-*-x86_64
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: >-
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "$TAG"
+          "dist/librepods-$VERSION-x86_64" "dist/librepods-$VERSION-x86_64.sha256"

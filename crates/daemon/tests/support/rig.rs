@@ -27,7 +27,7 @@ use super::players::{FakePlayer, Playback};
 use super::relay::Relay;
 use super::watch::Watch;
 use super::{
-    BINARY, DAEMON_LOG, Daemon, Proto1, Session, do_request, outcome, wait_for, wait_within,
+    DAEMON_LOG, Daemon, Proto1, Session, binary, do_request, outcome, wait_for, wait_within,
 };
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
@@ -359,7 +359,7 @@ impl Rig {
         let mut command = if self.unmasked {
             self.session.unmasked_daemon()
         } else {
-            self.session.command(Path::new(BINARY), &["daemon"])
+            self.session.command(Path::new(binary()), &["daemon"])
         };
         command
             .env(
@@ -447,7 +447,7 @@ impl Rig {
 
     /// The `librepods` client in this session, run to its end.
     pub(crate) fn client(&self, args: &[&str]) -> Output {
-        self.session.run_client(Path::new(BINARY), args)
+        self.session.run_client(Path::new(binary()), args)
     }
 
     /// `librepods status`, parsed.
