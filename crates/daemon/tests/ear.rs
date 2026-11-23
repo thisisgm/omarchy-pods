@@ -21,6 +21,7 @@ mod tests {
     use super::support::players::{Asked, CALL_TIMEOUT, FakePlayer, Playback};
     use super::support::rig::{
         ANSWERED_WITHIN, Device, REAL_TIME_SLACK, Rig, assert_gap, connected, not_before,
+        pause_ended,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
 
@@ -572,19 +573,16 @@ mod tests {
 
     #[test]
     fn a_pause_still_pending_when_the_link_ends_is_never_sent() {
-        let (rig, device) = linked();
+        let (mut rig, device) = linked();
         let player = rig.player("slow", Playback::Playing);
         player.hold_replies(true);
         device.pods.set_ear(InEar, OutOfEar);
         player.wait_reads(1, HANG_LIMIT);
-        let read = Instant::now();
         rig.disconnect();
         // Inside the daemon's wait for the status read, or the answer below would reach nobody either way.
-        assert_gap(
+        rig.assert_not_logged(
             "the disconnect while the status read is pending",
-            read,
-            Instant::now(),
-            &(Duration::ZERO..=CALL_TIMEOUT),
+            &pause_ended(0),
         );
         player.hold_replies(false);
         player.none_for(QUIET);
@@ -615,19 +613,16 @@ mod tests {
 
     #[test]
     fn a_pause_still_pending_when_the_channel_closes_is_never_sent() {
-        let (rig, device) = linked();
+        let (mut rig, device) = linked();
         let player = rig.player("slow", Playback::Playing);
         player.hold_replies(true);
-        let out = Instant::now();
         device.pods.set_ear(InEar, OutOfEar);
         player.wait_reads(1, HANG_LIMIT);
         rig.close_channel(&device);
         // Inside the daemon's wait for the status read, or the answer below would reach nobody either way.
-        assert_gap(
+        rig.assert_not_logged(
             "the close while the status read is pending",
-            out,
-            Instant::now(),
-            &(Duration::ZERO..=CALL_TIMEOUT),
+            &pause_ended(0),
         );
         player.hold_replies(false);
         player.none_for(QUIET);
@@ -703,25 +698,22 @@ mod tests {
         let (mut rig, device) = linked();
         let first = rig.player("first", Playback::Playing);
         placed_until(&device, InEar, OutOfEar, &first, Asked::Pause, HANG_LIMIT);
-        // The first pause's work has ended, as the gap below counts from `out`.
-        rig.wait_logged("media: the pause ended with 1 players paused");
+        // The first pause's work has ended, so the next line of its kind is the second pause's.
+        rig.wait_logged(&pause_ended(1));
         let slow = rig.player("slow", Playback::Playing);
         slow.hold_replies(true);
-        let out = Instant::now();
         device.pods.set_ear(OutOfEar, OutOfEar);
         slow.wait_reads(1, HANG_LIMIT);
         place(&rig, &device, InEar, InEar);
         end(&rig, &device);
         // Inside the second pause's wait for the slow read, so the resume is still queued behind it.
-        assert_gap(
+        rig.assert_not_logged(
             &format!("{what} while the second pause is pending"),
-            out,
-            Instant::now(),
-            &(Duration::ZERO..=CALL_TIMEOUT),
+            &pause_ended(0),
         );
         first.wait_asked(Asked::Play, HANG_LIMIT);
         // The second pause, cut by the end, has ended too, and paused nothing.
-        rig.wait_logged("media: the pause ended with 0 players paused");
+        rig.wait_logged(&pause_ended(0));
         slow.hold_replies(false);
         slow.none_for(QUIET);
         assert_eq!(slow.asked(), []);
