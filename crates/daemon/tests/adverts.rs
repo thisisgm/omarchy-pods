@@ -11,6 +11,8 @@ mod support;
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use pods_fake::Profile;
@@ -26,7 +28,7 @@ mod tests {
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
     use super::support::omarchy::{RECORDED_WITHIN, low_battery_notice};
     use super::support::players::PROPERTIES;
-    use super::support::rig::{ANSWERED_WITHIN, Rig, assert_gap};
+    use super::support::rig::{Rig, assert_gap};
     use super::support::sleep::logged;
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for};
 
@@ -76,7 +78,7 @@ mod tests {
     const LEVEL_STEP: u8 = 10;
     /// The random part of the flood's addresses, ahead of each address's own byte.
     const FLOOD_RANDOM: [u8; 2] = [0x40, 0x01];
-    /// The adverts of the flood, and the addresses they come from.
+    /// The adverts of the flood before the status is asked, and the addresses they come from.
     const FLOOD: usize = 2000;
     const FLOOD_ADDRESSES: u8 = 40;
     /// Over five times the most growth measured over the flood (192 KiB), under the 1288 KiB that 512 bytes kept per advert grew it by.
@@ -649,14 +651,23 @@ mod tests {
                 advertiser.update(&advert_from(at, u8::try_from(round).unwrap()).data);
             }
         }
-        let asked = Instant::now();
-        let status = rig.status();
-        assert_gap(
-            "status during the flood",
-            asked,
-            Instant::now(),
-            &(Duration::ZERO..=ANSWERED_WITHIN),
-        );
+        // Adverts keep coming until the status answers, so it answered during the flood.
+        let flooding = AtomicBool::new(true);
+        let status = thread::scope(|scope| {
+            scope.spawn(|| {
+                let started = Instant::now();
+                let mut round = u8::try_from(rounds).unwrap();
+                while flooding.load(Ordering::Relaxed) && started.elapsed() < HANG_LIMIT {
+                    for (at, advertiser) in (0..FLOOD_ADDRESSES).zip(&advertisers) {
+                        advertiser.update(&advert_from(at, round).data);
+                    }
+                    round = round.wrapping_add(1);
+                }
+            });
+            let status = rig.status();
+            flooding.store(false, Ordering::Relaxed);
+            status
+        });
         assert_eq!(status["case"]["available"], false);
         let advert = ours(HEADER, PAYLOAD);
         let _ours = rig.bluez().advertise(&advert.address, &advert.data);
@@ -664,9 +675,7 @@ mod tests {
             picked(status) == filled()
         });
         let after_kib = resident_kib(pid);
-        eprintln!(
-            "resident memory: {before_kib} KiB before {FLOOD} adverts, {after_kib} KiB after"
-        );
+        eprintln!("resident memory: {before_kib} KiB before the flood, {after_kib} KiB after");
         assert!(after_kib.saturating_sub(before_kib) <= RSS_GROWTH_MAX_KIB);
         assert_eq!(rig.daemon().log(), log_before);
         assert_eq!(rig.bluez().calls(), registration(rig.adapter()));

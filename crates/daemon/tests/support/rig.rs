@@ -36,8 +36,6 @@ pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
 const PASSING_SINK: &str = "alsa_output.passing";
 /// A dial may leave just as `Connected` falls.
 pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
-/// The most a reply or a status may take while a BlueZ call hangs.
-pub(crate) const ANSWERED_WITHIN: Duration = Duration::from_millis(200);
 /// BlueZ method calls the daemon leaves unanswered at once before it fails the next.
 pub(crate) const CALLS_IN_FLIGHT_MAX: usize = 4;
 /// A dial that should come at once.

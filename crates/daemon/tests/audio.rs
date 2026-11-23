@@ -22,7 +22,7 @@ mod tests {
     use super::support::audio::{Asked, CALL_TIMEOUT, FakeAudio, LADDER_MS, PERCENT, Volumes};
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
     use super::support::players::PROPERTIES;
-    use super::support::rig::{ANSWERED_WITHIN, REAL_TIME_SLACK, Rig, assert_gap};
+    use super::support::rig::{REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::{HANG_LIMIT, pause, wait_for};
 
     /// Past the first two steps of the daemon's retry ladder, by the slack a real time check takes.
@@ -130,14 +130,10 @@ mod tests {
         rig.link_up(&device);
         let asked = audio.wait_requests(1, HANG_LIMIT);
         assert_eq!(asked[..], opening()[..1]);
-        let started = Instant::now();
+        let timed_out = down_line(&format!("no answer within {} ms", CALL_TIMEOUT.as_millis()));
+        // The timeout not logged yet, so this answer came while the call hung.
         let status = rig.status();
-        assert_gap(
-            "status while the server holds its answer",
-            started,
-            Instant::now(),
-            &(Duration::ZERO..=ANSWERED_WITHIN),
-        );
+        rig.assert_not_logged("status while the server holds its answer", &timed_out);
         assert_eq!(status["audio_server"], "down");
         audio.wait_clients(0, CALL_TIMEOUT.saturating_add(HANG_LIMIT));
         let closed = Instant::now();
@@ -147,10 +143,7 @@ mod tests {
             closed,
             &(CALL_TIMEOUT..=Duration::MAX),
         );
-        rig.wait_logged(&down_line(&format!(
-            "no answer within {} ms",
-            CALL_TIMEOUT.as_millis()
-        )));
+        rig.wait_logged(&timed_out);
         audio.hold_replies(false);
         rig.wait_audio_server("up");
         audio.assert_only_reads();

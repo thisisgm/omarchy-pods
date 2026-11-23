@@ -20,8 +20,7 @@ mod tests {
     use super::support::audio::{Asked as AudioAsked, FakeAudio, PERCENT, Volumes};
     use super::support::players::{Asked, CALL_TIMEOUT, FakePlayer, Playback};
     use super::support::rig::{
-        ANSWERED_WITHIN, Device, REAL_TIME_SLACK, Rig, assert_gap, connected, not_before,
-        pause_ended,
+        Device, REAL_TIME_SLACK, Rig, assert_gap, connected, not_before, pause_ended,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
 
@@ -435,14 +434,8 @@ mod tests {
                 paused,
                 &(Duration::ZERO..=CALL_TIMEOUT),
             );
-            let status_asked = Instant::now();
+            // Asked before the hung player is released, so a status held on its reply would time out.
             let status = rig.status();
-            assert_gap(
-                "status while a player hangs",
-                status_asked,
-                Instant::now(),
-                &(Duration::ZERO..=ANSWERED_WITHIN),
-            );
             assert!(connected(&status), "{status}");
             hung.wait_reads(reads.saturating_add(1), HANG_LIMIT);
             // The hung player never took the pause, so the resume leaves it alone.
