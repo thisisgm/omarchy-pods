@@ -326,6 +326,17 @@ fn a_linked_state_directory_is_removed_through_its_target_then_the_link() {
 }
 
 #[test]
+fn a_state_link_to_a_missing_directory_is_removed() {
+    let bench = Bench::new();
+    install(&bench);
+    fs::create_dir_all(bench.path(STATE).parent().unwrap()).unwrap();
+    symlink(bench.path(LINKED), bench.path(STATE)).unwrap();
+    let ran = bench.run(&UNINSTALL);
+    ok(&ran);
+    assert!(!exists(&bench, STATE), "{}", ran.stdout);
+}
+
+#[test]
 fn keep_keys_keeps_a_linked_state_directory_and_its_link() {
     let bench = Bench::new();
     install(&bench);
