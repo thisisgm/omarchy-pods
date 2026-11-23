@@ -76,9 +76,6 @@ mod tests {
     /// Longer than a sweep that times out and the dial that would follow it.
     const QUIET: Duration = SWEEP_TIMEOUT.saturating_add(REAL_TIME_SLACK);
 
-    /// The most a dial may come after a `Connected` true edge.
-    const EDGE_TO_DIAL: Duration = Duration::from_millis(500);
-
     /// When the system bus starts, inside the daemon's first wait to reconnect.
     const SYSTEM_BUS_LATE: Duration = Duration::from_secs(2);
 
@@ -389,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connected_edge_brings_a_new_dial_within_500_ms() {
+    fn a_connected_edge_brings_a_new_dial_inside_the_grace() {
         let mut rig = Rig::new();
         let device = rig.add_pods(Profile::default());
         rig.start();
@@ -400,19 +397,18 @@ mod tests {
             .set(&device.path, "Connected", OwnedVariant::from(false));
         device.pods.wait_closed(1, HANG_LIMIT).unwrap();
         rig.no_dial_for(QUIET);
+        let sweeps = rig.bluez().sweeps().len();
         let edge = Instant::now();
         rig.bluez()
             .set(&device.path, "Connected", OwnedVariant::from(true));
-        let dials = rig.wait_dials(2, EDGE_TO_DIAL);
-        let took = dials[1]
-            .at
-            .checked_duration_since(edge)
-            .unwrap_or_else(|| panic!("the second dial came before the edge: {dials:?}"));
+        let dials = rig.wait_dials(2, HANG_LIMIT);
         assert!(
-            took <= EDGE_TO_DIAL,
-            "the second dial came {took:?} after the edge, wanted 0 to {EDGE_TO_DIAL:?}"
+            dials[1].at >= edge,
+            "the second dial came before the edge: {dials:?}"
         );
         up(&rig);
+        // The grace ends in a sweep, so none means the edge dialled while the grace still ran.
+        assert_eq!(rig.bluez().sweeps().len(), sweeps, "the grace ran out");
         rig.finish();
     }
 

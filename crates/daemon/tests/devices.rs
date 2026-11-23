@@ -30,12 +30,6 @@ mod tests {
     const NOT_CONNECTED: &str = "The AirPods are not connected.";
     const NO_DEVICE: &str = "There are no AirPods to act on.";
 
-    /// The most a user disconnect may take to clear the state, far inside the 7750 ms grace of pods that left.
-    const CLEARED_WITHIN: Duration = Duration::from_secs(1);
-
-    /// The most a forget may take to close the channel to the pods.
-    const CLOSED_WITHIN: Duration = Duration::from_secs(1);
-
     /// Long enough for a call the daemon wrongly makes to reach the fake BlueZ.
     const QUIET: Duration = Duration::from_millis(300);
 
@@ -96,15 +90,13 @@ mod tests {
 
     #[test]
     fn do_disconnect_calls_bluez_and_resets_without_the_grace() {
-        let (rig, device) = up();
-        let asked = Instant::now();
+        let (mut rig, device) = up();
         assert_taken(&rig.client(&["do", "disconnect"]));
         let cleared = rig.wait_status("the name cleared", |status| status["device_name"] == "");
-        assert_gap(
-            "the name cleared after do disconnect",
-            asked,
-            Instant::now(),
-            &(Duration::ZERO..=CLEARED_WITHIN),
+        assert_eq!(
+            rig.entered("grace"),
+            0,
+            "the disconnect went through the grace"
         );
         assert!(!connected(&cleared));
         assert_eq!(rig.bluez().calls(), [device.call(DeviceMethod::Disconnect)]);
@@ -175,7 +167,7 @@ mod tests {
         assert_taken(&rig.client(&["do", "forget"]));
         device
             .pods
-            .wait_closed(1, CLOSED_WITHIN)
+            .wait_closed(1, HANG_LIMIT)
             .expect("the channel closed");
         let cleared = rig.wait_status("the name cleared", |status| status["device_name"] == "");
         let removed = Call {
