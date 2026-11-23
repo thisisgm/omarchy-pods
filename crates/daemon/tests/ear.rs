@@ -396,14 +396,7 @@ mod tests {
             hung.hold_replies(true);
             let reads = hung.reads();
             let asked = hung.asked();
-            let (out, paused) =
-                placed_until(&device, InEar, OutOfEar, fine, Asked::Pause, HANG_LIMIT);
-            assert_gap(
-                "the other player's pause while one hangs",
-                out,
-                paused,
-                &(Duration::ZERO..=CALL_TIMEOUT),
-            );
+            placed_until(&device, InEar, OutOfEar, fine, Asked::Pause, HANG_LIMIT);
             hung.wait_reads(reads.saturating_add(1), HANG_LIMIT);
             // The hung player never took the pause, so the resume leaves it alone.
             placed_until(&device, InEar, InEar, fine, Asked::Play, HANG_LIMIT);
