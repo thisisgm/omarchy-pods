@@ -91,7 +91,7 @@ fn props() -> Props {
 }
 
 /// A sink as a server describes it, with properties, a port and a format that has properties of its own.
-fn sink(index: u32, name: &CStr, volumes: &[u32]) -> SinkInfo {
+pub(in crate::daemon::audio) fn sink(index: u32, name: &CStr, volumes: &[u32]) -> SinkInfo {
     let mut cvolume = ChannelVolume::empty();
     for volume in volumes {
         cvolume.push(Volume::from_u32_clamped(*volume));
