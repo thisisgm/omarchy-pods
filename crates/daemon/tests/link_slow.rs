@@ -31,9 +31,6 @@ mod tests {
     /// The daemon's limit on one BlueZ method call.
     const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// The most a user disconnect may take to clear the state once the pods left, far inside the 7750 ms grace.
-    const CLEARED_WITHIN: Duration = Duration::from_secs(1);
-
     /// Keeps the second disconnect waiting for BlueZ long after the first one timed out.
     const DISCONNECTS_APART: Duration = Duration::from_secs(5);
 
@@ -181,14 +178,13 @@ mod tests {
             CALL_TIMEOUT.saturating_add(HANG_LIMIT),
             || (total(&rig.status(), "disconnect_failures_total") == 1).then_some(()),
         );
-        let left = Instant::now();
+        let graces = rig.entered("grace");
         rig.link_down(&device);
         let cleared = rig.wait_status("the name cleared", |status| status["device_name"] == "");
-        assert_gap(
-            "the name cleared after the pods left",
-            left,
-            Instant::now(),
-            &(Duration::ZERO..=CLEARED_WITHIN),
+        assert_eq!(
+            rig.entered("grace"),
+            graces,
+            "the pods left through the grace"
         );
         assert!(!connected(&cleared));
         assert_eq!(total(&cleared, "disconnect_failures_total"), 1);

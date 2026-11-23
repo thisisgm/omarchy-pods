@@ -586,16 +586,18 @@ impl Rig {
 
     /// Waits for the link to have entered `phase` `times` times, from whichever phase the racing words of BlueZ and of the channel took it through.
     pub(crate) fn wait_entered(&mut self, phase: &str, times: usize) {
-        let entered = format!(" to {phase}");
-        let daemon = self.daemon();
         wait_for(
             &format!("the link to enter `{phase}` {times} times"),
-            || {
-                let log = daemon.log();
-                let steps = log.lines().filter(|line| line.starts_with("link: "));
-                (steps.filter(|line| line.ends_with(&entered)).count() >= times).then_some(())
-            },
+            || (self.entered(phase) >= times).then_some(()),
         );
+    }
+
+    /// How often the daemon's log shows the link entering `phase`; sample input `link: up to grace`.
+    pub(crate) fn entered(&mut self, phase: &str) -> usize {
+        let entered = format!(" to {phase}");
+        let log = self.daemon().log();
+        let steps = log.lines().filter(|line| line.starts_with("link: "));
+        steps.filter(|line| line.ends_with(&entered)).count()
     }
 
     fn trap(&self) -> &Trap {

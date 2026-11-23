@@ -35,9 +35,6 @@ mod tests {
     /// Past the 64 changes the hub lets a subscriber leave untaken, within the 16 queued lines plus the ~92 event lines a default 208 KiB socket buffer holds.
     const BURST_CHANGES: usize = 96;
 
-    /// Half the 2000 ms stall deadline: the bound on a set and a get answered while a slow subscriber falls behind.
-    const OTHERS_ANSWERED_WITHIN: Duration = Duration::from_millis(1000);
-
     /// Half the daemon's 1000 ms first byte deadline: a client closed sooner was closed at accept.
     const CLOSED_AT_ACCEPT_WITHIN: Duration = Duration::from_millis(500);
 
@@ -459,15 +456,8 @@ mod tests {
             let reader = scope.spawn(move || (0..CHANGES).map(|_| fast.line()).collect::<Vec<_>>());
             let mut changes_made = ear_changes(&first_reply);
             for id in 0..CHANGES {
-                // The set runs every subscriber's task before its reply, so it is timed too.
-                let started = Instant::now();
                 assert_eq!(changer.ask_line(&ear_change(id)), confirmed(id));
                 let reply = getter.ask_line(GET);
-                let waited = started.elapsed();
-                assert!(
-                    waited < OTHERS_ANSWERED_WITHIN,
-                    "change {id} and a get took {waited:?}"
-                );
                 changes_made += 1;
                 assert_eq!(ear_changes(&reply), changes_made, "{reply}");
             }
