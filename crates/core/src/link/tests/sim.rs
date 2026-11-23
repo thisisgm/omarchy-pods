@@ -73,7 +73,7 @@ enum Seen {
     Lost,
 }
 
-/// The control channel as the reader thread sees it.
+/// The control channel as the driver holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Channel {
     Free,

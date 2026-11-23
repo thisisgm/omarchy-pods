@@ -3,10 +3,12 @@
 mod reader;
 
 use std::collections::{HashMap, VecDeque};
-use std::future;
+use std::future::{self, poll_fn};
 use std::mem;
 use std::ops::ControlFlow;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
@@ -31,11 +33,12 @@ use zeroize::Zeroizing;
 
 use super::hub::Hub;
 use super::{MAX_CONNECTIONS, audio, keys, log, media, notify};
+use reader::Open;
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// One command per client, shared with SDUs; when full a reader waits, a command is refused.
+/// One command per client, shared with device events, sleep edges and connect answers; when full those wait and a command is refused.
 pub(super) const INPUT_QUEUE: usize = MAX_CONNECTIONS;
 
 /// One sweep reads every device, so a few waiting cover any burst of events.
@@ -44,7 +47,7 @@ pub(super) const REQUEST_QUEUE: usize = 8;
 /// Stop steps never block, so a driver still busy after this is stuck and is aborted.
 pub(super) const STOP_WAIT_MS: u64 = 500;
 
-const READER_THREAD: &str = "link-reader";
+const CONNECT_THREAD: &str = "link-connect";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum DeviceEvent {
@@ -58,8 +61,8 @@ pub(super) enum DeviceEvent {
 #[derive(Debug)]
 pub(super) enum Input {
     Device(DeviceEvent),
-    Opened(Arc<Channel>),
-    Sdu(Zeroizing<Box<[u8]>>),
+    /// From the connect thread, which ends after this or after its `Ended`.
+    Opened(Channel),
     Ended(End),
     /// Made by the driver itself when a write fails.
     SendFailed,
@@ -101,7 +104,7 @@ pub(super) fn queue() -> (mpsc::Sender<Input>, mpsc::Receiver<Input>) {
     mpsc::channel(INPUT_QUEUE)
 }
 
-/// A reader thread still inside its connect is left to the end of the process.
+/// A thread still inside its connect is left to the end of the process.
 pub(super) async fn stop(link: &mpsc::Sender<Input>, driver: JoinHandle<()>) {
     let (done, stopped) = oneshot::channel();
     let asked = async {
@@ -142,6 +145,7 @@ pub(super) async fn drive(
         requests,
         connector,
         channel: None,
+        channel_first: false,
         replies: HashMap::new(),
         next_ticket: 0,
         fed_back: VecDeque::new(),
@@ -157,6 +161,11 @@ pub(super) async fn drive(
         };
         let flow = match turn {
             Turn::Input(input) => driver.take(input),
+            Turn::Read(Some(sdu)) => {
+                driver.step(Event::Packet(&sdu));
+                ControlFlow::Continue(())
+            }
+            Turn::Read(None) => driver.take(Input::Ended(End::Closed)),
             Turn::Tick => {
                 driver.step(Event::Tick);
                 ControlFlow::Continue(())
@@ -172,6 +181,8 @@ pub(super) async fn drive(
 
 enum Turn {
     Input(Input),
+    /// One SDU from the open channel, or `None` at its end.
+    Read(Option<Zeroizing<Box<[u8]>>>),
     Tick,
 }
 
@@ -184,8 +195,10 @@ struct Driver {
     feedback: mpsc::Sender<Input>,
     requests: mpsc::Sender<Request>,
     connector: Connector,
-    /// The open channel, from its `Opened` until its close or its `Ended`.
-    channel: Option<Arc<Channel>>,
+    /// The open channel, from its `Opened` until its close or its end.
+    channel: Option<Open>,
+    /// Whether the last wait asked the channel before the queue; the next wait asks the other first.
+    channel_first: bool,
     /// At most one outlives its turn, a written setting the machine answers in the next step.
     replies: HashMap<Ticket, oneshot::Sender<Outcome>>,
     next_ticket: u64,
@@ -196,7 +209,7 @@ struct Driver {
 }
 
 impl Driver {
-    async fn wait(&self, inputs: &mut mpsc::Receiver<Input>) -> Turn {
+    async fn wait(&mut self, inputs: &mut mpsc::Receiver<Input>) -> Turn {
         let deadline = self
             .machine
             .deadline()
@@ -204,30 +217,28 @@ impl Driver {
             .chain(self.policy.deadline())
             .min()
             .and_then(|at| self.started.checked_add(at));
-        let received = match deadline {
-            // Served before the queue, which can stay full for as long as the pods keep talking.
-            Some(at) if at <= Instant::now() => return Turn::Tick,
-            Some(at) => match timeout_at(at, inputs.recv()).await {
-                Ok(received) => received,
-                Err(_) => return Turn::Tick,
-            },
-            None => inputs.recv().await,
-        };
-        match received {
-            Some(input) => Turn::Input(input),
-            // Never: the driver holds `feedback`, a sender of this same queue.
-            None => future::pending().await,
+        let next = next_of(inputs, self.channel.as_mut(), &mut self.channel_first);
+        match deadline {
+            // Served before the queue and the channel, which stay ready for as long as their peers keep talking.
+            Some(at) if at <= Instant::now() => Turn::Tick,
+            Some(at) => timeout_at(at, next).await.unwrap_or(Turn::Tick),
+            None => next.await,
         }
     }
 
     fn take(&mut self, input: Input) -> ControlFlow<()> {
         match input {
             Input::Device(device) => self.step(device.event()),
-            Input::Opened(channel) => {
-                self.channel = Some(channel);
-                self.step(Event::ChannelOpened);
-            }
-            Input::Sdu(sdu) => self.step(Event::Packet(&sdu)),
+            Input::Opened(channel) => match Open::watch(channel) {
+                Ok(open) => {
+                    self.channel = Some(open);
+                    self.step(Event::ChannelOpened);
+                }
+                Err(error) => {
+                    log(&format!("link: cannot watch the channel: {error}"));
+                    self.step(Event::ChannelEnded(End::ConnectFailed));
+                }
+            },
             Input::Ended(end) => {
                 self.channel = None;
                 self.step(Event::ChannelEnded(end));
@@ -362,26 +373,36 @@ impl Driver {
         let feedback = self.feedback.clone();
         // Never joined: a thread inside connect cannot be woken; the end of the process ends it.
         let spawned = thread::Builder::new()
-            .name(READER_THREAD.to_owned())
-            .spawn(move || reader::run(connector, device, feedback));
+            .name(CONNECT_THREAD.to_owned())
+            .spawn(move || {
+                let answer = match connector(device) {
+                    Ok(channel) => Input::Opened(channel),
+                    Err(error) => {
+                        log(&format!("link: {error}"));
+                        Input::Ended(End::ConnectFailed)
+                    }
+                };
+                // A driver that is gone has stopped and needs no answer.
+                feedback.blocking_send(answer).ok();
+            });
         if let Err(error) = spawned {
-            log(&format!("link: cannot start the reader thread: {error}"));
+            log(&format!("link: cannot start the connect thread: {error}"));
             self.fed_back.push_back(Input::Ended(End::ConnectFailed));
         }
     }
 
     fn close(&mut self) {
-        if let Some(channel) = self.channel.take() {
-            // An error is a channel already down, which is the end wanted.
-            channel.shutdown().ok();
+        // Dropping the channel closes it, and the machine waits for the end of each channel it closes.
+        if self.channel.take().is_some() {
+            self.fed_back.push_back(Input::Ended(End::Closed));
         }
     }
 
     fn send(&mut self, sdu: &[u8]) {
-        let Some(channel) = &self.channel else {
+        let Some(open) = &self.channel else {
             return;
         };
-        if let Err(error) = channel.try_send(sdu) {
+        if let Err(error) = open.channel().try_send(sdu) {
             log(&format!("link: {error}"));
             // First, so the machine learns of it before any input that came after the write.
             self.fed_back.push_front(Input::SendFailed);
@@ -400,6 +421,36 @@ impl Driver {
             self.announced = true;
         }
     }
+}
+
+/// The queue's next input or the channel's next SDU; `channel_first` changes every call, so neither keeps the other from its turn.
+async fn next_of(
+    inputs: &mut mpsc::Receiver<Input>,
+    channel: Option<&mut Open>,
+    channel_first: &mut bool,
+) -> Turn {
+    *channel_first = !*channel_first;
+    let channel_first = *channel_first;
+    let mut read = pin!(async {
+        match channel {
+            Some(open) => open.read().await,
+            None => future::pending().await,
+        }
+    });
+    poll_fn(|context| {
+        if channel_first && let Poll::Ready(sdu) = read.as_mut().poll(context) {
+            return Poll::Ready(Turn::Read(sdu));
+        }
+        // A closed queue never comes: the driver holds `feedback`, a sender of this same queue.
+        if let Poll::Ready(Some(input)) = inputs.poll_recv(context) {
+            return Poll::Ready(Turn::Input(input));
+        }
+        if channel_first {
+            return Poll::Pending;
+        }
+        read.as_mut().poll(context).map(Turn::Read)
+    })
+    .await
 }
 
 impl DeviceEvent {

@@ -2,27 +2,29 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::ErrorKind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
-use pods_core::link::End;
 use pods_core::link::ladder::{FIRST_RETRY_MS, HELD_DELAYS_MS};
 use pods_core::state::State;
-use pods_fake::{Fault, Pods, Profile, pair};
+use pods_fake::{Fault, Pods, Profile, pair, unwatchable};
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_samples::{CASE, Cell, NOISE, RIGHT, host, setting};
-use pods_sys::l2cap::{Channel, ChannelError};
+use pods_sys::l2cap::ChannelError;
 use rustix::io::Errno;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
 
-use super::super::reader::{self, RECV_BUFFER_LEN};
-use super::super::{Connector, DeviceEvent, INPUT_QUEUE, Input, REQUEST_QUEUE, STOP_WAIT_MS};
+use super::super::reader::{Open, RECV_BUFFER_LEN};
+use super::super::{
+    CONNECT_THREAD, Connector, DeviceEvent, INPUT_QUEUE, Input, REQUEST_QUEUE, STOP_WAIT_MS,
+};
 use super::super::{drive, queue, stop};
 use super::{
     HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device, device_up, report, unread_outlets,
@@ -46,6 +48,9 @@ const SENTINEL: Cell = Cell {
     level: 13,
     charging: true,
 };
+
+/// The fake pods serve each open channel on one thread of the test's own process.
+const FAKE_PODS_THREADS: usize = 1;
 
 /// The first rungs of the held ladder, 1 + 2 + 4 s apart; the rest is the pure machine's to prove.
 const LADDER_ATTEMPTS: usize = 4;
@@ -107,7 +112,7 @@ async fn wait_for_tasks(count: usize, within: Duration) -> Duration {
         }
         assert!(
             started.elapsed() < within,
-            "{now} threads after {within:?}, {count} before the open"
+            "{now} threads after {within:?}, {count} wanted"
         );
         sleep(POLL).await;
     }
@@ -413,7 +418,7 @@ fn noise_from_the_peer_never_stops_the_link() {
 }
 
 #[test]
-fn stop_with_the_link_up_ends_the_reader_thread() {
+fn stop_with_the_link_up_leaves_no_thread() {
     let pods = Pods::new(Profile::default());
     let (connector, _connects) = fake_connector(&pods);
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
@@ -435,7 +440,7 @@ fn stop_with_the_link_up_ends_the_reader_thread() {
             .await
             .unwrap();
         wait_for_state_async(&hub, HANG_LIMIT, "the first burst", filled).await;
-        assert!(tasks() > before, "no reader thread while the link is up");
+        wait_for_tasks(before + FAKE_PODS_THREADS, Duration::from_secs(1)).await;
         stop(&link, driver).await;
         wait_for_tasks(before, Duration::from_secs(1)).await
     });
@@ -467,7 +472,7 @@ fn stop_gives_up_on_a_driver_that_never_answers() {
 }
 
 #[test]
-fn never_more_than_one_reader_thread() {
+fn never_more_than_one_connect_thread() {
     let live = Arc::new(AtomicUsize::new(0));
     let most = Arc::new(AtomicUsize::new(0));
     let (connected, connects) = std_mpsc::channel();
@@ -494,7 +499,7 @@ fn never_more_than_one_reader_thread() {
         let (name, at) = connects
             .recv_timeout(HANG_LIMIT)
             .unwrap_or_else(|_| panic!("attempt {attempt} never connected"));
-        assert_eq!(name.as_deref(), Some("link-reader"), "attempt {attempt}");
+        assert_eq!(name.as_deref(), Some(CONNECT_THREAD), "attempt {attempt}");
         times.push(at);
     }
     let gaps: Vec<Duration> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
@@ -513,7 +518,7 @@ fn never_more_than_one_reader_thread() {
     assert_eq!(
         most.load(Ordering::SeqCst),
         1,
-        "reader threads alive at once"
+        "connect threads alive at once"
     );
 }
 
@@ -542,61 +547,32 @@ fn a_full_input_queue_refuses_with_timeout() {
     });
 }
 
-fn reader_inputs(connector: Connector, on_opened: impl Fn(&Channel)) -> Vec<String> {
-    let (feedback, mut inputs) = mpsc::channel(INPUT_QUEUE);
-    let reader = thread::spawn(move || reader::run(connector, device(), feedback));
-    let labels = block_on(async {
-        let mut labels = Vec::new();
-        while let Some(input) = timeout(HANG_LIMIT, inputs.recv()).await.unwrap() {
-            labels.push(match input {
-                Input::Opened(channel) => {
-                    on_opened(&channel);
-                    "opened".to_owned()
-                }
-                Input::Sdu(sdu) => format!("sdu {}", sdu.len()),
-                Input::Ended(End::Closed) => "ended closed".to_owned(),
-                Input::Ended(End::ConnectFailed) => "ended connect failed".to_owned(),
-                Input::Device(_)
-                | Input::SendFailed
-                | Input::Command { .. }
-                | Input::Sleep(_)
-                | Input::Shutdown(_)
-                | Input::Audio(_)
-                | Input::Media(..)
-                | Input::Advert(_)
-                | Input::Monitor(_) => {
-                    format!("unexpected {input:?}")
-                }
-            });
-        }
-        labels
-    });
-    reader.join().unwrap();
-    labels
+#[test]
+fn the_runtime_refuses_to_watch_a_regular_file() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    let refused = runtime.block_on(async { Open::watch(unwatchable()).unwrap_err() });
+    assert_eq!(refused.kind(), ErrorKind::PermissionDenied);
 }
 
 #[test]
-fn the_reader_sends_exactly_one_end() {
-    let refused: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
-    assert_eq!(reader_inputs(refused, |_| {}), ["ended connect failed"]);
-
-    let peer_closes: Connector = Arc::new(|_| {
-        let (host_end, pods_end) = pair();
-        pods_end.send(&[0x04, 0x00]).unwrap();
-        Ok(host_end)
+fn a_channel_the_runtime_cannot_watch_counts_as_a_failed_connect() {
+    let (connected, connects) = std_mpsc::channel();
+    let connector: Connector = Arc::new(move |_| {
+        connected.send(Instant::now()).ok();
+        Ok(unwatchable())
     });
-    assert_eq!(
-        reader_inputs(peer_closes, |_| {}),
-        ["opened", "sdu 2", "ended closed"]
+    let running = Running::start(connector, None);
+    device_up(running.inputs());
+    let first = connects.recv_timeout(HANG_LIMIT).unwrap();
+    let second = connects.recv_timeout(HANG_LIMIT).unwrap();
+    let delay = Duration::from_millis(HELD_DELAYS_MS[0]);
+    let gap = second - first;
+    report(&format!("the second attempt came {gap:?} after the first"));
+    assert!(
+        gap >= delay && gap <= delay + REAL_TIME_SLACK,
+        "{gap:?}, from {delay:?} to {:?}",
+        delay + REAL_TIME_SLACK
     );
-
-    let (keep, kept) = std_mpsc::channel();
-    let held_open: Connector = Arc::new(move |_| {
-        let (host_end, pods_end) = pair();
-        keep.send(pods_end).unwrap();
-        Ok(host_end)
-    });
-    let shut = reader_inputs(held_open, |channel| channel.shutdown().unwrap());
-    assert_eq!(shut, ["opened", "ended closed"]);
-    drop(kept);
+    assert!(!running.hub().state().connected);
+    drop(running);
 }

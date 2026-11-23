@@ -110,7 +110,7 @@ fn wire(mode: NoiseMode) -> u8 {
     wire
 }
 
-/// Sees each input a reader sends, before the driver does.
+/// Sees each input a connect thread sends, before the driver does.
 pub(super) type Tap = Box<dyn Fn(&Input) + Send>;
 
 /// Dropping it aborts the driver and joins its thread.
