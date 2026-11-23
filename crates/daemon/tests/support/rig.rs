@@ -1,15 +1,12 @@
 //! The built daemon under the trap, a private system bus with the fake BlueZ, a private session bus and the fake pods, joined.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::mem;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pods_fake::{Pods, Profile};
@@ -28,9 +25,9 @@ use super::logind::{FakeLogind, Impostor};
 use super::omarchy::{Mood, Omarchy};
 use super::players::{FakePlayer, Playback};
 use super::relay::Relay;
+use super::watch::Watch;
 use super::{
-    BINARY, DAEMON_LOG, Daemon, HANG_LIMIT, Proto1, Session, do_request, outcome, wait_for,
-    wait_within,
+    BINARY, DAEMON_LOG, Daemon, Proto1, Session, do_request, outcome, wait_for, wait_within,
 };
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
@@ -75,7 +72,6 @@ const SYSTEM_BUS: &str = "system";
 const SESSION_BUS: &str = "session";
 /// The socket in the session the daemon takes for its system bus once a test relays it.
 const SYSTEM_RELAY_SOCKET: &str = "system-relay.sock";
-const WATCH_LOG_NAME: &str = "watch.log";
 /// Every fixture address is this prefix and one more octet; the daemon's log may hold neither form.
 const ADDRESS_PREFIX: [u8; 5] = [0x02, 0x00, 0x00, 0x00, 0x00];
 const LOGGED_ADDRESS: [&str; 2] = ["02:00:00", "02_00_00"];
@@ -461,34 +457,7 @@ impl Rig {
 
     /// `librepods watch` in this session, its lines read as they come.
     pub(crate) fn watch(&self) -> Watch {
-        let log = File::create(self.session.dir.path().join(WATCH_LOG_NAME)).unwrap();
-        let mut child = self
-            .session
-            .command(Path::new(BINARY), &["watch"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(log)
-            .spawn()
-            .unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let process = Daemon {
-            child,
-            log: self.session.dir.path().join(WATCH_LOG_NAME),
-        };
-        let (sender, lines) = mpsc::channel();
-        let reader = thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { return };
-                if sender.send((Instant::now(), line)).is_err() {
-                    return;
-                }
-            }
-        });
-        Watch {
-            process,
-            lines,
-            reader: Some(reader),
-        }
+        Watch::start(&self.session)
     }
 
     /// Asks `librepods status` until `ready` holds, failing at `HANG_LIMIT`.
@@ -711,62 +680,6 @@ pub(crate) fn serve(pods: &Pods, after: Duration) -> Answer {
     Answer::Accept {
         after,
         serve: Arc::new(move |channel| pods.serve(channel)),
-    }
-}
-
-/// One line `librepods watch` printed, and when the test's reader took it.
-#[derive(Debug)]
-pub(crate) struct Printed {
-    pub(crate) at: Instant,
-    pub(crate) state: Value,
-}
-
-/// `librepods watch` in a guard, its output read on a thread the guard joins.
-pub(crate) struct Watch {
-    process: Daemon,
-    lines: Receiver<(Instant, String)>,
-    reader: Option<JoinHandle<()>>,
-}
-
-impl Watch {
-    /// The next line, or none at the deadline, a watch that ended failing the test; sample input `{"adaptive_noise_level":50,"case":{"available":true,"charging":false,"level":50},"connected":true,...}`.
-    pub(crate) fn next(&self, deadline: Duration) -> Option<Printed> {
-        let (at, line) = match self.lines.recv_timeout(deadline) {
-            Ok(printed) => printed,
-            Err(RecvTimeoutError::Timeout) => return None,
-            Err(RecvTimeoutError::Disconnected) => {
-                panic!("watch ended: {}", self.process.log())
-            }
-        };
-        let state = serde_json::from_str(&line)
-            .unwrap_or_else(|error| panic!("watch printed {line:?}: {error}"));
-        Some(Printed { at, state })
-    }
-
-    /// Every line up to and including the first equal to `last`, failing once `HANG_LIMIT` passes in all.
-    pub(crate) fn lines_until(&self, last: &Value) -> Vec<Value> {
-        let started = Instant::now();
-        let mut lines = Vec::new();
-        while lines.last() != Some(last) {
-            let left = HANG_LIMIT.saturating_sub(started.elapsed());
-            let Some(printed) = self.next(left) else {
-                panic!("watch never printed {last}; it printed {lines:#?}");
-            };
-            lines.push(printed.state);
-        }
-        lines
-    }
-}
-
-impl Drop for Watch {
-    fn drop(&mut self) {
-        // A watch that already exited refuses the kill, which is the outcome wanted.
-        drop(self.process.child.kill());
-        drop(self.process.child.wait());
-        if let Some(reader) = self.reader.take() {
-            // The kill closed the pipe, so the reader is at its end; one that panicked has nothing left to clean up.
-            drop(reader.join());
-        }
     }
 }
 
