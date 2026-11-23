@@ -9,4 +9,5 @@
 
 mod bench;
 mod install;
+mod monitor;
 mod old_install;

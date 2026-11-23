@@ -22,6 +22,10 @@ pub(crate) const ASSET: &str = "librepods-9.8.7-x86_64";
 const USER_ID: &str = "1000\n";
 /// The machine type a case runs on unless it sets another.
 const MACHINE: &str = "x86_64\n";
+/// The D-Bus object `busctl` reads, which names no file.
+pub(crate) const ADAPTER_OBJECT: &str = "/org/bluez/hci0";
+/// What `busctl` prints for the manager's monitor types when BlueZ serves it.
+pub(crate) const SERVED_TYPES: &str = "as 1 \"or_patterns\"\n";
 /// The real programs the installer and the stubs run; any other name is not found.
 const REAL: [&str; 12] = [
     "bash",
@@ -92,6 +96,15 @@ fi
 const SUDO: &str = r#"
 log sudo "$@"
 exit 1
+"#;
+
+/// Prints `stub/busctl-output` and exits with `stub/busctl-exit`, the served manager's reply unless the case set another, and names the interface on standard error when it fails.
+const BUSCTL: &str = r#"
+log busctl "$@"
+cat "$bench/stub/busctl-output"
+status=$(cat "$bench/stub/busctl-exit")
+[ "$status" = 0 ] || echo 'Failed to get property SupportedMonitorTypes on interface org.bluez.AdvertisementMonitorManager1: Unknown interface' >&2
+exit "$status"
 "#;
 
 const ID: &str = r#"
@@ -185,6 +198,7 @@ impl Bench {
             ("curl", CURL),
             ("systemctl", SYSTEMCTL),
             ("sudo", SUDO),
+            ("busctl", BUSCTL),
             ("id", ID),
             ("uname", UNAME),
         ];
@@ -195,6 +209,8 @@ impl Bench {
         fs::copy(bench.path("stub/payload"), bench.path("stub/served")).unwrap();
         bench.set("uid", USER_ID);
         bench.set("machine", MACHINE);
+        bench.set("busctl-output", SERVED_TYPES);
+        bench.set("busctl-exit", "0\n");
         fs::write(bench.path("calls.log"), "").unwrap();
         let lock = format!(
             "# The release this plugin installs.\n{}\n",

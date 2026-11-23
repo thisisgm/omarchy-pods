@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crate::bench::{ASSET, Bench, Node, Ran, Tree, VERSION, repo, script_constant};
+use crate::bench::{ADAPTER_OBJECT, ASSET, Bench, Node, Ran, Tree, VERSION, repo, script_constant};
 
 /// How far past its wait a run that never hears the daemon may end.
 const WAIT_SLACK: Duration = Duration::from_secs(5);
@@ -436,7 +436,8 @@ fn no_call_names_a_path_outside_the_bench() {
                 let path = Path::new(word);
                 let climbs = path.components().any(|part| part == Component::ParentDir);
                 assert!(!climbs, "{call:?}");
-                if word.starts_with('/') {
+                let object_path = call[0] == "busctl" && word == ADAPTER_OBJECT;
+                if word.starts_with('/') && !object_path {
                     assert!(path.starts_with(bench.root()), "{call:?}");
                 }
                 if word.contains("://") {
