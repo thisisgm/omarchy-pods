@@ -1,7 +1,8 @@
 //! One temporary directory per case: the home, a copy of the plugin, the stubs, the allow list of real programs and the call log.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::ffi::OsStr;
+use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::CommandExt;
@@ -22,7 +23,7 @@ const USER_ID: &str = "1000\n";
 /// The machine type a case runs on unless it sets another.
 const MACHINE: &str = "x86_64\n";
 /// The real programs the installer and the stubs run; any other name is not found.
-const REAL: [&str; 11] = [
+const REAL: [&str; 12] = [
     "bash",
     "cat",
     "dirname",
@@ -32,6 +33,7 @@ const REAL: [&str; 11] = [
     "mktemp",
     "mv",
     "rm",
+    "rmdir",
     "sha256sum",
     "sleep",
 ];
@@ -113,7 +115,7 @@ mkdir -p target/release
 cat "$bench/stub/payload" > target/release/librepods
 "#;
 
-/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced or slowed it.
+/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced or slowed it, writing `stub/settings` as its settings file when the case gave one.
 /// A slowed `status` spends the client's 2 s worst case (connect, write and reply timeouts) before it fails.
 const PAYLOAD: &str = r#"
 log librepods "$@"
@@ -122,8 +124,23 @@ case "$1" in
 status)
     [ -e "$bench/stub/silent" ] && exit 1
     [ -e "$bench/stub/slow" ] && { sleep 2; exit 1; }
+    if [ -e "$bench/stub/settings" ]; then
+        mkdir -p "$HOME/.local/state/librepods"
+        cat "$bench/stub/settings" > "$HOME/.local/state/librepods/settings.json"
+    fi
     echo '{"connected":false,"schema_version":1}' ;;
 esac
+"#;
+
+/// Stands in for `rm` or `rmdir`: logs the call, refuses an absolute path outside the bench, then runs the real program.
+const RECORDED_REMOVAL: &str = r#"
+log NAME "$@"
+for argument in "$@"; do
+    case "$argument" in
+    /*) inside "$argument" ;;
+    esac
+done
+exec 'REAL' "$@"
 "#;
 
 /// A file, a directory or a symbolic link as a listing records it.
@@ -233,17 +250,35 @@ impl Bench {
 
     /// Runs `bash plugin/packaging/setup` with only `HOME`, `PATH` and `XDG_RUNTIME_DIR` set, all inside the bench.
     pub(crate) fn run(&self, args: &[&str]) -> Ran {
+        self.launch(args, self.path("home").as_os_str(), Stdio::piped())
+    }
+
+    /// The same run with another `HOME`; the run's working directory is the bench root.
+    pub(crate) fn run_as(&self, args: &[&str], home: &str) -> Ran {
+        self.launch(args, OsStr::new(home), Stdio::piped())
+    }
+
+    /// The same run with its standard output appended to the call log, so a printed line and the calls around it keep their order.
+    pub(crate) fn run_into_log(&self, args: &[&str]) -> Ran {
+        let log = OpenOptions::new()
+            .append(true)
+            .open(self.path("calls.log"))
+            .unwrap();
+        self.launch(args, self.path("home").as_os_str(), Stdio::from(log))
+    }
+
+    fn launch(&self, args: &[&str], home: &OsStr, stdout: Stdio) -> Ran {
         let mut command = Command::new(self.path("bin/bash"));
         command
             .arg(self.path("plugin/packaging/setup"))
             .args(args)
             .env_clear()
-            .env("HOME", self.path("home"))
+            .env("HOME", home)
             .env("PATH", self.path("bin"))
             .env("XDG_RUNTIME_DIR", self.path("runtime"))
             .current_dir(self.root())
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(stdout)
             .stderr(Stdio::piped())
             .process_group(0);
         let started = Instant::now();
@@ -251,7 +286,7 @@ impl Bench {
             child: command.spawn().unwrap(),
             reaped: false,
         };
-        let stdout = read_all(running.child.stdout.take().unwrap());
+        let stdout = running.child.stdout.take().map(read_all);
         let stderr = read_all(running.child.stderr.take().unwrap());
         let deadline = started.checked_add(RUN_DEADLINE).unwrap();
         let status = loop {
@@ -270,7 +305,7 @@ impl Bench {
         let leftover = running.end_group();
         let ran = Ran {
             code: status.code(),
-            stdout: stdout.join().unwrap(),
+            stdout: stdout.map_or_default(|reader| reader.join().unwrap()),
             stderr: stderr.join().unwrap(),
             took,
         };
@@ -315,6 +350,19 @@ impl Bench {
             .iter()
             .map(|arguments| arguments.join(" "))
             .collect()
+    }
+
+    /// Replaces the real `rm` and `rmdir` with stubs that log each call before they run the real program.
+    pub(crate) fn record_removals(&self) {
+        for name in ["rm", "rmdir"] {
+            let stub = format!("bin/{name}");
+            fs::remove_file(self.path(&stub)).unwrap();
+            let real = real_program(name);
+            let body = RECORDED_REMOVAL
+                .replace("NAME", name)
+                .replace("REAL", &real.display().to_string());
+            self.write_stub(&stub, &body);
+        }
     }
 
     pub(crate) fn clear_calls(&self) {

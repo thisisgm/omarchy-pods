@@ -29,7 +29,7 @@ const CURL_OUTPUT_AT: usize = 11;
 /// The exit status the cargo stub fails with, as cargo does on a compile error.
 const CARGO_FAILED: &str = "exit status 101";
 
-fn done_lines() -> String {
+pub(crate) fn done_lines() -> String {
     format!(
         "librepods {VERSION} is running.\n\
          The bar icon stays hidden until AirPods are connected.\n\
