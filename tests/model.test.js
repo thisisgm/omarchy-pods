@@ -33,6 +33,40 @@ const huge = Model.parseStatus('{"schema_version":1,"pad":"' + "x".repeat(Model.
 check("oversized line is refused", huge.ok, false)
 check("oversized line says why", huge.lastError, "The librepods status file is too large to read")
 
+// A minimal line padded to an exact length in UTF-8 bytes.
+function lineOfBytes(bytes, padChar, padCharBytes) {
+  const frame = '{"schema_version":1,"pad":""}'
+  const count = (bytes - frame.length) / padCharBytes
+  if (!Number.isInteger(count)) throw new Error("lineOfBytes: " + bytes + " bytes is not the frame plus whole pad characters")
+  return frame.slice(0, -2) + padChar.repeat(count) + '"}'
+}
+check("a line of exactly the bound is read", Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES, "x", 1)).ok, true)
+check("one byte over the bound is refused", Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES + 1, "x", 1)).lastError,
+  "The librepods status file is too large to read")
+// head counts bytes, so a line of two byte characters is over the bound at half the characters.
+check("a line of two byte characters over the bound is refused",
+  Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES + 3, "é", 2)).lastError,
+  "The librepods status file is too large to read")
+// U+2019 is three bytes and U+1D11E four, the second written as a surrogate pair.
+check("a line of three byte characters under the bound is read",
+  Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES - 2, "\u2019", 3)).ok, true)
+check("a line of three byte characters over the bound is refused",
+  Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES + 1, "\u2019", 3)).lastError,
+  "The librepods status file is too large to read")
+check("a line of four byte characters under the bound is read",
+  Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES - 3, "\u{1D11E}", 4)).ok, true)
+check("a line of four byte characters over the bound is refused",
+  Model.parseStatus(lineOfBytes(Model.MAX_STATUS_BYTES + 1, "\u{1D11E}", 4)).lastError,
+  "The librepods status file is too large to read")
+// The reader keeps one byte past the bound, and Qt decodes the cut character as U+FFFD, as TextDecoder does.
+const cutRead = new TextDecoder().decode(
+  new TextEncoder().encode(lineOfBytes(Model.MAX_STATUS_BYTES + 4, "\u2019", 3)).slice(0, Model.MAX_STATUS_BYTES + 1))
+check("the cut read ends inside a character", cutRead.endsWith("\uFFFD"), true)
+check("a read cut inside a three byte character is refused", Model.parseStatus(cutRead).lastError,
+  "The librepods status file is too large to read")
+check("a line cut in the middle is an error and not a crash", Model.parseStatus(live.slice(0, live.length / 2)).lastError,
+  "Could not read the librepods status file")
+
 // A fresh daemon omits left, right and case entirely rather than sending available:false.
 const fresh = Model.parseStatus('{"connected":false,"noise_mode":-1,"schema_version":1}')
 check("fresh line parses", fresh.ok, true)
