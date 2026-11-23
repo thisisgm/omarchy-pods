@@ -690,12 +690,14 @@ mod tests {
         assert_eq!(pods.monitor_source_index, Some(monitor.index));
         assert_eq!(microphone.monitor_of_sink_index, None);
 
+        let monitor_name = format!("{sink}.monitor");
         let kinds = [
             (MICROPHONE, Recorder::Program),
             (MICROPHONE, Recorder::PeakMeter),
             (sink.as_str(), Recorder::Monitor),
             (MICROPHONE, Recorder::Corked),
             (ABSENT_SOURCE, Recorder::Program),
+            (monitor_name.as_str(), Recorder::PeakMeter),
         ];
         let mut ids = Vec::new();
         for (target, kind) in kinds {
@@ -725,6 +727,12 @@ mod tests {
                 ),
                 expected(mic, MICROPHONE, true, &[]),
                 expected(NO_SOURCE, ABSENT_SOURCE, false, &[]),
+                expected(
+                    monitor.index,
+                    &monitor_name,
+                    false,
+                    &[("stream.monitor", "true")]
+                ),
             ]
         );
 

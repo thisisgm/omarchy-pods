@@ -124,7 +124,7 @@ impl Capture {
             match recording.kind {
                 Recorder::Monitor => monitored == Some(recording.target.as_str()),
                 Recorder::Program | Recorder::PeakMeter | Recorder::Corked => {
-                    monitored.is_none() && source.name == recording.target
+                    source.name == recording.target
                 }
             }
         });
