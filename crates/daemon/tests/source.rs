@@ -13,7 +13,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use pods_core::policy::mic::{SOURCE_UP_LINE, withdrawn_line};
+    use pods_core::policy::mic::{SOURCE_UP_LINE, STOPPED_BY_THE_PODS_LINE, withdrawn_line};
     use pods_fake::Profile;
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ};
     use pods_pwrig::states_latency;
@@ -201,6 +201,45 @@ mod tests {
             "{log}"
         );
         assert_eq!(stops(&device).len(), 1, "{:?}", device.pods.heard());
+        rig.finish();
+    }
+
+    #[test]
+    fn a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again() {
+        let (mut rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Running);
+        let pipewire = start(&rig);
+        link_heard(&rig, &device);
+        wait_node(&pipewire);
+        let first = record(&rig, &pipewire, "first.wav");
+        wait_mic(&rig, "recording");
+        device.pods.uplink().stop_unasked();
+        rig.wait_logged(STOPPED_BY_THE_PODS_LINE);
+        wait_restore(&audio, &device);
+        // A second START shows `starting`, never `ready`, while the recorder stays linked.
+        wait_mic(&rig, "ready");
+        let dump = pipewire.dump();
+        let node = wait_node(&pipewire);
+        assert_ne!(links_of(&dump, &node), Vec::<Value>::new(), "{dump}");
+        assert_eq!(node["info"]["state"], "running", "{node}");
+        read_up_to_now(&rig, &device);
+        assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        drop(first.finish());
+        wait_for("the node idle once the recorder left", || {
+            (wait_node(&pipewire)["info"]["state"] != "running").then_some(())
+        });
+        // A START for the leave alone shows `starting` or `live` inside the window.
+        rig.holds_for(
+            REAL_TIME_SLACK,
+            "mic ready once the recorder left",
+            |status| status["mic"] == "ready",
+        );
+        assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        let second = record(&rig, &pipewire, "second.wav");
+        wait_starts(&device, 2);
+        wait_mic(&rig, "recording");
+        drop(second.finish());
+        read_up_to_now(&rig, &device);
+        assert_eq!(starts(&device).len(), 2, "{:?}", device.pods.heard());
         rig.finish();
     }
 

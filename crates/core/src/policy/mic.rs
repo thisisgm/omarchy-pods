@@ -259,7 +259,7 @@ impl Mic {
                 since,
                 id,
                 unasked: true,
-            } if !wanted(state) => {
+            } if !self.wants(state) => {
                 self.phase = Phase::Restoring {
                     since,
                     id,
