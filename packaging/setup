@@ -1,0 +1,175 @@
+#!/bin/bash
+# Installs the published librepods binary, or one built here with --from-source, with its systemd user service.
+
+set -euo pipefail
+
+readonly bin_dir="${HOME:-}/.local/bin"
+readonly unit_dir="${HOME:-}/.local/share/systemd/user"
+readonly release_url=https://github.com/thisisgm/omarchy-pods/releases/download
+readonly download_timeout_s=60
+readonly service_wait_s=10
+readonly ASSET_SUFFIX=-x86_64
+readonly sha256_hex_digits=64
+readonly lock_separator="  "
+
+plugin_dir=$(cd "$(dirname "$0")/.." && pwd)
+readonly plugin_dir
+readonly lock_file="$plugin_dir/packaging/librepods.sha256"
+readonly unit_file="$plugin_dir/packaging/systemd/librepods.service"
+
+from_source=false
+lock_line=
+asset=
+tag=
+binary=
+scratch=
+
+fail() {
+    printf 'setup: %s: %s\n' "$1" "$2" >&2
+    exit 1
+}
+
+usage() {
+    printf '%s\n' \
+        "usage: setup [--from-source]" \
+        "Installs the published librepods binary once it matches packaging/librepods.sha256," \
+        "then installs, enables and restarts its systemd user service." \
+        "  --from-source  build librepods here with cargo instead of downloading it" >&2
+    exit 2
+}
+
+read_arguments() {
+    local argument
+    for argument in "$@"; do
+        case "$argument" in
+        --from-source) from_source=true ;;
+        *) usage ;;
+        esac
+    done
+}
+
+check_machine() {
+    local uid machine
+    [[ ${HOME:-} == /* ]] || fail "HOME is not an absolute path" "${HOME:-unset}"
+    if [[ ${XDG_RUNTIME_DIR:-} != /* || ! -d ${XDG_RUNTIME_DIR:-} ]]; then
+        fail "XDG_RUNTIME_DIR is not an absolute directory" "${XDG_RUNTIME_DIR:-unset}"
+    fi
+    uid=$(id -u) || fail "could not read the user id" "id -u"
+    [ "$uid" != 0 ] || fail "run setup as your own user, not as root" "uid $uid"
+    [ "$from_source" = false ] || return 0
+    machine=$(uname -m) || fail "could not read the machine type" "uname -m"
+    if [ "$machine" != x86_64 ]; then
+        fail "the published librepods file is for x86-64, and setup --from-source builds it on this machine" "$machine"
+    fi
+}
+
+# Sample input: `9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  librepods-2.0.0-x86_64`
+read_lock() {
+    local line hash separator
+    [ -r "$lock_file" ] || fail "could not read the checksum file" "$lock_file"
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ $line != '#'* ]]; then
+            lock_line=$line
+            break
+        fi
+    done < "$lock_file"
+    [ -n "$lock_line" ] || fail "the checksum file holds no checksum line" "$lock_file"
+    hash=${lock_line:0:sha256_hex_digits}
+    separator=${lock_line:sha256_hex_digits:${#lock_separator}}
+    asset=${lock_line:sha256_hex_digits+${#lock_separator}}
+    tag=${asset%"$ASSET_SUFFIX"}
+    if [ "${#hash}" != "$sha256_hex_digits" ] || [[ $hash == *[!0-9a-fA-F]* ]] || [ "$separator" != "$lock_separator" ] ||
+        [[ $asset != librepods-?*"$ASSET_SUFFIX" ]] || [[ $asset == *[!A-Za-z0-9._-]* ]]; then
+        fail "the checksum line is not 64 hex digits, two spaces and a librepods asset name" "$lock_line"
+    fi
+}
+
+fetch_binary() {
+    local url="$release_url/$tag/$asset" status=0
+    scratch=$(mktemp -d "$XDG_RUNTIME_DIR/omapods-setup.XXXXXX") ||
+        fail "could not make a scratch directory" "$XDG_RUNTIME_DIR"
+    curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+        --max-time "$download_timeout_s" --output "$scratch/$asset" "$url" || status=$?
+    [ "$status" = 0 ] || fail "the download of $asset failed with curl exit status $status" "$url"
+    [ -s "$scratch/$asset" ] || fail "the download is empty" "$asset"
+    if ! (cd "$scratch" && printf '%s\n' "$lock_line" | sha256sum --check --strict --status); then
+        fail "the download does not match packaging/librepods.sha256" "$asset"
+    fi
+    binary="$scratch/$asset"
+}
+
+build_binary() {
+    local status=0
+    command -v cargo > /dev/null || fail "cargo was not found, install it with omarchy install dev-env rust" "cargo"
+    (cd "$plugin_dir" && cargo build --release --locked -p librepods --target-dir "$plugin_dir/target") || status=$?
+    [ "$status" = 0 ] || fail "cargo could not build librepods, exit status $status" "$plugin_dir"
+    binary="$plugin_dir/target/release/librepods"
+}
+
+install_binary() {
+    install -D --mode=755 "$binary" "$bin_dir/librepods.new" ||
+        fail "could not install the binary" "$bin_dir/librepods.new"
+    mv -f "$bin_dir/librepods.new" "$bin_dir/librepods" ||
+        fail "could not move the binary into place" "$bin_dir/librepods"
+    ln -sfn librepods "$bin_dir/librepods-ctl" || fail "could not link the client" "$bin_dir/librepods-ctl"
+}
+
+install_unit() {
+    install -D --mode=644 "$unit_file" "$unit_dir/librepods.service" ||
+        fail "could not install the unit" "$unit_dir/librepods.service"
+    systemctl --user daemon-reload || fail "systemctl could not reload the user units" "daemon-reload"
+    systemctl --user enable librepods.service || fail "systemctl could not enable the service" "librepods.service"
+}
+
+start_service() {
+    local second reply
+    systemctl --user restart librepods.service || fail "systemctl could not restart the service" "librepods.service"
+    for ((second = 0; second < service_wait_s; second++)); do
+        # A daemon still starting makes status fail, and the journal named below holds why it never answered.
+        reply=$("$bin_dir/librepods" status 2> /dev/null) || reply=
+        if [[ $reply == *'"schema_version"'* ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+    printf '%s\n' "setup: librepods did not start. See: journalctl --user -u librepods.service -n 30" >&2
+    exit 1
+}
+
+# Sample input: `librepods 2.0.0`
+report_running() {
+    local version_line
+    version_line=$("$bin_dir/librepods" --version) ||
+        fail "the installed binary did not print its version" "$bin_dir/librepods --version"
+    printf '%s\n' \
+        "$version_line is running." \
+        "The bar icon stays hidden until AirPods are connected." \
+        "Keep it visible: omarchy bar set io.github.thisisgm.omapods hideWhenDisconnected false --json"
+}
+
+remove_scratch() {
+    [ -n "$scratch" ] || return 0
+    if [[ $scratch == "$XDG_RUNTIME_DIR"/omapods-setup.* ]]; then
+        rm -rf -- "$scratch"
+    else
+        printf 'setup: left the scratch directory, it is not under XDG_RUNTIME_DIR: %s\n' "$scratch" >&2
+    fi
+}
+
+main() {
+    read_arguments "$@"
+    check_machine
+    if [ "$from_source" = true ]; then
+        build_binary
+    else
+        read_lock
+        fetch_binary
+    fi
+    install_binary
+    install_unit
+    start_service
+    report_running
+}
+
+trap remove_scratch EXIT
+main "$@"
