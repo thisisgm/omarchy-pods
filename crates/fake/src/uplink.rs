@@ -92,13 +92,13 @@ impl Uplink {
         self.shared.uplink(|uplink| uplink.run.is_some())
     }
 
-    /// The audio packets handed to a channel since the pods were made.
+    /// The audio packets the pods made on their own clock since they were made, read by the host or still queued for it.
     #[must_use]
     pub fn sent_packets(&self) -> u64 {
         self.shared.uplink(|uplink| uplink.sent_packets)
     }
 
-    /// The longest time between two audio packets since the last START was answered, as the serving thread handed them to the channel.
+    /// The longest time between two audio packets the pods made since the last START was answered; a host that reads late shows on its own side, not here.
     #[must_use]
     pub fn largest_gap(&self) -> Duration {
         self.shared.uplink(|uplink| uplink.largest_gap)
