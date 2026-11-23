@@ -19,7 +19,7 @@ mod tests {
     use pods_proto::noise::NoiseMode;
     use serde_json::Value;
 
-    use super::support::{BINARY, Session, wait_for};
+    use super::support::{Session, binary, wait_for};
 
     const MODEL_JS: &str = include_str!("../../../Model.js");
 
@@ -207,7 +207,7 @@ mod tests {
                 .ok()
                 .and_then(|index| panel_verbs.get(index));
             assert_eq!(sent, Some(&verb), "the verb Model.js sends for {constant}");
-            let out = session.run_client(Path::new(BINARY), &["ctl", verb]);
+            let out = session.run_client(Path::new(binary()), &["ctl", verb]);
             assert!(out.status.success(), "{verb}: {out:?}");
             let document = settled_state_file(&session);
             numbers.insert(constant, number_at(&document, "ear_detection_behavior"));

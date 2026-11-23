@@ -20,7 +20,7 @@ mod tests {
         BUS_NAME, CONVERSATION_LIMIT, INTERFACE, OBJECT_PATH, owned_connection, start_bus,
         start_daemon,
     };
-    use super::support::{BINARY, DAEMON_LOG, Proto1, Session, set_request};
+    use super::support::{DAEMON_LOG, Proto1, Session, binary, set_request};
 
     /// The exit code of every refused command, `ExitCode::FAILURE`.
     const REFUSED: i32 = 1;
@@ -54,7 +54,7 @@ mod tests {
                 "That setting does not take this value.\n",
             ),
         ] {
-            let out = session.run_client(Path::new(BINARY), &args);
+            let out = session.run_client(Path::new(binary()), &args);
             assert_eq!(out.status.code(), Some(REFUSED), "{args:?}");
             assert_eq!(out.stdout, b"", "{args:?}");
             let printed = String::from_utf8(out.stderr).unwrap();
@@ -137,7 +137,7 @@ mod tests {
             let reply = client.ask_line(&set_request(id, "adaptive_level", value));
             assert_eq!(reply, error_reply(&id.to_string(), range), "{value}");
         }
-        let out = session.run_client(Path::new(BINARY), &["set", "adaptive_level", "101"]);
+        let out = session.run_client(Path::new(binary()), &["set", "adaptive_level", "101"]);
         assert_eq!(out.status.code(), Some(REFUSED));
         let stderr = String::from_utf8(out.stderr).unwrap();
         assert_eq!(

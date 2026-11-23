@@ -14,12 +14,14 @@ pub(crate) mod rig;
 pub(crate) mod sleep;
 pub(crate) mod watch;
 
+use std::env::{self, VarError};
 use std::fs::{self, DirBuilder, File};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -27,7 +29,33 @@ use rustix::process::{Pid, Signal, kill_process};
 use serde_json::Value;
 use tempfile::TempDir;
 
-pub(crate) const BINARY: &str = env!("CARGO_BIN_EXE_librepods");
+/// Names a release file for the suite to run in place of this build's binary.
+pub(crate) const BINARY_VARIABLE: &str = "LIBREPODS_E2E_BINARY";
+
+/// The daemon under test: the file `LIBREPODS_E2E_BINARY` names when it is set, else this build's binary.
+pub(crate) fn binary() -> &'static str {
+    static BINARY: OnceLock<String> = OnceLock::new();
+    BINARY.get_or_init(|| match env::var(BINARY_VARIABLE) {
+        Err(VarError::NotPresent) => env!("CARGO_BIN_EXE_librepods").to_owned(),
+        // Made absolute here, since a spawn looks a bare name up in `PATH` and a link resolves from its own directory.
+        Ok(path) => match fs::canonicalize(&path) {
+            Ok(file) if file.is_file() => {
+                file.into_os_string().into_string().unwrap_or_else(|file| {
+                    panic!(
+                        "{BINARY_VARIABLE} names {}, which is not a UTF-8 path",
+                        file.display()
+                    )
+                })
+            }
+            Ok(_) => panic!("{BINARY_VARIABLE} names {path}, which is no file"),
+            Err(error) => panic!("{BINARY_VARIABLE} names {path}, which is no file: {error}"),
+        },
+        Err(VarError::NotUnicode(path)) => panic!(
+            "{BINARY_VARIABLE} names {}, which is not a UTF-8 path",
+            path.display()
+        ),
+    })
+}
 
 const SHELL: &str = "/bin/sh";
 
@@ -183,12 +211,12 @@ impl Session {
 
     /// The daemon under umask 0, so the modes it sets are its own and not the runner's mask.
     pub(crate) fn unmasked_daemon(&self) -> Command {
-        self.command(Path::new(SHELL), &["-c", UNMASKED, BINARY])
+        self.command(Path::new(SHELL), &["-c", UNMASKED, binary()])
     }
 
     /// Starts a daemon with `args`, its stderr going to a log file in the session.
     pub(crate) fn spawn(&self, args: &[&str], log_name: &str) -> Daemon {
-        self.spawn_command(&mut self.command(Path::new(BINARY), args), log_name)
+        self.spawn_command(&mut self.command(Path::new(binary()), args), log_name)
     }
 
     /// Starts `command` as a daemon, its stderr going to a log file in the session.

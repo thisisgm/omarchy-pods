@@ -18,7 +18,7 @@ use zbus::zvariant::{DynamicType, Type};
 use zbus::{Connection, Message, MessageStream};
 
 use super::players::PROPERTIES;
-use super::{BINARY, Daemon, HANG_LIMIT, Session, wait_for};
+use super::{Daemon, HANG_LIMIT, Session, binary, wait_for};
 
 /// The names the daemon serves on the session bus, from `src/daemon/dbus.rs`.
 pub(crate) const BUS_NAME: &str = "io.github.thisisgm.Omapods";
@@ -167,7 +167,7 @@ impl Listener {
 
 /// Starts a daemon whose session bus is `bus_address`, and waits until its socket accepts.
 pub(crate) fn start_daemon(session: &Session, bus_address: &str, log_name: &str) -> Daemon {
-    let mut command = session.command(Path::new(BINARY), &["daemon"]);
+    let mut command = session.command(Path::new(binary()), &["daemon"]);
     let daemon = session.spawn_command(command.env(BUS_ADDRESS_VAR, bus_address), log_name);
     session.wait_accepting();
     daemon

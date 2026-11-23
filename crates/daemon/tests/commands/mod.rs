@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 
-use super::support::{BINARY, HANG_LIMIT, Session, run_to_end, wait_for};
+use super::support::{HANG_LIMIT, Session, binary, run_to_end, wait_for};
 
 /// A device on which every write fails with no space left.
 const FULL_DEVICE: &str = "/dev/full";
@@ -45,7 +45,7 @@ fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
 /// Starts `librepods watch` with its stdout piped back here.
 fn spawn_watch(session: &Session) -> (Watch, BufReader<ChildStdout>) {
     let mut child = session
-        .command(Path::new(BINARY), &["watch"])
+        .command(Path::new(binary()), &["watch"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -96,7 +96,7 @@ fn watch_prints_a_line_per_change_and_exits_one_when_daemon_stops() {
     let mut daemon = session.start();
     let (watch, mut stdout) = spawn_watch(&session);
     assert_eq!(read_watch_line(&mut stdout), session.status());
-    let set = session.run_client(Path::new(BINARY), &["set", "ear_detection", "both"]);
+    let set = session.run_client(Path::new(binary()), &["set", "ear_detection", "both"]);
     assert_eq!(set.status.code(), Some(0));
     assert_eq!(read_watch_line(&mut stdout), session.status());
     assert_eq!(session.send(b"ear:one"), b"");
@@ -125,25 +125,25 @@ fn status_fails_like_watch_when_its_line_cannot_be_written_and_ctl_does_not() {
     let session = Session::new();
     let _daemon = session.start();
     let link = session.dir.path().join("librepods-ctl");
-    symlink(BINARY, &link).unwrap();
+    symlink(binary(), &link).unwrap();
     let to_full = |program: &Path, args: &[&str]| {
         let full = File::options().write(true).open(FULL_DEVICE).unwrap();
         let mut command = session.command(program, args);
         run_to_end(command.stdout(full).stderr(Stdio::piped()))
     };
-    let watch = to_full(Path::new(BINARY), &["watch"]);
+    let watch = to_full(Path::new(binary()), &["watch"]);
     assert_eq!(watch.status.code(), Some(1));
     let message = String::from_utf8(watch.stderr).unwrap();
     assert!(
         message.starts_with("Cannot write the state to standard output: "),
         "{message}"
     );
-    let status = to_full(Path::new(BINARY), &["status"]);
+    let status = to_full(Path::new(binary()), &["status"]);
     assert_eq!(status.status.code(), Some(1));
     assert_eq!(String::from_utf8(status.stderr).unwrap(), message);
     // The legacy client ignores the failed write, as the C++ `librepods-ctl` does.
     for (program, args) in [
-        (Path::new(BINARY), &["ctl", "status"][..]),
+        (Path::new(binary()), &["ctl", "status"][..]),
         (link.as_path(), &["status"]),
     ] {
         let out = to_full(program, args);
@@ -159,7 +159,7 @@ fn status_and_watch_end_quietly_when_nothing_reads_their_output() {
     for args in [["status"], ["watch"]] {
         let (reader, writer) = io::pipe().unwrap();
         drop(reader);
-        let mut command = session.command(Path::new(BINARY), &args);
+        let mut command = session.command(Path::new(binary()), &args);
         let out = run_to_end(command.stdout(writer).stderr(Stdio::piped()));
         assert_eq!(out.status.code(), Some(0), "{args:?}");
         assert_eq!(out.stderr, b"", "{args:?}");
@@ -170,8 +170,8 @@ fn status_and_watch_end_quietly_when_nothing_reads_their_output() {
 fn set_exit_codes_and_messages() {
     let session = Session::new();
     let mut daemon = session.start();
-    let binary = Path::new(BINARY);
-    let status = session.run_client(binary, &["status"]);
+    let client = Path::new(binary());
+    let status = session.run_client(client, &["status"]);
     assert_eq!(status.status.code(), Some(0));
     assert_eq!(String::from_utf8(status.stdout).unwrap(), session.status());
     assert_eq!(status.stderr, b"");
@@ -208,7 +208,7 @@ fn set_exit_codes_and_messages() {
             "The daemon could not read the request.\n",
         ),
     ] {
-        let out = session.run_client(binary, args);
+        let out = session.run_client(client, args);
         assert_eq!(out.status.code(), Some(code), "{args:?}");
         assert_eq!(out.stdout, b"", "{args:?}");
         assert_eq!(String::from_utf8(out.stderr).unwrap(), stderr, "{args:?}");
@@ -224,7 +224,7 @@ fn set_exit_codes_and_messages() {
         &["set", "ear_detection", "off"],
         &["do", "connect"],
     ] {
-        let out = session.run_client(binary, args);
+        let out = session.run_client(client, args);
         assert_eq!(out.status.code(), Some(1), "{args:?}");
         assert_eq!(out.stdout, b"", "{args:?}");
         assert_eq!(String::from_utf8(out.stderr).unwrap(), refused, "{args:?}");

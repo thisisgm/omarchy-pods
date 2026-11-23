@@ -113,8 +113,8 @@ codegen-units = 1
 panic = "unwind"
 overflow-checks = true
 debug = "line-tables-only"
-split-debuginfo = "packed"
-strip = "debuginfo"
+split-debuginfo = "off"
+strip = "none"
 
 [profile.dev]
 debug = "line-tables-only"
