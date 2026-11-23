@@ -201,11 +201,12 @@ impl From<Lost> for Ended {
     }
 }
 
-/// A restore the driver asked for: `Asked` waits for its answer, `Owed` was answered while the server was down and is done once it is back.
+/// A restore the driver asked for: `Asked` waits for its answer, `Resuming` too with its resume left to the next connection, and `Owed` was answered while the server was down and is done once it is back.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Restore {
     Clear,
     Asked,
+    Resuming,
     Owed,
 }
 
@@ -302,7 +303,7 @@ impl<'a> Follower<'a> {
         }
     }
 
-    /// Tells the loss once an outage, answers a restore asked meanwhile as owed, and waits out the ladder's step.
+    /// Tells the loss once an outage, answers a restore asked meanwhile as owed unless its suspend went out, and waits out the ladder's step.
     async fn retry(&mut self, lost: Lost) -> Result<(), Left> {
         if self.misses == 0 {
             log(&format!("audio: the audio server is down: {lost}"));
@@ -314,6 +315,9 @@ impl<'a> Follower<'a> {
         let wait = AUDIO_RETRY_MS.get(self.misses).copied().unwrap_or(longest);
         let mut step = pin!(sleep(Duration::from_millis(wait)));
         loop {
+            if self.requests.restore == Restore::Asked && self.suspended {
+                self.requests.restore = Restore::Resuming;
+            }
             if self.requests.restore == Restore::Asked {
                 log(RESTORE_OWED_LINE);
                 self.requests.restore = Restore::Owed;
@@ -387,7 +391,7 @@ impl<'a> Follower<'a> {
             _ => {}
         }
         self.suspended = false;
-        let asked = self.requests.restore == Restore::Asked;
+        let asked = matches!(self.requests.restore, Restore::Asked | Restore::Resuming);
         self.requests.restore = Restore::Clear;
         if asked {
             self.tell(AudioFact::Restored).await?;

@@ -303,6 +303,17 @@ mod tests {
     }
 
     #[test]
+    fn exit_with_the_server_lost_inside_the_restore_resumes_the_sink_before_it_ends() {
+        let (mut rig, device, audio) = live(SinkState::Running);
+        rig.term();
+        audio.wait_writes(1, HANG_LIMIT);
+        audio.restart(Volumes::Kept);
+        let status = rig.exited(MIC_EXIT.saturating_add(REAL_TIME_SLACK));
+        assert!(status.success(), "{status}");
+        wait_restore(&audio, &device);
+    }
+
+    #[test]
     fn exit_with_the_uplink_stopped_is_answered_at_once() {
         let (mut rig, device) = rig_with("auto", &[MODEL_NUMBER], Profile::default());
         link(&rig, &device);
