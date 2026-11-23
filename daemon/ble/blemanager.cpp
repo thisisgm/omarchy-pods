@@ -91,12 +91,11 @@ QString getConnectionStateName(BleInfo::ConnectionState state)
 BleManager::BleManager(QObject *parent) : QObject(parent)
 {
     discoveryAgent = new QBluetoothDeviceDiscoveryAgent(this);
-    discoveryAgent->setLowEnergyDiscoveryTimeout(0); // Continuous scanning
+    // Continuous discovery starves BlueZ's passive auto-connect scan, so paired LE mice and keyboards reconnect late.
+    discoveryAgent->setLowEnergyDiscoveryTimeout(scanBurstMs);
 
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::deviceDiscovered,
             this, &BleManager::onDeviceDiscovered);
-    connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::finished,
-            this, &BleManager::onScanFinished);
     connect(discoveryAgent, &QBluetoothDeviceDiscoveryAgent::errorOccurred,
             this, &BleManager::onErrorOccurred);
 }
@@ -112,6 +111,8 @@ BleManager::~BleManager()
 
 void BleManager::startScan()
 {
+    if (discoveryAgent->isActive())
+        return;
     LOG_DEBUG("Starting BLE scan...");
     discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
 }
@@ -223,14 +224,6 @@ void BleManager::onDeviceDiscovered(const QBluetoothDeviceInfo &info)
 
             emit deviceFound(deviceInfo); // Emit signal for device found
         }
-    }
-}
-
-void BleManager::onScanFinished()
-{
-    if (discoveryAgent->isActive())
-    {
-        discoveryAgent->start(QBluetoothDeviceDiscoveryAgent::LowEnergyMethod);
     }
 }
 

@@ -77,6 +77,13 @@ Item {
     stateReader.running = true
   }
 
+  // The C++ daemon only scans in short bursts, so opening the panel asks it for one.
+  function scan() {
+    if (daemonCurrent || scanProcess.running) return
+    scanProcess.command = [String(setting("ctlPath", "") || "librepods-ctl"), "scan"]
+    scanProcess.running = true
+  }
+
   function applyLine(raw) {
     var status = Model.parseStatus(raw)
     if (!status.ok) {
@@ -243,6 +250,12 @@ Item {
   }
 
   Component.onCompleted: refresh()
+
+  Process {
+    id: scanProcess
+    running: false
+    command: []
+  }
 
   Process {
     id: commandProcess

@@ -29,7 +29,10 @@
 - **Ear detection**: pause when one pod is out, pause when both are out, or
   never pause.
 - **Case lid**, when the case has broadcast its state. Lid state comes from BLE
-  advertisements, and the daemon pauses that discovery while the control link is
+  advertisements, which the daemon reads in 10 second scans (at start, when the
+  pods disconnect, and when the panel opens) rather than continuously, because
+  nonstop discovery delays the reconnect of paired Bluetooth mice and keyboards.
+  It also pauses that discovery while the control link is
   up, because discovery running alongside a live link is what the crackle in issue
   26 tracks. So lid state holds its last value for as long as the pods stay
   connected, and the case level may keep refreshing over the control link, as it

@@ -114,6 +114,7 @@ Panel {
     cursorIndex = 0
     if (panelFlick) panelFlick.contentY = 0
     pods.refresh()
+    pods.scan()
     Qt.callLater(function () { keyCatcher.forceActiveFocus() })
   }
 

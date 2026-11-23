@@ -1,6 +1,7 @@
 #include <QtTest>
 #include <QBluetoothAddress>
 #include <QBluetoothDeviceInfo>
+#include <QBluetoothDeviceDiscoveryAgent>
 
 #include "../ble/blemanager.h"
 
@@ -70,6 +71,7 @@ private slots:
     void unparseableFrameIsDropped();
     void realAirPodsFrameIsParsed();
     void podsBatteryKeepsLeftAndRightApart();
+    void scanEndsOnItsOwn();
 };
 
 void TestBleManager::unparseableFrameIsDropped_data()
@@ -116,6 +118,15 @@ void TestBleManager::podsBatteryKeepsLeftAndRightApart()
     QCOMPARE(parseFrame(withRightPodPrimary(unequalPods), &parsed), 1);
     QCOMPARE(parsed.leftPodBattery, 80);
     QCOMPARE(parsed.rightPodBattery, 20);
+}
+
+// A timeout of 0 means continuous discovery, which starves BlueZ's auto-connect scan for paired LE devices.
+void TestBleManager::scanEndsOnItsOwn()
+{
+    BleManager manager;
+    const auto *agent = manager.findChild<QBluetoothDeviceDiscoveryAgent *>();
+    QVERIFY(agent);
+    QVERIFY(agent->lowEnergyDiscoveryTimeout() > 0);
 }
 
 QTEST_GUILESS_MAIN(TestBleManager)

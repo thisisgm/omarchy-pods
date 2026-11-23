@@ -70,13 +70,15 @@ public:
     explicit BleManager(QObject *parent = nullptr);
     ~BleManager();
 
+    static constexpr int scanBurstMs = 10000;
+
+    // Scans for scanBurstMs and then stops on its own.
     void startScan();
     void stopScan();
     bool isScanning() const;
 
 private slots:
     void onDeviceDiscovered(const QBluetoothDeviceInfo &info);
-    void onScanFinished();
     void onErrorOccurred(QBluetoothDeviceDiscoveryAgent::Error error);
 
 signals:

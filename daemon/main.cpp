@@ -696,6 +696,13 @@ public slots:
         m_bleManager->stopScan();
     }
 
+    // The panel asks for this on open, so case state is fresh without scanning all the time.
+    void requestBleScan()
+    {
+        if (!areAirpodsConnected() && !m_isSuspending)
+            m_bleManager->startScan();
+    }
+
     void onSystemGoingToSleep()
     {
         m_isSuspending = true;
@@ -717,12 +724,9 @@ public slots:
         // the disconnect notifications that BlueZ fires during resume
         // don't surface as user-visible "AirPods Disconnected" toasts.
         QTimer::singleShot(2000, this, [this]() {
-            // Suspend stopped discovery on every controller, so resume restarts it and the gate below re-applies.
-            m_bleManager->startScan();
-
+            // No BLE scan here: resume is when paired mice and keyboards reconnect, and discovery delays them.
             if (areAirpodsConnected() && m_deviceInfo && !m_deviceInfo->bluetoothAddress().isEmpty())
             {
-                stopBleScanWhileConnected();
                 LOG_INFO("AirPods already connected after wake-up, re-activating A2DP profile");
                 // Profile may have been dropped during suspend; reassert.
                 QTimer::singleShot(1000, this, [this]() {
@@ -859,7 +863,8 @@ private slots:
 
         // Clear the device name and model
         m_deviceInfo->reset();
-        m_bleManager->startScan();
+        if (!m_isSuspending)
+            m_bleManager->startScan();
         emit airPodsStatusChanged();
 
         // Skip the disconnect toast if we're suspending/resuming — BlueZ
@@ -2126,6 +2131,8 @@ int main(int argc, char *argv[]) {
                 if (auto level = OpenPods::Ipc::parseIntVerb(msg, QStringLiteral("adaptive:"))) {
                     trayAppPtr->setAdaptiveNoiseLevel(*level);
                 }
+            } else if (msg == "scan") {
+                trayAppPtr->requestBleScan();
             } else if (msg == "status") {
                 // Read-only status snapshot. One-line JSON; the consumer
                 // (Quickshell tile, status bar) doesn't need to keep its
