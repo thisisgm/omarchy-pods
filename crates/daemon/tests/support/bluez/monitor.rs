@@ -7,7 +7,7 @@ use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use zbus::message::Flags;
 use zbus::{Connection, Message, OwnedObjectPath, OwnedVariant, Str, Variant};
 
@@ -42,6 +42,8 @@ const RSSI_PROPERTIES: [&str; 5] = [
 const ADVERT_RSSI: i16 = -50;
 /// How long a registration waits for the application's object manager before it fails; inside the test's own wait.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// How late `answer_unregister_late` answers: long enough for another adapter's whole registration first.
+pub(crate) const LATE_BY: Duration = Duration::from_millis(500);
 
 /// A monitor BlueZ accepted, as it read it: `or_patterns` and patterns of start, AD type and content.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +68,7 @@ pub(super) struct Monitors {
     /// An address and its next advert, shown just ahead of the reply to the next `GetAll` of its device.
     at_read: Option<(String, Vec<u8>)>,
     release_at_activation: bool,
+    late_unregister: Option<String>,
 }
 
 /// What BlueZ tells applications apart by: the adapter, the owner's unique name and the root path.
@@ -177,6 +180,11 @@ impl Bluez {
     pub(crate) fn release_at_activation(&self) {
         self.lock().monitors.release_at_activation = true;
     }
+
+    /// The next `UnregisterMonitor` on `adapter` gets its `Release`s and reply `LATE_BY` after it arrives, as from a busy BlueZ.
+    pub(crate) fn answer_unregister_late(&self, adapter: &AdapterPath) {
+        self.lock().monitors.late_unregister = Some(adapter.0.clone());
+    }
 }
 
 impl Advertiser {
@@ -272,7 +280,12 @@ impl Monitors {
                 let app = self.apps.remove(index);
                 let mut messages = releases(&app);
                 messages.push(Message::method_return(&header).build(&()).unwrap());
-                Answer::Send(messages)
+                let late = self.late_unregister.take_if(|late| late == adapter);
+                if late.is_some() {
+                    Answer::Late(messages)
+                } else {
+                    Answer::Send(messages)
+                }
             }
             ("UnregisterMonitor", None) => refusal(call, DOES_NOT_EXIST),
             _ => refusal(call, UNKNOWN),
@@ -546,6 +559,14 @@ pub(super) async fn register(
         }
     };
     for message in releases {
+        connection.send(&message).await.unwrap();
+    }
+}
+
+/// Sends `messages` `LATE_BY` from now, while the serving thread answers other calls.
+pub(super) async fn answer_late(connection: Connection, messages: Vec<Message>) {
+    sleep(LATE_BY).await;
+    for message in messages {
         connection.send(&message).await.unwrap();
     }
 }
