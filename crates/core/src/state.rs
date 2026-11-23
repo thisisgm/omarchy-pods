@@ -15,7 +15,7 @@ pub struct State {
     pub connected: bool,
     pub device_name: String,
     pub model: Model,
-    /// The raw `A<NNNN>` metadata code, kept when `model` is `Unknown` or reset.
+    /// The raw `A<NNNN>` metadata code, kept when it names no known model; a reset clears it.
     pub model_number: String,
     pub noise_mode: NoiseMode,
     /// Whether the pods reported they offer Off; `None` until they do.
@@ -63,9 +63,10 @@ impl Default for State {
 }
 
 impl State {
-    /// Forgets what the pods reported, as the C++ `DeviceInfo::reset` does; preferences, the model number and counters stay.
+    /// Forgets what the pods reported; preferences and counters stay.
     pub fn reset_device(&mut self) {
         self.device_name.clear();
+        self.model_number.clear();
         self.model = Model::Unknown;
         self.noise_mode = NoiseMode::Off;
         self.noise_off = None;
