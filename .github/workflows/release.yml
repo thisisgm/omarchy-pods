@@ -3,12 +3,8 @@ name: Release
 on:
   push:
     tags: ["librepods-*"]
+  # Any source, dependency or toolchain change can change the released file, so every pull request builds it.
   pull_request:
-    # The release profile lives in the workspace manifest.
-    paths:
-      - .github/workflows/release.yml
-      - crates/xtask/src/release.rs
-      - Cargo.toml
 
 permissions:
   contents: read
