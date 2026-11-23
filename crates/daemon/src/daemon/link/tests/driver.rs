@@ -40,9 +40,6 @@ const ROUNDS: usize = 200;
 /// Hang-up offsets around a submit: a set confirms in about 50 us, so both orders come up.
 const RACE_SPREAD_US: usize = 200;
 
-/// The most a set may take from submit to the pods hearing it.
-const TURN_BOUND: Duration = Duration::from_millis(20);
-
 /// A battery none of the first burst carries, so its arrival shows every earlier packet was taken.
 const SENTINEL: Cell = Cell {
     level: 13,
@@ -328,29 +325,24 @@ fn set_racing_a_hang_up_always_resolves() {
     pods.finish().unwrap();
 }
 
+/// On a held paused clock, so a timer anywhere between the request and the write keeps the pods from hearing it.
 #[test]
 fn set_writes_in_the_turn_it_is_read() {
     let pods = Pods::new(Profile::default());
-    let (running, _connects) = link_up(&pods);
+    let (connector, _connects) = fake_connector(&pods);
+    let running = Running::paused(connector, Box::new(|_| {}));
+    let hold = running.hold_clock();
     let hub = running.hub();
-    let mut latencies = Vec::with_capacity(ROUNDS);
+    device_up(running.inputs());
+    wait_for_state(&hub, HANG_LIMIT, "the first burst", filled);
     for round in 0..ROUNDS {
         let (mode, value) = noise_for(round);
-        let frame = setting(NOISE, value);
-        let written_before = round / 2;
-        let started = Instant::now();
         let outcome = hub.submit(noise(mode));
-        let heard = pods
-            .wait_heard(&frame, written_before + 1, HANG_LIMIT)
+        pods.wait_heard(&setting(NOISE, value), round / 2 + 1, HANG_LIMIT)
             .unwrap();
-        latencies.push(heard[written_before].at - started);
         assert_eq!(block_on(outcome), Outcome::Sent, "round {round}");
     }
-    let (min, max) = range(&latencies);
-    report(&format!(
-        "{ROUNDS} sets reached the pods {min:?} to {max:?} after submit"
-    ));
-    assert!(max < TURN_BOUND, "the slowest took {max:?}");
+    drop(hold);
     drop(running);
     pods.finish().unwrap();
 }
