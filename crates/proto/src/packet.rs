@@ -6,6 +6,8 @@ use crate::ear::EarReport;
 use crate::error::{HEADER_LEN, ParseError, Parser};
 use crate::keys::ProximityKeys;
 use crate::metadata::Metadata;
+use crate::uplink::UplinkState;
+use crate::uplink::state::{self, SESSION_OPCODE, STATE_OPCODE};
 
 /// Starts every packet the pods send after the handshake; the opcode follows.
 pub const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
@@ -28,6 +30,8 @@ pub enum Incoming<'a> {
     Keys(ProximityKeys),
     /// The whole packet, for `UplinkPacket::parse`.
     Uplink(&'a [u8]),
+    /// One of the two markers by which the pods say whether the uplink runs.
+    UplinkState(UplinkState),
     Other {
         opcode: u16,
     },
@@ -54,6 +58,10 @@ pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
         OPCODE_METADATA => Incoming::Metadata(Metadata::parse(sdu)?),
         OPCODE_PROXIMITY_KEYS => Incoming::Keys(ProximityKeys::parse(sdu)?),
         OPCODE_UPLINK => Incoming::Uplink(sdu),
+        STATE_OPCODE | SESSION_OPCODE => match state::parse(sdu) {
+            Some(state) => Incoming::UplinkState(state),
+            None => Incoming::Other { opcode },
+        },
         opcode => Incoming::Other { opcode },
     })
 }
@@ -76,6 +84,7 @@ mod tests {
     use crate::fixture::hex;
     use crate::keys::ProximityKeys;
     use crate::metadata::Metadata;
+    use crate::uplink::UplinkState;
 
     #[test]
     fn each_opcode_reaches_its_parser() {
@@ -188,6 +197,29 @@ mod tests {
     }
 
     #[test]
+    fn an_uplink_marker_is_its_state_and_any_other_packet_of_its_opcode_is_other() {
+        for (running, state) in [(false, UplinkState::Stopped), (true, UplinkState::Running)] {
+            let marker = pods_samples::uplink::state_marker(running);
+            assert_eq!(classify(&marker), Ok(Incoming::UplinkState(state)));
+            let marker = pods_samples::uplink::session_marker(running);
+            assert_eq!(classify(&marker), Ok(Incoming::UplinkState(state)));
+        }
+        for (other, opcode) in [
+            ("04 00 04 00 0e 00", 0x000e),
+            ("04 00 04 00 0e 00 00 00 00 00", 0x000e),
+            ("04 00 04 00 0e 00 02 00 00 00 00 01 12", 0x000e),
+            ("04 00 04 00 55 00", 0x0055),
+            ("04 00 04 00 55 00 01 01 00 33", 0x0055),
+        ] {
+            assert_eq!(
+                classify(&hex(other)),
+                Ok(Incoming::Other { opcode }),
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
     fn the_first_burst_classifies_without_an_error() {
         let burst = pods_samples::first_burst();
         assert_eq!(burst.len(), 38);
@@ -203,6 +235,9 @@ mod tests {
                 Incoming::Other { opcode } => others.push(opcode),
                 Incoming::Uplink(_) => panic!("the first burst carries no uplink packet"),
                 Incoming::Keys(_) => panic!("the first burst carries no proximity keys"),
+                Incoming::UplinkState(_) => {
+                    panic!("the first burst sample carries no uplink marker")
+                }
             }
         }
         assert_eq!(counts, [1, 1, 22, 1, 1]);

@@ -130,7 +130,7 @@ struct CaptureArgs {
     /// The script to follow; a name that is not one is answered with the list.
     #[arg(long, required_unless_present = "steps")]
     script: Option<ScriptName>,
-    /// A step file to follow in place of a script, on the dictation route: one write-request, write-command, read, control or wait a line; end it with a wait to keep the last answers.
+    /// A step file to follow in place of a script, on the dictation route: one write-request, write-command, read, control, wait or cue a line; a cue is shown and waits for a line on standard input; end it with a wait to keep the last answers.
     #[arg(long, conflicts_with_all = ["script", "minutes", "no_marker"])]
     steps: Option<PathBuf>,
     /// How many minutes listen and soak run, 1 to 90; no other script takes it.
@@ -496,6 +496,7 @@ fn summary(outcome: &Outcome, route: Route) -> String {
         audio_sdus,
         starts,
         stops,
+        uplink_running,
         truncated,
         att_pdus_in,
         audio_notifications,
@@ -518,7 +519,7 @@ fn summary(outcome: &Outcome, route: Route) -> String {
     }
     let stop = if *starts == 0 {
         ""
-    } else if stops >= starts {
+    } else if !*uplink_running {
         "; STOP was sent"
     } else {
         "; STOP was NOT sent, so run cargo xtask probe stop"

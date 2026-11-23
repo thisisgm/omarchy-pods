@@ -3,6 +3,13 @@
 #[cfg(test)]
 #[expect(
     dead_code,
+    reason = "only the length of one read of standard input is read here"
+)]
+#[path = "../src/probe/capture/answer.rs"]
+mod answer;
+#[cfg(test)]
+#[expect(
+    dead_code,
     reason = "the parts of the fake pods only the unit tests of the capture loop read go unused here"
 )]
 #[path = "../src/probe/capture/tests/att_pods.rs"]
@@ -25,12 +32,15 @@ mod pods;
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::path::{Path, PathBuf};
+    use std::process::Stdio;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use pods_proto::att;
@@ -39,15 +49,18 @@ mod tests {
         ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
     };
     use pods_proto::sdulog::Direction;
+    use pods_samples::uplink::{START, STOP};
     use pods_trap::Outcome;
     use tempfile::TempDir;
 
+    use super::answer::READ_LEN;
     use super::att_pods::{
         READ_NOT_PERMITTED, READ_RESPONSE, READ_VALUE, WRITE_NOT_PERMITTED, WRITE_RESPONSE,
     };
     use super::capture::{
         FAILED, Ran, Running, assert_att_ran, assert_control_logged, capture, far_end, files_of,
         hand_over, home_with_device, kinds, logged, read, route, run_path, stamp_of, transcript,
+        wait_for_cue, wait_for_packets_after,
     };
     use super::pods::{self, Pods, Transcript};
 
@@ -98,6 +111,27 @@ mod tests {
     /// When the start write of `STARTS_ONLY` leaves, in milliseconds from the gate.
     const STARTS_ONLY_START_MS: u64 = 480;
 
+    /// The four step files of the uplink sitting, each with the number of cues it holds.
+    const SITTING_FILES: [(&str, usize); 4] = [
+        ("revive", 4),
+        ("restore", 8),
+        ("stop-early", 3),
+        ("start-twice", 1),
+    ];
+    /// As many lines as two reads of standard input take at the least, a line being a byte or more.
+    const TYPED_AHEAD_LINES: usize = 2 * READ_LEN;
+    /// The wait before the cue of `wait_cue_wait` and the wait after it, in milliseconds.
+    const BEFORE_CUE_MS: u64 = 500;
+    const AFTER_CUE_MS: u64 = 300;
+    /// How long the cue of `wait_cue_wait` goes unanswered: longer than the wait after it, so that wait is over when counted from the gate.
+    const HELD_MS: u64 = 400;
+    /// What a line that is no step is told.
+    const NO_STEP: &str = "the line is no step; the steps are write-request, write-command, read, control, wait and cue with a text of at most 120 characters between double quotes, and a comment starts with #";
+    /// The most characters the text of a cue holds.
+    const MAX_CUE_CHARS: usize = 120;
+    /// What the end of standard input at a cue is called, in the marks and to the owner.
+    const NO_LINE: &str = "standard input ended at a cue, which waits for a line";
+
     /// Writes `contents` to a new file of `mode` in `dir` and returns its path; the mode is set after the umask has had its say.
     fn plan(dir: &Path, name: &str, contents: &[u8], mode: u32) -> PathBuf {
         let path = dir.join(name);
@@ -127,6 +161,205 @@ mod tests {
         let played = pods::spawn_dialled(Some(far_end(&control_far)), att_far, part, flag);
         let ran = running.finish();
         (ran, transcript(&played))
+    }
+
+    /// The step that sends `sdu` on the control channel, as the line `control 0400040017000000`.
+    fn control_step(sdu: &[u8]) -> String {
+        let mut line = String::from("control ");
+        for byte in sdu {
+            write!(line, "{byte:02x}").unwrap();
+        }
+        line.push('\n');
+        line
+    }
+
+    /// A start, a cue and a packet no guard covers that follows the cue with no wait between them.
+    fn cue_then_step() -> String {
+        let (start, step) = (control_step(&START), control_step(&EVERY_KIND_CONTROL));
+        format!("{start}cue \"ready\"\n{step}wait 50\n")
+    }
+
+    /// A start and a cue that a run with no standard input never passes.
+    fn cue_never_answered() -> String {
+        let start = control_step(&START);
+        format!("{start}cue \"nobody answers\"\nwait 60000\n")
+    }
+
+    /// A start, a wait, a cue, a wait and a packet no guard covers.
+    fn wait_cue_wait() -> String {
+        let (start, step) = (control_step(&START), control_step(&EVERY_KIND_CONTROL));
+        format!("{start}wait {BEFORE_CUE_MS}\ncue \"ready\"\nwait {AFTER_CUE_MS}\n{step}wait 50\n")
+    }
+
+    /// The step file `name` as this crate ships it, with every wait cut to a millisecond: what is sent and in which order stays, and the test does not sit out the sitting.
+    // Sample input: `wait 10000`, a whole line of a step file, which becomes `wait 1`.
+    fn quickened(name: &str) -> String {
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("steps")
+            .join(name);
+        let text = fs::read_to_string(shipped).unwrap();
+        let lines = text.lines().map(|line| {
+            let quick = if line.starts_with("wait ") {
+                "wait 1"
+            } else {
+                line
+            };
+            format!("{quick}\n")
+        });
+        lines.collect()
+    }
+
+    /// Starts the step file at `path` into run `name` with a pipe on standard input, and types `typed_ahead` lines before the fake pods answer the handshake, so before any cue is shown.
+    fn start_piped(
+        home: &TempDir,
+        name: &str,
+        path: &Path,
+        typed_ahead: usize,
+    ) -> (Running, mpsc::Receiver<Transcript>) {
+        let (control, control_far) = hand_over();
+        let (att, att_far) = hand_over();
+        let mut command = capture(home, name, &steps_args(path));
+        command.stdin(Stdio::piped());
+        let routes = vec![route(CONTROL_PSM, control), route(ATT_PSM, att)];
+        let mut running = Running::start(command, routes);
+        for _ in 0..typed_ahead {
+            running.type_line();
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        let part = Pods::default();
+        let played = pods::spawn_dialled(Some(far_end(&control_far)), att_far, part, flag);
+        (running, played)
+    }
+
+    /// Runs the step file at `path` into run `name` with a pipe on standard input, and types one line at each of its `cues` cues once the cue is shown.
+    fn run_cued(home: &TempDir, name: &str, path: &Path, cues: usize) -> (Ran, Transcript) {
+        let (mut running, played) = start_piped(home, name, path, 0);
+        let run = run_path(home, name);
+        for shown in 1..=cues {
+            wait_for_cue(&run, shown);
+            running.type_line();
+        }
+        let ran = running.finish();
+        (ran, transcript(&played))
+    }
+
+    /// Runs the shipped step file `name` and returns what the fake pods heard on the control channel after the handshake.
+    fn heard_from(name: &str) -> Vec<Vec<u8>> {
+        let home = home_with_device();
+        let (_, cues) = SITTING_FILES
+            .into_iter()
+            .find(|(file, _)| *file == name)
+            .unwrap();
+        let path = plan(home.path(), "plan", quickened(name).as_bytes(), OWNER_FILE);
+        let (ran, pods) = run_cued(&home, name, &path, cues);
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        assert_eq!(ran.stdout.lines().count(), cues, "{}", ran.stdout);
+        after_handshake(&pods)
+    }
+
+    fn after_handshake(pods: &Transcript) -> Vec<Vec<u8>> {
+        let got = pods.got();
+        let (handshake, rest) = got.split_at(HANDSHAKE_SENT.len());
+        assert_eq!(handshake, HANDSHAKE_SENT);
+        rest.iter().map(|sdu| sdu.to_vec()).collect()
+    }
+
+    #[test]
+    fn revive_sends_start_stop_start_stop_in_order() {
+        let expected: [&[u8]; 4] = [&START, &STOP, &START, &STOP];
+        assert_eq!(heard_from("revive"), expected);
+    }
+
+    #[test]
+    fn restore_sends_eight_starts_and_eight_stops() {
+        let cycle: [&[u8]; 2] = [&START, &STOP];
+        assert_eq!(heard_from("restore"), cycle.repeat(8));
+    }
+
+    #[test]
+    fn stop_early_sends_each_stop_right_after_its_start() {
+        let pair: [&[u8]; 2] = [&START, &STOP];
+        assert_eq!(heard_from("stop-early"), pair.repeat(3));
+    }
+
+    #[test]
+    fn start_twice_sends_two_starts_then_one_stop() {
+        let expected: [&[u8]; 3] = [&START, &START, &STOP];
+        assert_eq!(heard_from("start-twice"), expected);
+    }
+
+    #[test]
+    fn a_cue_prints_its_text_and_waits_for_a_line() {
+        let home = home_with_device();
+        let path = plan(home.path(), "plan", cue_then_step().as_bytes(), OWNER_FILE);
+        // None of the lines typed ahead is the cue's answer, however many reads they take.
+        let (mut running, played) = start_piped(&home, "cue", &path, TYPED_AHEAD_LINES);
+        let run = run_path(&home, "cue");
+        let cue_ns = wait_for_cue(&run, 1);
+        // The loop looks at its script after every packet, so the first of two packets logged after the cue was followed by a look that sent nothing.
+        let held_until_ns = wait_for_packets_after(&run, cue_ns, 2);
+        let marks = read(&run, "marks.tsv");
+        assert!(step_marks(&marks).is_empty(), "{marks}");
+        running.type_line();
+        let ran = running.finish();
+        let pods = transcript(&played);
+
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        assert_eq!(ran.stdout, "cue ready\n");
+        let expected: [&[u8]; 3] = [&START, &EVERY_KIND_CONTROL, &STOP];
+        assert_eq!(after_handshake(&pods), expected);
+        let marks = read(&run, "marks.tsv");
+        let steps = step_marks(&marks);
+        let [(step_ns, "line 3 control")] = steps[..] else {
+            panic!("{marks}");
+        };
+        assert!(step_ns > held_until_ns, "{marks}");
+        assert!(marks.contains("\tcue\tready\n"), "{marks}");
+    }
+
+    #[test]
+    fn a_wait_after_a_cue_counts_from_the_answer_to_the_cue() {
+        let home = home_with_device();
+        let path = plan(home.path(), "plan", wait_cue_wait().as_bytes(), OWNER_FILE);
+        let (mut running, played) = start_piped(&home, "answer", &path, 0);
+        let run = run_path(&home, "answer");
+        let cue_ns = wait_for_cue(&run, 1);
+        // A packet stamped this long after the cue says the command's own clock has passed the hold.
+        wait_for_packets_after(&run, cue_ns + HELD_MS * NS_PER_MS, 1);
+        running.type_line();
+        let ran = running.finish();
+        let pods = transcript(&played);
+
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        let expected: [&[u8]; 3] = [&START, &EVERY_KIND_CONTROL, &STOP];
+        assert_eq!(after_handshake(&pods), expected);
+        let marks = read(&run, "marks.tsv");
+        let (gate_ns, answer_ns) = (stamp_of(&marks, "gate"), stamp_of(&marks, "answer"));
+        let cue_due_ns = gate_ns + BEFORE_CUE_MS * NS_PER_MS;
+        assert_on_time(cue_ns, cue_due_ns, "the cue", &marks);
+        assert!(answer_ns >= cue_ns + HELD_MS * NS_PER_MS, "{marks}");
+        let [(step_ns, "line 5 control")] = step_marks(&marks)[..] else {
+            panic!("{marks}");
+        };
+        let step_due_ns = answer_ns + AFTER_CUE_MS * NS_PER_MS;
+        assert_on_time(step_ns, step_due_ns, "the step after the cue", &marks);
+    }
+
+    #[test]
+    fn end_of_input_at_a_cue_ends_the_run_through_the_guard() {
+        let home = home_with_device();
+        let contents = cue_never_answered();
+        let path = plan(home.path(), "plan", contents.as_bytes(), OWNER_FILE);
+        let (ran, pods) = run_steps(&home, "unanswered", &path, Pods::default());
+
+        assert_eq!(ran.code, FAILED, "{}", ran.stderr);
+        assert_eq!(ran.stdout, "cue nobody answers\n");
+        let said = format!("xtask probe: capture ended early: {NO_LINE}; STOP was sent (");
+        assert!(ran.stderr.starts_with(&said), "{}", ran.stderr);
+        let expected: [&[u8]; 2] = [&START, &STOP];
+        assert_eq!(after_handshake(&pods), expected);
+        let marks = read(&run_path(&home, "unanswered"), "marks.tsv");
+        assert!(marks.ends_with(&format!("\tend\t{NO_LINE}\n")), "{marks}");
     }
 
     /// The stamp and the text of every step mark, each line `1203456789\tstep\tline 2 read 0x0024`.
@@ -309,10 +542,13 @@ mod tests {
         let longest_run = format!("wait {MAX_WAIT_MS}\n").repeat(MAX_WAITS + 1);
         let too_many = "#\n".repeat(MAX_LINES + 1);
         vec![
+            refused("# plan\nsend 0x0019 0100\n", 2, NO_STEP),
+            refused("cue restore now\n", 1, NO_STEP),
+            refused("wait 10\ncue \"restore now\n", 2, NO_STEP),
             refused(
-                "# plan\nsend 0x0019 0100\n",
-                2,
-                "the line starts with no step; the steps are write-request, write-command, read, control and wait, and a comment starts with #",
+                format!("cue \"{}\"\n", "a".repeat(MAX_CUE_CHARS + 1)),
+                1,
+                NO_STEP,
             ),
             refused(
                 "write-request 0x0019 01g0\n",

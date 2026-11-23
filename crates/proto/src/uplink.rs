@@ -1,7 +1,11 @@
 //! The microphone uplink: opcode 0x58 packets on the control channel, read and built with no I/O.
 
+pub mod state;
+
 use crate::control::{ControlCommand, ControlId};
 use crate::error::{HEADER_LEN, ParseError, Parser};
+
+pub use state::UplinkState;
 
 // From librepods-org/librepods pull request 655 (aacp.rs, aacp_audio.rs); the C++ has no uplink.
 

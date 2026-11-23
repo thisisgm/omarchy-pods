@@ -153,3 +153,85 @@ on its standard error.
 | 77 | the AirPods did not connect within 20 s, so nothing was measured; the service was restored |
 | 70 | the installed service could not be restored; this is printed last |
 | 101 | the run panicked; the restore ran as it unwound, and its line follows the panic message |
+
+## The uplink sitting
+
+Four step files under `crates/xtask/steps/` drive the microphone uplink of real
+AirPods through `xtask probe capture --steps`. They answer what only a person
+wearing the pods can say: whether a stop silences a bud, what brings it back,
+and what the pods answer to a start or a stop out of turn. Two people sit: one
+at the keyboard, one wearing both buds with music playing on them. Nobody
+starts a run without the wearer present.
+
+A step file is read only when it is the caller's alone, so each is copied
+beside the built `xtask` with `install -m 600`. Every run goes into the store
+of `xtask probe init`, on the route the step files run on:
+
+```bash
+./xtask probe capture --stamp <stamp> --run <name> --route dictation --steps ./revive
+```
+
+A cue is printed as `cue <text>` and the run waits there for Enter, with no
+timeout. What was typed before a cue was shown does not answer it. The Enter
+that answers a cue is stamped in `marks.tsv` as an `answer` mark, and the waits
+after the cue count from it. A run whose
+standard input has ended stops at its first cue, and so does Ctrl+C at any
+moment; both send the stop of the uplink before the run ends. The person at
+the keyboard asks each question aloud and writes the answer in the sitting's
+notes. A cue that begins `controller:` asks for a command typed by hand in a
+second terminal, then Enter.
+
+| File | Runs | What is written down |
+|---|---|---|
+| `revive` | three | Whether one bud is silent after the stop, and whether the second start alone, with no restore of the sink before it, brings the sound back in both buds. |
+| `restore` | one | At each of its eight cues one restore form is run on the pods' sink, each form twice, in an order written down before the sitting. After each: did the wearer hear a gap, and are both buds playing. |
+| `stop-early` | one | A stop written before the pods answered the start: which markers the pods then send and in which order, whether audio packets follow, and whether a bud is silent. |
+| `start-twice` | two | A start while the uplink already runs: whether a second running marker comes, whether the audio stamps break, and whether the one stop ends the uplink: do stopped markers come, and do audio packets end. |
+
+Whether one stop ends an uplink started twice is not known. The summary of that
+run says `STOP was sent` because the stop left, not because the uplink ended.
+If audio packets still come after the stop, run `./xtask probe stop --route
+uplink` before anything else.
+
+The restore forms, with `<sink>` the pods' sink in `pactl list sinks short`:
+
+```bash
+pactl suspend-sink <sink> 1; pactl suspend-sink <sink> 0
+pactl suspend-sink <sink> 1; sleep 0.1; pactl suspend-sink <sink> 0
+pactl suspend-sink <sink> 1; sleep 0.3; pactl suspend-sink <sink> 0
+pactl suspend-sink <sink> 1
+```
+
+The time each form held the sink is read from the suspend and the start of the
+audio stream in a Bluetooth trace of the sitting, not from the clock of the
+hand. The shortest form nobody heard in two runs of two is the one to keep.
+The last form says whether the resume does anything, or the sink comes back by
+itself.
+
+Also written down in the same sitting:
+
+- **The first burst.** The pods send one packet of opcode 0x0e when the channel
+  opens. Its length and its last byte are read from any run's `sdu.log`, and
+  nothing else of it is printed, because the bytes between identify a device.
+  The state marker has the same opcode and comes later in a run that starts the
+  uplink, so only the first match is read:
+
+  ```bash
+  grep -m 1 ' < 040004000e00' sdu.log | while read -r _ _ hex; do
+      echo "$(( ${#hex} / 2 )) bytes, last byte ${hex: -2}"
+  done
+  ```
+
+- **The idle sink.** With music paused for two seconds, so the sink is idle and
+  not yet suspended, `./xtask probe stop --route uplink` and then play at once.
+  Are both buds playing? Three tries.
+- **The first word.** `--route uplink --script firstword`, three times, with
+  the wearer counting aloud from before the run starts, so the loss at a cold
+  start is measured with speech under way.
+- **Read, changing nothing:** whether any client in
+  `pactl -f json list clients` carries `session.fast-capture-start` while a
+  dictation program is awake; `wpctl settings
+  bluetooth.autoswitch-to-headset-profile`, and whether a saved setting for
+  that key exists; whether `omarchy-refresh-config` removes files it did not
+  write; and what `pactl list sinks short` shows for the pods' sink while
+  paused, each second for eight seconds.

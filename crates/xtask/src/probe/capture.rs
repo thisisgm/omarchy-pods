@@ -1,5 +1,6 @@
 //! The capture loop: one thread reads the open channels, stamps and logs every packet, and follows a script.
 
+mod answer;
 mod att;
 mod guard;
 mod record;
@@ -21,6 +22,7 @@ use pods_sys::l2cap::{Channel, ChannelError};
 
 use super::dictate::{HANDLE_WALK_TIMEOUT_MS, HandleCheck};
 use super::script::{Action, Opening, Script, StepPacket};
+use answer::NoLine;
 use att::Asked;
 use guard::{Dictation, Dropped, Session, SideChange, Tail, Uplink};
 use record::Recorder;
@@ -84,6 +86,8 @@ pub(crate) enum EndReason {
     WalkUnfinished,
     HandshakeTimeout(Step),
     NoInitialSide,
+    /// A cue of a step file got no line on standard input.
+    Cue(NoLine),
     Io(IoFailure),
 }
 
@@ -114,6 +118,7 @@ impl fmt::Display for EndReason {
             Self::NoInitialSide => f.write_str(
                 "the pods did not report their microphone side, so no setting was changed",
             ),
+            Self::Cue(no_line) => write!(f, "{no_line}"),
             Self::Io(failure) => write!(f, "{failure}"),
         }
     }
@@ -135,6 +140,8 @@ pub(crate) struct Outcome {
     pub(crate) starts: u32,
     /// STOP packets that left.
     pub(crate) stops: u32,
+    /// A START left and no STOP has left since.
+    pub(crate) uplink_running: bool,
     /// Packets marked and not logged: longer than the receive buffer, or refused by the log format.
     pub(crate) truncated: u32,
     /// Packets of the attribute channel from the pods that went into its log.
@@ -163,6 +170,8 @@ enum Phase {
     Settling { asked_at_ns: u64 },
     /// The gate opened at `gate_ns`; the events before `next` have fired.
     Scripted { gate_ns: u64, next: usize },
+    /// A cue of a step file is shown, `offset_ns` after the gate; the events from `next` on wait for a line on standard input, which then stands where the cue stood.
+    Held { next: usize, offset_ns: u64 },
 }
 
 /// One run: the loop's state and its guards, which drop with it on every way out.
@@ -287,7 +296,10 @@ impl Engine<'_, '_> {
 
     fn on_packet(&mut self, at_ns: u64, sdu: &[u8]) -> Flow {
         self.recorder.received(at_ns, sdu)?;
-        if !matches!(self.phase, Phase::Scripted { .. }) {
+        if matches!(
+            self.phase,
+            Phase::Handshaking { .. } | Phase::Settling { .. }
+        ) {
             self.note_reports(sdu);
         }
         let Phase::Handshaking {
@@ -368,7 +380,21 @@ impl Engine<'_, '_> {
             }
             Phase::Settling { asked_at_ns } => self.settle(now_ns, *asked_at_ns),
             Phase::Scripted { .. } => self.fire_due(now_ns),
+            Phase::Held { next, offset_ns } => self.go_on_at_a_line(*next, *offset_ns),
         }
+    }
+
+    /// Goes on with the script once a line has arrived on standard input.
+    fn go_on_at_a_line(&mut self, next: usize, offset_ns: u64) -> Flow {
+        if !answer::line_arrived().map_err(EndReason::Cue)? {
+            return Ok(());
+        }
+        // A stamp taken after the line was read: the waits after the cue count from it, so none ends early.
+        let now_ns = self.wires.now();
+        self.recorder.mark(now_ns, Mark::Answer, &"")?;
+        let gate_ns = now_ns.saturating_sub(offset_ns);
+        self.phase = Phase::Scripted { gate_ns, next };
+        self.fire_due(now_ns)
     }
 
     fn settle(&mut self, now_ns: u64, asked_at_ns: u64) -> Flow {
@@ -416,7 +442,13 @@ impl Engine<'_, '_> {
                 return Ok(());
             }
             *next = next.saturating_add(1);
+            let after = *next;
             self.fire(&event.action)?;
+            if matches!(event.action, Action::Hold(_)) {
+                let next = after;
+                self.phase = Phase::Held { next, offset_ns };
+                return Ok(());
+            }
         }
     }
 
@@ -434,6 +466,10 @@ impl Engine<'_, '_> {
                 Ok(record_dropped(self.recorder, self.dropped)?)
             }
             Action::Cue(text) => Ok(self.recorder.cue(self.wires.now(), text)?),
+            Action::Hold(text) => {
+                answer::discard_typed_ahead();
+                Ok(self.recorder.cue(self.wires.now(), text)?)
+            }
             Action::SetSide(side) => self.set_side(*side),
             Action::RestoreSide => {
                 self.side = None;
@@ -460,19 +496,14 @@ impl Engine<'_, '_> {
     }
 
     fn start(&mut self) -> Flow {
-        // A second START is not known to be harmless, so a running uplink is left as it is.
-        if self.uplink.is_some() {
-            return Ok(());
-        }
         let link = self.wires.link(Bearer::Accessory)?;
-        // The guard exists before the send, so a START that failed half way still gets its STOP.
-        self.uplink = Some(Uplink {
-            link,
-            dropped: self.dropped,
-        });
+        let dropped = self.dropped;
+        // The guard exists before the send, so a START that failed half way still gets its STOP; a START while the uplink runs goes out under the guard of the first.
+        self.uplink.get_or_insert_with(|| Uplink { link, dropped });
         let sent = link.send(&uplink::START);
         if sent.result.is_ok() {
             self.recorder.starts = self.recorder.starts.saturating_add(1);
+            self.recorder.uplink_running = true;
         }
         let recorded = self
             .recorder
@@ -533,6 +564,7 @@ fn record_dropped(recorder: &mut Recorder<'_>, dropped: &Dropped) -> Result<(), 
     let stop = dropped.stop.take().map_or(Ok(()), |sent| {
         if sent.result.is_ok() {
             recorder.stops = recorder.stops.saturating_add(1);
+            recorder.uplink_running = false;
         }
         recorder.sent(sent, &uplink::STOP, Mark::Stop, &"uplink stop")
     });
@@ -656,6 +688,7 @@ fn run_with(
         audio_sdus: recorder.audio_sdus,
         starts: recorder.starts,
         stops: recorder.stops,
+        uplink_running: recorder.uplink_running,
         truncated: recorder.truncated,
         att_pdus_in: recorder.att_pdus_in,
         audio_notifications: recorder.audio_notifications,

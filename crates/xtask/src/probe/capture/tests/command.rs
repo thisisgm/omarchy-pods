@@ -197,6 +197,7 @@ fn the_summary_says_whether_stop_followed_start() {
         audio_sdus: 4,
         starts,
         stops,
+        uplink_running: starts > stops,
         truncated: 7,
         att_pdus_in: 11,
         ..counted_nothing(end)
@@ -216,6 +217,12 @@ fn the_summary_says_whether_stop_followed_start() {
     let running = summary(&outcome(2, 1, EndReason::PeerClosed));
     assert!(running.contains("STOP was NOT sent"), "{running}");
     assert!(running.contains("cargo xtask probe stop"), "{running}");
+    // One STOP ends an uplink two STARTs asked for.
+    let twice = Outcome {
+        uplink_running: false,
+        ..outcome(2, 1, EndReason::Interrupted)
+    };
+    assert!(summary(&twice).contains("; STOP was sent ("), "{twice:?}");
     let send = IoFailure::Channel(Bearer::Accessory, ChannelError::Send(Errno::PIPE));
     let failed = summary(&outcome(0, 0, EndReason::Io(send)));
     assert!(

@@ -27,6 +27,8 @@ pub(crate) const MAX_FILE_BYTES: u64 = 512 * BYTES_PER_KIB;
 const HANDLE_DIGITS: usize = 4;
 /// The lowest attribute handle; 0x0000 is reserved (Vol 3, Part F, 3.2.2).
 const FIRST_HANDLE: u16 = 0x0001;
+/// The most characters the text of a cue holds, chosen here: one line a person reads at a glance.
+const MAX_CUE_CHARS: usize = 120;
 /// Each packet a guard of the run covers on the control channel, and the action that sends it under that guard.
 const GUARDED_CONTROL: [(&[u8], Action); 4] = [
     (&uplink::START, Action::Start),
@@ -90,7 +92,7 @@ pub(crate) enum Fault {
     #[error("the line is not UTF-8 text")]
     NotText,
     #[error(
-        "the line starts with no step; the steps are write-request, write-command, read, control and wait, and a comment starts with #"
+        "the line is no step; the steps are write-request, write-command, read, control, wait and cue with a text of at most {MAX_CUE_CHARS} characters between double quotes, and a comment starts with #"
     )]
     UnknownStep,
     #[error("{step} takes {takes} and nothing more")]
@@ -204,6 +206,7 @@ fn parse_line(text: &str, line: usize) -> Result<Line, Fault> {
             let [ms] = take(words).ok_or(fields("wait", "a number of milliseconds"))?;
             return parse_wait(ms).map(Line::Wait);
         }
+        "cue" => Action::Hold(parse_cue(text)?),
         _ => return Err(Fault::UnknownStep),
     };
     Ok(Line::Send(action))
@@ -263,6 +266,19 @@ fn parse_wait(text: &str) -> Result<u32, Fault> {
         return Err(Fault::WaitTooLong);
     }
     Ok(ms)
+}
+
+// Sample input: `cue "controller: restore now"`, the whole line: one space, then up to MAX_CUE_CHARS characters between double quotes, none of them a quote or a control character.
+fn parse_cue(line: &str) -> Result<String, Fault> {
+    let quoted = line.trim_ascii().strip_prefix("cue \"");
+    let text = quoted.and_then(|rest| rest.strip_suffix('"'));
+    let text = text.ok_or(Fault::UnknownStep)?;
+    let plain = !text.chars().any(|c| c == '"' || c.is_control());
+    if plain && text.chars().count() <= MAX_CUE_CHARS {
+        Ok(text.to_owned())
+    } else {
+        Err(Fault::UnknownStep)
+    }
 }
 
 /// A packet a guard covers goes out under that guard; any other write to the stream's two handles is refused.

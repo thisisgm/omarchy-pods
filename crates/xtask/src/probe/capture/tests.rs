@@ -54,6 +54,7 @@ fn counted_nothing(end: EndReason) -> Outcome {
         audio_sdus: 0,
         starts: 0,
         stops: 0,
+        uplink_running: false,
         truncated: 0,
         att_pdus_in: 0,
         audio_notifications: 0,
@@ -311,7 +312,7 @@ fn a_hang_up_during_the_tail_ends_the_wait() {
 }
 
 #[test]
-fn a_start_while_the_uplink_runs_is_not_repeated() {
+fn a_start_while_the_uplink_runs_goes_out_again_and_one_stop_ends_both() {
     let events = [
         at(0, Action::Start),
         at(10, Action::Start),
@@ -319,11 +320,12 @@ fn a_start_while_the_uplink_runs_is_not_repeated() {
     ];
     let report = Case::new(Opening::Handshake, &events).run();
 
-    assert_eq!(report.pods.count(&START), 1);
+    assert_eq!(report.pods.count(&START), 2);
+    assert_eq!(report.pods.count(&STOP), 1);
     assert!(report.stop_followed_start(), "{:02x?}", report.pods.got());
     let outcome = report.outcome();
-    assert_eq!(outcome.starts, 1);
-    // The second start is passed over, so the script still runs to its end.
+    assert_eq!((outcome.starts, outcome.stops), (2, 1));
+    assert!(!outcome.uplink_running);
     assert_eq!(outcome.end, EndReason::ScriptDone);
 }
 
