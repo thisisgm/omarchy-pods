@@ -94,8 +94,6 @@ struct Objects {
     fail: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
     sweeps: Vec<Instant>,
-    /// The path of each `GetAll` call, oldest first.
-    reads: Vec<String>,
     reactions: Option<SyncSender<Call>>,
 }
 
@@ -553,11 +551,6 @@ impl Objects {
         let header = call.header();
         if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
             self.sweeps.push(Instant::now());
-        }
-        if header.member().map(MemberName::as_str) == Some("GetAll")
-            && let Some(path) = header.path()
-        {
-            self.reads.push(path.to_string());
         }
         let recorded = record(call);
         if let Some(recorded) = &recorded {

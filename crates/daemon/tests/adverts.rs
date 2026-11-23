@@ -682,22 +682,19 @@ mod tests {
             "the flood's deadline ended it, not the status"
         );
         assert_eq!(status["case"]["available"], false);
-        // An advert offered while the flood fills the queue is dropped, so ours waits until the queue is worked through.
-        let last = advert_from(FLOOD_ADDRESSES, 0);
-        let behind = rig.bluez().advertise(&last.address, &last.data);
-        // Sent again until read, as a device does, since no read starts while ADVERT_QUEUE are under way.
-        wait_for("the read behind the flood", || {
-            let read = behind.was_read();
-            if !read {
-                behind.update(&last.data);
-            }
-            read.then_some(())
-        });
-        rig.wait_queued_inputs_applied();
         let advert = ours(HEADER, PAYLOAD);
-        let _ours = rig.bluez().advertise(&advert.address, &advert.data);
-        rig.wait_status("our advert after the flood", |status| {
-            picked(status) == filled()
+        let advertiser = rig.bluez().advertise(&advert.address, &advert.data);
+        let mut round = 0_u8;
+        // Sent changed in its last sealed byte, which no reading uses, until shown: a read or a queued advert can each be dropped at ADVERT_QUEUE.
+        wait_for("our advert after the flood", || {
+            let shown = picked(&rig.status()) == filled();
+            if !shown {
+                round = round.wrapping_add(1);
+                let mut payload = PAYLOAD;
+                payload[SEALED_LEN - 1] = round;
+                advertiser.update(&ours(HEADER, payload).data);
+            }
+            shown.then_some(())
         });
         let after_kib = resident_kib(pid);
         eprintln!("resident memory: {before_kib} KiB before the flood, {after_kib} KiB after");
