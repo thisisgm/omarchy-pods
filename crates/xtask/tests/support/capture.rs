@@ -145,6 +145,7 @@ pub(crate) struct Ran {
 pub(crate) struct Running {
     child: Child,
     trap: Option<Trap>,
+    stdout_closed: bool,
 }
 
 impl Running {
@@ -154,6 +155,7 @@ impl Running {
         Self {
             child,
             trap: Some(trap),
+            stdout_closed: false,
         }
     }
 
@@ -171,9 +173,19 @@ impl Running {
         stdin.write_all(b"\n").unwrap();
     }
 
+    /// Closes the test's end of the command's standard output, as a reader that went away does.
+    pub(crate) fn close_stdout(&mut self) {
+        drop(self.child.stdout.take());
+        self.stdout_closed = true;
+    }
+
     pub(crate) fn finish(mut self) -> Ran {
         let status = wait_within(HANG_LIMIT, "exit", || self.child.try_wait().unwrap());
-        let stdout = text_of(self.child.stdout.take());
+        let stdout = if self.stdout_closed {
+            String::new()
+        } else {
+            text_of(self.child.stdout.take())
+        };
         let stderr = text_of(self.child.stderr.take());
         let trap = self.trap.take().unwrap();
         let dials = trap.finish().unwrap_or_else(|error| panic!("{error}"));

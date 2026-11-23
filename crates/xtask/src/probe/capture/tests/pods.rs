@@ -29,7 +29,7 @@ const PODS_POLL: Duration = Duration::from_millis(2);
 /// Larger than any packet the loop sends, so the fake pods never cut one short.
 const PODS_BUFFER_LEN: usize = 8192;
 /// The two byte unit the tests of `pods_proto::uplink` call silent; the loop logs it and never decodes it.
-const SILENT_UNIT: [u8; 2] = [0x00, 0x00];
+pub(super) const SILENT_UNIT: [u8; 2] = [0x00, 0x00];
 const UNITS_PER_SDU: u32 = 4;
 /// Both buds in the ear: the header of `pods_proto::ear`, then its placement byte 00 for each bud.
 pub(super) const EAR_PACKET: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00];
@@ -37,6 +37,9 @@ pub(super) const EAR_PACKET: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00
 const ACK_REST: [u8; 2] = [0x00, 0x00];
 /// The seed of the noise packets, so every run feeds the same bytes.
 const NOISE_SEED: [u8; 32] = [0x5a; 32];
+
+/// What a test runs at a point of the fake pods' play, on their thread.
+pub(super) type Hook = Arc<dyn Fn() + Send + Sync>;
 
 /// What the fake pods do; `Pods::default()` answers the handshake, reports the buds in the ear and streams silence from START to STOP.
 #[derive(Clone)]
@@ -56,6 +59,16 @@ pub(super) struct Pods {
     /// Whether they hang up once the notification request has arrived.
     pub(super) hang_up_when_ready: bool,
     pub(super) hang_up_on_stop: bool,
+    /// How many audio SDUs they stream before they go quiet; `None` is until STOP.
+    pub(super) stream_for: Option<u32>,
+    /// The body of every unit they stream; `None` is the silent unit.
+    pub(super) unit: Option<Vec<u8>>,
+    /// Packets they send on START, ahead of the stream.
+    pub(super) starting: Vec<Vec<u8>>,
+    /// Called once START has arrived, before the starting packets go.
+    pub(super) on_start: Option<Hook>,
+    /// Called once STOP has arrived, before the parting packets go.
+    pub(super) on_stop: Option<Hook>,
     /// Packets they send once STOP has arrived.
     pub(super) parting: Vec<Vec<u8>>,
     pub(super) att: AttPods,
@@ -75,6 +88,11 @@ impl Default for Pods {
             interrupt_after: None,
             hang_up_when_ready: false,
             hang_up_on_stop: false,
+            stream_for: None,
+            unit: None,
+            starting: Vec::new(),
+            on_start: None,
+            on_stop: None,
             parting: Vec::new(),
             att: AttPods::default(),
             deadline: DEADLINE,
@@ -255,13 +273,13 @@ impl Far {
     }
 }
 
-/// The audio SDU with this number, counting from 0: four silent units, stamped upward across SDUs.
-pub(super) fn audio_sdu(number: u32) -> Vec<u8> {
+/// The audio SDU with this number, counting from 0: four units of `body`, stamped upward across SDUs.
+pub(super) fn audio_sdu(number: u32, body: &[u8]) -> Vec<u8> {
     let first_stamp = number.saturating_mul(UNITS_PER_SDU);
     let units: Vec<AccessUnit<'_>> = (0..UNITS_PER_SDU)
         .map(|unit| AccessUnit {
             stamp: first_stamp.saturating_add(unit),
-            data: &SILENT_UNIT,
+            data: body,
         })
         .collect();
     encode_audio(&[0; OPAQUE_LEN], &units).unwrap()
@@ -336,14 +354,23 @@ fn play(mut far: Far, part: &Pods, interrupted: &AtomicBool) -> Transcript {
                 .ear_after
                 .and_then(|after| Instant::now().checked_add(after));
         } else if sdu == START {
+            if let Some(on_start) = &part.on_start {
+                on_start();
+            }
             if let Some(burst) = &part.burst {
                 for packet in burst {
                     far.say(packet);
                 }
                 break;
             }
+            for packet in &part.starting {
+                far.say(packet);
+            }
             streaming = true;
         } else if sdu == STOP {
+            if let Some(on_stop) = &part.on_stop {
+                on_stop();
+            }
             if part.hang_up_on_stop {
                 break;
             }
@@ -357,9 +384,11 @@ fn play(mut far: Far, part: &Pods, interrupted: &AtomicBool) -> Transcript {
             far.say(&EAR_PACKET);
             far.transcript.heard.push(Heard::SentEar);
         }
-        if streaming {
+        let quiet = part.stream_for.is_some_and(|last| audio_sdus >= last);
+        if streaming && !quiet {
             // A send that fails means the loop has closed; what it sent before that is still queued to read.
-            streaming = far.say(&audio_sdu(audio_sdus));
+            let body = part.unit.as_deref().unwrap_or(&SILENT_UNIT);
+            streaming = far.say(&audio_sdu(audio_sdus, body));
             audio_sdus = audio_sdus.saturating_add(1);
             if part.interrupt_after == Some(audio_sdus) {
                 interrupted.store(true, Ordering::SeqCst);

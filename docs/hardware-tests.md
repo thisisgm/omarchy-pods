@@ -252,16 +252,30 @@ and says the recording may be missing its end. A packet from the pods cut
 short before its fixed fields carries no audio; it is left out, and one line
 on standard error counts them.
 
-It opens no channel to the AirPods, stops no unit and writes no file. It needs
-only the session's audio server, whose socket it takes from
+A replay opens no channel to the AirPods, stops no unit and writes no file.
+It needs only the session's audio server, whose socket it takes from
 `$XDG_RUNTIME_DIR`. The node links to nothing by itself: a recorder names it,
 as in `pw-record --target omapods_input.probe out.wav`. The command ends when
 the capture ends, or on SIGINT, SIGTERM, SIGHUP or SIGQUIT, and the node goes
 with it. It fails, before any node exists, on a file that is not the caller's
 own or holds no audio packet, and when no audio server answers.
 
-Every second, and once more at its end, it prints one line of fixed words and
-numbers on standard output:
+Without `--replay`, `cargo xtask probe source [--seconds N]` serves the AirPods
+of the device file live. It stops `librepods.service` if it runs, and starts it
+again on every way out. It dials the control channel, runs the handshake and
+sends START; the node is made only once the AirPods answer with their running
+marker. Each audio packet then goes through the decode chain as it lands. With
+no `--seconds` it runs until a signal. After `N` seconds, or on a signal, it
+sends STOP and waits for the stopped marker, then suspends the device's sink
+with `pactl suspend-sink`, holds it briefly and resumes it; the sink's name is
+never printed. A panic takes the same way out. When START goes unanswered it
+sends nothing more and leaves the sink alone. The run fails then, when STOP goes
+unanswered (the sink is still restored), when the AirPods stop the uplink on
+their own (no STOP is sent, and the sink is still restored), and when a restore
+fails.
+
+Every second, and once more at its end, a replay or a live run prints one line
+of fixed words and numbers on standard output:
 
 | Field | What it holds |
 |---|---|

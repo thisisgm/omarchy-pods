@@ -1,10 +1,10 @@
 //! Support tests: which sink is the device's and how its name starts; no user path yet for the sink it reports.
 
-use pods_core::policy::audio::{Percent, SinkFact};
+use pods_core::policy::audio::{Percent, SinkFact, sink_prefix};
 use pods_proto::addr::BdAddr;
 
+use super::device_sink;
 use super::wire::tests::sink_list;
-use super::{device_sink, sink_prefix};
 
 const DEVICE: &str = "02:00:00:00:00:0A";
 const SPEAKERS: &[u8] = b"alsa_output.speakers";
@@ -17,7 +17,7 @@ const HALF: u32 = 0x8000;
 const NORM: u32 = 0x10000;
 
 fn prefix() -> Vec<u8> {
-    sink_prefix(DEVICE.parse::<BdAddr>().unwrap())
+    sink_prefix(DEVICE.parse::<BdAddr>().unwrap()).into_bytes()
 }
 
 fn found(is_default: bool, percent: u8) -> SinkFact {
@@ -33,11 +33,6 @@ fn device_sink_of(default: Option<&[u8]>) -> Option<SinkFact> {
         (c"bluez_output.02_00_00_00_00_0A.2", &[NORM]),
     ]);
     device_sink(&list, &prefix(), default).unwrap()
-}
-
-#[test]
-fn the_prefix_is_the_address_in_capitals_with_underscores() {
-    assert_eq!(prefix(), b"bluez_output.02_00_00_00_00_0A");
 }
 
 #[test]

@@ -29,7 +29,7 @@ use super::super::script::{Event, Route, rescue};
 use super::super::summary;
 use super::*;
 use case::{Case, LogFault, PATIENT_MS, PATIENT_NS, Report, TAIL_NS};
-use pods::{EAR_PACKET, Heard, ack, audio_sdu, noise};
+use pods::{EAR_PACKET, Heard, SILENT_UNIT, ack, audio_sdu, noise};
 
 /// A wait short enough for a test that expects it to run out.
 const SHORT_NS: u64 = 50_000_000;
@@ -152,8 +152,15 @@ fn every_sdu_is_logged_in_order_with_non_decreasing_stamps() {
         &[at(0, Action::Start), at(PATIENT_MS, Action::End)],
     );
     case.pods.greeting = vec![vec![0x7f], noise(RECV_BUFFER_LEN)];
-    let mut burst: Vec<Vec<u8>> = (0..6).map(audio_sdu).collect();
-    burst.extend([noise(300), audio_sdu(6), noise(7), audio_sdu(7)]);
+    let mut burst: Vec<Vec<u8>> = (0..6)
+        .map(|number| audio_sdu(number, &SILENT_UNIT))
+        .collect();
+    burst.extend([
+        noise(300),
+        audio_sdu(6, &SILENT_UNIT),
+        noise(7),
+        audio_sdu(7, &SILENT_UNIT),
+    ]);
     case.pods.burst = Some(burst);
     let report = case.run();
 

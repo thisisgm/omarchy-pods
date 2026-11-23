@@ -6,6 +6,20 @@ use super::Fact;
 use crate::link::Signal;
 use crate::state::AudioServer;
 
+/// How `PipeWire` names a Bluetooth device's output, before the address.
+const SINK_PREFIX: &str = "bluez_output.";
+
+/// `bluez_output.` then the address in capitals with underscores, as `bluez_output.02_00_00_00_00_01`.
+#[must_use]
+pub fn sink_prefix(device: BdAddr) -> String {
+    let groups: Vec<String> = device
+        .octets()
+        .iter()
+        .map(|octet| format!("{octet:02X}"))
+        .collect();
+    format!("{SINK_PREFIX}{}", groups.join("_"))
+}
+
 /// A volume as the desktop shows it, 0 to 100.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Percent(u8);

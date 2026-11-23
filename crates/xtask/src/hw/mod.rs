@@ -9,7 +9,7 @@ mod lab;
 mod old_line;
 mod report;
 mod system;
-mod unit;
+pub(crate) mod unit;
 
 use std::env;
 use std::ffi::OsString;

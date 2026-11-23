@@ -1,4 +1,6 @@
-//! `probe source`: serves a capture as a microphone. Its audio packets go through the decode chain of `pods-mic` into one stream source node, each at the time the log holds for it. The unit tests are support for the tests of the built command.
+//! `probe source`: serves the pods' uplink, or a capture of it, as a microphone. Its audio packets go through the decode chain of `pods-mic` into one stream source node; a capture's each at the time the log holds for it. The unit tests are support for the tests of the built command.
+
+mod live;
 
 use std::env;
 use std::io::{self, Write};
@@ -14,6 +16,7 @@ use pods_mic::{Chain, Counters, NODE_LATENCY_MS, RATE_HZ, Reader, Resync};
 use pods_proto::sdulog::Direction;
 use pods_proto::uplink::UplinkPacket;
 use pods_pw::{Event, Fill, OpenError, Source, Spec};
+use pods_sys::l2cap::ChannelError;
 
 use super::Host;
 use super::analyse::MAX_LOG_BYTES;
@@ -40,9 +43,12 @@ const NONE: &str = "none";
 
 #[derive(Debug, Args)]
 pub(super) struct SourceArgs {
-    /// The sdu.log of a run to serve: the caller's own, with no access for group or others.
+    /// The sdu.log of a run to serve: the caller's own, with no access for group or others; without it the pods of the device file are served live.
     #[arg(long)]
-    replay: PathBuf,
+    replay: Option<PathBuf>,
+    /// How many seconds a live run serves before it stops the uplink; without it, until a signal.
+    #[arg(long, conflicts_with = "replay")]
+    seconds: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +71,24 @@ enum SourceError {
     TailUnread,
     #[error("could not print the status line: {0}")]
     Print(io::Error),
+    #[error("{0}")]
+    Service(String),
+    #[error("{0}")]
+    Connect(ChannelError),
+    #[error("the control channel failed: {0}")]
+    Channel(ChannelError),
+    #[error("the pods closed the control channel")]
+    PeerClosed,
+    #[error("the pods did not answer the handshake within {} ms", live::HANDSHAKE_STEP.as_millis())]
+    Handshake,
+    #[error("the pods did not answer START within {} ms, so nothing more was sent", live::START_ANSWER.as_millis())]
+    StartUnanswered,
+    #[error("the pods did not answer STOP within {} ms", live::STOP_ANSWER.as_millis())]
+    StopUnanswered,
+    #[error("the pods stopped the uplink on their own")]
+    PodsStopped,
+    #[error("the restore of the device's sink failed: {0}")]
+    Restore(String),
 }
 
 /// One audio packet of a capture: when it landed on the log's clock, and its units as stamp and body.
@@ -153,9 +177,13 @@ fn status_line(seen: &Seen, unsteered: u64, counters: &Counters) -> String {
     )
 }
 
-/// Serves the capture to its end or to a signal, a status line a second and one at the end; only a capture that could not be served fails.
+/// Serves a capture to its end or the pods' uplink for its seconds, either until a signal, with a status line a second and one at the end; any error the run says fails it.
 pub(super) fn serve(args: &SourceArgs, host: &mut Host<'_>, interrupted: &AtomicBool) -> ExitCode {
-    match replay(&args.replay, host, interrupted) {
+    let served = match &args.replay {
+        Some(file) => replay(file, host, interrupted),
+        None => live::serve(args.seconds, host, interrupted),
+    };
+    match served {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             host.say(&error);
@@ -180,6 +208,23 @@ fn replay(file: &Path, host: &mut Host<'_>, interrupted: &AtomicBool) -> Result<
     let counters = Arc::new(Counters::default());
     let (mut chain, reader, resync) =
         pods_mic::chain(Arc::clone(&counters)).ok_or(SourceError::Decoder)?;
+    let served = open_node(reader, resync, counters)?;
+    feed(
+        &audio.packets,
+        &mut chain,
+        &served,
+        host.stdout,
+        interrupted,
+    )?;
+    served.print_status(host.stdout)
+}
+
+/// Opens the node on the session's audio server, its reader counting from now.
+fn open_node(
+    reader: Reader,
+    resync: Resync,
+    counters: Arc<Counters>,
+) -> Result<Served, SourceError> {
     let runtime_dir = env::var_os("XDG_RUNTIME_DIR").ok_or(SourceError::NoRuntimeDir)?;
     let socket = Path::new(&runtime_dir).join(SERVER_SOCKET);
     let seen = Arc::new(Seen::default());
@@ -200,21 +245,13 @@ fn replay(file: &Path, host: &mut Host<'_>, interrupted: &AtomicBool) -> Result<
         latency_ns: u64::from(NODE_LATENCY_MS).saturating_mul(NS_PER_MS),
         priority: NODE_PRIORITY,
     };
-    let served = Served {
+    Ok(Served {
         source: Source::open(&spec, Box::new(held), Box::new(on_event(resync, lost)))?,
         seen,
         counters,
         gone,
         since,
-    };
-    feed(
-        &audio.packets,
-        &mut chain,
-        &served,
-        host.stdout,
-        interrupted,
-    )?;
-    served.print_status(host.stdout)
+    })
 }
 
 /// What the node's events do: a recorder that links starts at the reader's target, and a lost server ends the replay.
