@@ -548,6 +548,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pods-pw"
+version = "0.0.0"
+dependencies = [
+ "pods-pwrig",
+ "proptest",
+]
+
+[[package]]
 name = "pods-pwrig"
 version = "0.0.0"
 dependencies = [

@@ -1,6 +1,7 @@
 //! The private server: its own configuration and runtime directory, and the stock tools pointed at it.
 
 use std::cell::RefCell;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -22,6 +23,8 @@ const MIN_QUANTUM: u32 = 2048;
 const SOCKET: &str = "pipewire-0";
 const CONFIG_FILE: &str = "pipewire.conf";
 const LOG_FILE: &str = "pipewire.log";
+/// The configuration line of the module that makes the node of a client.
+const CLIENT_NODE_MODULE: &str = "{ name = libpipewire-module-client-node }";
 
 /// A local server opens its socket, and exits after SIGTERM, in milliseconds; this is a hung one.
 const SERVER_WITHIN: Duration = Duration::from_secs(5);
@@ -34,6 +37,10 @@ const LINK_WITHIN: Duration = Duration::from_secs(5);
 const PRIVATE_VARIABLES: [&str; 3] = ["XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"];
 /// The variables that would point a child at the session's audio server.
 const SESSION_VARIABLES: [&str; 3] = ["PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "PULSE_SERVER"];
+/// The addresses of the session's and the system's message bus, which the client library asks for real time priority.
+const BUS_VARIABLES: [&str; 2] = ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS"];
+/// A socket name inside the private directory that nothing ever makes.
+const NO_BUS: &str = "no-bus";
 
 const NODE_TYPE: &str = "PipeWire:Interface:Node";
 const NODE_NAME: &str = "/info/props/node.name";
@@ -52,8 +59,18 @@ impl Server {
     /// Writes the configuration into `runtime_dir`, starts `pipewire` there and waits for its socket.
     #[must_use]
     pub fn start(runtime_dir: &Path) -> Self {
+        Self::start_with(runtime_dir, CLIENT_NODE_MODULE)
+    }
+
+    /// As `start`, without the module that makes a client's node: a client connects and its node is refused, across `restart` too.
+    #[must_use]
+    pub fn start_without_client_nodes(runtime_dir: &Path) -> Self {
+        Self::start_with(runtime_dir, "")
+    }
+
+    fn start_with(runtime_dir: &Path, client_node_module: &str) -> Self {
         let config = runtime_dir.join(CONFIG_FILE);
-        fs::write(&config, config_text())
+        fs::write(&config, config_text(client_node_module))
             .unwrap_or_else(|error| panic!("{}: {error}", config.display()));
         let server = Self {
             dir: runtime_dir.to_owned(),
@@ -70,11 +87,11 @@ impl Server {
     /// A child for this server: its directories are the server's, and no variable names the session's server.
     pub fn command(&self, program: &str) -> Command {
         let mut command = Command::new(program);
-        for name in PRIVATE_VARIABLES {
-            command.env(name, &self.dir);
-        }
-        for name in SESSION_VARIABLES {
-            command.env_remove(name);
+        for (name, value) in environment(&self.dir) {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
         }
         command
     }
@@ -292,6 +309,17 @@ impl Direction {
     }
 }
 
+/// What a process that loads the client library gets, value by value, and loses, to stay inside `dir`: no user configuration, no session server, no message bus.
+#[must_use]
+pub fn environment(dir: &Path) -> Vec<(&'static str, Option<OsString>)> {
+    let mut no_bus = OsString::from("unix:path=");
+    no_bus.push(dir.join(NO_BUS));
+    let private = PRIVATE_VARIABLES.map(|name| (name, Some(dir.as_os_str().to_owned())));
+    let session = SESSION_VARIABLES.map(|name| (name, None));
+    let buses = BUS_VARIABLES.map(|name| (name, Some(no_bus.clone())));
+    [&private[..], &session, &buses].concat()
+}
+
 /// The `node.name` of every node in a `pw-dump`, sorted.
 #[must_use]
 pub fn node_names(dump: &Value) -> Vec<String> {
@@ -334,7 +362,7 @@ fn channels(node: &Value) -> usize {
 }
 
 /// The modules one by one: no ALSA, Bluetooth or session manager module is loaded.
-fn config_text() -> String {
+fn config_text(client_node_module: &str) -> String {
     format!(
         "context.properties = {{
     core.daemon = true
@@ -352,7 +380,7 @@ context.modules = [
     {{ name = libpipewire-module-access }}
     # Serves the settings object every client binds; without it the bind is a protocol error.
     {{ name = libpipewire-module-metadata }}
-    {{ name = libpipewire-module-client-node }}
+    {client_node_module}
     {{ name = libpipewire-module-adapter }}
     {{ name = libpipewire-module-link-factory }}
     {{ name = libpipewire-module-spa-node-factory }}

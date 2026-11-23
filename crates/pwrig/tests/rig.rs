@@ -3,7 +3,7 @@
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
 mod tests {
-    use std::f64::consts::{SQRT_2, TAU};
+    use std::f64::consts::TAU;
     use std::ffi::OsStr;
     use std::fs;
     use std::io::Write;
@@ -11,6 +11,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
+    use pods_pwrig::tone::{CHECKED, SETTLE, assert_tone, frames};
     use pods_pwrig::{DRIVER_NODE, Recorder, Server, node_names, write_wav};
     use rustix::process::{Pid, Signal, kill_process};
 
@@ -25,22 +26,15 @@ mod tests {
     const TONE_AMPLITUDE: f64 = 0.5;
     /// Longer than the lead, the settle and the checked span together.
     const TONE: Duration = Duration::from_secs(4);
-    /// The span the tone checks judge.
-    const CHECKED: Duration = Duration::from_secs(2);
-    /// Skipped after the first sound, so the resampler's start is not judged as the tone.
-    const SETTLE: Duration = Duration::from_millis(100);
     /// Recorded beyond the settle and the checked span, for the silence before the first sound.
     const LEAD: Duration = Duration::from_millis(200);
-    /// Ten cycles of the tone: short enough to show a gap, long enough for a steady level.
-    const WINDOW: Duration = Duration::from_millis(10);
     const LEVEL_TOLERANCE_DB: f64 = 1.0;
-    /// How far the count of zero crossings may stand from two a cycle, for the two ends of the span.
-    const CROSSINGS_SLACK: f64 = 4.0;
     /// A local server answers in milliseconds; this is a hung one.
     const WITHIN: Duration = Duration::from_secs(5);
     /// The node name the stock player gives itself.
     const PLAYER: &str = "pw-play";
-    const MILLIS_PER_SECOND: u128 = 1_000;
+    /// The server's answer to a client that asks for its node, which the player writes to its standard error.
+    const NO_CLIENT_NODE: &str = "unknown factory name client-node";
     /// A directory name long enough to put the socket path past 108 bytes on its own.
     const TOO_DEEP: usize = 120;
     /// The C library's text for ENAMETOOLONG, which pipewire writes to its log for that socket path.
@@ -85,7 +79,7 @@ mod tests {
         let _player = server.play(&tone(dir.path()));
         server.link(PLAYER, recorder.node());
         recorder.wait_frames(frames(LEAD + SETTLE + CHECKED, SUPERWHISPER_RATE), WITHIN);
-        assert_tone(&recorder.finish(), SUPERWHISPER_RATE);
+        assert_whole(&recorder.finish(), SUPERWHISPER_RATE);
     }
 
     #[test]
@@ -101,8 +95,8 @@ mod tests {
         history.wait_frames(frames(LEAD + SETTLE + CHECKED, HISTORY_RATE), WITHIN);
         capture.wait_frames(frames(LEAD + SETTLE + CHECKED, SUPERWHISPER_RATE), WITHIN);
         assert_server_logged_no_error(&server);
-        assert_tone(&history.finish(), HISTORY_RATE);
-        assert_tone(&capture.finish(), SUPERWHISPER_RATE);
+        assert_whole(&history.finish(), HISTORY_RATE);
+        assert_whole(&capture.finish(), SUPERWHISPER_RATE);
     }
 
     #[test]
@@ -119,7 +113,7 @@ mod tests {
         hold(PLAYER_STALL);
         kill_process(player, Signal::CONT).unwrap();
         history.wait_frames(frames(LEAD + SETTLE + CHECKED, HISTORY_RATE), WITHIN);
-        assert_tone(&history.finish(), HISTORY_RATE);
+        assert_whole(&history.finish(), HISTORY_RATE);
     }
 
     #[test]
@@ -145,6 +139,19 @@ mod tests {
     }
 
     #[test]
+    fn a_server_without_client_nodes_refuses_a_player() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start_without_client_nodes(dir.path());
+        let mut player = server.play(&tone(dir.path()));
+        let Some(status) = player.wait(WITHIN) else {
+            panic!("the player still runs on a server that cannot make its node");
+        };
+        assert!(!status.success(), "pw-play exited cleanly with no node");
+        assert!(player.log().contains(NO_CLIENT_NODE), "{}", player.log());
+        assert_eq!(node_names(&server.dump()), [DRIVER_NODE]);
+    }
+
+    #[test]
     fn the_private_server_has_no_device_node() {
         let dir = tempfile::tempdir().unwrap();
         let server = Server::start(dir.path());
@@ -162,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn children_get_the_private_directory_and_none_of_the_three_variables() {
+    fn children_get_the_private_directory_no_session_server_and_no_bus() {
         let dir = tempfile::tempdir().unwrap();
         let server = Server::start(dir.path());
         let command = server.command("pw-dump");
@@ -177,6 +184,14 @@ mod tests {
             assert!(
                 envs.contains(&(OsStr::new(name), None)),
                 "{name} is not removed: {envs:?}"
+            );
+        }
+        let no_bus = format!("unix:path={}", dir.path().join("no-bus").display());
+        assert!(!dir.path().join("no-bus").exists());
+        for name in ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS"] {
+            assert!(
+                envs.contains(&(OsStr::new(name), Some(OsStr::new(&no_bus)))),
+                "{name} still names a bus: {envs:?}"
             );
         }
     }
@@ -336,9 +351,8 @@ mod tests {
         (value * f64::from(i16::MAX)).round() as i16
     }
 
-    fn frames(span: Duration, rate: u32) -> usize {
-        let frames = span.as_millis().checked_mul(u128::from(rate)).unwrap() / MILLIS_PER_SECOND;
-        usize::try_from(frames).unwrap()
+    fn assert_whole(samples: &[i16], rate: u32) {
+        assert_tone(samples, rate, TONE_HZ, TONE_AMPLITUDE, LEVEL_TOLERANCE_DB);
     }
 
     /// The rig's limit for one recording: the longest recording at 48 kHz in 16 bit, plus the header.
@@ -347,48 +361,6 @@ mod tests {
             .checked_mul(BYTES_PER_SAMPLE)
             .and_then(|bytes| bytes.checked_add(usize::try_from(WAV_HEADER_LEN).unwrap()))
             .unwrap()
-    }
-
-    /// Asserts `samples` hold the tone at its level, with no gap, over the checked span after the first sound.
-    fn assert_tone(samples: &[i16], rate: u32) {
-        let first = samples
-            .iter()
-            .position(|&sample| sample != 0)
-            .expect("the recording holds no sound");
-        let start = first.checked_add(frames(SETTLE, rate)).unwrap();
-        let end = start.checked_add(frames(CHECKED, rate)).unwrap();
-        let span = samples
-            .get(start..end)
-            .unwrap_or_else(|| panic!("{} samples, the tone starts at {first}", samples.len()));
-        let expected = 20.0 * (TONE_AMPLITUDE / SQRT_2).log10();
-        for (index, window) in span.chunks_exact(frames(WINDOW, rate)).enumerate() {
-            let level = dbfs(window);
-            assert!(
-                (level - expected).abs() <= LEVEL_TOLERANCE_DB,
-                "window {index} of {WINDOW:?} at {level:.2} dBFS, the tone is {expected:.2}"
-            );
-        }
-        let crossings = span
-            .array_windows::<2>()
-            .filter(|[before, after]| (*before < 0) != (*after < 0))
-            .count();
-        let crossings = f64::from(u32::try_from(crossings).unwrap());
-        let cycles = TONE_HZ * CHECKED.as_secs_f64();
-        assert!(
-            (crossings - 2.0 * cycles).abs() <= CROSSINGS_SLACK,
-            "{crossings} zero crossings at {rate} Hz, a 1 kHz tone makes {}",
-            2.0 * cycles
-        );
-    }
-
-    fn dbfs(window: &[i16]) -> f64 {
-        let full_scale = -f64::from(i16::MIN);
-        let power: f64 = window
-            .iter()
-            .map(|&sample| (f64::from(sample) / full_scale).powi(2))
-            .sum();
-        let count = f64::from(u32::try_from(window.len()).unwrap());
-        10.0 * (power / count).log10()
     }
 
     /// The one child of this test in `dir` whose command name is `name`.
