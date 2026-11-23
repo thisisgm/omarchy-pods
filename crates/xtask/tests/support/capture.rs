@@ -25,7 +25,7 @@ use super::pods::{self, DEADLINE, Pods, Transcript};
 /// A stamp of the shape `date -u +%Y%m%dT%H%M%SZ` prints.
 pub(crate) const STAMP: &str = "20261121T120000Z";
 /// The synthetic device of the device file, which no output of the command may name.
-const DEVICE: &str = "02:00:00:00:00:01";
+pub(crate) const DEVICE: &str = "02:00:00:00:00:01";
 /// The store under the temporary home.
 pub(crate) const ROOT_NAME: &str = "omapods-captures";
 /// The mode the store gives a run directory.

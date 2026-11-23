@@ -73,6 +73,8 @@ enum SourceError {
     Print(io::Error),
     #[error("{0}")]
     Service(String),
+    #[error("a hardware run or another live probe is in progress, so nothing was stopped")]
+    LockHeld,
     #[error("{0}")]
     Connect(ChannelError),
     #[error("the control channel failed: {0}")]

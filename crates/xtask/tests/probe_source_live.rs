@@ -37,13 +37,16 @@ mod tests {
 
     use pods_proto::packets::CONTROL_PSM;
     use pods_proto::uplink::{START, STOP};
-    use pods_pwrig::{Server, environment, node_names};
+    use pods_pwrig::{Server, environment, node_names, parse_dump};
     use pods_samples::uplink::state_marker;
     use pods_trap::Outcome;
+    use rustix::fs::FlockOperation;
+    use rustix::io::Errno;
     use tempfile::TempDir;
 
     use super::capture::{
-        FAILED, HANG_LIMIT, Ran, Running, far_end, hand_over, home_with_device, route, transcript,
+        DEVICE, FAILED, HANG_LIMIT, Ran, Running, far_end, hand_over, home_with_device, route,
+        transcript,
     };
     use super::pods::{self, Hook, Pods, SILENT_UNIT, Transcript, audio_sdu};
 
@@ -51,8 +54,12 @@ mod tests {
     const INSTALLED: &str = "librepods.service";
     const UNDER_TEST: &str = "librepods-hw.service";
     const EXECUTABLE: u32 = 0o755;
+    /// The hardware run's lock in the runtime directory, which the private server's directory is.
+    const RUN_LOCK: &str = "librepods-hw.lock";
+    /// What `flock -n` in a stub exits with while another process holds the lock.
+    const LOCK_HELD: &str = "1";
     const NS_PER_MS: u64 = 1_000_000;
-    /// What the two stub calls around the hold add to it, a fork and a `date` each, with room for a loaded host.
+    /// What the two stub calls around the hold add to it, a fork, a `date` and a `flock` each, with room for a loaded host.
     const HOLD_SLACK: Duration = Duration::from_secs(2);
     /// A unit the decoder refuses: a frame count is due after its first byte, and none follows.
     const REFUSED_UNIT: [u8; 1] = [0x03];
@@ -69,20 +76,20 @@ mod tests {
     /// The calls of the restore, the sink found among the others listed.
     const RESTORE: [&str; 3] = [
         "pactl list short sinks",
-        "pactl suspend-sink bluez_output.02_00_00_00_00_01.1 1",
-        "pactl suspend-sink bluez_output.02_00_00_00_00_01.1 0",
+        "pactl suspend-sink 57 1",
+        "pactl suspend-sink 57 0",
     ];
-    /// The calls that put the installed service back.
-    const STARTED: [&str; 4] = [
-        "systemctl --user stop librepods-hw.service",
-        "systemctl --user is-active librepods-hw.service",
+    /// The calls that put the installed service back, and nothing of the hardware run's test unit.
+    const STARTED: [&str; 2] = [
         "systemctl --user start librepods.service",
         "systemctl --user is-active librepods.service",
     ];
 
-    /// A `systemctl --user` that logs each call and keeps each unit's state in a file named after it, a stop leaving the state a `.stops-as` file names; builtins only, as `PATH` holds nothing else.
+    /// A `systemctl --user` that logs each call, its environment and whether another process holds the hardware run's lock, and keeps each unit's state in a file named after it, a stop leaving the state a `.stops-as` file names; builtins and absolute paths only, as `PATH` holds nothing else.
     const SYSTEMCTL: &str = r#"#!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$STUB/calls"
+export -p >> "$STUB/env"
+/usr/bin/flock -n "$XDG_RUNTIME_DIR/$RUN_LOCK" true; printf '%s\n' "$?" >> "$STUB/locked"
 case "$2" in
 is-active) read -r s < "$STUB/$3"; printf '%s\n' "$s"; [ "$s" = active ] || exit 3 ;;
 stop) s=inactive; [ -e "$STUB/$3.stops-as" ] && read -r s < "$STUB/$3.stops-as"; printf '%s\n' "$s" > "$STUB/$3" ;;
@@ -90,9 +97,11 @@ start) printf 'active\n' > "$STUB/$3" ;;
 *) exit 1 ;;
 esac
 "#;
-    /// A `pactl` that logs each call with the time it ran in nanoseconds and lists a speaker sink, then the device's; a resume fails while a `resume-fails` file is there.
+    /// A `pactl` that logs each call with the time it ran in nanoseconds, its environment and whether another process holds the hardware run's lock, and lists a speaker sink, then the device's; a resume fails while a `resume-fails` file is there.
     const PACTL: &str = r#"#!/bin/sh
 printf 'pactl %s %s\n' "$*" "$(/usr/bin/date +%s%N)" >> "$STUB/calls"
+export -p >> "$STUB/env"
+/usr/bin/flock -n "$XDG_RUNTIME_DIR/$RUN_LOCK" true; printf '%s\n' "$?" >> "$STUB/locked"
 case "$1" in
 list) printf '56\talsa_output.speakers\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n57\tbluez_output.02_00_00_00_00_01.1\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED\n' ;;
 suspend-sink) if [ "$3" = 0 ] && [ -e "$STUB/resume-fails" ]; then exit 1; fi ;;
@@ -161,6 +170,7 @@ esac
             .env("HOME", home)
             .env("PATH", stubs.dir.path().join("bin"))
             .env("STUB", stubs.dir.path())
+            .env("RUN_LOCK", RUN_LOCK)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -195,8 +205,28 @@ esac
                 };
             }
             let printed = dump.output().unwrap();
-            let names = node_names(&serde_json::from_slice(&printed.stdout).unwrap());
+            assert!(
+                printed.status.success(),
+                "pw-dump failed with {}",
+                printed.status
+            );
+            let names =
+                node_names(&parse_dump(&String::from_utf8(printed.stdout).unwrap()).unwrap());
             *seen.lock().unwrap() = Some(names.iter().any(|name| name == NODE));
+        })
+    }
+
+    /// A hook that keeps whether another process holds the hardware run's lock at the moment it runs.
+    fn lock_taken(dir: &Path, taken: &Arc<Mutex<Option<bool>>>) -> Hook {
+        let (lock, taken) = (dir.join(RUN_LOCK), Arc::clone(taken));
+        Arc::new(move || {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&lock)
+                .unwrap();
+            let tried = rustix::fs::flock(&file, FlockOperation::NonBlockingLockExclusive);
+            *taken.lock().unwrap() = Some(tried == Err(Errno::WOULDBLOCK));
         })
     }
 
@@ -466,5 +496,85 @@ esac
         assert_eq!((pods.count(&START), pods.count(&STOP)), (1, 0));
         assert_eq!(stubs.calls(), expected(&[&STOPPED, &RESTORE, &STARTED]));
         assert_eq!(stubs.state(INSTALLED), "active\n");
+    }
+
+    #[test]
+    fn no_child_is_given_the_device_address_in_its_arguments_or_its_environment() {
+        let home = home_with_device();
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start(dir.path());
+        let stubs = Stubs::new();
+        let args = ["--seconds", "1"];
+        let part = answering(&stubs);
+        let (running, played) = start(&server, home.path(), &stubs, &args, part, &Arc::default());
+        let ran = running.finish();
+        let pods = transcript(&played);
+
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        assert_eq!((pods.count(&START), pods.count(&STOP)), (1, 1));
+        let calls = stubs.calls();
+        let suspends = calls
+            .iter()
+            .filter(|call| call.starts_with("pactl suspend-sink"));
+        assert_eq!(suspends.count(), 2, "{calls:?}");
+        let environments = fs::read_to_string(stubs.dir.path().join("env")).unwrap();
+        assert!(environments.contains("STUB="), "{environments}");
+        for form in [DEVICE.to_owned(), DEVICE.replace(':', "_")] {
+            for call in &calls {
+                assert!(!call.contains(&form), "{call}");
+            }
+            assert!(!environments.contains(&form), "{environments}");
+        }
+    }
+
+    #[test]
+    fn a_probe_during_a_hardware_run_stops_nothing_and_leaves_its_daemon_alone() {
+        let home = home_with_device();
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start(dir.path());
+        let stubs = Stubs::new();
+        fs::write(stubs.dir.path().join(INSTALLED), "inactive\n").unwrap();
+        fs::write(stubs.dir.path().join(UNDER_TEST), "active\n").unwrap();
+        let held = fs::File::create(dir.path().join(RUN_LOCK)).unwrap();
+        rustix::fs::flock(&held, FlockOperation::NonBlockingLockExclusive).unwrap();
+        let command = command(&server, home.path(), &stubs, &[]);
+        let ran = Running::start(command, Vec::new()).finish();
+
+        assert_eq!(ran.code, FAILED, "{}", ran.stderr);
+        let said = "a hardware run or another live probe is in progress, so nothing was stopped";
+        assert!(ran.stderr.contains(said), "{}", ran.stderr);
+        assert_eq!(stubs.calls(), Vec::<String>::new());
+        assert_eq!(stubs.state(UNDER_TEST), "active\n");
+        assert_eq!(ran.dials, []);
+        drop(held);
+    }
+
+    #[test]
+    fn a_live_probe_holds_the_hardware_runs_lock_until_it_ends() {
+        let home = home_with_device();
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start(dir.path());
+        let stubs = Stubs::new();
+        let (at_start, at_stop) = (Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None)));
+        let part = Pods {
+            on_start: Some(lock_taken(dir.path(), &at_start)),
+            on_stop: Some(lock_taken(dir.path(), &at_stop)),
+            ..answering(&stubs)
+        };
+        let args = ["--seconds", "1"];
+        let (running, played) = start(&server, home.path(), &stubs, &args, part, &Arc::default());
+        let ran = running.finish();
+        let pods = transcript(&played);
+
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        assert_eq!((pods.count(&START), pods.count(&STOP)), (1, 1));
+        assert_eq!(*at_start.lock().unwrap(), Some(true));
+        assert_eq!(*at_stop.lock().unwrap(), Some(true));
+        assert_eq!(stubs.calls(), expected(&[&STOPPED, &RESTORE, &STARTED]));
+        let locked = fs::read_to_string(stubs.dir.path().join("locked")).unwrap();
+        let held = locked.lines().filter(|line| *line == LOCK_HELD);
+        assert_eq!(held.count(), stubs.calls().len(), "{locked}");
+        let after = fs::File::open(dir.path().join(RUN_LOCK)).unwrap();
+        rustix::fs::flock(&after, FlockOperation::NonBlockingLockExclusive).unwrap();
     }
 }

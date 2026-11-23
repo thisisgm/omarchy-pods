@@ -105,9 +105,7 @@ impl Server {
 
     pub fn dump(&self) -> Value {
         let printed = self.run("pw-dump", &[]);
-        // Sample input: `[{"id":0,"type":"PipeWire:Interface:Core","info":{"props":{}}}]`.
-        serde_json::from_str(&printed)
-            .unwrap_or_else(|error| panic!("pw-dump printed no JSON: {error}"))
+        parse_dump(&printed).unwrap_or_else(|error| panic!("pw-dump printed no JSON: {error}"))
     }
 
     pub fn wait_node(&self, name: &str, within: Duration) -> Value {
@@ -320,6 +318,34 @@ pub fn environment(dir: &Path) -> Vec<(&'static str, Option<OsString>)> {
     [&private[..], &session, &buses].concat()
 }
 
+/// The objects a `pw-dump` printed, in every document it printed: `PipeWire` 1.0 adds one, even without `--monitor`, for each object removed while it runs.
+// Sample input: `[{"id":0,"type":"PipeWire:Interface:Core","info":{"props":{}}},{"id":45,"type":"PipeWire:Interface:Client","info":{"props":{}}}]\n[{"id":45,"info":null}]\n`.
+pub fn parse_dump(printed: &str) -> Result<Value, String> {
+    let mut objects: Vec<Value> = Vec::new();
+    let mut read_any = false;
+    for document in serde_json::Deserializer::from_str(printed).into_iter::<Vec<Value>>() {
+        read_any = true;
+        for object in document.map_err(|error| error.to_string())? {
+            let id = object.get("id").cloned();
+            objects.retain(|kept| kept.get("id") != id.as_ref());
+            if !is_removal(&object) {
+                objects.push(object);
+            }
+        }
+    }
+    if !read_any {
+        return Err("the output holds no document".to_owned());
+    }
+    Ok(Value::Array(objects))
+}
+
+/// True for the entry `pw-dump` prints for a removed object, whose `info`, or `props` when it has no info, is null.
+fn is_removal(object: &Value) -> bool {
+    ["info", "props"]
+        .iter()
+        .any(|key| object.get(key).is_some_and(Value::is_null))
+}
+
 /// The `node.name` of every node in a `pw-dump`, sorted.
 #[must_use]
 pub fn node_names(dump: &Value) -> Vec<String> {
@@ -397,3 +423,6 @@ context.objects = [
 "
     )
 }
+
+#[cfg(test)]
+mod tests;

@@ -58,8 +58,8 @@ fn a_panic_while_the_uplink_runs_sends_stop_then_restores() {
         [
             "far end heard STOP",
             "pactl list short sinks",
-            "pactl suspend-sink bluez_output.02_00_00_00_00_01.1 1",
-            "pactl suspend-sink bluez_output.02_00_00_00_00_01.1 0",
+            "pactl suspend-sink 57 1",
+            "pactl suspend-sink 57 0",
         ]
     );
 }
@@ -97,12 +97,11 @@ fn panic_while_the_uplink_runs() {
 }
 
 #[test]
-fn the_device_sink_is_the_first_listed_name_with_its_prefix() {
+fn the_device_sink_is_the_index_of_the_first_listed_name_with_its_prefix() {
     let prefix = "bluez_output.02_00_00_00_00_01";
-    assert_eq!(
-        device_sink(LISTED, prefix),
-        Some("bluez_output.02_00_00_00_00_01.1")
-    );
+    assert_eq!(device_sink(LISTED, prefix), Some(57));
+    let unnumbered = "x\tbluez_output.02_00_00_00_00_01.1\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n";
+    assert_eq!(device_sink(unnumbered, prefix), None);
     assert_eq!(device_sink(LISTED, "bluez_output.02_00_00_00_00_02"), None);
     assert_eq!(device_sink("", prefix), None);
     assert_eq!(
