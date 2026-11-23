@@ -3,6 +3,7 @@
 mod model;
 mod serve;
 
+use std::fs::File;
 use std::time::{Duration, Instant};
 
 use pods_samples::{CASE, Cell, LEFT, MODEL_NUMBER, NAME, Placed, RIGHT};
@@ -100,4 +101,34 @@ pub fn pair() -> (Channel, Channel) {
     )
     .expect("the kernel makes an AF_UNIX SOCK_SEQPACKET socket pair");
     (from_fd(host), from_fd(pods))
+}
+
+/// A channel around a regular file, which epoll refuses to watch; panics when the file cannot be opened.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "a test tool: a process that cannot open its own program has no test to run, and the one line says so"
+)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test wraps a file as a channel"
+)]
+pub fn unwatchable() -> Channel {
+    let file = File::open("/proc/self/exe").expect("the running program opens as a file");
+    from_fd(file.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use pods_sys::l2cap::ChannelError;
+    use rustix::io::Errno;
+
+    use super::unwatchable;
+
+    #[test]
+    fn an_unwatchable_channel_is_no_socket() {
+        let error = unwatchable().try_recv(&mut [0]).unwrap_err();
+        assert_eq!(error, ChannelError::Recv(Errno::NOTSOCK));
+    }
 }

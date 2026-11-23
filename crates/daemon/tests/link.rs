@@ -15,4 +15,5 @@ mod link {
     mod reports;
     mod sets;
     mod stop;
+    mod wakeups;
 }

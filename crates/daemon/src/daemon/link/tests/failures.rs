@@ -1,4 +1,4 @@
-//! Support tests: a queue that never empties, a write that fails, a queue that closes, and a full request queue at an advert monitor edge.
+//! Support tests: a channel that never empties, a channel the peer closes, a write that fails, a queue that closes, and a full request queue at an advert monitor edge.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
@@ -16,14 +16,14 @@ use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 use rustix::time::{ClockId, clock_gettime};
 use tokio::runtime::Builder;
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use tokio::task::yield_now;
-use tokio::time::sleep;
-use zeroize::Zeroizing;
+use tokio::time::{sleep, timeout};
 
-use super::super::reader::RECV_BUFFER_LEN;
-use super::super::{Connector, Input, Outlets, REQUEST_QUEUE, Request, drive, queue};
+use super::super::reader::{Open, RECV_BUFFER_LEN};
+use super::super::{
+    Connector, Input, Outlets, REQUEST_QUEUE, Request, Turn, drive, next_of, queue,
+};
 use super::{
     HANG_LIMIT, REAL_TIME_SLACK, Running, block_on, device_up, report, unread_outlets,
     wait_for_state, wire,
@@ -33,8 +33,11 @@ use crate::daemon::hub::Hub;
 /// Writes into an unread socket before one must have failed; a few hundred fill it.
 const SENDS_MAX: usize = 10_000;
 
-/// Threads feeding the queue at once, so it never empties between two inputs.
+/// Threads writing to the channel at once, so it never empties between two reads.
 const FLOODERS: usize = 4;
+
+/// Turns each of the channel and the queue gets in the turn taking test.
+const TURNS_EACH: usize = 3;
 
 const IDLE_WATCH: Duration = Duration::from_millis(200);
 
@@ -84,20 +87,18 @@ fn packets_never_hold_back_a_passed_deadline() {
     pods_end.set_recv_timeout(HANG_LIMIT).unwrap();
     let mut buf = vec![0_u8; RECV_BUFFER_LEN];
     assert!(matches!(pods_end.recv(&mut buf), Ok(Received::Sdu(_))));
-    // The handshake is never answered, and a packet it ignores keeps the queue full.
+    // The handshake is never answered, and a packet it ignores keeps the channel readable.
     let flood = pods_samples::battery();
-    let inputs = running.inputs();
     let stop = AtomicBool::new(false);
     let seen = thread::scope(|scope| {
         for _ in 0..FLOODERS {
             scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {
-                    let sdu = Input::Sdu(Zeroizing::new(flood.clone().into_boxed_slice()));
-                    match inputs.try_send(sdu) {
+                    match pods_end.try_send(&flood) {
                         Ok(()) => {}
                         // Never blocks, so the stop ends a flooder whatever the driver does.
-                        Err(TrySendError::Full(_)) => thread::yield_now(),
-                        Err(TrySendError::Closed(_)) => return,
+                        Err(ChannelError::Send(Errno::AGAIN)) => thread::yield_now(),
+                        Err(_) => return,
                     }
                 }
             });
@@ -126,6 +127,79 @@ fn packets_never_hold_back_a_passed_deadline() {
         delay + REAL_TIME_SLACK
     );
     drop(running);
+}
+
+/// A watched channel that holds `waiting`, and the pods' end, which must outlive it; the poller has told of every SDU in its one edge, so nothing wakes a read that has cleared its readiness.
+async fn readable_channel(waiting: &[Vec<u8>]) -> (Open, Channel) {
+    let (host_end, pods_end) = pair();
+    let mut open = Open::watch(host_end).unwrap();
+    pods_end.send(&pods_samples::battery()).unwrap();
+    for sdu in waiting {
+        pods_end.send(sdu).unwrap();
+    }
+    assert!(open.read().await.is_some());
+    (open, pods_end)
+}
+
+/// Which of the channel and the queue served each of `count` waits, the channel asked first in the first.
+async fn served(
+    inputs: &mut mpsc::Receiver<Input>,
+    open: &mut Open,
+    count: usize,
+) -> Vec<&'static str> {
+    let mut channel_first = false;
+    let mut order = Vec::new();
+    for _ in 0..count {
+        let next = next_of(inputs, Some(open), &mut channel_first);
+        order.push(match timeout(HANG_LIMIT, next).await.unwrap() {
+            Turn::Read(Some(_)) => "channel",
+            Turn::Input(_) => "queue",
+            Turn::Read(None) | Turn::Tick => "neither",
+        });
+    }
+    order
+}
+
+#[test]
+fn the_channel_and_the_queue_take_turns_while_both_are_ready() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    let order = runtime.block_on(async {
+        let (link, mut inputs) = queue();
+        let waiting = vec![pods_samples::battery(); TURNS_EACH];
+        let (mut open, _pods_end) = readable_channel(&waiting).await;
+        for _ in 0..TURNS_EACH {
+            link.send(Input::SendFailed).await.unwrap();
+        }
+        served(&mut inputs, &mut open, TURNS_EACH * 2).await
+    });
+    assert_eq!(order, ["channel", "queue"].repeat(TURNS_EACH));
+}
+
+#[test]
+fn an_oversized_sdu_ends_the_channels_turn_and_costs_no_other() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    let order = runtime.block_on(async {
+        let (link, mut inputs) = queue();
+        let waiting = [vec![0; RECV_BUFFER_LEN + 1], pods_samples::battery()];
+        let (mut open, _pods_end) = readable_channel(&waiting).await;
+        link.send(Input::SendFailed).await.unwrap();
+        served(&mut inputs, &mut open, 2).await
+    });
+    // The channel is asked first and drops the oversized SDU, the queue is served, and the SDU behind it comes next.
+    assert_eq!(order, ["queue", "channel"]);
+}
+
+#[test]
+fn a_peer_close_ends_the_read_after_the_sdu_sent_before_it() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    let read = runtime.block_on(async {
+        let (mut open, pods_end) = readable_channel(&[pods_samples::battery()]).await;
+        drop(pods_end);
+        let sent_before = timeout(HANG_LIMIT, open.read()).await.unwrap();
+        let end = timeout(HANG_LIMIT, open.read()).await.unwrap();
+        (sent_before.map(|sdu| sdu.to_vec()), end.is_none())
+    });
+    assert_eq!(read, (Some(pods_samples::battery()), true));
 }
 
 #[test]
