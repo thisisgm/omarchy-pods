@@ -10,12 +10,15 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use pulseaudio::protocol::{
-    AuthReply, ChannelVolume, Command, CommandTag, DEFAULT_SINK, GetSinkInfo, MAX_VERSION,
-    PulseError, ServerInfo, SetClientNameReply, SetDeviceVolumeParams, SinkInfo, SubscriptionEvent,
-    SubscriptionEventFacility, SubscriptionEventType, SubscriptionMask, Volume,
+    AuthReply, ChannelVolume, Command, CommandTag, DEFAULT_SINK, GetCardInfo, GetSinkInfo,
+    MAX_VERSION, PulseError, ServerInfo, SetCardProfileParams, SetClientNameReply,
+    SetDeviceVolumeParams, SinkInfo, SinkState, SubscriptionEvent, SubscriptionEventFacility,
+    SubscriptionEventType, SubscriptionMask, Volume,
 };
 
 use super::Asked;
+use super::capture::{Capture, Recorder, RecorderId, monitor_name};
+use super::cards::{Cards, FakeProfile};
 use super::wire::{self, CONTROL_CHANNEL, percent_of};
 
 /// A test opens a handful of clients at once.
@@ -29,7 +32,7 @@ const WRITE_LIMIT: Duration = Duration::from_secs(2);
 /// Stereo, as `SinkInfo::new_dummy` describes every sink.
 const SINK_CHANNELS: usize = 2;
 /// The commands the fake answers; any other is refused with `PulseError::Command`.
-const UNDERSTOOD: [CommandTag; 7] = [
+const UNDERSTOOD: [CommandTag; 12] = [
     CommandTag::Auth,
     CommandTag::SetClientName,
     CommandTag::GetServerInfo,
@@ -37,6 +40,11 @@ const UNDERSTOOD: [CommandTag; 7] = [
     CommandTag::GetSinkInfoList,
     CommandTag::SetSinkVolume,
     CommandTag::Subscribe,
+    CommandTag::GetCardInfo,
+    CommandTag::GetCardInfoList,
+    CommandTag::SetCardProfile,
+    CommandTag::GetSourceInfoList,
+    CommandTag::GetSourceOutputInfoList,
 ];
 
 pub(super) struct Shared {
@@ -49,6 +57,8 @@ struct Sink {
     name: CString,
     volume: Volume,
     added: Volume,
+    monitor: u32,
+    running: bool,
 }
 
 struct Client {
@@ -66,6 +76,8 @@ pub(super) struct State {
     sinks: Vec<Sink>,
     default: Option<u32>,
     next_sink: u32,
+    pub(super) cards: Cards,
+    pub(super) capture: Capture,
     pub(super) requests: Vec<Asked>,
     clients: Vec<Client>,
     next_client: u32,
@@ -141,9 +153,17 @@ impl Sink {
         for _ in 0..SINK_CHANNELS {
             cvolume.push(self.volume);
         }
+        let monitor = monitor_name(&self.name.to_string_lossy());
         SinkInfo {
             name: self.name.clone(),
             cvolume,
+            state: if self.running {
+                SinkState::Running
+            } else {
+                SinkState::Idle
+            },
+            monitor_source_index: Some(self.monitor),
+            monitor_source_name: Some(CString::new(monitor).unwrap()),
             ..SinkInfo::new_dummy(self.index)
         }
     }
@@ -235,18 +255,21 @@ impl State {
     }
 
     pub(super) fn add_sink(&mut self, name: &str, volume: Volume) {
-        let name = CString::new(name).unwrap();
+        let c_name = CString::new(name).unwrap();
         assert!(
-            self.position(&name).is_none(),
+            self.position(&c_name).is_none(),
             "a second sink named {name:?}"
         );
         let index = self.next_sink;
         self.next_sink = self.next_sink.saturating_add(1);
+        let monitor = self.capture.add_monitor(name, index);
         self.sinks.push(Sink {
             index,
-            name,
+            name: c_name,
             volume,
             added: volume,
+            monitor,
+            running: false,
         });
         self.announce(
             SubscriptionEventFacility::Sink,
@@ -257,6 +280,7 @@ impl State {
 
     pub(super) fn remove_sink(&mut self, name: &str) {
         let index = self.sinks.remove(self.named(name)).index;
+        self.capture.remove_monitor(index);
         self.announce(
             SubscriptionEventFacility::Sink,
             SubscriptionEventType::Removed,
@@ -305,6 +329,62 @@ impl State {
                 Some(index),
             );
         }
+    }
+
+    pub(super) fn set_sink_running(&mut self, name: &str, running: bool) {
+        let position = self.named(name);
+        let sink = &mut self.sinks[position];
+        if sink.running != running {
+            sink.running = running;
+            let index = sink.index;
+            self.announce(
+                SubscriptionEventFacility::Sink,
+                SubscriptionEventType::Changed,
+                Some(index),
+            );
+        }
+    }
+
+    pub(super) fn add_card(&mut self, name: &str, profiles: &[FakeProfile], active: &str) {
+        let index = self.cards.add(name, profiles, active);
+        self.announce(
+            SubscriptionEventFacility::Card,
+            SubscriptionEventType::New,
+            Some(index),
+        );
+    }
+
+    pub(super) fn set_profile_as_user(&mut self, card: &str, profile: &str) {
+        if let Some(index) = self.cards.set(card, profile) {
+            self.announce_card(index);
+        }
+    }
+
+    pub(super) fn add_recorder(&mut self, target: &str, kind: Recorder) -> RecorderId {
+        let id = self.capture.add(target, kind);
+        self.announce(
+            SubscriptionEventFacility::SourceOutput,
+            SubscriptionEventType::New,
+            Some(id.0),
+        );
+        id
+    }
+
+    pub(super) fn remove_recorder(&mut self, id: RecorderId) {
+        let index = self.capture.remove(id);
+        self.announce(
+            SubscriptionEventFacility::SourceOutput,
+            SubscriptionEventType::Removed,
+            Some(index),
+        );
+    }
+
+    fn announce_card(&mut self, index: u32) {
+        self.announce(
+            SubscriptionEventFacility::Card,
+            SubscriptionEventType::Changed,
+            Some(index),
+        );
     }
 
     pub(super) fn forget_volumes(&mut self) {
@@ -377,7 +457,7 @@ impl State {
     )]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "the fake answers seven of the protocol's commands and refuses every other alike"
+        reason = "the fake answers twelve of the protocol's commands and refuses every other alike"
     )]
     fn answer(&mut self, id: u32, frame: &[u8]) -> Result<(), String> {
         let (channel, command, seq) = wire::header(frame)?;
@@ -447,6 +527,26 @@ impl State {
                 self.client(id).subscribed = mask;
                 wire::ack(seq)
             }
+            Command::GetCardInfo(GetCardInfo {
+                index: None,
+                name: Some(name),
+            }) => match self.cards.info(&name) {
+                Some(card) => wire::reply(seq, &card, version),
+                None => wire::error(seq, PulseError::NoEntity),
+            },
+            Command::GetCardInfoList => wire::reply(seq, &self.cards.list(), version),
+            Command::SetCardProfile(SetCardProfileParams {
+                card_index: None,
+                card_name: Some(card),
+                profile_name,
+            }) => {
+                self.write_profile(id, seq, &card, &profile_name);
+                return Ok(());
+            }
+            Command::GetSourceInfoList => wire::reply(seq, &self.capture.sources(), version),
+            Command::GetSourceOutputInfoList => {
+                wire::reply(seq, &self.capture.recorders(), version)
+            }
             _ => wire::error(seq, PulseError::Command),
         };
         self.send(id, bytes);
@@ -467,12 +567,25 @@ impl State {
         self.send(id, wire::ack(seq));
         self.change_volume(position, loudest(volume));
     }
+
+    /// The ack goes out before the change event, as for a volume.
+    fn write_profile(&mut self, id: u32, seq: u32, card: &CStr, profile: &CStr) {
+        match self.cards.write(card, profile) {
+            Ok(changed) => {
+                self.send(id, wire::ack(seq));
+                if let Some(index) = changed {
+                    self.announce_card(index);
+                }
+            }
+            Err(error) => self.send(id, wire::error(seq, error)),
+        }
+    }
 }
 
 /// What the test sees of a command the fake understands; one addressed by index is not understood.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the fake names seven of the protocol's commands and records every other by number"
+    reason = "the fake names twelve of the protocol's commands and records every other by number"
 )]
 fn asked(command: u32, parsed: &Command) -> Asked {
     match parsed {
@@ -497,6 +610,23 @@ fn asked(command: u32, parsed: &Command) -> Asked {
             percent: percent_of(loudest(volume)),
         },
         Command::Subscribe(mask) => Asked::Subscribe { mask: *mask },
+        Command::GetCardInfo(GetCardInfo {
+            index: None,
+            name: Some(name),
+        }) => Asked::CardInfo {
+            name: name.to_string_lossy().into_owned(),
+        },
+        Command::GetCardInfoList => Asked::CardList,
+        Command::SetCardProfile(SetCardProfileParams {
+            card_index: None,
+            card_name: Some(card),
+            profile_name,
+        }) => Asked::Profile {
+            card: card.to_string_lossy().into_owned(),
+            profile: profile_name.to_string_lossy().into_owned(),
+        },
+        Command::GetSourceInfoList => Asked::SourceList,
+        Command::GetSourceOutputInfoList => Asked::RecorderList,
         _ => Asked::Unknown { command },
     }
 }

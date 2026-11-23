@@ -1,4 +1,4 @@
-//! Support tests: the fake BlueZ's advertisement monitor manager, driven by a monitor application the test serves itself.
+//! Support tests: the fake BlueZ's advertisement monitor manager, driven by a monitor application the test serves itself, and its media transports.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -24,8 +24,9 @@ mod tests {
     use zbus::{Connection, DBusError, MessageStream, OwnedObjectPath, OwnedVariant, Str, Variant};
 
     use super::support::bluez::monitor::{APPLE, Registered};
-    use super::support::bluez::{AdapterPath, Call, DeviceMethod, FakeBluez};
-    use super::support::bus::{Bus, in_time, start_bus};
+    use super::support::bluez::transport::{A2DP_SOURCE_UUID, TRANSPORT_INTERFACE};
+    use super::support::bluez::{AdapterPath, Call, DEVICE_INTERFACE, DeviceMethod, FakeBluez};
+    use super::support::bus::{Bus, Listener, in_time, start_bus};
     use super::support::{HANG_LIMIT, Session};
 
     const APP_PATH: &str = "/org/example/adverts";
@@ -63,9 +64,14 @@ mod tests {
     /// Present on a monitor, it makes BlueZ report a device once and its loss later.
     const RSSI_LOW_TIMEOUT: &str = "RSSILowTimeout";
     const LOW_TIMEOUT_SECONDS: u16 = 5;
+    const SBC: u8 = 0;
+    /// 44.1 kHz joint stereo, 16 blocks, 8 subbands, loudness, bitpool 2 to 53.
+    const SBC_CONFIGURATION: [u8; 4] = [0x21, 0x15, 0x02, 0x35];
+    const OBJECTS_CHANGED: &str = "type='signal',interface='org.freedesktop.DBus.ObjectManager'";
 
     type Pattern = (u8, u8, Vec<u8>);
-    type Managed = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedVariant>>>;
+    type Managed = HashMap<OwnedObjectPath, Interfaces>;
+    type Interfaces = HashMap<String, HashMap<String, OwnedVariant>>;
 
     fn apple_pattern() -> Pattern {
         (0, AD_MANUFACTURER_DATA, APPLE_PROXIMITY.to_vec())
@@ -273,6 +279,14 @@ mod tests {
                 .body()
                 .deserialize()
                 .unwrap()
+        }
+
+        fn get_all(&self, path: &str, interface: &str) -> HashMap<String, OwnedVariant> {
+            let call =
+                self.client
+                    .call_method(Some(BLUEZ), path, Some(PROPERTIES), "GetAll", &interface);
+            let reply = in_time(&self.runtime, call).unwrap();
+            reply.body().deserialize().unwrap()
         }
 
         fn has_object(&self, path: &str) -> bool {
@@ -585,6 +599,109 @@ mod tests {
             &filter,
             DeviceMethod::SetDiscoveryFilter,
         );
+    }
+
+    /// The object an `InterfacesAdded` names; sample body `("/org/bluez/hci0/dev_X/sep1/fd0", {..})`.
+    fn added_object(listener: &mut Listener) -> String {
+        let signal = listener.next();
+        assert_eq!(
+            signal.header().member().unwrap().as_str(),
+            "InterfacesAdded"
+        );
+        let (path, _): (OwnedObjectPath, Interfaces) = signal.body().deserialize().unwrap();
+        path.as_str().to_owned()
+    }
+
+    /// The object and interfaces an `InterfacesRemoved` names; sample body `("/org/bluez/hci0/dev_X", ["org.bluez.Device1"])`.
+    fn removed_object(listener: &mut Listener) -> (String, Vec<String>) {
+        let signal = listener.next();
+        assert_eq!(
+            signal.header().member().unwrap().as_str(),
+            "InterfacesRemoved"
+        );
+        let (path, interfaces): (OwnedObjectPath, Vec<String>) =
+            signal.body().deserialize().unwrap();
+        (path.as_str().to_owned(), interfaces)
+    }
+
+    fn gone(path: &str, interface: &str) -> (String, Vec<String>) {
+        (path.to_owned(), vec![interface.to_owned()])
+    }
+
+    #[test]
+    fn a_transport_is_listed_with_its_configuration_and_leaves_with_its_device() {
+        let bench = Bench::new();
+        let device = bench
+            .bluez
+            .add_device(&bench.adapter, FIRST.parse().unwrap(), &[], true);
+        let other = bench
+            .bluez
+            .add_device(&bench.adapter, SECOND.parse().unwrap(), &[], true);
+        let mut objects = Listener::subscribe(&bench.bus.address, OBJECTS_CHANGED);
+
+        let transport = bench.bluez.add_transport(&device, SBC, &SBC_CONFIGURATION);
+        let kept = bench.bluez.add_transport(&other, SBC, &SBC_CONFIGURATION);
+        assert_eq!(transport.0, format!("{FIRST_ON_HCI0}/sep1/fd0"));
+        assert_eq!(kept.0, format!("{SECOND_ON_HCI0}/sep1/fd0"));
+        assert_eq!(added_object(&mut objects), transport.0);
+        assert_eq!(added_object(&mut objects), kept.0);
+        let app = bench.app(Vec::new());
+        let path = OwnedObjectPath::try_from(transport.0.as_str()).unwrap();
+        let properties = &app.managed()[&path][TRANSPORT_INTERFACE];
+        assert_eq!(&app.get_all(&transport.0, TRANSPORT_INTERFACE), properties);
+        let text = |name: &str| String::try_from(properties[name].try_clone().unwrap()).unwrap();
+        assert_eq!(text("UUID"), A2DP_SOURCE_UUID);
+        assert_eq!(text("State"), "idle");
+        let owner = OwnedObjectPath::try_from(properties["Device"].try_clone().unwrap()).unwrap();
+        assert_eq!(owner.as_str(), device.0);
+        assert_eq!(u8::try_from(&properties["Codec"]).unwrap(), SBC);
+        let configuration =
+            Vec::<u8>::try_from(properties["Configuration"].try_clone().unwrap()).unwrap();
+        assert_eq!(configuration, SBC_CONFIGURATION);
+
+        bench.bluez.remove(&device);
+        let leaving = gone(&transport.0, TRANSPORT_INTERFACE);
+        assert_eq!(removed_object(&mut objects), leaving);
+        assert_eq!(
+            removed_object(&mut objects),
+            gone(&device.0, DEVICE_INTERFACE)
+        );
+        assert!(
+            !app.has_object(&transport.0),
+            "the transport outlived its device"
+        );
+        assert!(app.has_object(&kept.0), "another device's transport left");
+        bench.finish();
+    }
+
+    #[test]
+    fn a_disconnect_drops_the_device_transports() {
+        let bench = Bench::new();
+        let device = bench
+            .bluez
+            .add_device(&bench.adapter, FIRST.parse().unwrap(), &[], true);
+        let other = bench
+            .bluez
+            .add_device(&bench.adapter, SECOND.parse().unwrap(), &[], true);
+        let mut objects = Listener::subscribe(&bench.bus.address, OBJECTS_CHANGED);
+        let transport = bench.bluez.add_transport(&device, SBC, &SBC_CONFIGURATION);
+        let kept = bench.bluez.add_transport(&other, SBC, &SBC_CONFIGURATION);
+        assert_eq!(added_object(&mut objects), transport.0);
+        assert_eq!(added_object(&mut objects), kept.0);
+
+        bench
+            .bluez
+            .set(&device, "Connected", OwnedVariant::from(false));
+        let leaving = gone(&transport.0, TRANSPORT_INTERFACE);
+        assert_eq!(removed_object(&mut objects), leaving);
+        let app = bench.app(Vec::new());
+        assert!(
+            !app.has_object(&transport.0),
+            "the transport outlived its link"
+        );
+        assert!(app.has_object(&device.0), "the device left with its link");
+        assert!(app.has_object(&kept.0), "another device's transport left");
+        bench.finish();
     }
 
     #[test]

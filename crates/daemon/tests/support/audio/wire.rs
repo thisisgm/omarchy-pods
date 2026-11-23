@@ -23,20 +23,32 @@ const EVENT_SEQ: u32 = u32::MAX;
 
 /// What `PipeWire` names the output node of a Bluetooth device: `02:00:00:00:00:01` gives `bluez_output.02_00_00_00_00_01.1`.
 pub(crate) fn sink_of(address: &str) -> String {
-    let address = address
-        .parse::<BdAddr>()
-        .unwrap_or_else(|error| panic!("a sink for a bad address: {error}"));
-    sink_named(address)
+    sink_named(parsed(address))
 }
 
 /// As `sink_of`, for an address already parsed.
 pub(crate) fn sink_named(address: BdAddr) -> String {
+    format!("bluez_output.{}.1", underscored(address))
+}
+
+/// What `PipeWire` names the card of a Bluetooth device: `02:00:00:00:00:01` gives `bluez_card.02_00_00_00_00_01`.
+pub(crate) fn card_of(address: &str) -> String {
+    format!("bluez_card.{}", underscored(parsed(address)))
+}
+
+fn parsed(address: &str) -> BdAddr {
+    address
+        .parse::<BdAddr>()
+        .unwrap_or_else(|error| panic!("a node for a bad address: {error}"))
+}
+
+fn underscored(address: BdAddr) -> String {
     let groups: Vec<String> = address
         .octets()
         .iter()
         .map(|octet| format!("{octet:02X}"))
         .collect();
-    format!("bluez_output.{}.1", groups.join("_"))
+    groups.join("_")
 }
 
 /// The percent that `Volume::NORM` stands for.
