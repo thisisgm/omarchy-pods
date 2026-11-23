@@ -1,10 +1,14 @@
 //! The attended checks: the command census and the adapter cycle, against the stub socket.
 
+use std::ffi::OsString;
+use std::fs;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use pods_proto::model::Model;
 
-use super::bench::{Bench, assert_restarted_after_the_run, text};
+use super::bench::{Bench, RUN_DEADLINE, assert_restarted_after_the_run, finish, text};
 
 #[test]
 fn the_command_census_sends_shows_reads_back_and_finds_no_bud_worn() {
@@ -280,4 +284,28 @@ fn a_daemon_that_never_answers_ends_c6_within_two_bounds_and_the_run_restores() 
     assert!(took >= SILENT_RUN_AT_LEAST, "{took:?}");
     assert!(took < SILENT_RUN_AT_MOST, "{took:?}");
     assert_restarted_after_the_run(&bench);
+}
+
+#[test]
+fn a_stub_start_that_finds_the_set_socket_listening_leaves_it_bound() {
+    let bench = Bench::new();
+    let run = bench.path("tmp/unit/run");
+    fs::create_dir_all(&run).unwrap();
+    let socket = run.join("librepods.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut runtime = OsString::from("--setenv=XDG_RUNTIME_DIR=");
+    runtime.push(&run);
+    let mut start = Command::new(bench.path("bin/systemd-run"));
+    start
+        .arg(runtime)
+        .env("STUB", bench.path("bin").parent().unwrap())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = finish(start.spawn().unwrap(), RUN_DEADLINE);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(bench.read("run-dir").trim(), run.to_str().unwrap());
+    assert_eq!(bench.read("connected").trim(), "true");
+    drop(UnixStream::connect(&socket).unwrap());
+    listener.accept().unwrap();
 }
