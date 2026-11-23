@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 use rustix::process::Signal;
@@ -177,17 +177,12 @@ impl Server {
             .stderr(errors);
         // Kept before the wait, so a failed start still ends the process when the server drops.
         *self.process.borrow_mut() = Some(spawn(&mut command));
-        let started = wait_until(SERVER_WITHIN, || {
-            // The socket file appears at bind, before listen, so only a connect shows the server ready.
-            if UnixStream::connect(self.socket()).is_ok() {
-                return Some(Ok(()));
-            }
+        let started = wait_accepting(&self.socket(), || {
             let mut process = self.process.borrow_mut();
             let child = process.as_mut()?;
-            let exited = child
+            child
                 .try_wait()
-                .unwrap_or_else(|error| panic!("waiting for pipewire: {error}"));
-            exited.map(Err)
+                .unwrap_or_else(|error| panic!("waiting for pipewire: {error}"))
         });
         let failure = match started {
             Some(Ok(())) => return,
@@ -307,6 +302,20 @@ impl Direction {
             Self::Input => "-i",
         }
     }
+}
+
+/// Polls until `socket` takes a connection, or `exited` gives the server's status, or `SERVER_WITHIN` passes.
+fn wait_accepting(
+    socket: &Path,
+    mut exited: impl FnMut() -> Option<ExitStatus>,
+) -> Option<Result<(), ExitStatus>> {
+    wait_until(SERVER_WITHIN, || {
+        // The socket file appears at bind, before listen, so only a connect shows the server ready.
+        if UnixStream::connect(socket).is_ok() {
+            return Some(Ok(()));
+        }
+        exited().map(Err)
+    })
 }
 
 /// What a process that loads the client library gets, value by value, and loses, to stay inside `dir`: no user configuration, no session server, no message bus.

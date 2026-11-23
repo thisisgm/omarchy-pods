@@ -1,8 +1,9 @@
-//! The reader of what `pw-dump` prints, on the output of the oldest `PipeWire` the workspace supports.
+//! The reader of what `pw-dump` prints, on the output of the oldest `PipeWire` the workspace supports, and the wait for the server's socket.
 
+use rustix::net::{self, AddressFamily, SocketAddrUnix, SocketType};
 use serde_json::Value;
 
-use super::{node_names, parse_dump};
+use super::{node_names, parse_dump, wait_accepting};
 
 /// A whole dump: the core, the rig's driver and one client.
 const FULL: &str = r#"[
@@ -50,4 +51,20 @@ fn text_that_is_not_json_is_an_error() {
     assert!(parse_dump("\n").is_err());
     assert!(parse_dump("not json").is_err());
     assert!(parse_dump(&format!("{FULL}]")).is_err());
+}
+
+#[test]
+fn a_socket_is_ready_only_once_it_listens() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bound");
+    let socket = net::socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
+    net::bind(&socket, &SocketAddrUnix::new(&path).unwrap()).unwrap();
+    let mut unready_polls = 0;
+    let started = wait_accepting(&path, || {
+        unready_polls += 1;
+        net::listen(&socket, 1).unwrap();
+        None
+    });
+    assert_eq!(started, Some(Ok(())));
+    assert_eq!(unready_polls, 1, "ready before listen");
 }
