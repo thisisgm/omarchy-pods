@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::legacy::{LegacyRequest, parse_verb};
-use crate::state::MicCode;
+use crate::state::Microphone;
 use crate::status::to_status_line;
 
 pub(crate) fn level(percent: u8) -> AdaptiveLevel {
@@ -88,12 +88,7 @@ proptest! {
             Command::SetEarDetection(behavior) => expected.ear_detection_behavior = behavior,
             Command::SetNotifications(enabled) => expected.notifications = enabled,
             Command::SetMicrophone(preference) => {
-                expected.microphone = preference;
-                expected.mic.code = if preference == MicPref::Off {
-                    MicCode::Off
-                } else {
-                    MicCode::Idle
-                };
+                expected.microphone = Microphone::new(preference);
             }
             Command::SetConversationalAwareness(enabled) => {
                 expected.conversational_awareness = enabled;

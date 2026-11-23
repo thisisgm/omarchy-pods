@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use pods_proto::battery::{Charge, Component};
 use serde_json::{Map, Value};
 
-use crate::state::State;
+use crate::state::{Counters, State};
 
 /// Changes only when a key changes meaning or goes away.
 const SCHEMA_VERSION: u8 = 1;
@@ -32,10 +32,9 @@ pub fn to_status_line(state: &State) -> String {
 /// What protocol 1 replies and events carry as their `state`.
 #[must_use]
 pub fn to_status_object(state: &State) -> Value {
-    let counters = &state.counters;
     let capabilities = state.capabilities();
     let batteries = &state.batteries;
-    object(BTreeMap::from([
+    let mut fields = BTreeMap::from([
         ("schema_version", Value::from(SCHEMA_VERSION)),
         ("connected", Value::from(state.connected)),
         ("device_name", Value::from(state.device_name.as_str())),
@@ -50,6 +49,55 @@ pub fn to_status_object(state: &State) -> Value {
         ),
         ("case", battery_object(batteries.case)),
         ("headset", battery_object(batteries.headset)),
+        (
+            "conversational_awareness",
+            Value::from(state.conversational_awareness),
+        ),
+        (
+            "adaptive_noise_level",
+            Value::from(state.adaptive_noise_level.percent()),
+        ),
+        ("one_bud_anc_mode", Value::from(state.one_bud_anc_mode)),
+        ("model_name", Value::from(state.model.display_name())),
+        ("model_int", Value::from(state.model.as_int())),
+        ("is_pro_series", Value::from(capabilities.is_pro_series)),
+        ("is_headset", Value::from(capabilities.is_headset)),
+        ("supports_noise_off", Value::from(capabilities.noise_off)),
+        (
+            "supports_noise_control",
+            Value::from(capabilities.noise_control),
+        ),
+        ("supports_adaptive", Value::from(capabilities.adaptive)),
+        (
+            "supports_conversational_awareness",
+            Value::from(capabilities.conversational_awareness),
+        ),
+        (
+            "supports_one_bud_anc",
+            Value::from(capabilities.one_bud_anc),
+        ),
+        ("model_number", Value::from(state.model_number.as_str())),
+        (
+            "ear_detection_behavior",
+            Value::from(state.ear_detection_behavior.number()),
+        ),
+        ("lid_state", Value::from(state.lid_state.number())),
+        ("notifications_enabled", Value::from(state.notifications)),
+        ("audio_server", Value::from(state.audio_server.word())),
+        ("advert_intake", Value::from(state.advert_intake.word())),
+        (
+            "microphone",
+            Value::from(state.microphone.preference().word()),
+        ),
+        ("mic", Value::from(state.microphone.code().word())),
+    ]);
+    fields.extend(counter_fields(&state.counters));
+    object(fields)
+}
+
+/// The `_total` keys, one per counter.
+fn counter_fields(counters: &Counters) -> [(&'static str, Value); 13] {
+    [
         (
             "reconnect_attempts_total",
             Value::from(counters.reconnect_attempts),
@@ -93,45 +141,7 @@ pub fn to_status_object(state: &State) -> Value {
             Value::from(counters.one_bud_anc_changes),
         ),
         ("reopen_calls_total", Value::from(counters.reopen_calls)),
-        (
-            "conversational_awareness",
-            Value::from(state.conversational_awareness),
-        ),
-        (
-            "adaptive_noise_level",
-            Value::from(state.adaptive_noise_level.percent()),
-        ),
-        ("one_bud_anc_mode", Value::from(state.one_bud_anc_mode)),
-        ("model_name", Value::from(state.model.display_name())),
-        ("model_int", Value::from(state.model.as_int())),
-        ("is_pro_series", Value::from(capabilities.is_pro_series)),
-        ("is_headset", Value::from(capabilities.is_headset)),
-        ("supports_noise_off", Value::from(capabilities.noise_off)),
-        (
-            "supports_noise_control",
-            Value::from(capabilities.noise_control),
-        ),
-        ("supports_adaptive", Value::from(capabilities.adaptive)),
-        (
-            "supports_conversational_awareness",
-            Value::from(capabilities.conversational_awareness),
-        ),
-        (
-            "supports_one_bud_anc",
-            Value::from(capabilities.one_bud_anc),
-        ),
-        ("model_number", Value::from(state.model_number.as_str())),
-        (
-            "ear_detection_behavior",
-            Value::from(state.ear_detection_behavior.number()),
-        ),
-        ("lid_state", Value::from(state.lid_state.number())),
-        ("notifications_enabled", Value::from(state.notifications)),
-        ("audio_server", Value::from(state.audio_server.word())),
-        ("advert_intake", Value::from(state.advert_intake.word())),
-        ("microphone", Value::from(state.microphone.word())),
-        ("mic", Value::from(state.mic.code.word())),
-    ]))
+    ]
 }
 
 /// Keys in the map's byte order, whatever `serde_json` features are on.
