@@ -113,13 +113,15 @@ mkdir -p target/release
 cat "$bench/stub/payload" > target/release/librepods
 "#;
 
-/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced it.
+/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced or slowed it.
+/// A slowed `status` spends the client's 2 s worst case (connect, write and reply timeouts) before it fails.
 const PAYLOAD: &str = r#"
 log librepods "$@"
 case "$1" in
 --version) echo "librepods VERSION" ;;
 status)
     [ -e "$bench/stub/silent" ] && exit 1
+    [ -e "$bench/stub/slow" ] && { sleep 2; exit 1; }
     echo '{"connected":false,"schema_version":1}' ;;
 esac
 "#;
