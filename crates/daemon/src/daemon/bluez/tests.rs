@@ -2,7 +2,6 @@
 
 use std::future::poll_fn;
 use std::ops::ControlFlow;
-use std::os::unix::net::UnixStream;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -11,15 +10,14 @@ use pods_proto::addr::BdAddr;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep, timeout};
-use zbus::connection::Builder;
 use zbus::export::futures_core::Stream;
-use zbus::{Connection, Guid, MessageStream};
+use zbus::{Connection, MessageStream};
 
 use super::calls::{self, Calls};
 use super::monitor::Monitor;
 use super::objects::{Candidates, Change, Kind, Properties};
 use super::{DeviceEvent, ErrorLog, Input, Request, Watcher, wait_to_retry};
-use crate::daemon::paused::on_paused_clock;
+use crate::daemon::paused::{on_paused_clock, peers};
 
 /// Long enough for a call the watcher wrongly made to reach the peer.
 const QUIET: Duration = Duration::from_millis(300);
@@ -37,23 +35,6 @@ const SWEEP_RETRY: Duration = Duration::from_millis(1000);
 const SWEEP_ASKED: Duration = Duration::from_millis(1000);
 
 const PODS: &str = "/org/bluez/hci0/dev_02_00_00_00_00_01";
-
-/// The watcher's end of a peer to peer bus, and the peer's.
-async fn peers() -> (Connection, Connection) {
-    let (watcher_end, peer_end) = UnixStream::pair().unwrap();
-    let peer = tokio::spawn(
-        Builder::unix_stream(peer_end)
-            .server(Guid::generate())
-            .p2p()
-            .build(),
-    );
-    let connection = Builder::unix_stream(watcher_end)
-        .p2p()
-        .build()
-        .await
-        .unwrap();
-    (connection, peer.await.unwrap().unwrap())
-}
 
 /// What a watcher borrows across connections, kept by the test.
 #[derive(Default)]
