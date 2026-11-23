@@ -27,8 +27,8 @@ mod tests {
     use super::support::advert::{HEADER, PAYLOAD, PRIMARY_LEVEL, keyed, ours};
     use super::support::rig::{ANC, DIAL_WAIT, Device, OFF, Rig, TRANSPARENCY, connected};
     use super::support::{
-        HANG_LIMIT, KEEP_STATE, KEEP_STATE_REFUSED, KEEP_STATE_TAKEN, Proto1, Session, outcome,
-        set_request, wait_for,
+        BINARY_VARIABLE, HANG_LIMIT, KEEP_STATE, KEEP_STATE_REFUSED, KEEP_STATE_TAKEN, Proto1,
+        Session, binary, outcome, set_request, wait_for,
     };
 
     /// Powerbeats Pro, product `0x200B`, as BlueZ prints it.
@@ -119,7 +119,11 @@ mod tests {
     /// Runs `UNKNOWN_TEST` alone in `cwd`, with `KEEP_STATE` set to `kept` or removed.
     fn run_unknown_test(kept: Option<&OsStr>, cwd: &Path) -> Output {
         let mut child = Command::new(std::env::current_exe().unwrap());
-        child.args(["--exact", UNKNOWN_TEST]).current_dir(cwd);
+        // The resolved path, since a relative one would be read from `cwd`.
+        child
+            .args(["--exact", UNKNOWN_TEST])
+            .env(BINARY_VARIABLE, binary())
+            .current_dir(cwd);
         match kept {
             Some(kept) => child.env(KEEP_STATE, kept),
             None => child.env_remove(KEEP_STATE),
