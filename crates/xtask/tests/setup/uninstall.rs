@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use crate::bench::{Bench, Ran, Tree};
+use crate::bench::{BUILT_DAEMON_LINK, Bench, Ran, Tree};
 use crate::install::{BINARY, CLIENT, UNIT, USAGE_EXIT, USAGE_LINES, files, succeeded};
 use crate::old_install::{
     Event, OLD_CONFIG, OLD_CONFIG_TEXT, events, exists, plant, plant_old_config,
@@ -16,8 +16,10 @@ const STATE: &str = "home/.local/state/librepods";
 const KEYS: &str = "home/.local/state/librepods/keys.json";
 const STATUS: &str = "home/.local/state/librepods/status.json";
 const SETTINGS: &str = "home/.local/state/librepods/settings.json";
-/// A state directory under an `XDG_STATE_HOME` outside the home.
-const XDG_STATE: &str = "xdg state/librepods";
+/// A state directory under an `XDG_STATE_HOME` inside the home.
+const XDG_STATE: &str = "home/xdg state/librepods";
+/// What `timeout` exits with when it has to kill a command that outlived its deadline.
+const KILLED: u8 = 137;
 const KEYS_TEXT: &str = "{\"irk\":\"synthetic\"}\n";
 const SETTINGS_TEXT: &str = "{\"noise_control\":\"anc\"}\n";
 const CLOSING: &str =
@@ -36,7 +38,29 @@ fn home(name: &str) -> String {
 
 fn install(bench: &Bench) {
     succeeded(&bench.run(&[]));
+    bench.link_built_daemon();
     bench.clear_calls();
+}
+
+/// The line an uninstall prints when the installed binary is not there to name the state directory.
+fn no_binary_line(bench: &Bench) -> String {
+    format!(
+        "setup: left any state directory in place, because {} is not there to name it.\n",
+        bench.path(&home(BINARY)).display()
+    )
+}
+
+/// The line an uninstall prints when the installed binary's `state-dir` exits with `status`.
+fn lookup_failed_line(bench: &Bench, status: u8) -> String {
+    format!(
+        "setup: left any state directory in place, because {} state-dir exited with status {status}.\n",
+        bench.path(&home(BINARY)).display()
+    )
+}
+
+/// The refusal of a directory the daemon named outside the home.
+fn outside_home(dir: &str) -> String {
+    format!("setup: refusing to remove a state directory outside the home: {dir}\n")
 }
 
 /// What the daemon keeps in its state directory while it runs.
@@ -158,58 +182,131 @@ fn kept_keys_are_named_with_their_warning() {
     plant(&unpaired.path(SETTINGS), SETTINGS_TEXT.as_bytes());
     let ran = unpaired.run(&KEEP_KEYS);
     ok(&ran);
-    let kept = format!("Kept {}.\n{CLOSING}", unpaired.path(STATE).display());
-    assert!(ran.stdout.ends_with(&kept), "{}", ran.stdout);
+    let kept = format!("Kept {}.\n", unpaired.path(STATE).display());
+    assert!(ran.stdout.contains(&kept), "{}", ran.stdout);
     assert!(!ran.stdout.contains("keys.json"), "{}", ran.stdout);
 }
 
-/// The error a refused run prints, and the run that leads to it.
-type Refused = (&'static str, fn(&Bench) -> Ran);
+/// The value `XDG_STATE_HOME` is set to, and the directory the daemon then names.
+type Refused = (&'static str, &'static str);
 
 #[test]
-fn a_state_path_that_is_empty_relative_or_the_root_stops_before_any_removal() {
-    let cases: [Refused; 7] = [
-        ("setup: HOME is not an absolute path: unset\n", |bench| {
-            bench.run_as(&UNINSTALL, "")
-        }),
-        ("setup: HOME is not an absolute path: home\n", |bench| {
-            bench.run_as(&UNINSTALL, "home")
-        }),
-        (
-            "setup: refusing to remove a state directory whose base is the root or not an absolute path: /librepods\n",
-            |bench| bench.run_with_state_home(&UNINSTALL, "/"),
-        ),
-        (
-            "setup: refusing to remove a state directory whose base is the root or not an absolute path: //librepods\n",
-            |bench| bench.run_with_state_home(&UNINSTALL, "//"),
-        ),
-        (
-            "setup: refusing to remove a state directory whose base is the root or not an absolute path: ///librepods\n",
-            |bench| bench.run_with_state_home(&UNINSTALL, "///"),
-        ),
-        (
-            "setup: refusing to remove a state directory whose base is the root or not an absolute path: /./librepods\n",
-            |bench| bench.run_with_state_home(&UNINSTALL, "/."),
-        ),
-        (
-            "setup: refusing to remove a state directory whose base is the root or not an absolute path: /../librepods\n",
-            |bench| bench.run_with_state_home(&UNINSTALL, "/.."),
-        ),
+fn a_state_directory_outside_the_home_stops_before_any_removal() {
+    let cases: [Refused; 5] = [
+        ("/", "/librepods"),
+        ("//", "//librepods"),
+        ("///", "///librepods"),
+        ("/.", "/./librepods"),
+        ("/..", "/../librepods"),
     ];
-    for (said, run) in cases {
+    for (state_home, named) in cases {
         let bench = Bench::new();
         install(&bench);
         plant_state(&bench, STATE);
         bench.record_removals();
         let before = bench.home_tree();
-        let ran = run(&bench);
-        assert_ne!(ran.code, Some(0), "{said}: {}", ran.stdout);
-        assert_eq!(ran.stderr, said);
-        assert_eq!(ran.stdout, "", "{said}");
-        assert_eq!(removed_paths(&bench), Vec::<PathBuf>::new(), "{said}");
-        assert_eq!(bench.calls_of("systemctl"), Vec::<String>::new(), "{said}");
-        assert_eq!(bench.home_tree(), before, "{said}");
+        let ran = bench.run_with_state_home(&UNINSTALL, state_home);
+        assert_refused(&bench, &ran, &outside_home(named), &before);
     }
+    for base in ["xdg state", "home/.."] {
+        let bench = Bench::new();
+        install(&bench);
+        let dir = format!("{base}/librepods");
+        plant_state(&bench, &dir);
+        bench.record_removals();
+        let before = bench.home_tree();
+        let state_home = bench.path(base).display().to_string();
+        let ran = bench.run_with_state_home(&UNINSTALL, &state_home);
+        let named = format!("{state_home}/librepods");
+        assert_refused(&bench, &ran, &outside_home(&named), &before);
+        assert!(exists(&bench, &format!("{dir}/keys.json")), "{dir}");
+    }
+}
+
+#[test]
+fn a_home_that_is_empty_or_relative_stops_before_any_removal() {
+    for (home, said) in [("", "unset"), ("home", "home")] {
+        let bench = Bench::new();
+        install(&bench);
+        plant_state(&bench, STATE);
+        bench.record_removals();
+        let before = bench.home_tree();
+        let ran = bench.run_as(&UNINSTALL, home);
+        let refusal = format!("setup: HOME is not an absolute path: {said}\n");
+        assert_refused(&bench, &ran, &refusal, &before);
+    }
+}
+
+fn assert_refused(bench: &Bench, ran: &Ran, said: &str, before: &Tree) {
+    assert_ne!(ran.code, Some(0), "{said}: {}", ran.stdout);
+    assert_eq!(ran.stderr, said);
+    assert_eq!(ran.stdout, "", "{said}");
+    assert_eq!(removed_paths(bench), Vec::<PathBuf>::new(), "{said}");
+    assert_eq!(bench.calls_of("systemctl"), Vec::<String>::new(), "{said}");
+    assert_eq!(&bench.home_tree(), before, "{said}");
+}
+
+#[test]
+fn a_binary_that_cannot_name_the_directory_leaves_it_and_removes_the_rest() {
+    let missing = Bench::new();
+    install(&missing);
+    plant_state(&missing, STATE);
+    fs::remove_file(missing.path(&home(BINARY))).unwrap();
+    let ran = missing.run(&UNINSTALL);
+    ok(&ran);
+    assert_eq!(ran.stderr, no_binary_line(&missing));
+    assert_only_the_state_is_left(&missing);
+
+    let failing = Bench::new();
+    install(&failing);
+    plant_state(&failing, STATE);
+    failing.set("state-dir-fails", "");
+    let ran = failing.run(&KEEP_KEYS);
+    ok(&ran);
+    assert_eq!(
+        ran.stderr,
+        format!(
+            "librepods: cannot place the state file\n{}",
+            lookup_failed_line(&failing, 1)
+        )
+    );
+    assert!(!ran.stdout.contains("Kept "), "{}", ran.stdout);
+    assert_only_the_state_is_left(&failing);
+
+    let hanging = Bench::new();
+    install(&hanging);
+    plant_state(&hanging, STATE);
+    hanging.set("state-dir-hangs", "");
+    let ran = hanging.run(&UNINSTALL);
+    ok(&ran);
+    assert_eq!(ran.stderr, lookup_failed_line(&hanging, KILLED));
+    assert_only_the_state_is_left(&hanging);
+}
+
+#[test]
+fn a_rerun_after_a_failed_reload_still_finds_the_state() {
+    let bench = Bench::new();
+    install(&bench);
+    plant_state(&bench, STATE);
+    bench.set("systemctl-fails", "daemon-reload");
+    let ran = bench.run(&UNINSTALL);
+    assert_ne!(ran.code, Some(0), "{}", ran.stderr);
+    fs::remove_file(bench.path("stub/systemctl-fails")).unwrap();
+    let ran = bench.run(&UNINSTALL);
+    ok(&ran);
+    assert_eq!(ran.stderr, "");
+    assert_eq!(files(&bench.home_tree()), BTreeSet::new());
+}
+
+fn assert_only_the_state_is_left(bench: &Bench) {
+    let left: BTreeSet<&Path> = [
+        Path::new(".local/state/librepods/keys.json"),
+        Path::new(".local/state/librepods/settings.json"),
+        Path::new(".local/state/librepods/status.json"),
+    ]
+    .into();
+    assert_eq!(files(&bench.home_tree()), left);
+    assert_eq!(bench.calls_of("systemctl"), [STOP, RELOAD]);
 }
 
 #[test]
@@ -262,27 +359,24 @@ fn a_client_that_is_a_real_file_is_left_and_said() {
 }
 
 #[test]
-fn uninstall_runs_nothing_of_the_binary() {
+fn uninstall_asks_the_binary_only_where_its_state_is() {
     for args in [&UNINSTALL[..], &KEEP_KEYS[..]] {
         let bench = Bench::new();
         install(&bench);
         plant_state(&bench, STATE);
         ok(&bench.run(args));
         assert_eq!(bench.calls_of("systemctl"), [STOP, RELOAD], "{args:?}");
-        let programs: Vec<String> = bench
+        let asked: Vec<Vec<String>> = bench
             .call_arguments()
             .into_iter()
-            .map(|call| call[0].clone())
+            .filter(|call| call[0].contains("librepods"))
             .collect();
-        assert!(
-            !programs.iter().any(|program| program.contains("librepods")),
-            "{programs:?}"
-        );
+        assert_eq!(asked, [["librepods", "state-dir"]], "{args:?}");
     }
 }
 
 #[test]
-fn uninstall_twice_is_quiet() {
+fn uninstall_twice_removes_nothing_more() {
     let bench = Bench::new();
     install(&bench);
     plant_state(&bench, STATE);
@@ -292,7 +386,7 @@ fn uninstall_twice_is_quiet() {
     let ran = bench.run(&UNINSTALL);
     ok(&ran);
     assert_eq!(ran.stdout, CLOSING);
-    assert_eq!(ran.stderr, "");
+    assert_eq!(ran.stderr, no_binary_line(&bench));
     assert_eq!(bench.calls(), [ID_CHECK]);
 
     let kept = Bench::new();
@@ -303,20 +397,21 @@ fn uninstall_twice_is_quiet() {
     kept.record_removals();
     let ran = kept.run(&KEEP_KEYS);
     ok(&ran);
-    assert_eq!(ran.stdout, format!("{}{CLOSING}", kept_line(&kept, STATE)));
-    assert_eq!(ran.stderr, "");
+    assert_eq!(ran.stdout, CLOSING);
+    assert_eq!(ran.stderr, no_binary_line(&kept));
     assert_eq!(kept.calls(), [ID_CHECK]);
+    assert_eq!(fs::read_to_string(kept.path(KEYS)).unwrap(), KEYS_TEXT);
 }
 
 #[test]
-fn uninstall_where_setup_never_ran_is_quiet_and_exits_zero() {
+fn uninstall_where_setup_never_ran_removes_nothing_and_exits_zero() {
     for args in [&UNINSTALL[..], &KEEP_KEYS[..]] {
         let bench = Bench::new();
         bench.record_removals();
         let ran = bench.run(args);
         ok(&ran);
         assert_eq!(ran.stdout, CLOSING, "{args:?}");
-        assert_eq!(ran.stderr, "", "{args:?}");
+        assert_eq!(ran.stderr, no_binary_line(&bench), "{args:?}");
         assert_eq!(bench.calls(), [ID_CHECK], "{args:?}");
         assert_eq!(bench.home_tree(), Tree::new(), "{args:?}");
     }
@@ -374,11 +469,11 @@ fn keep_keys_without_uninstall_is_a_usage_error() {
 fn nothing_outside_the_bench_home_is_touched() {
     for args in [&UNINSTALL[..], &KEEP_KEYS[..]] {
         let bench = Bench::new();
-        let before = bench.outside_home(&[]);
+        let before = bench.outside_home(&[BUILT_DAEMON_LINK]);
         install(&bench);
         plant_state(&bench, STATE);
         ok(&bench.run(args));
-        assert_eq!(bench.outside_home(&[]), before, "{args:?}");
+        assert_eq!(bench.outside_home(&[BUILT_DAEMON_LINK]), before, "{args:?}");
     }
 }
 

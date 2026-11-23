@@ -21,6 +21,7 @@ pub(crate) enum Invocation {
     Watch,
     Set { key: String, value: String },
     Do { action: String },
+    StateDir,
 }
 
 /// Daemon for the Omarchy bar plugin, and its command line client.
@@ -59,6 +60,8 @@ enum Command {
         /// The action to ask for
         action: String,
     },
+    /// Print the directory that holds the state file, the settings and the pairing keys
+    StateDir,
 }
 
 // Sample input: `/bin/librepods-ctl` with `["noise:anc"]`, or `librepods` with `["ctl", "status"]`
@@ -74,6 +77,7 @@ pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, clap
         Command::Watch => Ok(Invocation::Watch),
         Command::Set { key, value } => Ok(Invocation::Set { key, value }),
         Command::Do { action } => Ok(Invocation::Do { action }),
+        Command::StateDir => Ok(Invocation::StateDir),
     }
 }
 
@@ -216,6 +220,7 @@ mod tests {
                     action: "disconnect".to_owned(),
                 },
             ),
+            (vec!["state-dir"], Invocation::StateDir),
         ] {
             let parsed = parse(OsStr::new("librepods"), &args(&words));
             assert_eq!(parsed.unwrap(), expected, "{words:?}");

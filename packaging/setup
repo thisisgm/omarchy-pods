@@ -21,8 +21,8 @@ readonly OLD_DESKTOP_SHA256=a485b2f5939e9f334fa8ffcdc0a37a292b1d349e9357ec1c710e
 readonly OLD_ICON_SHA256=8d3d2c7bd6ecbed70afe21c5530ce03e35811b5090087bf5b1ca2fffbf63ef19
 readonly manager_interface=org.bluez.AdvertisementMonitorManager1
 readonly busctl_timeout_s=2
+readonly state_dir_timeout_s=2
 readonly readme_section="Case battery while away"
-readonly state_name=librepods
 
 plugin_dir=$(cd "$(dirname "$0")/.." && pwd)
 readonly plugin_dir
@@ -39,6 +39,7 @@ asset=
 tag=
 binary=
 scratch=
+state_dir=
 
 fail() {
     printf 'setup: %s: %s\n' "$1" "$2" >&2
@@ -274,11 +275,28 @@ report_monitor() {
     fi
 }
 
-# The daemon's own rule: an absolute XDG_STATE_HOME, else the home's .local/state.
-state_dir() {
-    local base="${HOME:-}/.local/state"
-    [[ ${XDG_STATE_HOME:-} != /* ]] || base=${XDG_STATE_HOME%/}
-    printf '%s/%s' "$base" "$state_name"
+# The installed daemon names its state directory, so the rule for it lives in one place.
+find_state_dir() {
+    local binary="$bin_dir/librepods" status=0
+    if ! exists "$binary"; then
+        printf 'setup: left any state directory in place, because %s is not there to name it.\n' "$binary" >&2
+        return 0
+    fi
+    # The old C++ librepods sat at the same path, ignores its arguments and traps TERM, so the lookup is killed at a deadline.
+    state_dir=$(timeout --kill-after="$state_dir_timeout_s" "$state_dir_timeout_s" "$binary" state-dir) || status=$?
+    if [ "$status" -ne 0 ]; then
+        printf 'setup: left any state directory in place, because %s state-dir exited with status %s.\n' "$binary" "$status" >&2
+        state_dir=
+        return 0
+    fi
+    inside_home "$state_dir" || fail "refusing to remove a state directory outside the home" "$state_dir"
+}
+
+# Resolved first, so repeated slashes and dot segments cannot climb out of the home.
+inside_home() {
+    local resolved home
+    resolved=$(readlink -m -- "$1") && home=$(readlink -m -- "$HOME") || return 1
+    [[ $1 == /* && $resolved == "$home"/?* ]]
 }
 
 remove_if_there() {
@@ -315,25 +333,21 @@ remove_state() {
 }
 
 remove_installed() {
-    local dir resolved unit="$unit_dir/librepods.service" had_unit=false
-    dir=$(state_dir)
-    resolved=$(readlink -m -- "$dir") || fail "could not resolve the state directory" "$dir"
-    # Checked as resolved, so dot segments and repeated slashes cannot make the base the root.
-    if [[ $dir != /* || $resolved != /*[!/]*/"$state_name" ]]; then
-        fail "refusing to remove a state directory whose base is the root or not an absolute path" "$dir"
-    fi
+    local unit="$unit_dir/librepods.service" had_unit=false
+    find_state_dir
     if exists "$unit"; then
         had_unit=true
         systemctl --user disable --now librepods.service ||
             fail "systemctl could not stop and disable the service" "librepods.service"
     fi
     remove_client
-    remove_if_there "$bin_dir/librepods"
     if [ "$had_unit" = true ]; then
         remove_file "$unit"
         systemctl --user daemon-reload || fail "systemctl could not reload the user units" "daemon-reload"
     fi
-    remove_state "$dir"
+    [ -z "$state_dir" ] || remove_state "$state_dir"
+    # Last, so a run that fails before here can be rerun and still learn where the state is.
+    remove_if_there "$bin_dir/librepods"
     printf '%s\n' "Removed. To remove the plugin itself: omarchy plugin remove io.github.thisisgm.omapods"
 }
 
