@@ -13,7 +13,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pods_core::policy::audio::{
-    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, SinkFact, sink_prefix,
+    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkFact,
+    sink_prefix,
 };
 use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{
@@ -91,9 +92,9 @@ pub(super) async fn run(
         match request {
             Some(AudioRequest::Follow(device)) => followed = device,
             // Nothing is followed, so no sink is left to restore.
-            Some(AudioRequest::Restore) => {
+            Some(AudioRequest::Restore(id)) => {
                 if inputs
-                    .send(Input::Audio(AudioFact::Restored))
+                    .send(Input::Audio(AudioFact::Restored(id)))
                     .await
                     .is_err()
                 {
@@ -205,8 +206,8 @@ impl From<Lost> for Ended {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Restore {
     Clear,
-    Asked,
-    Resuming,
+    Asked(RestoreId),
+    Resuming(RestoreId),
     Owed,
 }
 
@@ -220,7 +221,7 @@ impl Requests<'_> {
     fn poll_next(&mut self, context: &mut Context<'_>) -> Poll<Option<AudioRequest>> {
         loop {
             match self.queue.poll_recv(context) {
-                Poll::Ready(Some(AudioRequest::Restore)) => self.restore = Restore::Asked,
+                Poll::Ready(Some(AudioRequest::Restore(id))) => self.restore = Restore::Asked(id),
                 Poll::Ready(Some(AudioRequest::CancelRestore)) => self.restore = Restore::Clear,
                 Poll::Ready(request) => return Poll::Ready(request),
                 Poll::Pending => return Poll::Pending,
@@ -250,7 +251,7 @@ impl Requests<'_> {
             if let Poll::Ready(request) = self.poll_next(context) {
                 return Poll::Ready(Err(Left::Request(request)));
             }
-            if self.restore == Restore::Asked {
+            if matches!(self.restore, Restore::Asked(_)) {
                 return Poll::Ready(Ok(None));
             }
             work.as_mut().poll(context).map(|done| Ok(Some(done)))
@@ -315,13 +316,14 @@ impl<'a> Follower<'a> {
         let wait = AUDIO_RETRY_MS.get(self.misses).copied().unwrap_or(longest);
         let mut step = pin!(sleep(Duration::from_millis(wait)));
         loop {
-            if self.requests.restore == Restore::Asked && self.suspended {
-                self.requests.restore = Restore::Resuming;
-            }
-            if self.requests.restore == Restore::Asked {
-                log(RESTORE_OWED_LINE);
-                self.requests.restore = Restore::Owed;
-                self.tell(AudioFact::Restored).await?;
+            if let Restore::Asked(id) = self.requests.restore {
+                if self.suspended {
+                    self.requests.restore = Restore::Resuming(id);
+                } else {
+                    log(RESTORE_OWED_LINE);
+                    self.requests.restore = Restore::Owed;
+                    self.tell(AudioFact::Restored(id)).await?;
+                }
             }
             if self.requests.waited(step.as_mut()).await?.is_some() {
                 break;
@@ -391,10 +393,13 @@ impl<'a> Follower<'a> {
             _ => {}
         }
         self.suspended = false;
-        let asked = matches!(self.requests.restore, Restore::Asked | Restore::Resuming);
+        let asked = match self.requests.restore {
+            Restore::Asked(id) | Restore::Resuming(id) => Some(id),
+            Restore::Clear | Restore::Owed => None,
+        };
         self.requests.restore = Restore::Clear;
-        if asked {
-            self.tell(AudioFact::Restored).await?;
+        if let Some(id) = asked {
+            self.tell(AudioFact::Restored(id)).await?;
         }
         Ok(())
     }

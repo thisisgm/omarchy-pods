@@ -131,7 +131,7 @@ impl Ear {
         self.ours = match fact {
             AudioFact::Sink(sink) => sink.is_some_and(|sink| sink.is_default),
             AudioFact::Down => false,
-            AudioFact::Up | AudioFact::Restored => self.ours,
+            AudioFact::Up | AudioFact::Restored(_) => self.ours,
         };
     }
 
