@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use crate::bench::{ADAPTER_OBJECT, Bench, Ran, SERVED_TYPES};
+use crate::bench::{ADAPTER_OBJECT, Bench, Ran, SERVED_TYPES, repo, script_constant};
 use crate::install::done_lines;
 
 const POINTER: &str = "BlueZ experimental features are off, so the case battery, lid and ear state do not show while the AirPods are away. The README section \"Case battery while away\" says how to turn them on.\n";
@@ -145,4 +145,21 @@ fn nothing_is_written_outside_the_bench_home() {
         assert_eq!(ran.stdout.contains(POINTER), !served, "{name}");
         assert_eq!(bench.outside_home(&[]), before, "{name}");
     }
+}
+
+#[test]
+fn the_pointer_names_a_readme_heading() {
+    let section = script_constant("readme_section");
+    let readme = fs::read_to_string(repo().join("README.md")).unwrap();
+    // Sample input: `## Case battery while away`
+    let headings: Vec<&str> = readme
+        .lines()
+        .filter(|line| line.starts_with('#'))
+        .filter_map(|line| line.trim_start_matches('#').strip_prefix(' '))
+        .collect();
+    assert!(
+        headings.contains(&section.as_str()),
+        "{section:?} in {headings:?}"
+    );
+    assert!(POINTER.contains(&format!("\"{section}\"")));
 }

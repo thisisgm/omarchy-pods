@@ -145,6 +145,18 @@ untouched. Upstream librepods has an implementation of it for its Rust rewrite i
 [PR 655](https://github.com/kavishdevar/librepods/pull/655), unmerged at the time
 of writing. Nothing in this daemon does that today.
 
+## Case battery while away
+
+The daemon `packaging/setup` installs hears the case report its battery, lid
+and ear state while the AirPods are away only when BlueZ serves its
+advertisement monitor, which needs BlueZ experimental features. They are off by
+default, and turning them on is yours to do:
+
+1. As root, set `Experimental = true` under `[General]` in
+   `/etc/bluetooth/main.conf`.
+2. Restart the Bluetooth service, or reboot. Every Bluetooth device disconnects
+   for a moment.
+
 ## Install
 
 ```bash
