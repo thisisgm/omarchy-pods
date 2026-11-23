@@ -1,6 +1,8 @@
 //! A fake BlueZ on a private bus: the object manager at `/`, adapters and devices, served from one thread of its own.
 
+mod calls;
 pub(crate) mod monitor;
+pub(crate) mod transport;
 
 use std::collections::HashMap;
 use std::future::{Future, poll_fn};
@@ -29,7 +31,11 @@ use zbus::{
 };
 
 use super::HANG_LIMIT;
+use calls::record;
+pub(crate) use calls::{Call, DeviceMethod};
 use monitor::{MANAGER_INTERFACE, Monitors, Registration};
+pub(crate) use transport::TransportPath;
+use transport::{TRANSPORT_INTERFACE, Transports};
 
 /// The service UUID AirPods list, the one the daemon looks for.
 pub(crate) const AAP_UUID: &str = "74ec2172-0bad-4d01-8f77-997b2be0722a";
@@ -56,32 +62,6 @@ pub(crate) struct AdapterPath(pub(crate) String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DevicePath(pub(crate) String);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DeviceMethod {
-    Connect,
-    Disconnect,
-    RemoveDevice,
-    StartDiscovery,
-    StopDiscovery,
-    SetDiscoveryFilter,
-    /// `AdvertisementMonitorManager1` calls, on an adapter that serves the interface or not.
-    RegisterMonitor,
-    UnregisterMonitor,
-    /// A `Properties.Set` on `Adapter1`, the value as D-Bus text writes it: `false`.
-    Set {
-        property: String,
-        value: String,
-    },
-}
-
-/// A method call on a device or an adapter; `argument` is the device path a `RemoveDevice` names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Call {
-    pub(crate) object: String,
-    pub(crate) method: DeviceMethod,
-    pub(crate) argument: Option<String>,
-}
-
 /// The serving thread and the sender that ends it.
 type Server = (oneshot::Sender<()>, JoinHandle<()>);
 
@@ -104,6 +84,7 @@ pub(crate) struct FakeBluez {
 struct Objects {
     adapters: Vec<Adapter>,
     devices: HashMap<String, Device>,
+    transports: Transports,
     monitors: Monitors,
     /// Every change of a device object's connection, its adding and its removal included, oldest first.
     edges: Vec<Edge>,
@@ -309,14 +290,23 @@ impl Bluez {
 
     /// Changes one property of a device and emits `PropertiesChanged` for it.
     pub(crate) fn set(&self, path: &DevicePath, property: &str, value: OwnedVariant) {
-        {
+        let dropped = {
             let mut objects = self.lock();
-            let Objects { devices, edges, .. } = &mut *objects;
+            let Objects {
+                devices,
+                edges,
+                transports,
+                ..
+            } = &mut *objects;
             let device = devices.get_mut(&path.0).expect("a device of the fake");
+            let mut dropped = Vec::new();
             match property {
                 "Connected" => {
                     device.connected = bool::try_from(&value).unwrap();
                     edges.push(Edge::now(&path.0, device.address, device.connected));
+                    if !device.connected {
+                        dropped = transports.remove_device(&path.0);
+                    }
                 }
                 "UUIDs" => device.uuids = Vec::try_from(value.try_clone().unwrap()).unwrap(),
                 "Modalias" => {
@@ -324,7 +314,10 @@ impl Bluez {
                 }
                 _ => {}
             }
-        }
+            dropped
+        };
+        // corner: a disconnect closes the device's streams, so its transports leave first
+        self.transports_removed(dropped);
         let changed = HashMap::from([(property, value)]);
         let body = (DEVICE_INTERFACE, changed, Vec::<String>::new());
         self.emit(&path.0, PROPERTIES, "PropertiesChanged", &body);
@@ -336,18 +329,53 @@ impl Bluez {
         self.emit(&path.0, PROPERTIES, "PropertiesChanged", &body);
     }
 
-    /// Removes a device and emits `InterfacesRemoved` for it.
+    /// Adds a `MediaTransport1` under the device and emits `InterfacesAdded` for it.
+    pub(crate) fn add_transport(
+        &self,
+        device: &DevicePath,
+        codec: u8,
+        configuration: &[u8],
+    ) -> TransportPath {
+        let (path, interfaces) = {
+            let mut objects = self.lock();
+            assert!(
+                objects.devices.contains_key(&device.0),
+                "a device of the fake"
+            );
+            let path = objects.transports.add(&device.0, codec, configuration);
+            let interfaces = objects.transports.interfaces(&path).unwrap();
+            (path, interfaces)
+        };
+        self.emit(
+            "/",
+            OBJECT_MANAGER,
+            "InterfacesAdded",
+            &(object(&path), interfaces),
+        );
+        TransportPath(path)
+    }
+
+    /// Removes a device and emits `InterfacesRemoved` for it, after one for each of its transports as BlueZ does.
     pub(crate) fn remove(&self, path: &DevicePath) {
-        {
+        let transports = {
             let mut objects = self.lock();
             let device = objects
                 .devices
                 .remove(&path.0)
                 .expect("a device of the fake");
             objects.edge(&path.0, device.address, false);
-        }
+            objects.transports.remove_device(&path.0)
+        };
+        self.transports_removed(transports);
         let body = (object(&path.0), vec![DEVICE_INTERFACE]);
         self.emit("/", OBJECT_MANAGER, "InterfacesRemoved", &body);
+    }
+
+    fn transports_removed(&self, paths: Vec<String>) {
+        for path in paths {
+            let body = (object(&path), vec![TRANSPORT_INTERFACE]);
+            self.emit("/", OBJECT_MANAGER, "InterfacesRemoved", &body);
+        }
     }
 
     pub(crate) fn drop_name(&self) {
@@ -499,11 +527,12 @@ impl Objects {
         });
         adapters
             .chain(devices)
+            .chain(self.transports.managed())
             .chain(self.monitors.managed_devices())
             .collect()
     }
 
-    /// The properties `Get` and `GetAll` read at `path`, a device's or an adapter's.
+    /// The properties `Get` and `GetAll` read at `path`, a device's, a transport's or an adapter's.
     fn properties(&self, path: &str) -> Option<HashMap<String, OwnedVariant>> {
         let adapter = || {
             let adapter = self.adapters.iter().find(|adapter| adapter.path == path)?;
@@ -512,6 +541,7 @@ impl Objects {
         self.devices
             .get(path)
             .map(Device::properties)
+            .or_else(|| self.transports.properties(path))
             .or_else(|| self.monitors.device_properties(path))
             .or_else(adapter)
     }
@@ -633,46 +663,6 @@ impl Edge {
             connected,
         }
     }
-}
-
-/// The call as `calls` lists it: `Connect` or `Disconnect` on `Device1`, a method of `Adapter1` or the monitor manager that `DeviceMethod` names, or a `Set` on `Adapter1`.
-fn record(call: &Message) -> Option<Call> {
-    let header = call.header();
-    let interface = header.interface().map(InterfaceName::as_str);
-    let member = header.member().map(MemberName::as_str);
-    let (method, argument) = match (interface, member) {
-        (Some(DEVICE_INTERFACE), Some("Connect")) => (DeviceMethod::Connect, None),
-        (Some(DEVICE_INTERFACE), Some("Disconnect")) => (DeviceMethod::Disconnect, None),
-        (Some(ADAPTER_INTERFACE), Some("RemoveDevice")) => {
-            let device: OwnedObjectPath = call.body().deserialize().ok()?;
-            (DeviceMethod::RemoveDevice, Some(device.as_str().to_owned()))
-        }
-        (Some(ADAPTER_INTERFACE), Some("StartDiscovery")) => (DeviceMethod::StartDiscovery, None),
-        (Some(ADAPTER_INTERFACE), Some("StopDiscovery")) => (DeviceMethod::StopDiscovery, None),
-        (Some(ADAPTER_INTERFACE), Some("SetDiscoveryFilter")) => {
-            (DeviceMethod::SetDiscoveryFilter, None)
-        }
-        (Some(MANAGER_INTERFACE), Some("RegisterMonitor")) => (DeviceMethod::RegisterMonitor, None),
-        (Some(MANAGER_INTERFACE), Some("UnregisterMonitor")) => {
-            (DeviceMethod::UnregisterMonitor, None)
-        }
-        // Sample body: ("org.bluez.Adapter1", "Powered", <false>).
-        (Some(PROPERTIES), Some("Set")) => {
-            let (interface, property, value): (String, String, OwnedVariant) =
-                call.body().deserialize().ok()?;
-            if interface != ADAPTER_INTERFACE {
-                return None;
-            }
-            let value = value.to_string();
-            (DeviceMethod::Set { property, value }, None)
-        }
-        _ => return None,
-    };
-    Some(Call {
-        object: header.path()?.as_str().to_owned(),
-        method,
-        argument,
-    })
 }
 
 fn object(path: &str) -> ObjectPath<'static> {

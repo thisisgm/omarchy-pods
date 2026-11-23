@@ -10,7 +10,8 @@ mod support;
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CString;
+    use std::collections::BTreeMap;
+    use std::ffi::{CStr, CString};
     use std::io::{ErrorKind, Read, Write};
     use std::net::Shutdown;
     use std::os::unix::net::UnixStream;
@@ -21,19 +22,20 @@ mod tests {
     use proptest::prelude::*;
 
     use pulseaudio::protocol::{
-        AuthParams, AuthReply, ChannelVolume, Command, CommandReply, CommandTag, DEFAULT_SINK,
-        DESCRIPTOR_SIZE, GetSinkInfo, MAX_VERSION, Prop, Props, ProtocolError, PulseError,
-        ServerInfo, SetClientNameReply, SetDeviceVolumeParams, SinkInfo, SubscriptionEvent,
-        SubscriptionEventFacility, SubscriptionEventType, SubscriptionMask, Volume,
-        read_ack_message, read_command_message, read_descriptor, read_reply_message,
+        AuthParams, AuthReply, CardInfo, ChannelVolume, Command, CommandReply, CommandTag,
+        DEFAULT_SINK, DESCRIPTOR_SIZE, GetCardInfo, GetSinkInfo, MAX_VERSION, Prop, Props,
+        ProtocolError, PulseError, ServerInfo, SetCardProfileParams, SetClientNameReply,
+        SetDeviceVolumeParams, SinkInfo, SinkState, SourceInfo, SourceOutputInfo,
+        SubscriptionEvent, SubscriptionEventFacility, SubscriptionEventType, SubscriptionMask,
+        Volume, read_ack_message, read_command_message, read_descriptor, read_reply_message,
         write_command_message,
     };
 
     use super::support::Session;
     use super::support::audio::wire::{
-        OVERSIZED_LENGTH, command, header, percent_of, read_frame, sink_of, volume_of,
+        OVERSIZED_LENGTH, card_of, command, header, percent_of, read_frame, sink_of, volume_of,
     };
-    use super::support::audio::{Asked, FakeAudio, Volumes};
+    use super::support::audio::{Asked, FakeAudio, FakeProfile, Recorder, Volumes};
     use super::support::rig::Rig;
 
     /// A reply or an event later than this is lost; the fake answers in microseconds.
@@ -52,6 +54,33 @@ mod tests {
     const PAYLOAD_KEPT: usize = 9;
     /// Longer than any command the fake answers, so every reader is driven past its last field.
     const ARBITRARY_MAX: usize = 96;
+    const MICROPHONE: &str = "alsa_input.internal";
+    /// A recorder may name a source that is not there, as one held on the pods' input while they are away.
+    const ABSENT_SOURCE: &str = "bluez_input.02:00:00:00:00:02";
+    /// What the server writes as the source of a recorder linked to none.
+    const NO_SOURCE: u32 = u32::MAX;
+    const OFF: &str = "off";
+    const SBC: &str = "a2dp-sink-sbc";
+    const SBC_XQ: &str = "a2dp-sink-sbc_xq";
+    const AAC: &str = "a2dp-sink";
+    const HEADSET: &str = "headset-head-unit";
+    /// The pods' card as the server offers it, one profile unavailable.
+    const PROFILES: [FakeProfile; 5] = [
+        profile(SBC, true, 1, 0),
+        profile(SBC_XQ, false, 1, 0),
+        profile(AAC, true, 1, 0),
+        profile(HEADSET, true, 1, 1),
+        profile(OFF, true, 0, 0),
+    ];
+
+    const fn profile(name: &'static str, available: bool, sinks: u32, sources: u32) -> FakeProfile {
+        FakeProfile {
+            name,
+            available,
+            sinks,
+            sources,
+        }
+    }
 
     /// One connection to the fake, speaking only through the crate's own messages.
     struct Client {
@@ -385,12 +414,12 @@ mod tests {
         let (audio, name) = one_sink(&session);
         let mut client = Client::open(audio.socket());
 
-        let error = client.refused(&Command::GetCardInfoList);
+        let error = client.refused(&Command::GetClientInfoList);
         assert_eq!(error, PulseError::Command);
         assert_eq!(
             audio.requests().last(),
             Some(&Asked::Unknown {
-                command: u32::from(CommandTag::GetCardInfoList as u8)
+                command: u32::from(CommandTag::GetClientInfoList as u8)
             })
         );
         let server: ServerInfo = client.ask(&Command::GetServerInfo);
@@ -461,6 +490,276 @@ mod tests {
         ] {
             assert_eq!(volume_of(percent).as_u32(), raw, "{percent} %");
             assert_eq!(percent_of(Volume::from_u32_clamped(raw)), percent, "{raw}");
+        }
+    }
+
+    fn card_info(name: &str) -> Command {
+        Command::GetCardInfo(GetCardInfo {
+            index: None,
+            name: Some(c_name(name)),
+        })
+    }
+
+    fn profile_write(card: &str, profile: &str) -> Command {
+        Command::SetCardProfile(SetCardProfileParams {
+            card_index: None,
+            card_name: Some(c_name(card)),
+            profile_name: c_name(profile),
+        })
+    }
+
+    /// The fake with the pods' card in `off`.
+    fn one_card(session: &Session) -> (FakeAudio, String) {
+        let audio = FakeAudio::start(&session.runtime_dir());
+        let card = card_of(FIRST);
+        audio.add_card(&card, &PROFILES, OFF);
+        (audio, card)
+    }
+
+    /// A recorder as a test compares it: its source, whether it is corked, and every property as text.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Listed {
+        source: u32,
+        corked: bool,
+        props: BTreeMap<String, String>,
+    }
+
+    fn listed(info: &SourceOutputInfo) -> Listed {
+        let props = info.props.iter().map(|(key, value)| {
+            let value = CStr::from_bytes_with_nul(value).unwrap();
+            (
+                key.to_str().unwrap().to_owned(),
+                value.to_str().unwrap().to_owned(),
+            )
+        });
+        Listed {
+            source: info.source_index,
+            corked: info.corked,
+            props: props.collect(),
+        }
+    }
+
+    /// A recorder through the pulse server on `target`, with `extra` properties beside the four every one carries.
+    fn expected(source: u32, target: &str, corked: bool, extra: &[(&str, &str)]) -> Listed {
+        let corked_text = if corked { "true" } else { "false" };
+        let mut props = BTreeMap::from([
+            ("client.api", "pipewire-pulse"),
+            ("media.class", "Stream/Input/Audio"),
+            ("pulse.corked", corked_text),
+            ("target.object", target),
+        ]);
+        props.extend(extra.iter().copied());
+        let props = props
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()));
+        Listed {
+            source,
+            corked,
+            props: props.collect(),
+        }
+    }
+
+    #[test]
+    fn a_card_lists_its_profiles_and_its_active_one() {
+        let session = Session::new();
+        let audio = FakeAudio::start(&session.runtime_dir());
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::CARD);
+        let card = card_of(FIRST);
+        assert_eq!(card, "bluez_card.02_00_00_00_00_01");
+        audio.add_card(&card, &PROFILES, OFF);
+        let mut client = Client::open(audio.socket());
+        let opened = audio.requests().len();
+
+        let cards: Vec<CardInfo> = client.ask(&Command::GetCardInfoList);
+        assert_eq!(cards.len(), 1, "{cards:?}");
+        let listed = &cards[0];
+        let added = SubscriptionEvent {
+            event_type: SubscriptionEventType::New,
+            ..event(SubscriptionEventFacility::Card, Some(listed.index))
+        };
+        assert_eq!(watcher.event(), added);
+        assert_eq!(listed.name, c_name(&card));
+        assert_eq!(listed.active_profile, Some(c_name(OFF)));
+        let profiles = listed.profiles.iter().map(|profile| {
+            let counts = (profile.available, profile.num_sinks, profile.num_sources);
+            (profile.name.clone(), counts)
+        });
+        let offered = PROFILES.iter().map(|profile| {
+            let counts = (u32::from(profile.available), profile.sinks, profile.sources);
+            (c_name(profile.name), counts)
+        });
+        assert!(profiles.eq(offered), "{:?}", listed.profiles);
+        let by_name: CardInfo = client.ask(&card_info(&card));
+        assert_eq!(&by_name, listed);
+        let absent = client.refused(&card_info(&card_of(SECOND)));
+        assert_eq!(absent, PulseError::NoEntity);
+        assert_eq!(audio.active_profile(&card), OFF);
+        assert_eq!(
+            audio.requests()[opened..],
+            [
+                Asked::CardList,
+                Asked::CardInfo { name: card.clone() },
+                Asked::CardInfo {
+                    name: card_of(SECOND)
+                },
+            ]
+        );
+        audio.assert_only_reads();
+    }
+
+    #[test]
+    fn a_profile_write_is_stored_announced_and_recorded() {
+        let session = Session::new();
+        let (audio, card) = one_card(&session);
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::CARD);
+        let mut writer = Client::open(audio.socket());
+        let index = writer.ask::<CardInfo>(&card_info(&card)).index;
+        let changed = event(SubscriptionEventFacility::Card, Some(index));
+
+        writer.ack(&profile_write(&card, SBC));
+        assert_eq!(watcher.event(), changed);
+        watcher.nothing_for(QUIET);
+        assert_eq!(audio.active_profile(&card), SBC);
+        let stored: CardInfo = writer.ask(&card_info(&card));
+        assert_eq!(stored.active_profile, Some(c_name(SBC)));
+
+        writer.ack(&profile_write(&card, SBC));
+        watcher.nothing_for(QUIET);
+        audio.set_profile_as_user(&card, AAC);
+        assert_eq!(watcher.event(), changed);
+        assert_eq!(audio.active_profile(&card), AAC);
+        assert_eq!(audio.profile_writes(&card), [SBC, SBC]);
+        assert!(audio.requests().contains(&Asked::Profile {
+            card: card.clone(),
+            profile: SBC.to_owned()
+        }));
+    }
+
+    #[test]
+    fn refused_writes_answer_an_error_the_given_number_of_times() {
+        let session = Session::new();
+        let (audio, card) = one_card(&session);
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::CARD);
+        let mut client = Client::open(audio.socket());
+        let index = client.ask::<CardInfo>(&card_info(&card)).index;
+
+        audio.refuse_profile_writes(2);
+        let unknown = client.refused(&profile_write(&card, "a2dp-sink-unknown"));
+        assert_eq!(unknown, PulseError::NoEntity);
+        let absent = client.refused(&profile_write(&card_of(SECOND), AAC));
+        assert_eq!(absent, PulseError::NoEntity);
+        for _ in 0..2 {
+            let refused = client.refused(&profile_write(&card, AAC));
+            assert_eq!(refused, PulseError::AccessDenied);
+            assert_eq!(audio.active_profile(&card), OFF);
+        }
+        watcher.nothing_for(QUIET);
+        client.ack(&profile_write(&card, AAC));
+        assert_eq!(
+            watcher.event(),
+            event(SubscriptionEventFacility::Card, Some(index))
+        );
+        assert_eq!(audio.active_profile(&card), AAC);
+        assert_eq!(
+            audio.profile_writes(&card),
+            ["a2dp-sink-unknown", AAC, AAC, AAC]
+        );
+    }
+
+    #[test]
+    fn each_kind_of_recorder_is_listed_as_the_server_lists_it() {
+        let session = Session::new();
+        let (audio, sink) = one_sink(&session);
+        audio.add_source(MICROPHONE);
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::SOURCE_OUTPUT);
+        let mut client = Client::open(audio.socket());
+        let opened = audio.requests().len();
+        let pods: SinkInfo = client.ask(&sink_info(&c_name(&sink)));
+        let sources: Vec<SourceInfo> = client.ask(&Command::GetSourceInfoList);
+        let names: Vec<CString> = sources.iter().map(|source| source.name.clone()).collect();
+        assert_eq!(
+            names,
+            [c_name(&format!("{sink}.monitor")), c_name(MICROPHONE)]
+        );
+        let (monitor, microphone) = (&sources[0], &sources[1]);
+        assert_eq!(monitor.monitor_of_sink_index, Some(pods.index));
+        assert_eq!(pods.monitor_source_index, Some(monitor.index));
+        assert_eq!(microphone.monitor_of_sink_index, None);
+
+        let kinds = [
+            (MICROPHONE, Recorder::Program),
+            (MICROPHONE, Recorder::PeakMeter),
+            (sink.as_str(), Recorder::Monitor),
+            (MICROPHONE, Recorder::Corked),
+            (ABSENT_SOURCE, Recorder::Program),
+        ];
+        let mut ids = Vec::new();
+        for (target, kind) in kinds {
+            let id = audio.add_recorder(target, kind);
+            let added = SubscriptionEvent {
+                event_type: SubscriptionEventType::New,
+                ..event(SubscriptionEventFacility::SourceOutput, Some(id.0))
+            };
+            assert_eq!(watcher.event(), added);
+            ids.push(id);
+        }
+        let recorders: Vec<SourceOutputInfo> = client.ask(&Command::GetSourceOutputInfoList);
+        let indexes: Vec<u32> = recorders.iter().map(|recorder| recorder.index).collect();
+        assert_eq!(indexes, ids.iter().map(|id| id.0).collect::<Vec<u32>>());
+        let shapes: Vec<Listed> = recorders.iter().map(listed).collect();
+        let mic = microphone.index;
+        assert_eq!(
+            shapes,
+            [
+                expected(mic, MICROPHONE, false, &[]),
+                expected(mic, MICROPHONE, false, &[("stream.monitor", "true")]),
+                expected(
+                    monitor.index,
+                    &sink,
+                    false,
+                    &[("stream.capture.sink", "true")]
+                ),
+                expected(mic, MICROPHONE, true, &[]),
+                expected(NO_SOURCE, ABSENT_SOURCE, false, &[]),
+            ]
+        );
+
+        let peak = ids.remove(1);
+        let index = peak.0;
+        audio.remove_recorder(peak);
+        let removed = SubscriptionEvent {
+            event_type: SubscriptionEventType::Removed,
+            ..event(SubscriptionEventFacility::SourceOutput, Some(index))
+        };
+        assert_eq!(watcher.event(), removed);
+        let left: Vec<SourceOutputInfo> = client.ask(&Command::GetSourceOutputInfoList);
+        let left: Vec<u32> = left.iter().map(|recorder| recorder.index).collect();
+        assert_eq!(left, ids.iter().map(|id| id.0).collect::<Vec<u32>>());
+        let lists = [Asked::SourceList, Asked::RecorderList, Asked::RecorderList];
+        assert_eq!(audio.requests()[opened + 1..], lists);
+        audio.assert_only_reads();
+    }
+
+    #[test]
+    fn a_running_sink_reads_running_and_is_announced() {
+        let session = Session::new();
+        let (audio, name) = one_sink(&session);
+        let mut watcher = Client::open(audio.socket());
+        watcher.subscribe(SubscriptionMask::SINK);
+        let index = watcher.ask::<SinkInfo>(&sink_info(&c_name(&name))).index;
+        let changed = event(SubscriptionEventFacility::Sink, Some(index));
+
+        for (running, state) in [(true, SinkState::Running), (false, SinkState::Idle)] {
+            audio.set_sink_running(&name, running);
+            assert_eq!(watcher.event(), changed);
+            let sink: SinkInfo = watcher.ask(&sink_info(&c_name(&name)));
+            assert_eq!(sink.state, state);
+            audio.set_sink_running(&name, running);
+            watcher.nothing_for(QUIET);
         }
     }
 

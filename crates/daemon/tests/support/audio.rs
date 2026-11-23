@@ -1,5 +1,7 @@
 //! A fake audio server at `<runtime dir>/pulse/native`, where the desktop's `PipeWire` pulse server listens; its threads end on drop.
 
+mod capture;
+mod cards;
 mod server;
 pub(crate) mod wire;
 
@@ -15,6 +17,8 @@ use std::time::{Duration, Instant};
 use pulseaudio::protocol::SubscriptionMask;
 use rustix::net::{self, Shutdown};
 
+pub(crate) use capture::{Recorder, RecorderId};
+pub(crate) use cards::FakeProfile;
 use server::{Shared, State};
 use wire::{percent_of, volume_of};
 
@@ -39,6 +43,11 @@ pub(crate) enum Asked {
     SinkList,
     Volume { name: String, percent: u8 },
     Subscribe { mask: SubscriptionMask },
+    CardInfo { name: String },
+    CardList,
+    Profile { card: String, profile: String },
+    SourceList,
+    RecorderList,
     Unknown { command: u32 },
 }
 
@@ -50,8 +59,12 @@ impl Asked {
             | Self::ServerInfo
             | Self::SinkInfo { .. }
             | Self::SinkList
-            | Self::Subscribe { .. } => true,
-            Self::Volume { .. } | Self::Unknown { .. } => false,
+            | Self::Subscribe { .. }
+            | Self::CardInfo { .. }
+            | Self::CardList
+            | Self::SourceList
+            | Self::RecorderList => true,
+            Self::Volume { .. } | Self::Profile { .. } | Self::Unknown { .. } => false,
         }
     }
 }
@@ -111,6 +124,60 @@ impl FakeAudio {
     /// As a user would set it, so every subscriber hears the change.
     pub(crate) fn set_volume(&self, name: &str, percent: u8) {
         self.change(|state| state.set_volume(name, volume_of(percent)));
+    }
+
+    /// Running is a sink playing; not running is idle.
+    pub(crate) fn set_sink_running(&self, name: &str, running: bool) {
+        self.change(|state| state.set_sink_running(name, running));
+    }
+
+    pub(crate) fn add_card(&self, name: &str, profiles: &[FakeProfile], active: &str) {
+        self.change(|state| state.add_card(name, profiles, active));
+    }
+
+    pub(crate) fn active_profile(&self, card: &str) -> String {
+        self.state().cards.active(card).to_owned()
+    }
+
+    /// Every profile write a client sent for the card, in order, refused ones included.
+    pub(crate) fn profile_writes(&self, card: &str) -> Vec<String> {
+        let requests = self.requests().into_iter();
+        let writes = requests.filter_map(|asked| {
+            if let Asked::Profile {
+                card: named,
+                profile,
+            } = asked
+                && named == card
+            {
+                Some(profile)
+            } else {
+                None
+            }
+        });
+        writes.collect()
+    }
+
+    /// As the user sets it, so it is announced and not recorded as a write.
+    pub(crate) fn set_profile_as_user(&self, card: &str, profile: &str) {
+        self.change(|state| state.set_profile_as_user(card, profile));
+    }
+
+    /// The next `times` writes of an offered profile are answered with an error and change nothing.
+    pub(crate) fn refuse_profile_writes(&self, times: u32) {
+        self.change(|state| state.cards.refuse(times));
+    }
+
+    pub(crate) fn add_source(&self, name: &str) {
+        self.change(|state| state.capture.add_source(name));
+    }
+
+    /// A record stream on `target`: a sink for `Recorder::Monitor`, a source for every other kind, linked to none when absent.
+    pub(crate) fn add_recorder(&self, target: &str, kind: Recorder) -> RecorderId {
+        self.change(|state| state.add_recorder(target, kind))
+    }
+
+    pub(crate) fn remove_recorder(&self, id: RecorderId) {
+        self.change(|state| state.remove_recorder(id));
     }
 
     pub(crate) fn volume(&self, name: &str) -> u8 {
