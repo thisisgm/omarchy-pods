@@ -21,7 +21,7 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::support::{HANG_LIMIT, Proto1, Session, pause, read_to_close, wait_for};
+    use super::support::{GET, HANG_LIMIT, Proto1, Session, pause, read_to_close, wait_for};
 
     /// The longest request line the daemon takes, newline excluded, from `MAX_LINE_BYTES` in `src/daemon/proto1.rs`.
     const MAX_LINE_BYTES: usize = 4096;
@@ -74,7 +74,6 @@ mod tests {
     /// Requests the steady client spaces half a stall deadline apart, more than one deadline in all.
     const STEADY_REQUESTS: usize = 4;
 
-    const GET: &str = r#"{"v":1,"id":7,"op":"get"}"#;
     const SUBSCRIBE: &str = r#"{"v":1,"id":8,"op":"subscribe"}"#;
     const NOT_CONNECTED: &str =
         r#"{"code":"not_connected","message":"The AirPods are not connected."}"#;

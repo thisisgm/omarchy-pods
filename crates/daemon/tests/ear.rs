@@ -19,10 +19,8 @@ mod tests {
     use super::support::audio::wire::sink_named;
     use super::support::audio::{Asked as AudioAsked, FakeAudio, PERCENT, Volumes};
     use super::support::players::{Asked, CALL_TIMEOUT, FakePlayer, Playback};
-    use super::support::rig::{
-        Device, REAL_TIME_SLACK, Rig, assert_gap, connected, not_before, pause_ended,
-    };
-    use super::support::{HANG_LIMIT, pause, wait_for};
+    use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, not_before, pause_ended};
+    use super::support::{GET, HANG_LIMIT, Proto1, pause, wait_for};
 
     const SETTLE: Duration = Duration::from_millis(BOTH_OUT_SETTLE_MS);
     /// Two flaps end well before the first settle, and leave time to change the preference before the last one ends.
@@ -417,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_player_delays_no_other_player_and_status_still_answers() {
+    fn a_hung_player_delays_no_other_player() {
         let (rig, device) = linked();
         let first = rig.player("first", Playback::Playing);
         let second = rig.player("second", Playback::Playing);
@@ -434,9 +432,6 @@ mod tests {
                 paused,
                 &(Duration::ZERO..=CALL_TIMEOUT),
             );
-            // Asked before the hung player is released, so a status held on its reply would time out.
-            let status = rig.status();
-            assert!(connected(&status), "{status}");
             hung.wait_reads(reads.saturating_add(1), HANG_LIMIT);
             // The hung player never took the pause, so the resume leaves it alone.
             placed_until(&device, InEar, InEar, fine, Asked::Play, HANG_LIMIT);
@@ -449,6 +444,29 @@ mod tests {
         }
         first.leave();
         second.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_status_asked_while_a_player_read_hangs_answers_before_the_read_ends() {
+        let (rig, device) = linked();
+        let player = rig.player("one", Playback::Playing);
+        player.hold_replies(true);
+        let reads = player.reads();
+        let mut client = Proto1::connect(rig.session());
+        device.pods.set_ear(InEar, OutOfEar);
+        player.wait_reads(reads.saturating_add(1), HANG_LIMIT);
+        let reply = client.ask(GET);
+        assert_eq!(reply["ok"], true, "{reply}");
+        // Released after the answer, so the pause comes only if the daemon still waited on the read.
+        player.hold_replies(false);
+        player.wait_asked(Asked::Pause, HANG_LIMIT);
+        assert_eq!(
+            player.reads(),
+            reads.saturating_add(1),
+            "the pause followed another read"
+        );
+        player.leave();
         rig.finish();
     }
 
