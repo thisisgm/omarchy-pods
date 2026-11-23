@@ -186,6 +186,13 @@ function parseStatus(raw) {
   return status
 }
 
+// The mark the panel draws: a headset is the Max whatever else it reports, then the Pro, then the buds.
+function markVariant(isHeadset, isProSeries) {
+  if (isHeadset) return "max"
+  if (isProSeries) return "pro"
+  return "buds"
+}
+
 // The one list both the cycle and the panel rows are built from, in the order the panel draws them.
 function availableModes(hasNoiseControl, hasOff, hasAdaptive) {
   // AirPods 1, 2, 3 and the plain AirPods 4 have no listening modes at all.

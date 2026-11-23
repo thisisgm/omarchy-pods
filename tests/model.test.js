@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
+  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
 
 let failures = 0
@@ -175,6 +175,26 @@ check("a Pro 3 loses Off and keeps Adaptive", modesFor(good),
   [Model.NOISE_TRANSPARENCY, Model.NOISE_ADAPTIVE, Model.NOISE_ANC])
 check("a Max 2 gets all four", modesFor(max2),
   [Model.NOISE_OFF, Model.NOISE_TRANSPARENCY, Model.NOISE_ADAPTIVE, Model.NOISE_ANC])
+
+// The mark of each family: a headset is the Max whatever else it reports, then the Pro, then the buds.
+check("markVariant of neither flag", Model.markVariant(false, false), "buds")
+check("markVariant of a Pro", Model.markVariant(false, true), "pro")
+check("markVariant of a headset", Model.markVariant(true, false), "max")
+check("markVariant of both flags", Model.markVariant(true, true), "max")
+
+// The line the C++ 1.3.6 daemon wrote with nothing connected, then the same line with the flag it sets for a Pro or a Max.
+const oldLine = Deno.readTextFileSync(new URL("../crates/core/tests/fixtures/status-disconnected.json", import.meta.url))
+function oldDocument(flags) {
+  return Model.parseStatus(JSON.stringify(Object.assign(JSON.parse(oldLine), flags)))
+}
+for (const [name, status, mark] of [
+  ["nothing connected", oldDocument({}), "buds"],
+  ["a Pro", oldDocument({ is_pro_series: true }), "pro"],
+  ["a Max", oldDocument({ is_headset: true }), "max"],
+  ["the line from the box, older than is_headset", good, "pro"],
+]) {
+  check("a_document_of_the_old_daemon_gives_the_mark_it_gave: " + name, Model.markVariant(status.isHeadset, status.isProSeries), mark)
+}
 
 if (failures > 0) {
   console.log(failures + " failed")

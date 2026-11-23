@@ -102,6 +102,16 @@ pub(crate) fn log_lines(log: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Names an absolute directory where `Session::keep_state` copies a daemon's state for a later look; unset, nothing is kept.
+pub(crate) const KEEP_STATE: &str = "LIBREPODS_E2E_KEEP_STATE";
+
+/// The end of the sentence a test fails with when `KEEP_STATE` names anything else.
+pub(crate) const KEEP_STATE_REFUSED: &str = "which is not an absolute directory that exists";
+
+/// The end of the sentence a test fails with when its label directory exists, so two runs never mix in one directory.
+pub(crate) const KEEP_STATE_TAKEN: &str =
+    "already exists, so point it at a new directory for each run";
+
 /// Waits for `ready` to give a value, failing the test once `HANG_LIMIT` passes.
 pub(crate) fn wait_for<T>(what: &str, ready: impl FnMut() -> Option<T>) -> T {
     wait_within(what, HANG_LIMIT, ready)
@@ -172,6 +182,44 @@ impl Session {
     /// The proximity keys the daemon keeps, beside the status document.
     pub(crate) fn keys_file(&self) -> PathBuf {
         self.state_home().join("librepods").join("keys.json")
+    }
+
+    /// Copies the daemon's state directory to `<KEEP_STATE>/<label>/librepods/` when `KEEP_STATE` is set.
+    pub(crate) fn keep_state(&self, label: &str) {
+        let alphabet =
+            |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-';
+        assert!(
+            !label.is_empty() && label.bytes().all(alphabet),
+            "keep_state: the label {label:?} holds more than lower case letters, digits and -"
+        );
+        let Some(root) = env::var_os(KEEP_STATE).map(PathBuf::from) else {
+            return;
+        };
+        assert!(
+            root.is_absolute() && root.is_dir(),
+            "{KEEP_STATE} names {root:?}, {KEEP_STATE_REFUSED}"
+        );
+        let labelled = root.join(label);
+        match fs::create_dir(&labelled) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                panic!(
+                    "keep_state: {KEEP_STATE} names {root:?}, and {labelled:?} {KEEP_STATE_TAKEN}"
+                )
+            }
+            Err(error) => panic!("keep_state: creating {labelled:?}: {error}"),
+        }
+        let kept = labelled.join("librepods");
+        fs::create_dir(&kept).unwrap();
+        for entry in fs::read_dir(self.state_home().join("librepods")).unwrap() {
+            let entry = entry.unwrap();
+            match fs::copy(entry.path(), kept.join(entry.file_name())) {
+                Ok(_) => {}
+                // A temporary file the daemon renamed between the listing and the copy.
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => panic!("keep_state: copying {:?}: {error}", entry.path()),
+            }
+        }
     }
 
     /// Stores the sample keys as the daemon writes them: `{"identity":"<32 hex digits>","payload":"<32 hex digits>"}` and a newline.

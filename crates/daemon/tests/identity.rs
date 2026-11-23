@@ -10,9 +10,15 @@ mod support;
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::path::Path;
+    use std::process::{Command, Output};
+
     use pods_core::state::State;
     use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT, to_status_object};
     use pods_fake::Profile;
+    use pods_proto::model::{MODEL_NUMBERS, Model};
     use pods_samples::advert::{HEADER_LEN, PRODUCT_AT};
     use pods_samples::{ALLOW_OFF_OPTION, NOISE, setting};
     use serde_json::{Value, json};
@@ -20,7 +26,10 @@ mod tests {
 
     use super::support::advert::{HEADER, PAYLOAD, PRIMARY_LEVEL, keyed, ours};
     use super::support::rig::{ANC, DIAL_WAIT, Device, OFF, Rig, TRANSPARENCY, connected};
-    use super::support::{HANG_LIMIT, Proto1, outcome, set_request, wait_for};
+    use super::support::{
+        HANG_LIMIT, KEEP_STATE, KEEP_STATE_REFUSED, KEEP_STATE_TAKEN, Proto1, Session, outcome,
+        set_request, wait_for,
+    };
 
     /// Powerbeats Pro, product `0x200B`, as BlueZ prints it.
     const BEATS: &str = "bluetooth:v004Cp200Bd0001";
@@ -58,6 +67,11 @@ mod tests {
         ([0x30, 0x20], "AirPods 5", 14, false),
         ([0x2d, 0x20], "AirPods Max 2", 12, true),
     ];
+    /// The display names whose family has its own mark; every other name is drawn as the buds.
+    const MAX_NAME: &str = "AirPods Max";
+    const PRO_NAME: &str = "AirPods Pro";
+    /// The test that keeps the state of an unknown number, run alone as a child by the `keep_state` tests.
+    const UNKNOWN_TEST: &str = "tests::an_unknown_number_reports_neither";
     const OFFERED: u8 = 1;
     const NOT_OFFERED: u8 = 2;
     /// Pods of `model_number` in noise cancelling, so a change to Off is a real write.
@@ -95,6 +109,35 @@ mod tests {
         rig.wait_status(&format!("supports_noise_off {offered}"), |status| {
             status["supports_noise_off"] == offered
         })
+    }
+
+    /// The label `keep_state` files the state of `model` under.
+    fn kept_label(model: Model) -> String {
+        format!("model-{}", model.as_int())
+    }
+
+    /// Runs `UNKNOWN_TEST` alone in `cwd`, with `KEEP_STATE` set to `kept` or removed.
+    fn run_unknown_test(kept: Option<&OsStr>, cwd: &Path) -> Output {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.args(["--exact", UNKNOWN_TEST]).current_dir(cwd);
+        match kept {
+            Some(kept) => child.env(KEEP_STATE, kept),
+            None => child.env_remove(KEEP_STATE),
+        };
+        child.output().unwrap()
+    }
+
+    /// Standard output then standard error of a child test run, for its assertions.
+    fn printed(output: &Output) -> String {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        format!("{stdout}{stderr}")
+    }
+
+    fn assert_ran_and_passed(output: &Output) {
+        let printed = printed(output);
+        assert!(output.status.success(), "{printed}");
+        assert!(printed.contains("test result: ok. 1 passed"), "{printed}");
     }
 
     fn sorted_keys(status: &Value) -> Vec<String> {
@@ -196,6 +239,115 @@ mod tests {
             assert_eq!(&status[key], value, "{key}");
         }
         rig.finish();
+    }
+
+    #[test]
+    #[expect(
+        clippy::print_stderr,
+        reason = "each row's name and two flags go into the test's output"
+    )]
+    fn every_number_of_the_table_reports_its_family() {
+        let mut kept = Vec::new();
+        for &(number, model) in MODEL_NUMBERS {
+            let name = model.display_name();
+            let (rig, _device) = started(pods(number), None);
+            let status = rig.wait_filled();
+            eprintln!(
+                "{number} {name} (model_int {}): is_headset {}, is_pro_series {}",
+                status["model_int"], status["is_headset"], status["is_pro_series"]
+            );
+            let reported = (
+                status["model_name"].as_str(),
+                status["model_int"].as_i64(),
+                status["is_headset"].as_bool(),
+                status["is_pro_series"].as_bool(),
+            );
+            let family = (
+                Some(name),
+                Some(model.as_int()),
+                Some(name.starts_with(MAX_NAME)),
+                Some(name.starts_with(PRO_NAME)),
+            );
+            assert_eq!(reported, family, "{number}");
+            if !kept.contains(&model) {
+                rig.session().keep_state(&kept_label(model));
+                kept.push(model);
+            }
+            rig.finish();
+        }
+    }
+
+    #[test]
+    fn an_unknown_number_reports_neither() {
+        let (rig, _device) = started(pods(UNKNOWN_MODEL), None);
+        let status = rig.wait_filled();
+        assert_eq!(status["is_headset"], false, "{status}");
+        assert_eq!(status["is_pro_series"], false, "{status}");
+        rig.session().keep_state(&kept_label(Model::Unknown));
+        rig.finish();
+    }
+
+    #[test]
+    fn keep_state_copies_what_the_daemon_wrote() {
+        let kept = tempfile::tempdir().unwrap();
+        assert_ran_and_passed(&run_unknown_test(
+            Some(kept.path().as_os_str()),
+            kept.path(),
+        ));
+        let copy = kept
+            .path()
+            .join(kept_label(Model::Unknown))
+            .join("librepods")
+            .join("status.json");
+        let first = fs::read_to_string(&copy).unwrap();
+        let status: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(status["model_number"], UNKNOWN_MODEL, "{status}");
+        assert!(connected(&status), "{status}");
+        let again = run_unknown_test(Some(kept.path().as_os_str()), kept.path());
+        assert!(!again.status.success(), "{}", printed(&again));
+        assert!(
+            printed(&again).contains(KEEP_STATE_TAKEN),
+            "{}",
+            printed(&again)
+        );
+        assert_eq!(
+            fs::read_to_string(&copy).unwrap(),
+            first,
+            "the second run touched the kept copy"
+        );
+    }
+
+    #[test]
+    fn keep_state_does_nothing_when_unset() {
+        let cwd = tempfile::tempdir().unwrap();
+        assert_ran_and_passed(&run_unknown_test(None, cwd.path()));
+        assert_eq!(fs::read_dir(cwd.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn keep_state_refuses_what_is_not_an_absolute_directory() {
+        let cwd = tempfile::tempdir().unwrap();
+        let relative = "relative";
+        fs::create_dir(cwd.path().join(relative)).unwrap();
+        let file = cwd.path().join("file");
+        fs::write(&file, "").unwrap();
+        let missing = cwd.path().join("missing");
+        for kept in [OsStr::new(relative), file.as_os_str(), missing.as_os_str()] {
+            let output = run_unknown_test(Some(kept), cwd.path());
+            let printed = printed(&output);
+            assert!(!output.status.success(), "{kept:?}: {printed}");
+            assert!(printed.contains(KEEP_STATE_REFUSED), "{kept:?}: {printed}");
+        }
+        assert_eq!(fs::read_dir(cwd.path().join(relative)).unwrap().count(), 0);
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "keep_state: the label \"Model-0\" holds more than lower case letters, digits and -"
+    )]
+    fn keep_state_refuses_a_label_outside_its_alphabet() {
+        Session::new().keep_state("Model-0");
     }
 
     #[test]
