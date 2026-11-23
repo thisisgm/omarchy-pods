@@ -273,10 +273,10 @@ fn a_subscriber_that_never_reads_is_dropped_and_status_still_answers() {
         .unwrap_or_else(|error| panic!("the subscribe reply: {error}: {reply:?}"));
     // The daemon follows the hub before it replies, so every change from here on finds the subscriber.
     assert_eq!(subscribed["ok"], true, "{subscribed}");
-    // Changes keep coming until the gets are answered, so the daemon answered them while it took changes.
+    // Changes keep coming until the gets are answered, so no get waited for the changes to end.
     let reporting = AtomicBool::new(true);
     let sent = AtomicUsize::new(0);
-    let stopped_by_gets = thread::scope(|scope| {
+    let (stopped_by_gets, replies) = thread::scope(|scope| {
         let changes = scope.spawn(|| {
             let started = Instant::now();
             while reporting.load(Ordering::Relaxed) {
@@ -302,16 +302,18 @@ fn a_subscriber_that_never_reads_is_dropped_and_status_still_answers() {
         wait_for("the changes past the subscriber's bound", || {
             (sent.load(Ordering::Relaxed) >= CHANGES).then_some(())
         });
-        for _ in 0..STATUS_CALLS {
-            let reply = Proto1::connect(rig.session()).ask(GET);
-            assert_eq!(reply["ok"], true, "{reply}");
-        }
+        let replies: Vec<_> = (0..STATUS_CALLS)
+            .map(|_| Proto1::connect(rig.session()).ask(GET))
+            .collect();
         reporting.store(false, Ordering::Relaxed);
-        changes.join().unwrap()
+        (changes.join().unwrap(), replies)
     });
+    for reply in &replies {
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
     assert!(
         stopped_by_gets,
-        "the changes' deadline ended them, not the gets"
+        "the changes reached HANG_LIMIT before the gets were answered"
     );
     device.pods.set_setting(NOISE, TRANSPARENCY.wire);
     // The last report on the channel, so its level in the status means every change before it was taken.
