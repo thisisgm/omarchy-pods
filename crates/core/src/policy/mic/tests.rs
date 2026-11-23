@@ -226,7 +226,7 @@ fn kind_of(mic: &Mic) -> Kind {
     }
 }
 
-fn confirmed() -> MicModels {
+pub(in crate::policy::mic) fn confirmed() -> MicModels {
     let mut models = MicModels::default();
     models.confirm(MODEL_NUMBER);
     models
@@ -278,7 +278,7 @@ fn stepped(event: Event, column: Column) -> (Fact, Duration, State) {
     (fact, SENT.saturating_add(at), state)
 }
 
-fn requests(effects: &[Effect]) -> Vec<UplinkRequest> {
+pub(in crate::policy::mic) fn requests(effects: &[Effect]) -> Vec<UplinkRequest> {
     effects
         .iter()
         .filter_map(|effect| {
@@ -291,7 +291,7 @@ fn requests(effects: &[Effect]) -> Vec<UplinkRequest> {
         .collect()
 }
 
-fn lines(effects: &[Effect]) -> Vec<&str> {
+pub(in crate::policy::mic) fn lines(effects: &[Effect]) -> Vec<&str> {
     effects
         .iter()
         .filter_map(|effect| {
@@ -518,4 +518,4 @@ fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
 
 mod faults;
 mod linger;
-mod table;
+pub(super) mod table;

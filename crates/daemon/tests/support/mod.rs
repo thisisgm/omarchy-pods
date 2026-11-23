@@ -8,6 +8,7 @@ pub(crate) mod children;
 pub(crate) mod logind;
 pub(crate) mod omarchy;
 pub(crate) mod parked;
+pub(crate) mod pipewire;
 pub(crate) mod players;
 pub(crate) mod relay;
 pub(crate) mod rig;

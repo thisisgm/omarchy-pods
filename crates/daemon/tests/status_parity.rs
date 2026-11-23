@@ -176,6 +176,7 @@ mod tests {
                 "MicStartFailures",
                 Variant::from(count(&document["mic_start_failures"])),
             ),
+            ("MicSource", Variant::from(word("mic_source"))),
         ])
     }
 

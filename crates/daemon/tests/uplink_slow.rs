@@ -142,7 +142,7 @@ mod tests {
             wait_stop(&device).at,
             &at_once,
         );
-        wait_mic(&rig, "idle");
+        wait_mic(&rig, "no_audio_server");
         audio.assert_only_reads();
         rig.finish();
     }
@@ -153,7 +153,7 @@ mod tests {
         let (rig, device, audio, unwanted) = unwanted(SinkState::Suspended);
         let stop = the_stop_after(&device, LINGER);
         assert_after("the STOP after the want went", unwanted, stop, LINGER);
-        wait_mic(&rig, "idle");
+        wait_mic(&rig, "no_audio_server");
         audio.assert_only_reads();
         rig.finish();
     }
@@ -325,7 +325,7 @@ mod tests {
             Instant::now(),
             &(STOP_ANSWER..),
         );
-        wait_mic(&rig, "idle");
+        wait_mic(&rig, "no_audio_server");
         read_up_to_now(&rig, &device);
         audio.assert_only_reads();
         let log = rig.daemon().log();

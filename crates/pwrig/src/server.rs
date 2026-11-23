@@ -21,7 +21,7 @@ const DRIVER_PRIORITY: u32 = 1;
 const MIN_QUANTUM: u32 = 2048;
 
 /// The name `core.name` gives the socket inside the runtime directory.
-const SOCKET: &str = "pipewire-0";
+pub const SOCKET: &str = "pipewire-0";
 const CONFIG_FILE: &str = "pipewire.conf";
 const LOG_FILE: &str = "pipewire.log";
 /// The configuration line of the module that makes the node of a client.

@@ -22,6 +22,7 @@ pub const ADDITIVE_KEYS: &[&str] = &[
     "microphone",
     "mic",
     "mic_start_failures",
+    "mic_source",
 ];
 
 /// Keys in ascending byte order, as the C++ `QJsonObject` writes them.
@@ -95,6 +96,7 @@ pub fn to_status_object(state: &State) -> Value {
             "mic_start_failures",
             Value::from(state.microphone.start_failures()),
         ),
+        ("mic_source", Value::from(state.mic_source())),
     ]);
     fields.extend(counter_fields(&state.counters));
     object(fields)

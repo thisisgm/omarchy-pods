@@ -130,9 +130,11 @@ fn a_sleep_stops_a_running_uplink_with_no_restore_and_the_wake_starts_it_again()
 fn a_sleep_drops_an_unanswered_start_and_counts_no_failure() {
     let state = linked(Column::AlwaysKnown);
     let mut mic = mic(phase(Kind::Starting));
-    assert_eq!(
-        mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), SENT),
-        []
+    let effects = mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), SENT);
+    // The fresh node's own open is the only effect.
+    assert!(
+        matches!(effects.as_slice(), [Effect::Mic(MicRequest::Open { .. })]),
+        "{effects:?}"
     );
     assert_eq!((kind_of(&mic), mic.deadline()), (Kind::Asleep, None));
     assert_eq!(

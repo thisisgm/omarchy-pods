@@ -91,7 +91,7 @@ mod tests {
         lose(&rig, &device);
         link(&rig, &device);
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
-        assert_eq!(mic(&rig), "idle");
+        wait_mic(&rig, "no_audio_server");
         rig.finish();
     }
 
@@ -118,9 +118,10 @@ mod tests {
         link(&rig, &device);
         assert!(starts(&device).is_empty(), "{:?}", device.pods.heard());
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
-        assert_eq!(mic(&rig), "idle");
+        wait_mic(&rig, "no_audio_server");
         let log = rig.daemon().log();
-        assert!(!log.lines().any(|line| line.starts_with("mic: ")), "{log}");
+        let uplink = |line: &str| line.starts_with("mic: ") && !line.starts_with("mic: source");
+        assert!(!log.lines().any(uplink), "{log}");
         rig.finish();
     }
 

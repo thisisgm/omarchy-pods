@@ -468,6 +468,7 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
             | Effect::StoreKeys(_)
             | Effect::Monitor(_)
             | Effect::Uplink(_)
+            | Effect::Mic(_)
             | Effect::Log(_)
             | Effect::Exited => {}
         }

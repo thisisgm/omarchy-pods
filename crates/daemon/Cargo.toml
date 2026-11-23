@@ -10,7 +10,9 @@ publish.workspace = true
 [dependencies]
 clap.workspace = true
 pods-core = { path = "../core" }
+pods-mic = { path = "../mic" }
 pods-proto.workspace = true
+pods-pw = { path = "../pw" }
 pods-sys.workspace = true
 # Requests to the desktop's audio server are written through the protocol crate; its replies are read by hand.
 pulseaudio = "0.3.2"
@@ -23,6 +25,7 @@ zeroize.workspace = true
 [dev-dependencies]
 cpp-source = { path = "../cpp-source" }
 pods-fake = { path = "../fake" }
+pods-pwrig = { path = "../pwrig" }
 pods-samples = { path = "../samples" }
 pods-trap = { path = "../trap" }
 proptest.workspace = true

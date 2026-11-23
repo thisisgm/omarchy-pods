@@ -24,7 +24,7 @@ fn charge(level: u8, charging: bool) -> Charge {
 #[test]
 fn populated_state_lands_every_field_on_its_key() {
     let mut microphone = Microphone::new(MicPref::Off);
-    microphone.show(MicCode::Off, 14);
+    microphone.show(MicCode::Off, 14, true);
     let state = State {
         connected: true,
         device_name: "Desk pods".to_owned(),
@@ -114,6 +114,7 @@ fn populated_state_lands_every_field_on_its_key() {
     });
     // Past the json macro's recursion limit.
     expected["mic_start_failures"] = json!(14);
+    expected["mic_source"] = json!("omarchypods_input.a3048");
     assert_eq!(status(&state), expected);
 }
 

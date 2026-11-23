@@ -8,6 +8,7 @@ mod keys;
 mod legacy_dialect;
 mod link;
 mod media;
+mod mic;
 mod notify;
 mod owner_file;
 #[cfg(test)]
@@ -28,6 +29,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::task::Poll;
 
+use pods_core::policy::MicRequest;
 use pods_core::prefs::Prefs;
 use pods_core::status::to_status_line;
 use pods_proto::keys::ProximityKeys;
@@ -109,6 +111,8 @@ async fn serve(
     let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
     let (audio_requests, audio_queue) = audio::queue();
     let (media_requests, media_queue) = media::queue();
+    let (mic_requests, mic_watch) = watch::channel(MicRequest::Close);
+    let source = tokio::spawn(mic::run(mic_watch, link.clone(), paths.runtime_dir.clone()));
     let adapter = tokio::spawn(audio::run(link.clone(), audio_queue, paths.runtime_dir));
     let (keys, pairs) = keys::queue();
     let (monitor, monitor_wanted) = watch::channel(false);
@@ -125,6 +129,7 @@ async fn serve(
             keys,
             media: media_requests,
             monitor,
+            mic: mic_requests,
         },
         stored.clone(),
     ));
@@ -141,6 +146,7 @@ async fn serve(
             link::stop(&link, driver).await;
             notify::stop(stop_notifier, notifier).await;
             audio::stop(adapter).await;
+            mic::stop(source).await;
             remove_state_file(&file).await;
             return ExitCode::FAILURE;
         }
@@ -160,8 +166,9 @@ async fn serve(
     }
     // After the driver, so no notice comes in once the notifier is stopping.
     notify::stop(stop_notifier, notifier).await;
-    // After the driver, whose end closes the adapter's queue and so ends it.
+    // After the driver, whose end closes the adapters' queues and so ends them.
     audio::stop(adapter).await;
+    mic::stop(source).await;
     suspends.abort();
     // Awaited so its system bus connection closes first; the result is only the cancellation.
     drop(suspends.await);
