@@ -189,8 +189,8 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     code
 }
 
-/// Takes the run lock without waiting; `None` when another run holds it.
-fn run_lock() -> Result<Option<OwnedFd>, String> {
+/// Takes the run lock without waiting; `None` when another run, or a live probe, holds it.
+pub(crate) fn run_lock() -> Result<Option<OwnedFd>, String> {
     let Some(runtime) = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
         return Err("XDG_RUNTIME_DIR must be set, because the run lock lives there".to_owned());
     };

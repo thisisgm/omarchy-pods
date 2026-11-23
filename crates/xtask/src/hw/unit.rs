@@ -313,6 +313,8 @@ pub(crate) fn start_under_test(binary: &Path, dir: &Path, uid: u32) -> Result<()
 #[derive(Debug)]
 pub(crate) struct Guard {
     was_running: bool,
+    /// False for a run that never starts the test unit, whose restore then leaves that unit alone.
+    test_unit: bool,
     pending: bool,
 }
 
@@ -320,6 +322,16 @@ impl Guard {
     pub(crate) fn new(was_running: bool) -> Self {
         Self {
             was_running,
+            test_unit: true,
+            pending: true,
+        }
+    }
+
+    /// The guard of a run that stops the installed service but never starts the test unit.
+    pub(crate) fn installed_only(was_running: bool) -> Self {
+        Self {
+            was_running,
+            test_unit: false,
             pending: true,
         }
     }
@@ -327,14 +339,14 @@ impl Guard {
     /// Restores now and gives the result to the caller instead of printing it on drop.
     pub(crate) fn restore(mut self) -> Result<(), String> {
         self.pending = false;
-        put_back(self.was_running)
+        put_back(self.was_running, self.test_unit)
     }
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
         if self.pending {
-            crate::report(&restored_line(&put_back(self.was_running)));
+            crate::report(&restored_line(&put_back(self.was_running, self.test_unit)));
         }
     }
 }
@@ -349,16 +361,10 @@ pub(crate) fn restored_line(restored: &Result<(), String>) -> String {
     }
 }
 
-/// Stops the test unit, then starts the installed service if it was running; the error says what is left wrong.
-fn put_back(was_running: bool) -> Result<(), String> {
-    // The test unit may never have started, so a failed stop is judged by the state after it.
-    let stopped = systemctl(&["stop", UNDER_TEST]);
-    let after = activity(UNDER_TEST)?;
-    if is_running(&after) {
-        let reason = stopped.err().unwrap_or_default();
-        return Err(format!(
-            "{UNDER_TEST} is still {after} after its stop {reason}"
-        ));
+/// Stops the test unit when the run owns it, then starts the installed service if it was running; the error says what is left wrong.
+fn put_back(was_running: bool, test_unit: bool) -> Result<(), String> {
+    if test_unit {
+        stop_test_unit()?;
     }
     if !was_running {
         return Ok(());
@@ -375,6 +381,20 @@ fn put_back(was_running: bool) -> Result<(), String> {
         }
         pause(POLL_INTERVAL);
     }
+}
+
+/// Stops the test unit and requires it not running after the stop.
+fn stop_test_unit() -> Result<(), String> {
+    // The test unit may never have started, so a failed stop is judged by the state after it.
+    let stopped = systemctl(&["stop", UNDER_TEST]);
+    let after = activity(UNDER_TEST)?;
+    if is_running(&after) {
+        let reason = stopped.err().unwrap_or_default();
+        return Err(format!(
+            "{UNDER_TEST} is still {after} after its stop {reason}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

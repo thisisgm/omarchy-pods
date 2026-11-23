@@ -261,18 +261,21 @@ with it. It fails, before any node exists, on a file that is not the caller's
 own or holds no audio packet, and when no audio server answers.
 
 Without `--replay`, `cargo xtask probe source [--seconds N]` serves the AirPods
-of the device file live. It stops `librepods.service` if it runs, and starts it
-again on every way out. It dials the control channel, runs the handshake and
-sends START; the node is made only once the AirPods answer with their running
-marker. Each audio packet then goes through the decode chain as it lands. With
-no `--seconds` it runs until a signal. After `N` seconds, or on a signal, it
-sends STOP and waits for the stopped marker, then suspends the device's sink
-with `pactl suspend-sink`, holds it briefly and resumes it; the sink's name is
-never printed. A panic takes the same way out. When START goes unanswered it
-sends nothing more and leaves the sink alone. The run fails then, when STOP goes
-unanswered (the sink is still restored), when the AirPods stop the uplink on
-their own (no STOP is sent, and the sink is still restored), and when a restore
-fails.
+of the device file live. It takes the hardware run's lock first and refuses to
+start while a hardware run or another live probe holds it. It stops
+`librepods.service` if it runs, and starts it again on every way out; the
+hardware run's test unit it leaves alone. It dials the control channel, runs the
+handshake and sends START; the node is made only once the AirPods answer with
+their running marker. Each audio packet then goes through the decode chain as it
+lands. With no `--seconds` it runs until a signal. After `N` seconds, or on a
+signal, it sends STOP and waits for the stopped marker, then suspends the
+device's sink with `pactl suspend-sink`, holds it briefly and resumes it. Both
+calls name the sink by its index, since its name holds the device's address, and
+the name is never printed. A panic takes the same way out. When START goes
+unanswered it sends nothing more and leaves the sink alone. The run fails then,
+when STOP goes unanswered (the sink is still restored), when the AirPods stop
+the uplink on their own (no STOP is sent, and the sink is still restored), and
+when a restore fails.
 
 Every second, and once more at its end, a replay or a live run prints one line
 of fixed words and numbers on standard output:

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use rustix::process::{Pid, Signal, kill_process};
 
 pub use recorder::Recorder;
-pub use server::{DRIVER_NODE, Server, environment, node_names};
+pub use server::{DRIVER_NODE, Server, environment, node_names, parse_dump};
 pub use wav::write_wav;
 
 /// Every program the rig runs comes in this package, on Debian and on Ubuntu.

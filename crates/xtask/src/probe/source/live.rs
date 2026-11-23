@@ -17,6 +17,7 @@ use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 
 use super::{POLL, STATUS_EVERY, Served, SourceError, open_node};
+use crate::hw::run_lock;
 use crate::hw::unit::{self, Guard, INSTALLED};
 use crate::probe::{HANDSHAKE_STEP_TIMEOUT_MS, Host, store};
 
@@ -41,10 +42,14 @@ pub(super) fn serve(
     interrupted: &AtomicBool,
 ) -> Result<(), SourceError> {
     let peer = store::read_device(&store::root(host.home.as_ref()))?;
+    // Held from before the installed service's state is read until after its restore, so a hardware run and this probe never share the service.
+    let lock = run_lock()
+        .map_err(SourceError::Service)?
+        .ok_or(SourceError::LockHeld)?;
     let word = unit::activity(INSTALLED).map_err(SourceError::Service)?;
     let was_running = unit::is_running(&word);
     // Made before the stop, as the hardware run makes it, so a stop that fails partway and every later way out, an unwind included, start it again.
-    let service = Guard::new(was_running);
+    let service = Guard::installed_only(was_running);
     let stopped = if was_running {
         unit::stop(INSTALLED).map_err(SourceError::Service)
     } else {
@@ -55,6 +60,7 @@ pub(super) fn serve(
     if let (Err(_), Err(error)) = (&served, &restored) {
         host.say(error);
     }
+    drop(lock);
     served.and(restored)
 }
 
@@ -273,15 +279,16 @@ fn stop(channel: &Channel, buf: &mut [u8]) -> Result<(), SourceError> {
     stopped.ok_or(SourceError::StopUnanswered)
 }
 
-/// Suspends the device's sink and resumes it after the hold, the two `pactl` calls the restore is; the sink's name is never printed.
+/// Suspends the device's sink and resumes it after the hold, the two `pactl` calls the restore is; both name the sink by its index, since its name holds the device's address.
 fn restore(peer: BdAddr) -> Result<Restored, String> {
     let listed = pactl(&["list", "short", "sinks"])?;
-    let Some(sink) = device_sink(&listed, &sink_prefix(peer)) else {
+    let Some(index) = device_sink(&listed, &sink_prefix(peer)) else {
         return Ok(Restored::NoSink);
     };
-    pactl(&["suspend-sink", sink, "1"])?;
+    let sink = index.to_string();
+    pactl(&["suspend-sink", &sink, "1"])?;
     unit::pause(Duration::from_millis(PROBE_RESTORE_HOLD_MS));
-    pactl(&["suspend-sink", sink, "0"])
+    pactl(&["suspend-sink", &sink, "0"])
         .map_err(|error| format!("{error}, so the device's sink stays suspended"))?;
     Ok(Restored::Done)
 }
@@ -298,11 +305,15 @@ fn pactl(args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// The name of the first listed sink that starts with `prefix`.
-// Sample input: `57\tbluez_output.02_00_00_00_00_01.1\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED`, whose second field is the name.
-fn device_sink<'l>(listed: &'l str, prefix: &str) -> Option<&'l str> {
-    let mut names = listed.lines().filter_map(|line| line.split('\t').nth(1));
-    names.find(|name| name.starts_with(prefix))
+/// The index of the first listed sink whose name starts with `prefix` and whose index is a number.
+// Sample input: `57\tbluez_output.02_00_00_00_00_01.1\tPipeWire\ts16le 2ch 48000Hz\tSUSPENDED`, whose first field is the index and second the name.
+fn device_sink(listed: &str, prefix: &str) -> Option<u32> {
+    listed.lines().find_map(|line| {
+        let mut fields = line.split('\t');
+        let index = fields.next()?;
+        let name = fields.next()?;
+        name.starts_with(prefix).then(|| index.parse().ok())?
+    })
 }
 
 #[cfg(test)]
