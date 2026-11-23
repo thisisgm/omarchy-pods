@@ -175,9 +175,25 @@ jobs:
             exit 1
           fi
 
+  shell:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends shellcheck
+      # The lint findings are those of this ShellCheck release: a later Ubuntu revision of 0.9.0 passes, another version stops here.
+      - run: dpkg-query --show --showformat='${Version}\n' shellcheck | grep --quiet '^0\.9\.0-'
+      - run: |
+          for script in packaging/setup setup; do
+            bash -n "$script"
+          done
+      - run: shellcheck packaging/setup setup
+
   ci-ok:
     if: always()
-    needs: [fmt, clippy, test, slow, pw-ffi, sanitize, deny, zizmor, plugin]
+    needs: [fmt, clippy, test, slow, pw-ffi, sanitize, deny, zizmor, plugin, shell]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
