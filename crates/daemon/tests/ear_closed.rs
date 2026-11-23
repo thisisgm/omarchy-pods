@@ -42,7 +42,7 @@ mod tests {
         rig.start();
         rig.link_up(&device);
         rig.wait_filled();
-        rig.wait_audio_server("up");
+        rig.wait_sink_told();
         rig.bluez().wait_monitors(0, HANG_LIMIT);
         (rig, device)
     }
@@ -107,7 +107,7 @@ mod tests {
         let player = rig.player("one", Playback::Playing);
         rig.disconnect();
         rig.relink(&device);
-        rig.wait_audio_server("up");
+        rig.wait_sink_told();
         device.pods.set_ear(InEar, InEar);
         wait_worn(&rig, 2);
         device.pods.set_ear(InEar, OutOfEar);
