@@ -7,7 +7,7 @@ use pods_trap::Answer;
 use rustix::io::Errno;
 
 use super::HANG_LIMIT;
-use super::rig::{Device, HELD_LADDER, Rig, assert_gap, not_before};
+use super::rig::{Device, HELD_LADDER, Rig, assert_gap};
 
 /// Pods that refuse every dial, the daemon started and BlueZ not yet reporting them connected.
 pub(crate) fn refused_pods() -> (Rig, Device) {
@@ -34,7 +34,7 @@ pub(crate) fn climb_to_parked(rig: &Rig) {
             delay.saturating_add(HANG_LIMIT),
         );
         let what = format!("held dial {} after the one before", dials.len());
-        assert_gap(&what, before, dials.last().unwrap().at, &not_before(delay));
+        assert_gap(&what, before, dials.last().unwrap().at, &(delay..));
     }
     rig.wait_status("one failure after the eleventh dial", |status| {
         status["reconnect_failures_total"] == 1

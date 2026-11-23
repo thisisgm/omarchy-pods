@@ -2,8 +2,9 @@
 
 mod driver;
 mod failures;
+mod ladders;
 
-use std::sync::Arc;
+use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use pods_proto::addr::BdAddr;
 use pods_proto::noise::NoiseMode;
 use pods_sys::l2cap::ChannelError;
 use rustix::io::Errno;
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Handle};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::timeout;
 
@@ -120,6 +121,12 @@ pub(in crate::daemon) struct Running {
     inputs: mpsc::Sender<Input>,
     halt: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    runtime: Handle,
+}
+
+/// While alive, the paused clock of a `Running::paused` stands still; dropping it lets the clock move again.
+pub(super) struct ClockHold {
+    _release: std_mpsc::Sender<()>,
 }
 
 impl Running {
@@ -130,12 +137,34 @@ impl Running {
     }
 
     pub(super) fn start(connector: Connector, tap: Option<Tap>) -> Self {
+        Self::launch(connector, tap, Builder::new_current_thread().enable_all())
+    }
+
+    /// On a paused clock, which jumps to the next deadline whenever every task waits, so a rung takes exactly its delay.
+    pub(super) fn paused(connector: Connector, tap: Tap) -> Self {
+        let mut builder = Builder::new_current_thread();
+        Self::launch(
+            connector,
+            Some(tap),
+            builder.enable_all().start_paused(true),
+        )
+    }
+
+    /// The runtime holds a paused clock still while a blocking task runs, so real work on other threads cannot pass for time.
+    pub(super) fn hold_clock(&self) -> ClockHold {
+        let (release, held) = std_mpsc::channel::<()>();
+        drop(self.runtime.spawn_blocking(move || held.recv()));
+        ClockHold { _release: release }
+    }
+
+    fn launch(connector: Connector, tap: Option<Tap>, builder: &mut Builder) -> Self {
         let (link, inputs) = queue();
         let hub = Hub::new(link.clone(), State::default());
         let fed = link.clone();
         let (halt, asked) = oneshot::channel::<()>();
         let shared = hub.clone();
-        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = builder.build().unwrap();
+        let handle = runtime.handle().clone();
         let body = move || {
             runtime.block_on(async move {
                 let (requests, _unread) = mpsc::channel(REQUEST_QUEUE);
@@ -172,6 +201,7 @@ impl Running {
             hub,
             halt: Some(halt),
             thread: Some(thread),
+            runtime: handle,
         }
     }
 

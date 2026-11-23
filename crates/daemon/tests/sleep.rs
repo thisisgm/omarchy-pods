@@ -220,7 +220,7 @@ mod tests {
             "the notice after the pods went",
             down,
             Instant::now(),
-            &not_before(ABSENT_GRACE),
+            &(ABSENT_GRACE..),
         );
         assert_eq!(calls, [DISCONNECT_NOTICE]);
         rig.finish();

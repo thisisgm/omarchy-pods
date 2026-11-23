@@ -9,9 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
-use pods_core::link::ladder::{FIRST_RETRY_MS, HELD_DELAYS_MS};
 use pods_core::state::State;
-use pods_fake::{Fault, Pods, Profile, pair, unwatchable};
+use pods_fake::{Pods, Profile, pair, unwatchable};
 use pods_proto::model::Model;
 use pods_proto::noise::NoiseMode;
 use pods_samples::{CASE, Cell, NOISE, RIGHT, host, setting};
@@ -52,7 +51,7 @@ const SENTINEL: Cell = Cell {
 /// The fake pods serve each open channel on one thread of the test's own process.
 const FAKE_PODS_THREADS: usize = 1;
 
-/// The first rungs of the held ladder, 1 + 2 + 4 s apart; the rest is the pure machine's to prove.
+/// Attempts the one thread check watches, a climb past the first held rungs.
 const LADDER_ATTEMPTS: usize = 4;
 
 /// Finer than a sleep can wake.
@@ -259,46 +258,6 @@ fn a_subscriber_that_never_reads_is_dropped_and_get_still_answers() {
 }
 
 #[test]
-fn peer_hang_up_mid_burst_starts_the_held_ladder() {
-    let pods = Pods::new(Profile::default());
-    pods.fault(Fault::CloseAfter(10));
-    let (connector, connects) = fake_connector(&pods);
-    let running = Running::start(connector, None);
-    let hub = running.hub();
-    let (_, mut changes) = hub.follow();
-    device_up(running.inputs());
-    connects.recv_timeout(HANG_LIMIT).unwrap();
-    let closed = pods.wait_closed(1, HANG_LIMIT).unwrap()[0];
-    block_on(async {
-        let mut was_up = false;
-        loop {
-            let change = timeout(HANG_LIMIT, changes.recv()).await.unwrap().unwrap();
-            was_up |= change.connected;
-            if was_up && !change.connected {
-                return;
-            }
-        }
-    });
-    let down_after = closed.elapsed();
-    assert!(
-        down_after <= Duration::from_secs(1),
-        "connected went false {down_after:?} after the hang-up"
-    );
-    let retried = connects.recv_timeout(HANG_LIMIT).unwrap() - closed;
-    let first_retry = Duration::from_millis(FIRST_RETRY_MS);
-    report(&format!(
-        "the second connect came {retried:?} after the hang-up"
-    ));
-    assert!(
-        retried >= first_retry && retried <= first_retry + REAL_TIME_SLACK,
-        "{retried:?}, from {first_retry:?} to {:?}",
-        first_retry + REAL_TIME_SLACK
-    );
-    drop(running);
-    pods.finish().unwrap();
-}
-
-#[test]
 fn set_racing_a_hang_up_always_resolves() {
     let pods = Pods::new(Profile::default());
     let (running, _connects) = link_up(&pods);
@@ -484,7 +443,7 @@ fn never_more_than_one_connect_thread() {
             let now = live.fetch_add(1, Ordering::SeqCst) + 1;
             most.fetch_max(now, Ordering::SeqCst);
             let name = thread::current().name().map(str::to_owned);
-            connected.send((name, Instant::now())).ok();
+            connected.send(name).ok();
             Err(ChannelError::Connect(Errno::HOSTDOWN))
         })
     };
@@ -496,25 +455,11 @@ fn never_more_than_one_connect_thread() {
     });
     let running = Running::start(connector, Some(tap));
     device_up(running.inputs());
-    let mut times = Vec::with_capacity(LADDER_ATTEMPTS);
     for attempt in 1..=LADDER_ATTEMPTS {
-        let (name, at) = connects
+        let name = connects
             .recv_timeout(HANG_LIMIT)
             .unwrap_or_else(|_| panic!("attempt {attempt} never connected"));
         assert_eq!(name.as_deref(), Some(CONNECT_THREAD), "attempt {attempt}");
-        times.push(at);
-    }
-    let gaps: Vec<Duration> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    report(&format!(
-        "the first {LADDER_ATTEMPTS} attempts came {gaps:?} apart"
-    ));
-    for (gap, delay) in gaps.iter().zip(HELD_DELAYS_MS) {
-        let delay = Duration::from_millis(delay);
-        assert!(
-            *gap >= delay && *gap <= delay + REAL_TIME_SLACK,
-            "{gap:?}, from {delay:?} to {:?}",
-            delay + REAL_TIME_SLACK
-        );
     }
     drop(running);
     assert_eq!(
@@ -554,27 +499,4 @@ fn the_runtime_refuses_to_watch_a_regular_file() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     let refused = runtime.block_on(async { Open::watch(unwatchable()).unwrap_err() });
     assert_eq!(refused.kind(), ErrorKind::PermissionDenied);
-}
-
-#[test]
-fn a_channel_the_runtime_cannot_watch_counts_as_a_failed_connect() {
-    let (connected, connects) = std_mpsc::channel();
-    let connector: Connector = Arc::new(move |_| {
-        connected.send(Instant::now()).ok();
-        Ok(unwatchable())
-    });
-    let running = Running::start(connector, None);
-    device_up(running.inputs());
-    let first = connects.recv_timeout(HANG_LIMIT).unwrap();
-    let second = connects.recv_timeout(HANG_LIMIT).unwrap();
-    let delay = Duration::from_millis(HELD_DELAYS_MS[0]);
-    let gap = second - first;
-    report(&format!("the second attempt came {gap:?} after the first"));
-    assert!(
-        gap >= delay && gap <= delay + REAL_TIME_SLACK,
-        "{gap:?}, from {delay:?} to {:?}",
-        delay + REAL_TIME_SLACK
-    );
-    assert!(!running.hub().state().connected);
-    drop(running);
 }
