@@ -8,6 +8,7 @@ readonly unit_dir="${HOME:-}/.local/share/systemd/user"
 readonly release_url=https://github.com/thisisgm/omarchy-pods/releases/download
 readonly download_timeout_s=60
 readonly service_wait_s=10
+readonly us_per_s=1000000
 readonly ASSET_SUFFIX=-x86_64
 readonly sha256_hex_digits=64
 readonly lock_separator="  "
@@ -121,10 +122,16 @@ install_unit() {
     systemctl --user enable librepods.service || fail "systemctl could not enable the service" "librepods.service"
 }
 
+# Sample input: EPOCHREALTIME `1763880000.123456`, whose digits alone are microseconds.
+now_us() {
+    printf '%s' "${EPOCHREALTIME//[!0-9]/}"
+}
+
 start_service() {
-    local second reply
+    local deadline reply
     systemctl --user restart librepods.service || fail "systemctl could not restart the service" "librepods.service"
-    for ((second = 0; second < service_wait_s; second++)); do
+    deadline=$(($(now_us) + service_wait_s * us_per_s))
+    while (($(now_us) < deadline)); do
         # A daemon still starting makes status fail, and the journal named below holds why it never answered.
         reply=$("$bin_dir/librepods" status 2> /dev/null) || reply=
         if [[ $reply == *'"schema_version"'* ]]; then

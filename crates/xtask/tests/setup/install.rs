@@ -266,6 +266,17 @@ fn a_service_that_never_answers_fails_loud_inside_the_bound() {
 }
 
 #[test]
+fn a_service_that_answers_slowly_fails_inside_the_same_bound() {
+    let wait = Duration::from_secs(script_constant("service_wait_s").parse().unwrap());
+    let bench = Bench::new();
+    bench.set("slow", "");
+    let ran = bench.run(&[]);
+    assert_eq!(ran.code, Some(1), "{}", ran.stderr);
+    assert_eq!(ran.stderr, NOT_STARTED);
+    assert!(ran.took <= wait + WAIT_SLACK, "ended after {:?}", ran.took);
+}
+
+#[test]
 fn running_as_root_is_refused() {
     let bench = Bench::new();
     bench.set("uid", "0\n");
