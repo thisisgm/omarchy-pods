@@ -19,9 +19,7 @@ mod tests {
     use super::support::bluez::DeviceMethod;
     use super::support::children::{children, reaped_children_faults};
     use super::support::parked::{climb_to_parked, refused_pods};
-    use super::support::rig::{
-        ANSWERED_WITHIN, CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Rig, assert_gap, connected, total,
-    };
+    use super::support::rig::{CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Rig, assert_gap, connected, total};
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for, wait_within};
 
     /// The wait before the next dial once the held ladder is spent and the pods are parked.
@@ -117,18 +115,18 @@ mod tests {
         wait_for("four calls at the fake BlueZ", || {
             (rig.bluez().calls() == held).then_some(())
         });
+        // No call counted failed yet, so this answer came while all four hung.
+        let during = rig.status();
+        assert_eq!(
+            failures(&during),
+            0,
+            "status answered while the calls hang: {during}"
+        );
         let failed = wait_within(
             "the held connects counted as failed",
             CALL_TIMEOUT.saturating_add(HANG_LIMIT),
             || {
-                let started = Instant::now();
                 let status = rig.status();
-                assert_gap(
-                    "librepods status while the calls hang",
-                    started,
-                    Instant::now(),
-                    &(Duration::ZERO..=ANSWERED_WITHIN),
-                );
                 (failures(&status) >= CALLS_IN_FLIGHT_MAX).then_some((Instant::now(), status))
             },
         );

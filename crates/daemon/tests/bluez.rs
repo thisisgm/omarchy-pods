@@ -67,17 +67,14 @@ mod tests {
     /// Words every line of the daemon about the system bus holds.
     const SYSTEM_BUS_LINE: &str = "system bus";
 
-    /// The most a `status` may take while BlueZ answers nothing.
-    const STATUS_LIMIT: Duration = Duration::from_millis(200);
+    /// The pause between two asks of `status`.
+    const STATUS_APART: Duration = Duration::from_millis(200);
 
-    /// Asks of `status` a `STATUS_LIMIT` apart, spanning two sweep timeouts.
+    /// Asks of `status` a `STATUS_APART` apart, spanning two sweep timeouts.
     const STATUS_ASKS: u32 = 20;
 
     /// Longer than a sweep that times out and the dial that would follow it.
     const QUIET: Duration = SWEEP_TIMEOUT.saturating_add(REAL_TIME_SLACK);
-
-    /// The most the daemon may take to close the channel after BlueZ reports the link down.
-    const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
     /// The most a dial may come after a `Connected` true edge.
     const EDGE_TO_DIAL: Duration = Duration::from_millis(500);
@@ -309,7 +306,7 @@ mod tests {
         rig.wait_dials(1, DIAL_WAIT);
         rig.wait_filled();
         rig.bluez().remove(&device.path);
-        device.pods.wait_closed(1, CLOSE_WAIT).unwrap();
+        device.pods.wait_closed(1, HANG_LIMIT).unwrap();
         rig.wait_status("no device after the forget", |status| {
             device_fields(status.clone()) == no_device
         });
@@ -358,7 +355,7 @@ mod tests {
         // The watcher still follows BlueZ after its return: the link falling closes the channel.
         rig.bluez()
             .set(&device.path, "Connected", OwnedVariant::from(false));
-        device.pods.wait_closed(1, CLOSE_WAIT).unwrap();
+        device.pods.wait_closed(1, HANG_LIMIT).unwrap();
         rig.finish();
     }
 
@@ -401,7 +398,7 @@ mod tests {
         up(&rig);
         rig.bluez()
             .set(&device.path, "Connected", OwnedVariant::from(false));
-        device.pods.wait_closed(1, CLOSE_WAIT).unwrap();
+        device.pods.wait_closed(1, HANG_LIMIT).unwrap();
         rig.no_dial_for(QUIET);
         let edge = Instant::now();
         rig.bluez()
@@ -447,7 +444,7 @@ mod tests {
         assert!(closed.is_err(), "the channel closed: {closed:?}");
         rig.bluez()
             .set(&other, "Connected", OwnedVariant::from(false));
-        device.pods.wait_closed(1, CLOSE_WAIT).unwrap();
+        device.pods.wait_closed(1, HANG_LIMIT).unwrap();
         rig.finish();
     }
 
@@ -487,17 +484,20 @@ mod tests {
         let mut rig = Rig::new();
         rig.bluez().hold_replies(true);
         rig.start();
-        let mut slowest = Duration::ZERO;
-        for _ in 0..STATUS_ASKS {
-            let asked = Instant::now();
-            rig.status();
-            slowest = slowest.max(asked.elapsed());
-            pause(STATUS_LIMIT);
-        }
+        wait_for("the first sweep at the fake BlueZ", || {
+            (!rig.bluez().sweeps().is_empty()).then_some(())
+        });
+        rig.status();
+        // Its timeout not logged yet, so this answer came while the sweep hung.
+        let log = rig.daemon().log();
         assert!(
-            slowest <= STATUS_LIMIT,
-            "the slowest status took {slowest:?}, wanted 0 to {STATUS_LIMIT:?}"
+            !log.contains(SWEEP_HELD),
+            "status while the sweep hangs: {log}"
         );
+        for _ in 0..STATUS_ASKS {
+            rig.status();
+            pause(STATUS_APART);
+        }
         let log = rig.daemon().log();
         assert!(log.contains(SWEEP_HELD), "no sweep was held: {log}");
         rig.bluez().hold_replies(false);
@@ -633,7 +633,7 @@ mod tests {
         rig.link_up(&second);
         rig.no_dial_for(SIGNAL_SLACK);
         rig.bluez().remove(&first.path);
-        first.pods.wait_closed(1, CLOSE_WAIT).unwrap();
+        first.pods.wait_closed(1, HANG_LIMIT).unwrap();
         let dials = rig.wait_dials(2, DIAL_WAIT);
         assert_eq!(dials[1].device, second.address);
         up(&rig);

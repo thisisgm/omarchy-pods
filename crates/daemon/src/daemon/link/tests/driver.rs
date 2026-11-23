@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_core::command::{Command, CommandError, NoiseTarget, Outcome};
+use pods_core::prefs::MicPref;
 use pods_core::state::State;
 use pods_fake::{Pods, Profile, pair, unwatchable};
 use pods_proto::model::Model;
@@ -82,9 +83,16 @@ fn filled(state: &State) -> bool {
         && state.ear.any_in_ear()
 }
 
+/// `auto` starts the uplink once to confirm the model, which moves the state past any sentinel.
+fn mic_off(hub: &Hub) {
+    let off = Command::SetMicrophone(MicPref::Off);
+    assert_eq!(block_on(hub.submit(off)), Outcome::Confirmed);
+}
+
 fn link_up(pods: &Pods) -> (Running, std_mpsc::Receiver<Instant>) {
     let (connector, connects) = fake_connector(pods);
     let running = Running::start(connector, None);
+    mic_off(&running.hub());
     device_up(running.inputs());
     wait_for_state(&running.hub(), HANG_LIMIT, "the first burst", filled);
     (running, connects)
@@ -187,11 +195,10 @@ fn handshake_runs_against_the_fake_pods_and_the_state_fills() {
 #[test]
 fn burst_of_38_packets_reaches_a_healthy_subscriber_in_order() {
     let pods = Pods::new(Profile::default());
-    // Held, so no running marker can follow the sentinel inside the answer window.
-    pods.uplink().hold_starts(true);
     let (connector, _connects) = fake_connector(&pods);
     let running = Running::start(connector, None);
     let hub = running.hub();
+    mic_off(&hub);
     let (first, mut changes) = hub.follow();
     let drainer = thread::spawn(move || {
         let mut seen = Vec::new();
