@@ -5,7 +5,7 @@ use std::time::Duration;
 use pods_proto::addr::BdAddr;
 use pods_proto::uplink::UplinkState;
 
-use super::{AudioFact, AudioRequest, Percent, SinkFact, server_after, sink_prefix};
+use super::{AudioFact, AudioRequest, Percent, SinkFact, SinkState, server_after, sink_prefix};
 use crate::link::Signal;
 use crate::policy::{Effect, Fact, Policy, SleepEdge};
 use crate::state::{AudioServer, State};
@@ -31,7 +31,12 @@ fn lost() -> Fact {
 fn sink() -> Fact {
     let volume = Percent::new(40).unwrap();
     let is_default = true;
-    Fact::Audio(AudioFact::Sink(Some(SinkFact { is_default, volume })))
+    let state = SinkState::Running;
+    Fact::Audio(AudioFact::Sink(Some(SinkFact {
+        is_default,
+        volume,
+        state,
+    })))
 }
 
 const SERVERS: [AudioServer; 3] = [AudioServer::Idle, AudioServer::Up, AudioServer::Down];

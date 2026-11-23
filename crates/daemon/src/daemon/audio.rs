@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use pods_core::policy::audio::{
     AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkFact,
-    sink_prefix,
+    SinkState, sink_prefix,
 };
 use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{
-    AuthParams, Command, CommandTag, Prop, Props, SinkState, SubscriptionMask, SuspendParams,
+    AuthParams, Command, CommandTag, Prop, Props, SubscriptionMask, SuspendParams,
 };
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, error::TrySendError};
@@ -374,14 +374,15 @@ impl<'a> Follower<'a> {
         let owed = self.requests.restore != Restore::Clear;
         let is_suspended = |state| state == SinkState::Suspended;
         match sink {
-            Some(Followed { index, state, .. })
-                if (owed && !is_suspended(state)) || (self.suspended && is_suspended(state)) =>
+            Some(Followed { index, fact })
+                if (owed && !is_suspended(fact.state))
+                    || (self.suspended && is_suspended(fact.state)) =>
             {
                 let began = Instant::now();
-                if !is_suspended(state) {
+                if !is_suspended(fact.state) {
                     self.suspended = true;
                     connection.suspend(index, true, stale).await?;
-                    if state == SinkState::Running {
+                    if fact.state == SinkState::Running {
                         sleep(Duration::from_millis(RESTORE_HOLD_MS)).await;
                     }
                 }
@@ -543,7 +544,6 @@ async fn within<T>(work: impl Future<Output = Result<T, Lost>>) -> Result<T, Los
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Followed {
     index: u32,
-    state: SinkState,
     fact: SinkFact,
 }
 
@@ -564,10 +564,10 @@ fn device_sink(
             let fact = SinkFact {
                 is_default,
                 volume: sink.volume,
+                state: sink.state,
             };
             found = Some(Followed {
                 index: sink.index,
-                state: sink.state,
                 fact,
             });
         }

@@ -9,7 +9,7 @@ use pods_proto::ear::EarReport;
 use pods_proto::keys::{Key, ProximityKeys};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
 
-use super::audio::{AudioFact, AudioRequest, Percent, SinkFact};
+use super::audio::{AudioFact, AudioRequest, Percent, SinkFact, SinkState};
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
 use super::ear::{BOTH_OUT_SETTLE_MS, BUS_NAME_MAX};
 use super::notices::{Notice, Part, disconnected};
@@ -475,9 +475,13 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
     asked
 }
 
-fn sink(is_default: bool) -> Fact {
+pub(super) fn sink_in(is_default: bool, state: SinkState) -> Fact {
     let volume = Percent::FULL;
-    Fact::Audio(AudioFact::Sink(Some(SinkFact { is_default, volume })))
+    Fact::Audio(AudioFact::Sink(Some(SinkFact {
+        is_default,
+        volume,
+        state,
+    })))
 }
 
 /// Runs a row's steps on a linked state, then the clock to the settle's end if one is pending.
@@ -491,7 +495,11 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
     };
     let mut now = Duration::ZERO;
     let mut at_once = asks(policy.step(&state, Fact::Changed, now));
-    at_once.extend(asks(policy.step(&state, sink(ours), now)));
+    at_once.extend(asks(policy.step(
+        &state,
+        sink_in(ours, SinkState::Running),
+        now,
+    )));
     for &step in steps {
         now = now.saturating_add(Duration::from_millis(STEP_MS));
         let fact = match step {
@@ -504,7 +512,7 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
                 Fact::Changed
             }
             Step::Paused => Fact::Paused(Era::default(), vec![player()]),
-            Step::Ours => sink(OURS),
+            Step::Ours => sink_in(OURS, SinkState::Running),
             Step::Settle => {
                 now = policy.deadline().expect("a settle pending");
                 Fact::Tick
@@ -581,7 +589,10 @@ fn the_settle_and_a_suspend_window_each_end_at_their_own_deadline() {
         ..State::default()
     };
     let at = Duration::from_millis;
-    assert_eq!(policy.step(&state, sink(OURS), at(0)), []);
+    assert_eq!(
+        policy.step(&state, sink_in(OURS, SinkState::Running), at(0)),
+        []
+    );
     state.ear = EarReport::from_in_ear(true, true);
     assert_eq!(policy.step(&state, Fact::Changed, at(0)), []);
     state.ear = EarReport::from_in_ear(false, false);
@@ -651,7 +662,7 @@ fn a_pause_report_from_before_a_loss_is_dropped_after_the_relink() {
     };
     let now = Duration::ZERO;
     let one_out = |policy: &mut Policy, state: &mut State| {
-        drop(policy.step(state, sink(OURS), now));
+        drop(policy.step(state, sink_in(OURS, SinkState::Running), now));
         state.ear = EarReport::from_in_ear(true, true);
         drop(policy.step(state, Fact::Changed, now));
         state.ear = EarReport::from_in_ear(true, false);
@@ -690,13 +701,19 @@ fn a_late_pause_with_the_buds_back_plays_only_its_own_players() {
     let now = Duration::ZERO;
     let other = PlayerOwner::new(&format!("{PLAYER}2")).unwrap();
     assert_eq!(policy.step(&state, Fact::Changed, now), []);
-    assert_eq!(policy.step(&state, sink(ELSEWHERE), now), []);
+    assert_eq!(
+        policy.step(&state, sink_in(ELSEWHERE, SinkState::Running), now),
+        []
+    );
     // The buds are back with the sink elsewhere, so this pause is dropped rather than kept for later.
     assert_eq!(
         policy.step(&state, Fact::Paused(Era::default(), vec![player()]), now),
         []
     );
-    assert_eq!(policy.step(&state, sink(OURS), now), []);
+    assert_eq!(
+        policy.step(&state, sink_in(OURS, SinkState::Running), now),
+        []
+    );
     let play = Effect::Media(MediaRequest::Play(vec![other.clone()]));
     assert_eq!(
         policy.step(&state, Fact::Paused(Era::default(), vec![other]), now),

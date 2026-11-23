@@ -338,12 +338,8 @@ fn every_sink_of_a_list_is_read_with_its_mean_volume() {
 
 #[test]
 fn each_sinks_index_and_state_are_read() {
-    let states = [
-        (4, SinkState::Running),
-        (9, SinkState::Idle),
-        (11, SinkState::Suspended),
-    ];
-    let infos: Vec<SinkInfo> = states
+    use pulseaudio::protocol::SinkState as Wire;
+    let infos: Vec<SinkInfo> = [(4, Wire::Running), (9, Wire::Idle), (11, Wire::Suspended)]
         .into_iter()
         .map(|(index, state)| SinkInfo {
             state,
@@ -354,7 +350,12 @@ fn each_sinks_index_and_state_are_read() {
     let read: Vec<(u32, SinkState)> = sinks(&list)
         .map(|sink| sink.map(|sink| (sink.index, sink.state)).unwrap())
         .collect();
-    assert_eq!(read, states);
+    let expected = [
+        (4, SinkState::Running),
+        (9, SinkState::Idle),
+        (11, SinkState::Suspended),
+    ];
+    assert_eq!(read, expected);
 }
 
 #[test]

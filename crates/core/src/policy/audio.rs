@@ -68,6 +68,15 @@ pub struct RestoreId(pub(super) u32);
 pub struct SinkFact {
     pub is_default: bool,
     pub volume: Percent,
+    pub state: SinkState,
+}
+
+/// Only `Suspended`, or no sink at all, lets a STOP out while a bud is worn; an idle sink can still hold a started stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkState {
+    Running,
+    Idle,
+    Suspended,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
