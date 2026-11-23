@@ -163,13 +163,14 @@ mod tests {
 
     #[test]
     fn do_forget_removes_the_device_through_its_adapter() {
-        let (rig, device) = up();
+        let (mut rig, device) = up();
         assert_taken(&rig.client(&["do", "forget"]));
         device
             .pods
             .wait_closed(1, HANG_LIMIT)
             .expect("the channel closed");
         let cleared = rig.wait_status("the name cleared", |status| status["device_name"] == "");
+        assert_eq!(rig.entered("grace"), 0, "the forget went through the grace");
         let removed = Call {
             object: rig.adapter().0.clone(),
             method: DeviceMethod::RemoveDevice,
