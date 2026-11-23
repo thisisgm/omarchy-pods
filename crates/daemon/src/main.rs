@@ -9,6 +9,7 @@ mod protocol;
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -40,6 +41,7 @@ fn main() -> ExitCode {
         Ok(Invocation::Do { action }) => {
             run_client(|socket, _out, err| client::proto1::act(&action, socket, err))
         }
+        Ok(Invocation::StateDir) => print_state_dir(),
         Err(error) => report_parse_error(&error),
     }
 }
@@ -61,20 +63,46 @@ fn run_daemon() -> ExitCode {
         daemon::log(daemon::NO_RUNTIME_DIR);
         return ExitCode::FAILURE;
     };
-    let state_home = env::var_os(STATE_HOME_VAR);
-    let home = env::var_os(HOME_VAR);
-    let Some(state_file) = daemon::state_file::path(state_home.as_deref(), home.as_deref()) else {
+    let Some(state_file) = state_file() else {
         daemon::log(daemon::NO_STATE_HOME);
         return ExitCode::FAILURE;
     };
-    let old_conf =
-        daemon::prefs::old_conf_path(env::var_os(CONFIG_HOME_VAR).as_deref(), home.as_deref());
+    let old_conf = daemon::prefs::old_conf_path(
+        env::var_os(CONFIG_HOME_VAR).as_deref(),
+        env::var_os(HOME_VAR).as_deref(),
+    );
     daemon::run(daemon::Paths {
         socket,
         state_file,
         old_conf,
         runtime_dir,
     })
+}
+
+fn state_file() -> Option<PathBuf> {
+    daemon::state_file::path(
+        env::var_os(STATE_HOME_VAR).as_deref(),
+        env::var_os(HOME_VAR).as_deref(),
+    )
+}
+
+/// Prints the directory the daemon keeps its files in, so the installer's uninstall never guesses it.
+fn print_state_dir() -> ExitCode {
+    let Some(dir) = state_file().and_then(|file| file.parent().map(Path::to_path_buf)) else {
+        daemon::log(daemon::NO_STATE_HOME);
+        return ExitCode::FAILURE;
+    };
+    let mut out = io::stdout().lock();
+    match out
+        .write_all(dir.as_os_str().as_bytes())
+        .and_then(|()| out.write_all(b"\n"))
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            daemon::log(&format!("cannot print the state directory: {error}"));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Prints a clap error, help or version where clap chooses, and exits with clap's code.

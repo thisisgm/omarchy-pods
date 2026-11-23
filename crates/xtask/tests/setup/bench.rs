@@ -26,8 +26,10 @@ const MACHINE: &str = "x86_64\n";
 pub(crate) const ADAPTER_OBJECT: &str = "/org/bluez/hci0";
 /// What `busctl` prints for the manager's monitor types when BlueZ serves it.
 pub(crate) const SERVED_TYPES: &str = "as 1 \"or_patterns\"\n";
+/// Where a case links the built daemon for the payload's `state-dir`.
+pub(crate) const BUILT_DAEMON_LINK: &str = "stub/librepods-built";
 /// The real programs the installer and the stubs run; any other name is not found.
-const REAL: [&str; 13] = [
+const REAL: [&str; 14] = [
     "bash",
     "cat",
     "dirname",
@@ -41,6 +43,7 @@ const REAL: [&str; 13] = [
     "rmdir",
     "sha256sum",
     "sleep",
+    "timeout",
 ];
 /// How long a case waits for one run of the installer, well past its own longest wait.
 const RUN_DEADLINE: Duration = Duration::from_secs(60);
@@ -129,12 +132,16 @@ mkdir -p target/release
 cat "$bench/stub/payload" > target/release/librepods
 "#;
 
-/// The binary the release serves and cargo builds: it answers `--version`, and `status` unless the case silenced or slowed it.
+/// The binary the release serves and cargo builds: it answers `--version`, `status` unless silenced or slowed, and `state-dir` through the built daemon.
 /// A slowed `status` spends the client's 2 s worst case (connect, write and reply timeouts) before it fails.
 const PAYLOAD: &str = r#"
 log librepods "$@"
 case "$1" in
 --version) echo "librepods VERSION" ;;
+state-dir)
+    [ -e "$bench/stub/state-dir-fails" ] && { echo 'librepods: cannot place the state file' >&2; exit 1; }
+    [ -e "$bench/stub/state-dir-hangs" ] && { trap '' TERM; exec sleep 30; }
+    exec "$bench/BUILT_LINK" state-dir ;;
 status)
     [ -e "$bench/stub/silent" ] && exit 1
     [ -e "$bench/stub/slow" ] && { sleep 2; exit 1; }
@@ -206,7 +213,12 @@ impl Bench {
         for (name, body) in stubs {
             bench.write_stub(&format!("bin/{name}"), body);
         }
-        bench.write_stub("stub/payload", &PAYLOAD.replace("VERSION", VERSION));
+        bench.write_stub(
+            "stub/payload",
+            &PAYLOAD
+                .replace("VERSION", VERSION)
+                .replace("BUILT_LINK", BUILT_DAEMON_LINK),
+        );
         fs::copy(bench.path("stub/payload"), bench.path("stub/served")).unwrap();
         bench.set("uid", USER_ID);
         bench.set("machine", MACHINE);
@@ -232,6 +244,11 @@ impl Bench {
     /// Writes a control file the stubs read under `stub/`.
     pub(crate) fn set(&self, name: &str, body: &str) {
         fs::write(self.path(&format!("stub/{name}")), body).unwrap();
+    }
+
+    /// Lets the installed binary answer `state-dir` through the daemon this workspace built.
+    pub(crate) fn link_built_daemon(&self) {
+        symlink(built_daemon(), self.path(BUILT_DAEMON_LINK)).unwrap();
     }
 
     /// Replaces the plugin copy's `packaging/librepods.sha256`, which is never the repository's own.
@@ -473,6 +490,21 @@ pub(crate) fn script_constant(name: &str) -> String {
 
 pub(crate) fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// The daemon the same workspace build left beside this test's directory, as `cargo xtask ci` builds both.
+fn built_daemon() -> PathBuf {
+    let test = std::env::current_exe().unwrap();
+    // Sample input: `<target>/debug/build/xtask/0123abcd/out/setup-0123abcd`, under `<target>/debug/librepods`'s directory.
+    test.ancestors()
+        .map(|dir| dir.join("librepods"))
+        .find(|daemon| daemon.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no librepods above {}; build the workspace first, as cargo xtask ci does",
+                test.display()
+            )
+        })
 }
 
 /// The first executable `name` on the test's own `PATH`.
