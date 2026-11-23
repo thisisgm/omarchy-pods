@@ -1,9 +1,10 @@
-//! The microphone uplink machine: when a START goes out, what the pods' markers move, and `off`; stepped only by facts and its own deadline.
+//! The microphone uplink machine: when a START and a STOP go out, what the pods' markers move, the restore after a STOP and the exit; stepped only by facts and its own deadline.
 
 use std::time::Duration;
 
 use pods_proto::uplink::{self, UplinkState};
 
+use super::audio::{AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS};
 use super::{Effect, Fact};
 use crate::link::Signal;
 use crate::prefs::MicPref;
@@ -13,6 +14,8 @@ use crate::state::{MicCode, State};
 pub const START_ANSWER_MS: u64 = 1500;
 /// About three times the slowest answer to a STOP measured on the pods, rounded up.
 pub const STOP_ANSWER_MS: u64 = 1500;
+/// The restore is two audio server calls with the hold between them.
+pub const RESTORE_WAIT_MS: u64 = 2 * AUDIO_CALL_TIMEOUT_MS + RESTORE_HOLD_MS;
 
 pub const UNANSWERED_LINE: &str = "mic: start unanswered (try 1 of 1)";
 pub const FAILED_LINE: &str = "mic: failed, the pods did not answer";
@@ -20,7 +23,6 @@ pub const NO_UPLINK_LINE: &str = "mic: this model has no uplink";
 pub const STOP_OWED_LINE: &str = "mic: stop owed, the start is unanswered";
 pub const STOP_UNCONFIRMED_LINE: &str = "mic: stop not confirmed";
 const START_SENT_LINE: &str = "mic: start sent (try 1)";
-const STOP_SENT_LINE: &str = "mic: stop sent (off)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UplinkRequest {
@@ -44,7 +46,7 @@ enum Phase {
     Stopped {
         spent: Option<Spent>,
     },
-    /// A START went out at `since` and the pods have not said they run; `owed` once `off` asked for its STOP.
+    /// A START went out at `since` and the pods have not said they run; `owed` once `off` or the exit asked for its STOP.
     Starting {
         since: Duration,
         owed: bool,
@@ -54,6 +56,26 @@ enum Phase {
     Stopping {
         since: Duration,
     },
+    /// The sink's restore was asked for at `since`.
+    Restoring {
+        since: Duration,
+    },
+}
+
+/// Why a STOP went out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Word {
+    Off,
+    Exit,
+}
+
+impl Word {
+    const fn line(self) -> &'static str {
+        match self {
+            Self::Off => "mic: stop sent (off)",
+            Self::Exit => "mic: stop sent (exit)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,12 +89,14 @@ enum Spent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Mic {
     phase: Phase,
+    exiting: bool,
 }
 
 impl Default for Mic {
     fn default() -> Self {
         Self {
             phase: Phase::Stopped { spent: None },
+            exiting: false,
         }
     }
 }
@@ -82,13 +106,16 @@ impl Mic {
     pub(super) fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
         let mut effects = Vec::new();
         match fact {
-            Fact::Link(Signal::Down | Signal::Lost { .. }) => *self = Self::default(),
+            Fact::Link(Signal::Down | Signal::Lost { .. }) => {
+                self.phase = Phase::Stopped { spent: None };
+            }
             Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
             Fact::Tick => self.tick(state, now, &mut effects),
+            Fact::Audio(fact) => self.audio(*fact),
+            Fact::Exit => self.exiting = true,
             Fact::Link(Signal::Up { .. } | Signal::Keys(_))
             | Fact::Changed
             | Fact::Sleep(_)
-            | Fact::Audio(_)
             | Fact::Paused(..)
             | Fact::Advert(_)
             | Fact::Monitor(_) => {}
@@ -109,11 +136,20 @@ impl Mic {
             (Phase::Stopping { since }, UplinkState::Stopped) => {
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("mic: uplink stopped after {after} ms")));
-                Phase::Stopped { spent: None }
+                restoring(now, effects)
             }
             (Phase::Running, UplinkState::Stopped) => Phase::Stopped { spent: None },
             (phase, _) => phase,
         };
+    }
+
+    fn audio(&mut self, fact: AudioFact) {
+        if matches!(
+            (fact, self.phase),
+            (AudioFact::Restored, Phase::Restoring { .. })
+        ) {
+            self.phase = Phase::Stopped { spent: None };
+        }
     }
 
     fn tick(&mut self, state: &State, now: Duration, effects: &mut Vec<Effect>) {
@@ -129,8 +165,9 @@ impl Mic {
             }
             Phase::Stopping { .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
-                Phase::Stopped { spent: None }
+                restoring(now, effects)
             }
+            Phase::Restoring { .. } => Phase::Stopped { spent: None },
             phase @ (Phase::Stopped { .. } | Phase::Running) => phase,
         };
     }
@@ -139,26 +176,33 @@ impl Mic {
     fn follow(&mut self, state: &State, now: Duration, effects: &mut Vec<Effect>) {
         let off = state.microphone.preference() == MicPref::Off;
         match self.phase {
+            Phase::Stopped { .. } if self.exiting => effects.push(Effect::Exited),
             Phase::Stopped { spent: None } if wanted(state) => {
-                effects.extend([Effect::Uplink(UplinkRequest::Start), log(START_SENT_LINE)]);
+                effects.extend([
+                    Effect::Uplink(UplinkRequest::Start),
+                    Effect::Audio(AudioRequest::CancelRestore),
+                    log(START_SENT_LINE),
+                ]);
                 self.phase = Phase::Starting {
                     since: now,
                     owed: false,
                 };
             }
             // No STOP is ever written while a START is unanswered: the running marker sends it.
-            Phase::Starting { since, owed: false } if off => {
+            Phase::Starting { since, owed: false } if off || self.exiting => {
                 effects.push(log(STOP_OWED_LINE));
                 self.phase = Phase::Starting { since, owed: true };
             }
-            Phase::Running if off => {
-                effects.extend([Effect::Uplink(UplinkRequest::Stop), log(STOP_SENT_LINE)]);
+            Phase::Running if off || self.exiting => {
+                let word = if off { Word::Off } else { Word::Exit };
+                effects.extend([Effect::Uplink(UplinkRequest::Stop), log(word.line())]);
                 self.phase = Phase::Stopping { since: now };
             }
             Phase::Stopped { .. }
             | Phase::Starting { .. }
             | Phase::Running
-            | Phase::Stopping { .. } => {}
+            | Phase::Stopping { .. }
+            | Phase::Restoring { .. } => {}
         }
     }
 
@@ -169,6 +213,9 @@ impl Mic {
             }
             Phase::Stopping { since } => {
                 Some(since.saturating_add(Duration::from_millis(STOP_ANSWER_MS)))
+            }
+            Phase::Restoring { since } => {
+                Some(since.saturating_add(Duration::from_millis(RESTORE_WAIT_MS)))
             }
             Phase::Stopped { .. } | Phase::Running => None,
         }
@@ -186,10 +233,11 @@ impl Mic {
             Phase::Stopped {
                 spent: Some(Spent::Failed),
             } => MicCode::Failed,
+            Phase::Stopping { .. } | Phase::Restoring { .. } => MicCode::Stopping,
             _ if !state.ear.any_in_ear() => MicCode::NotWorn,
             Phase::Starting { .. } => MicCode::Starting,
             Phase::Running => MicCode::Live,
-            Phase::Stopped { spent: None } | Phase::Stopping { .. } => MicCode::Idle,
+            Phase::Stopped { spent: None } => MicCode::Idle,
         }
     }
 }
@@ -202,6 +250,12 @@ fn wanted(state: &State) -> bool {
         MicPref::Auto => !state.mic_models.contains(&state.model_number),
     };
     preferred && !state.model_number.is_empty() && state.connected && state.ear.any_in_ear()
+}
+
+/// The end of a STOP: the sink's restore.
+fn restoring(now: Duration, effects: &mut Vec<Effect>) -> Phase {
+    effects.push(Effect::Audio(AudioRequest::Restore));
+    Phase::Restoring { since: now }
 }
 
 /// Why a START that `off` did not cancel went unanswered, and its line.

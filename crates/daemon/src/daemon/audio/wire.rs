@@ -6,7 +6,7 @@ use std::iter;
 
 use pods_core::policy::audio::Percent;
 use pulseaudio::protocol::{
-    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, Volume, encode_descriptor,
+    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SinkState, Volume, encode_descriptor,
     read_descriptor,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,8 +30,11 @@ const BEFORE_DEFAULT_SINK: usize = 5;
 /// Description, sample spec, channel map and owner module, between a sink's name and its volume.
 const BEFORE_VOLUME: usize = 4;
 
-/// Mute, monitor index and name, two latencies, driver, flags, properties, base volume, state, volume steps and card.
-const AFTER_VOLUME: usize = 12;
+/// Mute, monitor index and name, two latencies, driver, flags, properties and base volume.
+const BEFORE_STATE: usize = 9;
+
+/// Volume steps and card.
+const AFTER_STATE: usize = 2;
 
 /// Name, description, priority, availability, availability group and type.
 const PORT_FIELDS: usize = 6;
@@ -64,6 +67,18 @@ mod tag {
     pub(super) const PROPLIST: u8 = Tag::PropList as u8;
     pub(super) const VOLUME: u8 = Tag::Volume as u8;
     pub(super) const FORMAT_INFO: u8 = Tag::FormatInfo as u8;
+}
+
+/// The crate's numbers for the two sink states the restore tells apart from running.
+#[expect(
+    clippy::as_conversions,
+    reason = "the discriminant of a fieldless enum is the protocol's state number"
+)]
+mod state {
+    use super::SinkState;
+
+    pub(super) const IDLE: u32 = SinkState::Idle as u32;
+    pub(super) const SUSPENDED: u32 = SinkState::Suspended as u32;
 }
 
 /// The crate's numbers for the three commands a server sends this client.
@@ -119,15 +134,38 @@ impl Frame {
     }
 }
 
-/// The only allocation is the payload, after its length is held to `AUDIO_FRAME_MAX`.
-pub(super) async fn read_frame(stream: &mut UnixStream) -> io::Result<Frame> {
-    let mut descriptor = [0; DESCRIPTOR_SIZE];
-    stream.read_exact(&mut descriptor).await.map_err(closed)?;
-    let length = payload_length(&descriptor)
+/// Cancel safe: what a cancelled read took stays in `pending` for the next.
+pub(super) async fn read_frame(
+    stream: &mut UnixStream,
+    pending: &mut Vec<u8>,
+) -> io::Result<Frame> {
+    loop {
+        if let Some(frame) = take_frame(pending)? {
+            return Ok(frame);
+        }
+        if stream.read_buf(pending).await? == 0 {
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "the server closed the connection",
+            ));
+        }
+    }
+}
+
+/// The first whole frame in `pending`, its length held to `AUDIO_FRAME_MAX` before its payload is awaited; sample: a descriptor declaring 10 bytes, then 10 bytes.
+fn take_frame(pending: &mut Vec<u8>) -> io::Result<Option<Frame>> {
+    let Some(descriptor) = pending.first_chunk::<DESCRIPTOR_SIZE>() else {
+        return Ok(None);
+    };
+    let length = payload_length(descriptor)
         .map_err(|malformed| io::Error::new(ErrorKind::InvalidData, malformed.to_string()))?;
-    let mut payload = vec![0; length];
-    stream.read_exact(&mut payload).await.map_err(closed)?;
-    Ok(Frame(payload))
+    let end = DESCRIPTOR_SIZE.saturating_add(length);
+    if pending.len() < end {
+        return Ok(None);
+    }
+    Ok(Some(Frame(
+        pending.drain(..end).skip(DESCRIPTOR_SIZE).collect(),
+    )))
 }
 
 pub(super) async fn write_frame(stream: &mut UnixStream, frame: &Frame) -> io::Result<()> {
@@ -142,14 +180,6 @@ pub(super) async fn write_frame(stream: &mut UnixStream, frame: &Frame) -> io::R
     encode_descriptor(&mut descriptor, &control);
     stream.write_all(&descriptor).await?;
     stream.write_all(&frame.0).await
-}
-
-fn closed(error: io::Error) -> io::Error {
-    if error.kind() == ErrorKind::UnexpectedEof {
-        io::Error::new(ErrorKind::UnexpectedEof, "the server closed the connection")
-    } else {
-        error
-    }
 }
 
 /// The payload length a descriptor declares; sample `00 00 00 0a ff ff ff ff` then 12 zero bytes: 10 bytes of commands.
@@ -215,8 +245,10 @@ pub(super) fn default_sink(body: &[u8]) -> Result<Option<&[u8]>, Malformed> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Sink<'a> {
+    pub(super) index: u32,
     pub(super) name: &'a [u8],
     pub(super) volume: Percent,
+    pub(super) state: SinkState,
 }
 
 /// The sinks of a list reply to its end, the first malformed one ending the walk; sample: one `Tags::sink` after another.
@@ -324,6 +356,15 @@ impl<'a> Tags<'a> {
             .unwrap_or(Percent::FULL))
     }
 
+    /// A sink's state, any number past the protocol's three reading as running; sample `L 00000002`: suspended.
+    fn sink_state(&mut self) -> Result<SinkState, Malformed> {
+        Ok(match self.u32()? {
+            state::IDLE => SinkState::Idle,
+            state::SUSPENDED => SinkState::Suspended,
+            _ => SinkState::Running,
+        })
+    }
+
     /// Key, length and value triples to a null key; sample `t "media.class\0" L 0000000b x 0000000b "Audio/Sink\0" N`.
     fn proplist(&mut self) -> Result<(), Malformed> {
         while self.string()?.is_some() {
@@ -366,18 +407,25 @@ impl<'a> Tags<'a> {
 
     /// One sink of a list at protocol 35; sample `L 0 t "bluez_output.02_00_00_00_00_01.1\0" N a m L v 02 8000.. 8000.. 0 L N U N L P N U V L L L L 0 N B 0`.
     fn sink(&mut self) -> Result<Sink<'a>, Malformed> {
-        self.u32()?;
+        let index = self.u32()?;
         let name = self.string()?.ok_or(Malformed::Nameless)?;
         self.skip_n(BEFORE_VOLUME)?;
         let volume = self.volume()?;
-        self.skip_n(AFTER_VOLUME)?;
+        self.skip_n(BEFORE_STATE)?;
+        let state = self.sink_state()?;
+        self.skip_n(AFTER_STATE)?;
         for _ in 0..self.u32()? {
             self.skip_n(PORT_FIELDS)?;
         }
         self.skip()?;
         let formats = self.u8()?;
         self.skip_n(usize::from(formats))?;
-        Ok(Sink { name, volume })
+        Ok(Sink {
+            index,
+            name,
+            volume,
+            state,
+        })
     }
 }
 

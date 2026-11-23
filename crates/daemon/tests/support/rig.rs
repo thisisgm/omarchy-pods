@@ -604,8 +604,18 @@ impl Rig {
 
     /// Sends SIGTERM as a test's own step and gives the exit status, which must come within `limit`.
     pub(crate) fn stop(&mut self, limit: Duration) -> ExitStatus {
+        self.term();
+        self.exited(limit)
+    }
+
+    /// Sends SIGTERM as a test's own step, leaving the exit to `exited`.
+    pub(crate) fn term(&mut self) {
+        kill_process(self.daemon().pid(), Signal::TERM).unwrap();
+    }
+
+    /// The exit status, which must come within `limit`.
+    pub(crate) fn exited(&mut self, limit: Duration) -> ExitStatus {
         let daemon = self.daemon();
-        kill_process(daemon.pid(), Signal::TERM).unwrap();
         let status = wait_within("the daemon to exit", limit, || {
             daemon.child.try_wait().unwrap()
         });

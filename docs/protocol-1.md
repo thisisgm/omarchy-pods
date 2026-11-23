@@ -145,9 +145,15 @@ A reply carries the request's `id` and `ok`.
   `microphone`, the `microphone` setting. Its `mic` is `off` while that setting
   is `off`; else `idle` while no link is up; `unsupported` once a model never
   confirmed left its START unanswered, and `failed` once a confirmed one did,
-  each until the link is lost; `not_worn` while no bud is worn; `starting` from
-  the START until the AirPods say the uplink runs, then `live`; and `idle` when
-  nothing is wanted. Its `audio_server` is `idle` while no AirPods
+  each until the link is lost; `stopping` from a STOP until the sink's restore
+  after it is done or owed; `not_worn` while no bud is worn; `starting` from the
+  START until the AirPods say the uplink runs, then `live`; and `idle` when
+  nothing is wanted. After a STOP, while the link holds, the daemon suspends and
+  resumes the AirPods' sink unless it is already suspended, which reopens a
+  stream the uplink's end broke; with no audio server it owes that restore until
+  the server is back, and a newer START drops a restore not yet begun. At a stop
+  of the daemon a running uplink is stopped and its sink restored first,
+  within 2 s. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and
   `down` while it cannot reach it. Its
   `advert_intake` is `listening` once BlueZ accepted the daemon's advert

@@ -5,8 +5,8 @@ mod waits;
 use pods_core::policy::audio::{Percent, SinkFact, sink_prefix};
 use pods_proto::addr::BdAddr;
 
-use super::device_sink;
-use super::wire::tests::sink_list;
+use super::wire::tests::{FIRST_INDEX, sink_list};
+use super::{Followed, device_sink};
 
 const DEVICE: &str = "02:00:00:00:00:0A";
 const SPEAKERS: &[u8] = b"alsa_output.speakers";
@@ -28,6 +28,10 @@ fn found(is_default: bool, percent: u8) -> SinkFact {
 }
 
 fn device_sink_of(default: Option<&[u8]>) -> Option<SinkFact> {
+    device_sink_of_list(default).map(|sink| sink.fact)
+}
+
+fn device_sink_of_list(default: Option<&[u8]>) -> Option<Followed> {
     let list = sink_list(&[
         (c"alsa_output.speakers", &[NORM]),
         (c"bluez_output.02_00_00_00_00_01.1", &[NORM]),
@@ -48,6 +52,12 @@ fn another_default_leaves_the_devices_first_sink() {
     assert_eq!(device_sink_of(Some(SPEAKERS)), Some(found(false, 50)));
     assert_eq!(device_sink_of(Some(OTHER_PODS)), Some(found(false, 50)));
     assert_eq!(device_sink_of(None), Some(found(false, 50)));
+}
+
+#[test]
+fn the_devices_sink_keeps_its_index_for_the_restore() {
+    let found = device_sink_of_list(Some(OUTPUT)).unwrap();
+    assert_eq!(found.index, FIRST_INDEX + 2);
 }
 
 #[test]

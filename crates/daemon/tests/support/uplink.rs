@@ -1,13 +1,18 @@
 //! The microphone uplink as the tests against the built daemon drive it: the settings a start keeps, a read barrier on the pods' packets, and the STARTs and STOPs the pods heard.
 
 use std::fs;
+use std::rc::Rc;
+use std::time::Instant;
 
 use pods_core::prefs::{self, MicPref, Prefs};
 use pods_fake::{Heard, Profile};
 use pods_samples::uplink::{START, STOP};
 use pods_samples::{CASE, Cell, LEFT, RIGHT};
+use pulseaudio::protocol::SinkState;
 use serde_json::{Value, json};
 
+use super::audio::wire::sink_named;
+use super::audio::{Asked, FakeAudio, PERCENT, writes_of};
 use super::rig::{Device, Rig, connected};
 use super::settings::plant_settings;
 use super::{HANG_LIMIT, Session, wait_for};
@@ -39,6 +44,64 @@ pub(crate) fn rig_with(preference: &str, models: &[&str], profile: Profile) -> (
     let device = rig.add_pods(profile);
     rig.start();
     (rig, device)
+}
+
+/// As `rig_with`, with the fake audio server holding the pods' sink as its default in `state`.
+pub(crate) fn rig_with_audio(
+    preference: &str,
+    models: &[&str],
+    state: SinkState,
+) -> (Rig, Device, Rc<FakeAudio>) {
+    let mut rig = Rig::new();
+    keep_settings(rig.session(), preference, models);
+    let audio = rig.start_audio();
+    let device = rig.add_pods(Profile::default());
+    let sink = sink_named(device.address);
+    audio.add_sink(&sink, PERCENT);
+    audio.set_default_sink(&sink);
+    audio.set_sink_state(&sink, state);
+    rig.start();
+    (rig, device, audio)
+}
+
+/// As `link`, then the pods' sink read and applied.
+pub(crate) fn link_heard(rig: &Rig, device: &Device) {
+    link(rig, device);
+    rig.wait_sink_told();
+}
+
+/// Moves the pods' sink to `state`, then waits for the daemon to apply what it read.
+pub(crate) fn move_sink(rig: &Rig, audio: &FakeAudio, device: &Device, state: SinkState) {
+    audio.set_sink_state(&sink_named(device.address), state);
+    rig.wait_sink_told();
+}
+
+/// The pods' sink suspended then resumed, and nothing more written before the daemon read again or left: when each was asked.
+pub(crate) fn wait_restore(audio: &FakeAudio, device: &Device) -> (Instant, Instant) {
+    let sink = sink_named(device.address);
+    let writes = wait_for("two writes, then a read or the daemon gone", || {
+        // A client leaves only after its last request is recorded, so `gone` is read first.
+        let gone = audio.clients() == 0;
+        let requests = audio.requests();
+        let settled = gone || requests.last().is_some_and(Asked::only_reads);
+        let writes = writes_of(&requests);
+        (writes.len() >= 2 && settled).then_some(writes)
+    });
+    match writes.as_slice() {
+        [
+            Asked::Suspend {
+                name: Some(first),
+                suspend: true,
+                at: suspended,
+            },
+            Asked::Suspend {
+                name: Some(second),
+                suspend: false,
+                at: resumed,
+            },
+        ] if *first == sink && *second == sink => (*suspended, *resumed),
+        writes => panic!("a suspend and a resume of {sink}, and nothing else: {writes:?}"),
+    }
 }
 
 /// BlueZ reports the pods connected, then every packet of their first burst is read.

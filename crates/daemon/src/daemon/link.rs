@@ -4,7 +4,6 @@ mod reader;
 
 use std::collections::{HashMap, VecDeque};
 use std::future::{self, poll_fn};
-use std::ops::ControlFlow;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
@@ -43,10 +42,15 @@ pub(super) const INPUT_QUEUE: usize = MAX_CONNECTIONS;
 /// One sweep reads every device, so a few waiting cover any burst of events.
 pub(super) const REQUEST_QUEUE: usize = 8;
 
-/// Stop steps never block, so a driver still busy after this is stuck and is aborted.
-pub(super) const STOP_WAIT_MS: u64 = 500;
+/// The slowest measured START answer, STOP answer and restore hold together are about 1.2 s.
+const MIC_EXIT_MS: u64 = 2000;
+
+/// Covers the uplink's exit, so the driver is not aborted inside it, plus what the other stop steps had; a bound, not a wait.
+pub(super) const STOP_WAIT_MS: u64 = MIC_EXIT_MS + 500;
 
 const CONNECT_THREAD: &str = "link-connect";
+
+const EXIT_BEFORE_RESTORE_LINE: &str = "mic: exit before restore";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum DeviceEvent {
@@ -149,6 +153,7 @@ pub(super) async fn drive(
         next_ticket: 0,
         fed_back: VecDeque::new(),
         announced: false,
+        exit: None,
     };
     for effect in driver.policy.start() {
         driver.route(effect);
@@ -158,19 +163,16 @@ pub(super) async fn drive(
             Some(input) => Turn::Input(input),
             None => driver.wait(&mut inputs).await,
         };
-        let flow = match turn {
+        match turn {
             Turn::Input(input) => driver.take(input),
-            Turn::Read(Some(sdu)) => {
-                driver.step(Event::Packet(&sdu));
-                ControlFlow::Continue(())
-            }
+            Turn::Read(Some(sdu)) => driver.step(Event::Packet(&sdu)),
             Turn::Read(None) => driver.take(Input::Ended(End::Closed)),
-            Turn::Tick => {
-                driver.step(Event::Tick);
-                ControlFlow::Continue(())
-            }
-        };
-        if flow.is_break() {
+            Turn::Tick => driver.step(Event::Tick),
+        }
+        if let Some(done) = driver.exited() {
+            driver.step(Event::Shutdown);
+            // A stop that stopped waiting has nobody left to tell.
+            done.send(()).ok();
             return;
         }
         // One change, then every subscriber gets its turn.
@@ -205,6 +207,14 @@ struct Driver {
     fed_back: VecDeque<Input>,
     /// `STATE_POPULATED_LINE` was logged since the link last came up.
     announced: bool,
+    exit: Option<Exit>,
+}
+
+/// A shutdown held until the uplink's exit is done or `by` passes, on the clock of `started`.
+struct Exit {
+    done: oneshot::Sender<()>,
+    by: Duration,
+    exited: bool,
 }
 
 impl Driver {
@@ -214,6 +224,7 @@ impl Driver {
             .deadline()
             .into_iter()
             .chain(self.policy.deadline())
+            .chain(self.exit.as_ref().map(|exit| exit.by))
             .min()
             .and_then(|at| self.started.checked_add(at));
         let next = next_of(inputs, self.channel.as_mut(), &mut self.channel_first);
@@ -225,7 +236,7 @@ impl Driver {
         }
     }
 
-    fn take(&mut self, input: Input) -> ControlFlow<()> {
+    fn take(&mut self, input: Input) {
         match input {
             Input::Device(device) => self.step(device.event()),
             Input::Opened(channel) => match Open::watch(channel) {
@@ -251,17 +262,34 @@ impl Driver {
             }
             Input::Sleep(edge) => self.observe(Fact::Sleep(edge)),
             Input::Shutdown(done) => {
-                self.step(Event::Shutdown);
-                // A stop that stopped waiting has nobody left to tell.
-                done.send(()).ok();
-                return ControlFlow::Break(());
+                let bound = Duration::from_millis(MIC_EXIT_MS);
+                let by = self.started.elapsed().saturating_add(bound);
+                self.exit = Some(Exit {
+                    done,
+                    by,
+                    exited: false,
+                });
+                self.observe(Fact::Exit);
             }
             Input::Audio(fact) => self.observe(Fact::Audio(fact)),
             Input::Media(era, paused) => self.observe(Fact::Paused(era, paused)),
             Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
             Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
         }
-        ControlFlow::Continue(())
+    }
+
+    /// The held shutdown's answer, once the uplink's exit is done or out of time.
+    fn exited(&mut self) -> Option<oneshot::Sender<()>> {
+        let exit = self.exit.take()?;
+        if exit.exited {
+            return Some(exit.done);
+        }
+        if self.started.elapsed() >= exit.by {
+            log(EXIT_BEFORE_RESTORE_LINE);
+            return Some(exit.done);
+        }
+        self.exit = Some(exit);
+        None
     }
 
     /// The link machine, then the server reading and the policy on its signals, a changed state and the clock, then one publish, then the effects.
@@ -342,6 +370,11 @@ impl Driver {
             Effect::Monitor(wanted) => drop(self.outlets.monitor.send_replace(wanted)),
             Effect::Uplink(request) => self.send(request.sdu()),
             Effect::Log(line) => log(&line),
+            Effect::Exited => {
+                if let Some(exit) = &mut self.exit {
+                    exit.exited = true;
+                }
+            }
         }
     }
 

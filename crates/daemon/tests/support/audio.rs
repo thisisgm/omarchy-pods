@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use pulseaudio::protocol::SubscriptionMask;
+use pods_core::policy::audio::AUDIO_CALL_TIMEOUT_MS;
+use pulseaudio::protocol::{SinkState, SubscriptionMask};
 use rustix::net::{self, Shutdown};
 
 pub(crate) use capture::{Recorder, RecorderId};
@@ -27,7 +28,7 @@ const SOCKET_PATH_MAX: usize = 107;
 const SOCKET_DIR_MODE: u32 = 0o700;
 
 /// The daemon's wait for any one answer of the audio server.
-pub(crate) const CALL_TIMEOUT: Duration = Duration::from_millis(2000);
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_millis(AUDIO_CALL_TIMEOUT_MS);
 /// The daemon's waits between attempts, the last one repeating.
 pub(crate) const LADDER_MS: [u64; 5] = [250, 500, 1000, 2000, 5000];
 /// The volume the pods' sink starts at.
@@ -36,23 +37,45 @@ pub(crate) const PERCENT: u8 = 40;
 /// One command the fake received, in the terms a test asserts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Asked {
-    Auth { version: u16 },
+    Auth {
+        version: u16,
+    },
     ClientName,
     ServerInfo,
-    SinkInfo { name: String },
+    SinkInfo {
+        name: String,
+    },
     SinkList,
-    Volume { name: String, percent: u8 },
-    Subscribe { mask: SubscriptionMask },
-    CardInfo { name: String },
+    Volume {
+        name: String,
+        percent: u8,
+    },
+    Subscribe {
+        mask: SubscriptionMask,
+    },
+    CardInfo {
+        name: String,
+    },
     CardList,
-    Profile { card: String, profile: String },
+    Profile {
+        card: String,
+        profile: String,
+    },
     SourceList,
     RecorderList,
-    Unknown { command: u32 },
+    /// `name` is `None` for an index no sink has.
+    Suspend {
+        name: Option<String>,
+        suspend: bool,
+        at: Instant,
+    },
+    Unknown {
+        command: u32,
+    },
 }
 
 impl Asked {
-    fn only_reads(&self) -> bool {
+    pub(super) fn only_reads(&self) -> bool {
         match self {
             Self::Auth { .. }
             | Self::ClientName
@@ -64,9 +87,18 @@ impl Asked {
             | Self::CardList
             | Self::SourceList
             | Self::RecorderList => true,
-            Self::Volume { .. } | Self::Profile { .. } | Self::Unknown { .. } => false,
+            Self::Volume { .. }
+            | Self::Profile { .. }
+            | Self::Suspend { .. }
+            | Self::Unknown { .. } => false,
         }
     }
+}
+
+/// The commands in `requests` that are not reads, in order.
+pub(crate) fn writes_of(requests: &[Asked]) -> Vec<Asked> {
+    let writes = requests.iter().filter(|asked| !asked.only_reads());
+    writes.cloned().collect()
 }
 
 /// Whether a restarted server keeps the volumes set before it, as a session manager that stored them does.
@@ -126,9 +158,9 @@ impl FakeAudio {
         self.change(|state| state.set_volume(name, volume_of(percent)));
     }
 
-    /// Running is a sink playing; not running is idle.
-    pub(crate) fn set_sink_running(&self, name: &str, running: bool) {
-        self.change(|state| state.set_sink_running(name, running));
+    /// As the sink's streams would move it, so every subscriber hears the change.
+    pub(crate) fn set_sink_state(&self, name: &str, state: SinkState) {
+        self.change(|state_of| state_of.set_sink_state(name, state));
     }
 
     pub(crate) fn add_card(&self, name: &str, profiles: &[FakeProfile], active: &str) {
@@ -216,13 +248,22 @@ impl FakeAudio {
 
     /// Fails unless something was asked and every command received only reads: no volume, profile, stream or default sink write.
     pub(crate) fn assert_only_reads(&self) {
-        let requests = self.requests();
-        assert!(!requests.is_empty(), "the daemon asked nothing");
-        let writes: Vec<&Asked> = requests
-            .iter()
-            .filter(|asked| !asked.only_reads())
-            .collect();
+        assert!(!self.requests().is_empty(), "the daemon asked nothing");
+        let writes = self.writes();
         assert!(writes.is_empty(), "the daemon asked for {writes:?}");
+    }
+
+    /// Every command received that is not a read, in order.
+    pub(crate) fn writes(&self) -> Vec<Asked> {
+        writes_of(&self.requests())
+    }
+
+    pub(crate) fn wait_writes(&self, count: usize, within: Duration) -> Vec<Asked> {
+        let what = format!("{count} writes");
+        self.wait(&what, within, |state| {
+            let writes = writes_of(&state.requests);
+            (writes.len() >= count).then_some(writes)
+        })
     }
 
     /// Ends the listener and every client, joins their threads, and removes the socket.
@@ -278,6 +319,11 @@ impl FakeAudio {
     /// While held, every message to every client waits; release sends them in order.
     pub(crate) fn hold_replies(&self, hold: bool) {
         self.change(|state| state.hold(hold));
+    }
+
+    /// A sink change event cut inside its payload, with replies held; `hold_replies(false)` sends the rest.
+    pub(crate) fn send_split_event(&self) {
+        self.change(State::send_split_event);
     }
 
     pub(crate) fn send_oversized_frame(&self) {

@@ -761,12 +761,12 @@ mod tests {
         let index = watcher.ask::<SinkInfo>(&sink_info(&c_name(&name))).index;
         let changed = event(SubscriptionEventFacility::Sink, Some(index));
 
-        for (running, state) in [(true, SinkState::Running), (false, SinkState::Idle)] {
-            audio.set_sink_running(&name, running);
+        for state in [SinkState::Running, SinkState::Idle] {
+            audio.set_sink_state(&name, state);
             assert_eq!(watcher.event(), changed);
             let sink: SinkInfo = watcher.ask(&sink_info(&c_name(&name)));
             assert_eq!(sink.state, state);
-            audio.set_sink_running(&name, running);
+            audio.set_sink_state(&name, state);
             watcher.nothing_for(QUIET);
         }
     }

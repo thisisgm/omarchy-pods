@@ -109,9 +109,12 @@ fn sink(index: u32, name: &CStr, volumes: &[u32]) -> SinkInfo {
     }
 }
 
+/// The index `sink_list` gives its first sink, apart from list positions so a reader counting them is caught.
+pub(in crate::daemon::audio) const FIRST_INDEX: u32 = 40;
+
 /// The body of a sink list reply holding `sinks` in order.
 pub(in crate::daemon::audio) fn sink_list(sinks: &[(&CStr, &[u32])]) -> Vec<u8> {
-    let list: Vec<SinkInfo> = (0_u32..)
+    let list: Vec<SinkInfo> = (FIRST_INDEX..)
         .zip(sinks)
         .map(|(index, (name, volumes))| sink(index, name, volumes))
         .collect();
@@ -129,8 +132,12 @@ fn frames_of(bytes: &[u8]) -> (Vec<Frame>, io::Error) {
         theirs.write_all(bytes).await.unwrap();
         drop(theirs);
         let mut frames = Vec::new();
+        let mut pending = Vec::new();
         loop {
-            match timeout(READ_LIMIT, read_frame(&mut ours)).await.unwrap() {
+            match timeout(READ_LIMIT, read_frame(&mut ours, &mut pending))
+                .await
+                .unwrap()
+            {
                 Ok(frame) => frames.push(frame),
                 Err(error) => return (frames, error),
             }
@@ -179,7 +186,9 @@ fn an_oversized_frame_is_refused_before_its_payload_is_awaited() {
             .await
             .unwrap();
         // Kept open, so a reader that trusted the length would wait here.
-        let refused = timeout(READ_LIMIT, read_frame(&mut ours)).await.unwrap();
+        let refused = timeout(READ_LIMIT, read_frame(&mut ours, &mut Vec::new()))
+            .await
+            .unwrap();
         drop(theirs);
         refused
     });
@@ -325,6 +334,27 @@ fn every_sink_of_a_list_is_read_with_its_mean_volume() {
     let names: Vec<(&[u8], Percent)> = read.iter().map(|sink| (sink.name, sink.volume)).collect();
     assert_eq!(names, expected);
     assert_eq!(sinks(&[]).count(), 0);
+}
+
+#[test]
+fn each_sinks_index_and_state_are_read() {
+    let states = [
+        (4, SinkState::Running),
+        (9, SinkState::Idle),
+        (11, SinkState::Suspended),
+    ];
+    let infos: Vec<SinkInfo> = states
+        .into_iter()
+        .map(|(index, state)| SinkInfo {
+            state,
+            ..sink(index, c"bluez_output.02_00_00_00_00_01.1", &[HALF])
+        })
+        .collect();
+    let list = body(&reply(&infos)).to_vec();
+    let read: Vec<(u32, SinkState)> = sinks(&list)
+        .map(|sink| sink.map(|sink| (sink.index, sink.state)).unwrap())
+        .collect();
+    assert_eq!(read, states);
 }
 
 #[test]

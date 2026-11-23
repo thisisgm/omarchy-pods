@@ -204,6 +204,7 @@ pub enum MicCode {
     Unsupported,
     Starting,
     Live,
+    Stopping,
     Failed,
 }
 
@@ -224,6 +225,7 @@ impl MicCode {
             Self::Unsupported => "unsupported",
             Self::Starting => "starting",
             Self::Live => "live",
+            Self::Stopping => "stopping",
             Self::Failed => "failed",
         }
     }
