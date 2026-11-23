@@ -10,15 +10,14 @@ mod support;
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, DirBuilder};
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     use pods_fake::Profile;
     use pods_samples::{CASE, Cell};
     use serde_json::Value;
-    use zbus::OwnedVariant;
 
     use super::support::bus::{
         BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule, start_bus, start_daemon,
@@ -26,14 +25,14 @@ mod tests {
     use super::support::omarchy::{
         DISCONNECT_NOTICE, Mood, RECORDED_WITHIN, SLOW, low_battery_notice,
     };
-    use super::support::players::PROPERTIES;
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
+    use super::support::settings::{
+        plant_settings, set, status, stop, unreadable_lines, wait_settings,
+    };
     use super::support::{
         DAEMON_LOG, DIR_MODE, Daemon, FILE_MODE, HANG_LIMIT, Proto1, Session, binary, set_request,
         wait_for, wait_within,
     };
-
-    const UNREADABLE: &str = "prefs: settings unreadable, defaults used";
 
     const CANNOT_WRITE: &str = "prefs: cannot write";
 
@@ -79,17 +78,6 @@ mod tests {
         let path = old_conf(session);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
-    }
-
-    /// Writes `bytes` where the daemon keeps its settings, its directory made as the daemon would.
-    fn plant_settings(session: &Session, bytes: &[u8]) {
-        let path = session.settings_file();
-        DirBuilder::new()
-            .recursive(true)
-            .mode(DIR_MODE)
-            .create(path.parent().unwrap())
-            .unwrap();
-        fs::write(path, bytes).unwrap();
     }
 
     /// `READABLE` padded with trailing spaces, which JSON allows, to `len` bytes.
@@ -159,46 +147,10 @@ mod tests {
         assert_eq!(dir_mode & 0o777, DIR_MODE);
     }
 
-    fn set(session: &Session, key: &str, value: &str) {
-        let output = session.run_client(Path::new(binary()), &["set", key, value]);
-        assert!(output.status.success(), "set {key} {value}: {output:?}");
-    }
-
-    /// The legacy `status` verb's document.
-    fn status(session: &Session) -> Value {
-        serde_json::from_str(&session.status()).unwrap()
-    }
-
     fn assert_prefs(session: &Session, ear_detection: u64, notifications: bool) {
         let status = status(session);
         assert_eq!(status["ear_detection_behavior"], ear_detection, "{status}");
         assert_eq!(status["notifications_enabled"], notifications, "{status}");
-    }
-
-    fn unreadable_lines(daemon: &Daemon) -> usize {
-        daemon
-            .log()
-            .lines()
-            .filter(|line| line.starts_with(UNREADABLE))
-            .count()
-    }
-
-    /// The settings file once it holds `ear_detection`, parsed.
-    fn wait_settings(session: &Session, ear_detection: &str) -> Value {
-        wait_for(&format!("settings.json with {ear_detection}"), || {
-            let text = fs::read_to_string(session.settings_file()).ok()?;
-            let settings: Value = serde_json::from_str(&text).ok()?;
-            (settings["ear_detection"] == ear_detection).then_some(settings)
-        })
-    }
-
-    fn stop(daemon: &mut Daemon) {
-        let status = daemon.stop();
-        assert!(
-            status.success(),
-            "the daemon exited with {status}: {}",
-            daemon.log()
-        );
     }
 
     #[test]
@@ -323,15 +275,7 @@ mod tests {
         let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(printed["notifications_enabled"], enabled, "{printed}");
         assert_eq!(status(session)["notifications_enabled"], enabled);
-        let reply = listener.call(
-            BUS_NAME,
-            OBJECT_PATH,
-            PROPERTIES,
-            "Get",
-            &(INTERFACE, "StatusJson"),
-        );
-        let value: OwnedVariant = reply.unwrap().body().deserialize().unwrap();
-        let json: Value = serde_json::from_str(&String::try_from(value).unwrap()).unwrap();
+        let json: Value = serde_json::from_str(&listener.property("StatusJson")).unwrap();
         assert_eq!(json["notifications_enabled"], enabled, "{json}");
     }
 
@@ -369,7 +313,7 @@ mod tests {
         assert_prefs(&session, ONE_REMOVED, true);
         assert_eq!(unreadable_lines(&daemon), 1, "{}", daemon.log());
         set(&session, "ear_detection", "both");
-        let settings = wait_settings(&session, "both");
+        let settings = wait_settings(&session, "ear_detection", "both");
         assert_eq!(settings["notifications"], true, "{settings}");
         stop(&mut daemon);
     }
@@ -460,7 +404,7 @@ mod tests {
         // The migration wrote the file and made its directory before the runtime, so before the state file.
         assert_owner_only(&session.settings_file());
         set(&session, "ear_detection", "off");
-        wait_settings(&session, "off");
+        wait_settings(&session, "ear_detection", "off");
         assert_owner_only(&session.settings_file());
         stop(&mut daemon);
     }
@@ -472,7 +416,7 @@ mod tests {
         set(&session, "notifications", "false");
         set(&session, "ear_detection", "off");
         set(&session, "ear_detection", "both");
-        let settings = wait_settings(&session, "both");
+        let settings = wait_settings(&session, "ear_detection", "both");
         assert_eq!(settings["notifications"], false, "{settings}");
         stop(&mut daemon);
         assert_eq!(left_beside_settings(&session), ["settings.json"]);

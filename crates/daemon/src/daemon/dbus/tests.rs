@@ -88,6 +88,10 @@ const INTROSPECTED: &str = r#"
     <arg name="enabled" type="b" direction="in"/>
     <arg type="s" direction="out"/>
   </method>
+  <method name="SetMicrophone">
+    <arg name="preference" type="s" direction="in"/>
+    <arg type="s" direction="out"/>
+  </method>
   <method name="Connect">
     <arg type="s" direction="out"/>
   </method>
@@ -110,6 +114,8 @@ const INTROSPECTED: &str = r#"
   <property name="DeviceName" type="s" access="read"/>
   <property name="EarDetection" type="s" access="read"/>
   <property name="InEar" type="a{sb}" access="read"/>
+  <property name="Mic" type="s" access="read"/>
+  <property name="Microphone" type="s" access="read"/>
   <property name="ModelName" type="s" access="read"/>
   <property name="NoiseMode" type="s" access="read"/>
   <property name="OneBudAnc" type="b" access="read"/>

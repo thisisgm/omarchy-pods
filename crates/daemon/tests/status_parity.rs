@@ -162,6 +162,8 @@ mod tests {
             ("StatusJson", Variant::from(line.trim_end().to_owned())),
             ("AudioServer", Variant::from(word("audio_server"))),
             ("AdvertIntake", Variant::from(word("advert_intake"))),
+            ("Microphone", Variant::from(word("microphone"))),
+            ("Mic", Variant::from(word("mic"))),
         ])
     }
 

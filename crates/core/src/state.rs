@@ -4,6 +4,7 @@ use pods_proto::model::{Capabilities, Model};
 use pods_proto::noise::NoiseMode;
 
 use crate::command::AdaptiveLevel;
+use crate::prefs::MicPref;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(
@@ -32,12 +33,15 @@ pub struct State {
     pub counters: Counters,
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
+    pub microphone: MicPref,
+    pub mic: MicStatus,
     pub audio_server: AudioServer,
     pub advert_intake: AdvertIntake,
 }
 
 impl Default for State {
     fn default() -> Self {
+        let microphone = MicPref::default();
         Self {
             connected: false,
             device_name: String::new(),
@@ -56,6 +60,10 @@ impl Default for State {
             counters: Counters::default(),
             // The C++ `Notifier` starts enabled.
             notifications: true,
+            microphone,
+            mic: MicStatus {
+                code: MicCode::resting(microphone),
+            },
             audio_server: AudioServer::Idle,
             advert_intake: AdvertIntake::Paused,
         }
@@ -73,6 +81,11 @@ impl State {
         self.batteries = Batteries::default();
         self.ear = EarReport::default();
         self.primary = None;
+    }
+
+    pub fn set_microphone(&mut self, preference: MicPref) {
+        self.microphone = preference;
+        self.mic.code = MicCode::resting(preference);
     }
 
     /// The pods' own report when they sent one, else the model table.
@@ -141,6 +154,35 @@ impl LidState {
             Self::Open => 0,
             Self::Closed => 1,
             Self::Unknown => 2,
+        }
+    }
+}
+
+/// What the `mic` status key shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicStatus {
+    pub code: MicCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicCode {
+    Off,
+    Idle,
+}
+
+impl MicCode {
+    const fn resting(preference: MicPref) -> Self {
+        match preference {
+            MicPref::Off => Self::Off,
+            MicPref::Auto | MicPref::Always => Self::Idle,
+        }
+    }
+
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Idle => "idle",
         }
     }
 }

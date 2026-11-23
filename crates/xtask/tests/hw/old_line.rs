@@ -128,12 +128,11 @@ fn c9_is_skipped_by_name_when_the_installed_daemon_is_not_the_old_one() {
     let output = bench.run(&[]);
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{stdout}");
-    assert!(
-        stdout.contains(
-            "C9 old line: skipped\n  the installed daemon is not the old one: its line carries 3 of the 3 keys this daemon adds\n"
-        ),
-        "{stdout}"
+    let added = ADDITIVE_KEYS.len();
+    let all_added = format!(
+        "C9 old line: skipped\n  the installed daemon is not the old one: its line carries {added} of the {added} keys this daemon adds\n"
     );
+    assert!(stdout.contains(&all_added), "{stdout}");
     assert_restarted_after_the_run(&bench);
     let old = old_line(MARKED_NAME, "");
     let one_added = format!(
@@ -146,7 +145,7 @@ fn c9_is_skipped_by_name_when_the_installed_daemon_is_not_the_old_one() {
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{stdout}");
     assert!(
-        stdout.contains("C9 old line: skipped\n  the installed daemon is not the old one: its line carries 1 of the 3 keys this daemon adds\n"),
+        stdout.contains(&format!("C9 old line: skipped\n  the installed daemon is not the old one: its line carries 1 of the {added} keys this daemon adds\n")),
         "{stdout}"
     );
     let bench = Bench::new();

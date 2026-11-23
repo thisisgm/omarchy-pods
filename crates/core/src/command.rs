@@ -2,6 +2,7 @@
 
 use pods_proto::noise::NoiseMode;
 
+use crate::prefs::MicPref;
 use crate::state::{EarDetectionBehavior, State};
 
 /// The upper bound of the C++ `parseIntVerb` and `qBound`.
@@ -42,6 +43,7 @@ pub enum Command {
     SetOneBudAnc(bool),
     SetAdaptiveLevel(AdaptiveLevel),
     SetNotifications(bool),
+    SetMicrophone(MicPref),
     Connect,
     Disconnect,
     Forget,
@@ -174,6 +176,10 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
         }
         Command::SetNotifications(enabled) => {
             state.notifications = enabled;
+            Outcome::Confirmed
+        }
+        Command::SetMicrophone(preference) => {
+            state.set_microphone(preference);
             Outcome::Confirmed
         }
         Command::SetConversationalAwareness(enabled) => {

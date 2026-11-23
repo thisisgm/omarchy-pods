@@ -13,7 +13,10 @@ use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::{Attempt, KNOWN_MAX};
 use crate::link::{DeviceAction, Event, Machine, Phase};
-use crate::state::{AdvertIntake, AudioServer, EarDetectionBehavior, LidState, State};
+use crate::prefs::MicPref;
+use crate::state::{
+    AdvertIntake, AudioServer, EarDetectionBehavior, LidState, MicCode, MicStatus, State,
+};
 
 #[test]
 fn handshake_sends_the_three_requests_in_order_and_goes_up() {
@@ -544,6 +547,8 @@ fn reset_device_covers_the_cpp_reset() {
             ..Default::default()
         },
         notifications: false,
+        microphone: MicPref::Off,
+        mic: MicStatus { code: MicCode::Off },
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
     };

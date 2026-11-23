@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use super::*;
 use crate::legacy::{LegacyRequest, parse_verb};
+use crate::state::MicCode;
 use crate::status::to_status_line;
 
 pub(crate) fn level(percent: u8) -> AdaptiveLevel {
@@ -33,6 +34,7 @@ pub(crate) fn any_command() -> impl Strategy<Value = Command> {
         any::<bool>().prop_map(Command::SetOneBudAnc),
         (0..=ADAPTIVE_LEVEL_MAX).prop_map(|percent| Command::SetAdaptiveLevel(level(percent))),
         any::<bool>().prop_map(Command::SetNotifications),
+        proptest::sample::select(MicPref::ALL.to_vec()).prop_map(Command::SetMicrophone),
         Just(Command::Connect),
         Just(Command::Disconnect),
         Just(Command::Forget),
@@ -85,6 +87,14 @@ proptest! {
         match command {
             Command::SetEarDetection(behavior) => expected.ear_detection_behavior = behavior,
             Command::SetNotifications(enabled) => expected.notifications = enabled,
+            Command::SetMicrophone(preference) => {
+                expected.microphone = preference;
+                expected.mic.code = if preference == MicPref::Off {
+                    MicCode::Off
+                } else {
+                    MicCode::Idle
+                };
+            }
             Command::SetConversationalAwareness(enabled) => {
                 expected.conversational_awareness = enabled;
             }
@@ -109,7 +119,9 @@ proptest! {
     ) {
         let outcome = apply(&mut state.clone(), &command);
         let expected = match command {
-            Command::SetEarDetection(_) | Command::SetNotifications(_) => Outcome::Confirmed,
+            Command::SetEarDetection(_)
+            | Command::SetNotifications(_)
+            | Command::SetMicrophone(_) => Outcome::Confirmed,
             Command::Reopen => Outcome::Refused(CommandError::Headless),
             Command::SetNoise(_)
             | Command::SetConversationalAwareness(_)

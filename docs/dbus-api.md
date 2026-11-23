@@ -47,6 +47,8 @@ nothing, and a command that changes nothing sends none.
 | `Batteries` | `a{s(bby)}` | Always the keys `left`, `right`, `case` and `headset`, each `(available, charging, level)`. A part with no reading is `(false, false, 0)`. |
 | `InEar` | `a{sb}` | Always the keys `left` and `right`. |
 | `Capabilities` | `as` | The names of the status object's true `supports_*` keys without the prefix, sorted, for example `adaptive`. |
+| `Microphone` | `s` | The `microphone` setting: `auto`, `always` or `off`. |
+| `Mic` | `s` | What the daemon does with the AirPods' microphone: `off` while the setting is `off`, `idle` otherwise. |
 | `StatusJson` | `s` | The whole status object, the same JSON the state file holds, without the trailing newline. It changes whenever any key changes, counters included. No property of its own carries the `notifications` setting; it is this object's `notifications_enabled`. |
 | `AudioServer` | `s` | The daemon's connection to the desktop's audio server: `idle` while no AirPods link is up, `up` while it reads the server, `down` while it cannot reach it. |
 | `AdvertIntake` | `s` | Whether the daemon reads the AirPods' adverts while no link is up: `listening` once BlueZ accepted its advert monitor, `unavailable` while the monitor is wanted (the AirPods' keys are kept and no link is up) and BlueZ has not accepted it because no adapter offered advert monitors or BlueZ refused each try, `paused` otherwise (the link is up, the AirPods' keys are not kept, or BlueZ has not accepted the registration yet). |
@@ -80,6 +82,7 @@ refuses the same way.
 | `SetOneBudAnc` | `b` | `one_bud_anc` | |
 | `SetAdaptiveLevel` | `y` | `adaptive_level` | 0 to 100 |
 | `SetNotifications` | `b` | `notifications` | |
+| `SetMicrophone` | `s` | `microphone` | `auto`, `always`, `off` |
 | `Connect` | none | | |
 | `Disconnect` | none | | |
 | `Forget` | none | | |

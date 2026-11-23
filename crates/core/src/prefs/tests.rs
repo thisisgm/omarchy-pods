@@ -4,14 +4,19 @@ use cpp_source::{MAIN, MEDIA_CONTROLLER};
 use proptest::prelude::*;
 
 use super::*;
+use crate::state::MicCode;
 
 fn every_prefs() -> Vec<Prefs> {
     EarDetectionBehavior::ALL
         .into_iter()
         .flat_map(|ear_detection| {
-            [true, false].map(|notifications| Prefs {
+            [true, false].map(move |notifications| (ear_detection, notifications))
+        })
+        .flat_map(|(ear_detection, notifications)| {
+            MicPref::ALL.map(|microphone| Prefs {
                 ear_detection,
                 notifications,
+                microphone,
             })
         })
         .collect()
@@ -32,6 +37,49 @@ fn the_defaults_are_the_cpp_defaults() {
         EarDetectionBehavior::PauseWhenOneRemoved
     );
     assert!(defaults.notifications);
+    assert_eq!(defaults.microphone, MicPref::Auto);
+}
+
+#[test]
+fn each_microphone_word_reads_back_and_no_other_word_does() {
+    for (preference, word) in [
+        (MicPref::Auto, "auto"),
+        (MicPref::Always, "always"),
+        (MicPref::Off, "off"),
+    ] {
+        assert_eq!(preference.word(), word);
+        assert_eq!(MicPref::from_word(word), Some(preference));
+    }
+    for word in ["", "Auto", "on", "true", "off ", "idle"] {
+        assert_eq!(MicPref::from_word(word), None, "{word:?}");
+    }
+}
+
+#[test]
+fn a_file_without_the_microphone_key_reads_auto_and_keeps_its_other_choices() {
+    let read = parse(r#"{"version":1,"ear_detection":"both","notifications":false}"#);
+    let expected = Prefs {
+        ear_detection: EarDetectionBehavior::PauseWhenBothRemoved,
+        notifications: false,
+        microphone: MicPref::Auto,
+    };
+    assert_eq!(read, Ok(expected));
+    assert!(render(expected).starts_with(r#"{"ear_detection":"both","microphone":"auto","#));
+    assert!(render(expected).contains(r#""version":1"#));
+}
+
+#[test]
+fn a_fresh_state_reads_the_kept_microphone_on_both_keys() {
+    for prefs in every_prefs() {
+        let state = prefs.into_state();
+        let resting = if prefs.microphone == MicPref::Off {
+            MicCode::Off
+        } else {
+            MicCode::Idle
+        };
+        assert_eq!(state.microphone, prefs.microphone, "{prefs:?}");
+        assert_eq!(state.mic.code, resting, "{prefs:?}");
+    }
 }
 
 #[test]
@@ -84,6 +132,18 @@ fn a_cut_or_wrong_file_is_refused() {
         (
             r#"{"version":1,"ear_detection":"one"}"#,
             PrefsError::Notifications,
+        ),
+        (
+            r#"{"version":1,"ear_detection":"one","notifications":true,"microphone":"loud"}"#,
+            PrefsError::Microphone,
+        ),
+        (
+            r#"{"version":1,"ear_detection":"one","notifications":true,"microphone":true}"#,
+            PrefsError::Microphone,
+        ),
+        (
+            r#"{"version":1,"ear_detection":"one","notifications":true,"microphone":null}"#,
+            PrefsError::Microphone,
         ),
     ] {
         assert_eq!(parse(text), Err(error), "{text}");

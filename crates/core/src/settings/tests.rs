@@ -54,6 +54,13 @@ fn every_documented_value_sets_its_command() {
         ("one_bud_anc", "false", Command::SetOneBudAnc(false)),
         ("notifications", "true", Command::SetNotifications(true)),
         ("notifications", "false", Command::SetNotifications(false)),
+        ("microphone", "auto", Command::SetMicrophone(MicPref::Auto)),
+        (
+            "microphone",
+            "always",
+            Command::SetMicrophone(MicPref::Always),
+        ),
+        ("microphone", "off", Command::SetMicrophone(MicPref::Off)),
         ("adaptive_level", "0", Command::SetAdaptiveLevel(level(0))),
         ("adaptive_level", "37", Command::SetAdaptiveLevel(level(37))),
         (
@@ -106,6 +113,10 @@ fn a_word_the_key_does_not_take_is_bad_value() {
         ("notifications", "on"),
         ("notifications", "maybe"),
         ("notifications", ""),
+        ("microphone", "loud"),
+        ("microphone", "Off"),
+        ("microphone", "true"),
+        ("microphone", ""),
         ("adaptive_level", ""),
         ("adaptive_level", "high"),
         ("adaptive_level", " 50"),
@@ -124,7 +135,7 @@ fn a_word_the_key_does_not_take_is_bad_value() {
 
 #[test]
 fn values_lists_every_word_each_key_takes() {
-    let table: [(&str, Option<&[&str]>); 7] = [
+    let table: [(&str, Option<&[&str]>); 8] = [
         (
             NOISE,
             Some(&["off", "anc", "transparency", "adaptive", "cycle"]),
@@ -134,6 +145,7 @@ fn values_lists_every_word_each_key_takes() {
         (ONE_BUD_ANC, Some(&["true", "false"])),
         (ADAPTIVE_LEVEL, None),
         (NOTIFICATIONS, Some(&["true", "false"])),
+        (MICROPHONE, Some(&["auto", "always", "off"])),
         ("volume", None),
     ];
     for (key, _) in KEYS {
@@ -305,5 +317,9 @@ fn every_mode_and_behavior_has_the_word_that_sets_it() {
             Ok(command),
             "{behavior:?}"
         );
+    }
+    for preference in MicPref::ALL {
+        let command = Command::SetMicrophone(preference);
+        assert_eq!(setting(MICROPHONE, preference.word()), Ok(command));
     }
 }

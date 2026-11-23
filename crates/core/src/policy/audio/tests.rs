@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
+use pods_proto::uplink::UplinkState;
 
 use super::{AudioFact, AudioRequest, Percent, SinkFact, server_after};
 use crate::link::Signal;
@@ -79,6 +80,18 @@ fn a_sink_or_a_state_change_leaves_the_reading() {
     for was in SERVERS {
         assert_eq!(server_after(was, &sink()), was, "{was:?}");
         assert_eq!(server_after(was, &Fact::Changed), was, "{was:?}");
+    }
+}
+
+#[test]
+fn an_uplink_marker_asks_nothing_and_leaves_the_reading() {
+    for said in [UplinkState::Running, UplinkState::Stopped] {
+        let marker = || Fact::Link(Signal::Uplink(said));
+        let effects = Policy::default().step(&State::default(), marker(), Duration::ZERO);
+        assert_eq!(effects, [], "{said:?}");
+        for was in SERVERS {
+            assert_eq!(server_after(was, &marker()), was, "{said:?} {was:?}");
+        }
     }
 }
 

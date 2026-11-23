@@ -153,6 +153,7 @@ fn cpp_call(request: LegacyRequest) -> String {
         Command::Forget => "forgetDevice()".to_owned(),
         Command::Reopen => "incReopenCallsTotal()".to_owned(),
         Command::SetNotifications(_) => panic!("no legacy verb sets notifications"),
+        Command::SetMicrophone(_) => panic!("no legacy verb sets the microphone"),
     }
 }
 

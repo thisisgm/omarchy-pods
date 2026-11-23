@@ -4,6 +4,7 @@ use pods_proto::noise::NoiseMode;
 
 use crate::command::{Command, CommandError, NoiseTarget};
 use crate::legacy;
+use crate::prefs::MicPref;
 use crate::state::EarDetectionBehavior;
 
 #[derive(Debug, Clone, Copy)]
@@ -13,6 +14,8 @@ enum Family {
     Switch(&'static str),
     /// A switch the daemon keeps itself, with no legacy verb.
     DaemonSwitch(fn(bool) -> Command),
+    /// The words of `MicPref`, which the daemon keeps itself, with no legacy verb.
+    Microphone,
     Level,
 }
 
@@ -28,6 +31,8 @@ pub const ADAPTIVE_LEVEL: &str = "adaptive_level";
 
 pub const NOTIFICATIONS: &str = "notifications";
 
+pub const MICROPHONE: &str = "microphone";
+
 const NOISE_WORDS: [&str; 5] = [
     NoiseTarget::Mode(NoiseMode::Off).word(),
     NoiseTarget::Mode(NoiseMode::Anc).word(),
@@ -42,7 +47,13 @@ const EAR_WORDS: [&str; 3] = [
     EarDetectionBehavior::PauseWhenBothRemoved.word(),
 ];
 
-const KEYS: [(&str, Family); 6] = [
+const MICROPHONE_WORDS: [&str; 3] = [
+    MicPref::Auto.word(),
+    MicPref::Always.word(),
+    MicPref::Off.word(),
+];
+
+const KEYS: [(&str, Family); 7] = [
     (NOISE, Family::Words("noise", &NOISE_WORDS)),
     (EAR_DETECTION, Family::Words("ear", &EAR_WORDS)),
     (CONVERSATIONAL_AWARENESS, Family::Switch("ca")),
@@ -52,6 +63,7 @@ const KEYS: [(&str, Family); 6] = [
         NOTIFICATIONS,
         Family::DaemonSwitch(Command::SetNotifications),
     ),
+    (MICROPHONE, Family::Microphone),
 ];
 
 /// What a switch takes, each with the legacy word that sets it.
@@ -78,6 +90,9 @@ pub fn setting(key: &str, value: &str) -> Result<Command, CommandError> {
             .ok()
             .map(command)
             .ok_or(CommandError::BadValue),
+        Family::Microphone => MicPref::from_word(value)
+            .map(Command::SetMicrophone)
+            .ok_or(CommandError::BadValue),
         Family::Level => legacy::adaptive_level(value).map(Command::SetAdaptiveLevel),
     }
 }
@@ -88,6 +103,7 @@ pub fn values(key: &str) -> Option<&'static [&'static str]> {
     match family(key)? {
         Family::Words(_, words) => Some(words),
         Family::Switch(_) | Family::DaemonSwitch(_) => Some(&SWITCH_VALUES),
+        Family::Microphone => Some(&MICROPHONE_WORDS),
         Family::Level => None,
     }
 }
@@ -108,6 +124,7 @@ pub fn action(name: &str) -> Result<Command, CommandError> {
             | Command::SetOneBudAnc(_)
             | Command::SetAdaptiveLevel(_)
             | Command::SetNotifications(_)
+            | Command::SetMicrophone(_)
             | Command::Reopen,
         )
         | None => Err(CommandError::BadRequest),
