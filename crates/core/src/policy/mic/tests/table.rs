@@ -87,6 +87,13 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (NOTHING, Stopped),
         (NOTHING, Unasked),
     ];
+    const RESTORING_UNASKED: [Outcome; 5] = [
+        (NOTHING, RestoringUnasked),
+        (NOTHING, RestoringUnasked),
+        (NOTHING, Restoring),
+        (NOTHING, Restoring),
+        (NOTHING, RestoringUnasked),
+    ];
     [
         (Stopped, RunningMarker, WAIT),
         (Stopped, StoppedMarker, RESTART),
@@ -176,7 +183,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Owed, Sleep, same(Asleep)),
         (Owed, Wake, same(Owed)),
         (Running, RunningMarker, RUN),
-        (Running, StoppedMarker, same(RestoringUnasked)),
+        (Running, StoppedMarker, RESTORING_UNASKED),
         (Running, Deadline, RUN),
         (Running, Down, RESET),
         (Running, Lost, RESET),
@@ -187,7 +194,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Running, Sleep, SLEEP_STOPS),
         (Running, Wake, RUN),
         (Lingering, RunningMarker, RUN),
-        (Lingering, StoppedMarker, same(RestoringUnasked)),
+        (Lingering, StoppedMarker, RESTORING_UNASKED),
         (Lingering, Deadline, WAIT),
         (Lingering, Down, RESET),
         (Lingering, Lost, RESET),
@@ -198,7 +205,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Lingering, Sleep, SLEEP_STOPS),
         (Lingering, Wake, RUN),
         (Waiting, RunningMarker, WAIT),
-        (Waiting, StoppedMarker, same(RestoringUnasked)),
+        (Waiting, StoppedMarker, RESTORING_UNASKED),
         (Waiting, Deadline, WAIT),
         (Waiting, Down, RESET),
         (Waiting, Lost, RESET),
@@ -241,17 +248,17 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Restoring, Exit, same(Restoring)),
         (Restoring, Sleep, same(Restoring)),
         (Restoring, Wake, same(Restoring)),
-        (RestoringUnasked, RunningMarker, same(RestoringUnasked)),
-        (RestoringUnasked, StoppedMarker, same(RestoringUnasked)),
+        (RestoringUnasked, RunningMarker, RESTORING_UNASKED),
+        (RestoringUnasked, StoppedMarker, RESTORING_UNASKED),
         (RestoringUnasked, Deadline, UNASKED),
         (RestoringUnasked, Down, RESET),
         (RestoringUnasked, Lost, RESET),
-        (RestoringUnasked, Changed, same(RestoringUnasked)),
+        (RestoringUnasked, Changed, RESTORING_UNASKED),
         (RestoringUnasked, Restored, UNASKED),
-        (RestoringUnasked, Quiet, same(RestoringUnasked)),
-        (RestoringUnasked, Exit, same(RestoringUnasked)),
-        (RestoringUnasked, Sleep, same(RestoringUnasked)),
-        (RestoringUnasked, Wake, same(RestoringUnasked)),
+        (RestoringUnasked, Quiet, RESTORING_UNASKED),
+        (RestoringUnasked, Exit, RESTORING_UNASKED),
+        (RestoringUnasked, Sleep, RESTORING_UNASKED),
+        (RestoringUnasked, Wake, RESTORING_UNASKED),
         (Asleep, RunningMarker, SLEEP_STOPS),
         (Asleep, StoppedMarker, same(Asleep)),
         (Asleep, Deadline, same(Asleep)),
@@ -341,6 +348,10 @@ a_stop_nobody_asked_for_restores_and_does_not_start_again Running StoppedMarker 
 a_stop_nobody_asked_for_restores_and_does_not_start_again RestoringUnasked Restored AlwaysKnown
 a_stop_nobody_asked_for_restores_and_does_not_start_again Unasked Changed AlwaysKnown
 the_bud_put_back_after_that_starts_again Unasked Changed Auto
+a_want_gone_and_back_during_the_unasked_restore_starts_after_it Running StoppedMarker AlwaysKnown
+a_want_gone_and_back_during_the_unasked_restore_starts_after_it RestoringUnasked Changed Off
+a_want_gone_and_back_during_the_unasked_restore_starts_after_it Restoring Changed AlwaysKnown
+a_want_gone_and_back_during_the_unasked_restore_starts_after_it Restoring Restored AlwaysKnown
 sleep_while_running_sends_stop_before_the_suspend_and_no_restore Running Sleep AlwaysKnown
 sleep_while_starting_sends_nothing Starting Sleep AlwaysKnown
 resume_starts_again_when_the_want_still_holds Asleep Wake AlwaysKnown

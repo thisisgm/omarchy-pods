@@ -66,7 +66,7 @@ enum Phase {
         since: Duration,
         restore: bool,
     },
-    /// The sink's restore `id` was asked for at `since`; `unasked` when the pods stopped on their own.
+    /// The sink's restore `id` was asked for at `since`; `unasked` while the pods stopped on their own and the want has not been absent since.
     Restoring {
         since: Duration,
         id: RestoreId,
@@ -246,6 +246,17 @@ impl Mic {
                     since,
                     tried,
                     owed: true,
+                };
+            }
+            Phase::Restoring {
+                since,
+                id,
+                unasked: true,
+            } if !wanted(state) => {
+                self.phase = Phase::Restoring {
+                    since,
+                    id,
+                    unasked: false,
                 };
             }
             Phase::Running(hold) => self.running(hold, state, off, now, effects),
