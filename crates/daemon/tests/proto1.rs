@@ -720,26 +720,40 @@ mod tests {
         assert!(!log.contains("protocol 1 client closed"), "{log}");
     }
 
-    /// The socket's test on a paused clock proves the deadline counts from the accept, not from the first byte.
+    /// A silent client accepted between ours and our late first byte closes at its deadline from accept, which a deadline restarted at our first byte outlasts.
     #[test]
-    fn a_late_first_byte_is_closed_with_no_reply_and_never_before_the_legacy_deadline() {
+    fn a_late_first_byte_is_closed_at_the_deadline_from_accept_with_no_reply() {
         let session = Session::new();
         let _daemon = session.start();
-        let mut stream = UnixStream::connect(session.socket()).unwrap();
+        let mut ours = UnixStream::connect(session.socket()).unwrap();
         let connected = Instant::now();
-        pause(FIRST_BYTE_AFTER);
-        // A host that held this thread to the deadline finds the connection closed, and the read then sees a reset.
-        drop(stream.write_all(b"s"));
-        stream.set_read_timeout(Some(HANG_LIMIT)).unwrap();
-        let mut reply = Vec::new();
-        let read = stream.read_to_end(&mut reply);
-        assert!(
-            matches!(&read, Ok(0))
-                || matches!(&read, Err(error) if error.kind() == ErrorKind::ConnectionReset),
-            "{read:?}"
-        );
-        assert_eq!(reply, b"", "a reply came before the close");
-        let waited = connected.elapsed();
-        assert!(waited >= REQUEST_DEADLINE, "{waited:?}");
+        ours.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+        let mut reader = ours.try_clone().unwrap();
+        thread::scope(|scope| {
+            let closed = scope.spawn(move || {
+                let mut reply = Vec::new();
+                let read = reader.read_to_end(&mut reply);
+                (Instant::now(), read, reply)
+            });
+            pause(FIRST_BYTE_AFTER / 2);
+            let mut silent = UnixStream::connect(session.socket()).unwrap();
+            pause(FIRST_BYTE_AFTER / 2);
+            // A host that held this thread to the deadline finds the connection closed, and the read then sees a reset.
+            drop(ours.write_all(b"s"));
+            silent.set_read_timeout(Some(HANG_LIMIT)).unwrap();
+            let silent_read = silent.read(&mut [0; 1]);
+            assert!(matches!(silent_read, Ok(0)), "{silent_read:?}");
+            // Completes `status`, which only a request still being read would answer.
+            drop(ours.write_all(b"tatus"));
+            let (closed_at, read, reply) = closed.join().unwrap();
+            assert!(
+                matches!(&read, Ok(0))
+                    || matches!(&read, Err(error) if error.kind() == ErrorKind::ConnectionReset),
+                "{read:?}"
+            );
+            assert_eq!(reply, b"", "a reply came before the close");
+            let waited = closed_at.duration_since(connected);
+            assert!(waited >= REQUEST_DEADLINE, "{waited:?}");
+        });
     }
 }

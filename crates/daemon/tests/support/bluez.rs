@@ -1,5 +1,6 @@
 //! A fake BlueZ on a private bus: the object manager at `/`, adapters and devices, served from one thread of its own.
 
+mod barrier;
 mod calls;
 pub(crate) mod monitor;
 pub(crate) mod transport;
@@ -31,6 +32,7 @@ use zbus::{
 };
 
 use super::HANG_LIMIT;
+use barrier::Barrier;
 use calls::record;
 pub(crate) use calls::{Call, DeviceMethod};
 use monitor::{MANAGER_INTERFACE, Monitors, Registration};
@@ -94,8 +96,7 @@ struct Objects {
     fail: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
     sweeps: Vec<Instant>,
-    /// The path of each `GetAll` call, oldest first.
-    reads: Vec<String>,
+    barrier: Barrier,
     reactions: Option<SyncSender<Call>>,
 }
 
@@ -408,11 +409,6 @@ impl Bluez {
         self.lock().sweeps.clone()
     }
 
-    /// The path of each `GetAll` call, oldest first.
-    pub(crate) fn reads(&self) -> Vec<String> {
-        self.lock().reads.clone()
-    }
-
     /// Every `Device1` and `Adapter1` method call, oldest first.
     pub(crate) fn calls(&self) -> Vec<Call> {
         self.lock()
@@ -551,6 +547,7 @@ impl Objects {
             .or_else(|| self.transports.properties(path))
             .or_else(|| self.monitors.device_properties(path))
             .or_else(adapter)
+            .or_else(|| Barrier::properties(path))
     }
 
     /// The answer to `call`; a sweep's arrival and a device or adapter method are recorded first.
@@ -559,11 +556,7 @@ impl Objects {
         if header.member().map(MemberName::as_str) == Some("GetManagedObjects") {
             self.sweeps.push(Instant::now());
         }
-        if header.member().map(MemberName::as_str) == Some("GetAll")
-            && let Some(path) = header.path()
-        {
-            self.reads.push(path.to_string());
-        }
+        self.barrier.note(&header);
         let recorded = record(call);
         if let Some(recorded) = &recorded {
             self.calls.push((Instant::now(), recorded.clone()));
