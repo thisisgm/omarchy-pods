@@ -320,6 +320,11 @@ mod tests {
             .filter(|asked| matches!(asked, Asked::Auth { .. }))
             .count();
         assert_eq!(reconnected, 2, "{requests:?}");
+        let log = rig.daemon().log();
+        assert!(
+            !log.lines().any(|line| line == "mic: exit before restore"),
+            "{log}"
+        );
         rig.finish();
     }
 
