@@ -9,7 +9,7 @@ use serde_json::Value;
 use zbus::OwnedVariant;
 
 use crate::support::rig::{
-    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, named, serve,
+    ABSENT_GRACE, DIAL_WAIT, Device, Rig, SIGNAL_SLACK, assert_gap, connected, held, named,
 };
 use crate::support::{HANG_LIMIT, pause};
 
@@ -18,9 +18,6 @@ const AWAY: Duration = Duration::from_secs(3);
 
 const FLAPS: usize = 20;
 const FLAP_APART: Duration = Duration::from_millis(10);
-
-/// Longer than all the flaps, so every flap lands while the dial waits for its answer.
-const DIAL_ANSWERED_AFTER: Duration = Duration::from_millis(500);
 
 /// Past the 750 ms first retry, so a dial the daemon already queued comes within it.
 const QUIET_FOR: Duration = Duration::from_secs(1);
@@ -156,28 +153,17 @@ fn a_flapping_connected_property_never_opens_two_channels() {
     rig.finish();
 }
 
-/// Sets Connected `FLAPS` times, `FLAP_APART` apart, alternating and ending on `last`; returns when the last was set.
-fn flap(rig: &Rig, device: &Device, last: bool) -> Instant {
-    let mut last_set = Instant::now();
+/// Sets Connected `FLAPS` times, `FLAP_APART` apart, alternating and ending on `last`, past the first up only once its dial is made.
+fn flap(rig: &Rig, device: &Device, last: bool) {
     for left in (0..FLAPS).rev() {
         let value = last == left.is_multiple_of(2);
         rig.bluez()
             .set(&device.path, "Connected", OwnedVariant::from(value));
-        last_set = Instant::now();
+        if value && rig.dials().is_empty() {
+            rig.wait_dials(1, HANG_LIMIT);
+        }
         pause(FLAP_APART);
     }
-    last_set
-}
-
-/// Fails unless the last flap came while the only dial was in flight, after it was made and before it was answered.
-fn assert_in_flight(rig: &Rig, last_flap: Instant) {
-    let dials = rig.dials();
-    assert_eq!(dials.len(), 1, "{dials:?}");
-    let since_dial = last_flap.checked_duration_since(dials[0].at);
-    assert!(
-        since_dial.is_some_and(|since| !since.is_zero() && since < DIAL_ANSWERED_AFTER),
-        "the last flap came {since_dial:?} after the dial, which was answered after {DIAL_ANSWERED_AFTER:?}"
-    );
 }
 
 #[test]
@@ -185,14 +171,17 @@ fn flaps_ending_false_while_a_dial_is_in_flight_leave_no_link() {
     let mut rig = Rig::new();
     let device = rig.add_pods(Profile::default());
     rig.start();
-    rig.answer(&device, serve(&device.pods, DIAL_ANSWERED_AFTER));
-    let last_flap = flap(&rig, &device, false);
+    let (answer, release) = held(&device.pods);
+    rig.answer(&device, answer);
+    flap(&rig, &device, false);
+    rig.wait_bluez_signals_taken();
+    drop(release);
     device
         .pods
         .wait_closed(1, HANG_LIMIT)
         .unwrap_or_else(|deadline| panic!("the channel stayed open: {deadline:?}"));
     rig.no_dial_for(QUIET_FOR);
-    assert_in_flight(&rig, last_flap);
+    assert_eq!(rig.dials().len(), 1, "{:?}", rig.dials());
     assert!(!connected(&rig.status()));
     rig.finish();
 }
@@ -202,12 +191,15 @@ fn flaps_ending_true_while_a_dial_is_in_flight_leave_one_link() {
     let mut rig = Rig::new();
     let device = rig.add_pods(Profile::default());
     rig.start();
-    rig.answer(&device, serve(&device.pods, DIAL_ANSWERED_AFTER));
-    let last_flap = flap(&rig, &device, true);
+    let (answer, release) = held(&device.pods);
+    rig.answer(&device, answer);
+    flap(&rig, &device, true);
+    rig.wait_bluez_signals_taken();
+    drop(release);
     let status = rig.wait_filled();
     assert_eq!(status["device_name"], Profile::default().name);
     rig.no_dial_for(QUIET_FOR);
-    assert_in_flight(&rig, last_flap);
+    assert_eq!(rig.dials().len(), 1, "{:?}", rig.dials());
     assert_eq!(device.pods.most_open_at_once(), 1);
     rig.finish();
 }

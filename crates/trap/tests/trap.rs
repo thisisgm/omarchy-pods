@@ -7,6 +7,9 @@ mod support;
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, mpsc};
@@ -265,6 +268,60 @@ mod tests {
             took >= delay && took <= delay + REAL_TIME_SLACK,
             "the answer took {took:?}"
         );
+    }
+
+    #[test]
+    fn a_held_answer_waits_for_its_release() {
+        // How long the held dial is watched for an answer that must not come.
+        const HELD_FOR: Duration = Duration::from_millis(300);
+        let (release, held) = UnixStream::pair().unwrap();
+        let (sender, channels) = mpsc::channel();
+        let serve = Arc::new(move |channel| {
+            let _sent = sender.send(channel);
+        });
+        let answer = Answer::Held {
+            release: Arc::new(OwnedFd::from(held)),
+            serve,
+        };
+        let (child, trap) = start(
+            &["dial", DEVICE, &psm_arg(CONTROL_PSM)],
+            vec![route(DEVICE, CONTROL_PSM, answer)],
+        );
+        let dials = trap.wait_dials(1, WAIT).expect("the dial to be trapped");
+        assert_eq!(dials[0].outcome, Outcome::Pending);
+        assert!(
+            channels.recv_timeout(HELD_FOR).is_err(),
+            "the held dial was answered"
+        );
+        drop(release);
+        let far = channels
+            .recv_timeout(WAIT)
+            .expect("the far end of the released dial");
+        echo(&far);
+        assert_eq!(first_line(child), "ok 706f6e67");
+        assert_eq!(trap.dials()[0].outcome, Outcome::Accepted);
+    }
+
+    #[test]
+    fn a_trap_stopped_while_an_answer_is_held_ends_and_never_serves() {
+        let (_release, held) = UnixStream::pair().unwrap();
+        let served = Arc::new(AtomicBool::new(false));
+        let serving = Arc::clone(&served);
+        let answer = Answer::Held {
+            release: Arc::new(OwnedFd::from(held)),
+            serve: Arc::new(move |_| serving.store(true, Ordering::SeqCst)),
+        };
+        let (mut child, trap) = start(
+            &["dial", DEVICE, &psm_arg(CONTROL_PSM)],
+            vec![route(DEVICE, CONTROL_PSM, answer)],
+        );
+        trap.wait_dials(1, WAIT).expect("the dial to be trapped");
+        child.0.kill().unwrap();
+        let ended = child.0.wait().unwrap();
+        assert_eq!(ended.signal(), Some(libc::SIGKILL), "{ended:?}");
+        let dials = trap.finish().unwrap();
+        assert_eq!(dials[0].outcome, Outcome::Abandoned);
+        assert!(!served.load(Ordering::SeqCst), "serve ran for a held dial");
     }
 
     #[test]

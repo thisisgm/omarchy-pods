@@ -244,8 +244,13 @@ impl Supervisor {
             index = state.dials.len();
             state.dials.push(dial);
         });
-        let (Answer::Accept { after, .. } | Answer::Refuse { after, .. }) = answer;
-        if self.stopped_within(after)? {
+        let stopped = match &answer {
+            Answer::Accept { after, .. } | Answer::Refuse { after, .. } => {
+                self.stopped_within(*after)?
+            }
+            Answer::Held { release, .. } => self.stopped_before(release)?,
+        };
+        if stopped {
             if !notify::still_valid(self.listener.as_fd(), id) {
                 self.set_outcome(index, Outcome::Abandoned);
             }
@@ -261,7 +266,7 @@ impl Supervisor {
                 };
                 self.set_outcome(index, outcome);
             }
-            Answer::Accept { serve, .. } => {
+            Answer::Accept { serve, .. } | Answer::Held { serve, .. } => {
                 if !self.reply(id, Reply::Value(0))? {
                     self.set_outcome(index, Outcome::Abandoned);
                     return Ok(Flow::Go);
@@ -285,6 +290,23 @@ impl Supervisor {
                 dial.outcome = outcome;
             }
         });
+    }
+
+    /// Waits until `release` reads ready or the trap is stopped; true when stopped.
+    fn stopped_before(&self, release: &OwnedFd) -> Result<bool, String> {
+        loop {
+            let mut fds = [
+                PollFd::new(&*self.stop, PollFlags::IN),
+                PollFd::new(release, PollFlags::IN),
+            ];
+            match poll(&mut fds, None) {
+                Ok(_) => {}
+                Err(Errno::INTR) => continue,
+                Err(errno) => return Err(failed("poll", errno)),
+            }
+            let [stop, _] = fds.map(|fd| fd.revents());
+            return Ok(!stop.is_empty());
+        }
     }
 
     /// Waits `delay` on the stop descriptor; true when the trap is being stopped.
