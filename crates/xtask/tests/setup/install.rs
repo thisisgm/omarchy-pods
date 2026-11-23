@@ -12,11 +12,11 @@ use crate::bench::{ADAPTER_OBJECT, ASSET, Bench, Node, Ran, Tree, VERSION, repo,
 const WAIT_SLACK: Duration = Duration::from_secs(5);
 /// The runs of the silent daemon case, so its wall time is a range.
 const SILENT_RUNS: usize = 3;
-const USAGE_LINES: usize = 4;
-const USAGE_EXIT: i32 = 2;
-const BINARY: &str = ".local/bin/librepods";
-const CLIENT: &str = ".local/bin/librepods-ctl";
-const UNIT: &str = ".local/share/systemd/user/librepods.service";
+pub(crate) const USAGE_LINES: usize = 6;
+pub(crate) const USAGE_EXIT: i32 = 2;
+pub(crate) const BINARY: &str = ".local/bin/librepods";
+pub(crate) const CLIENT: &str = ".local/bin/librepods-ctl";
+pub(crate) const UNIT: &str = ".local/share/systemd/user/librepods.service";
 const RESTART: &str = "systemctl --user restart librepods.service";
 const NOT_STARTED: &str =
     "setup: librepods did not start. See: journalctl --user -u librepods.service -n 30\n";
@@ -37,7 +37,7 @@ pub(crate) fn done_lines() -> String {
     )
 }
 
-fn succeeded(ran: &Ran) {
+pub(crate) fn succeeded(ran: &Ran) {
     assert_eq!(ran.code, Some(0), "the install failed: {}", ran.stderr);
     assert_eq!(ran.stdout, done_lines());
 }
@@ -54,7 +54,7 @@ fn installed_nothing(bench: &Bench, ran: &Ran) {
     assert_eq!(bench.calls_of("systemctl"), Vec::<String>::new());
 }
 
-fn files(tree: &Tree) -> BTreeSet<&Path> {
+pub(crate) fn files(tree: &Tree) -> BTreeSet<&Path> {
     tree.iter()
         .filter(|(_, node)| !matches!(node, Node::Dir(_)))
         .map(|(path, _)| path.as_path())
@@ -396,10 +396,11 @@ fn a_second_run_changes_nothing_but_the_restart() {
 
 #[test]
 fn an_unknown_argument_prints_the_usage() {
-    let cases: [&[&str]; 5] = [
+    let cases: [&[&str]; 6] = [
         &["--no-experimental"],
         &["--bogus"],
         &["--from-source", "extra"],
+        &["--uninstall", "--from-source"],
         &["-h"],
         &[""],
     ];

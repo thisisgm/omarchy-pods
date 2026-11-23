@@ -15,7 +15,7 @@ const CATALOG: &str = "home/.local/share/openpods/translations/openpods_tr.qm";
 const TRANSLATIONS: &str = "home/.local/share/openpods/translations";
 const OPENPODS: &str = "home/.local/share/openpods";
 const OLD_CLIENT: &str = "home/.local/bin/librepods-ctl";
-const OLD_CONFIG: &str = "home/.config/AirPodsTrayApp/AirPodsTrayApp.conf";
+pub(crate) const OLD_CONFIG: &str = "home/.config/AirPodsTrayApp/AirPodsTrayApp.conf";
 const SETTINGS: &str = "home/.local/state/librepods/settings.json";
 const BUILD: &str = "plugin/daemon/build";
 const MANIFEST: &str = "plugin/daemon/build/install_manifest.txt";
@@ -28,7 +28,7 @@ const SHIPPED_ICON: &str = "daemon/assets/librepods.svg";
 const MANIFEST_TIME: Duration = Duration::from_secs(1_000_000_000);
 const BEFORE_MANIFEST: Duration = Duration::from_secs(999_999_940);
 const AFTER_MANIFEST: Duration = Duration::from_secs(1_000_000_060);
-const OLD_CONFIG_TEXT: &str = "[General]\nnoiseControlMode=1\n";
+pub(crate) const OLD_CONFIG_TEXT: &str = "[General]\nnoiseControlMode=1\n";
 const SETTINGS_TEXT: &str = "{\"noise_control\":\"anc\"}\n";
 
 /// The bytes the old tag ships at `path`, read from the repository's own history.
@@ -44,7 +44,7 @@ fn shipped(path: &str) -> Vec<u8> {
     shown.stdout
 }
 
-fn plant(path: &Path, bytes: &[u8]) {
+pub(crate) fn plant(path: &Path, bytes: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, bytes).unwrap();
 }
@@ -79,7 +79,7 @@ fn plant_old_install(bench: &Bench) {
 }
 
 /// The old config file and the settings the daemon writes on its first start after it read that file.
-fn plant_old_config(bench: &Bench) {
+pub(crate) fn plant_old_config(bench: &Bench) {
     plant(&bench.path(OLD_CONFIG), OLD_CONFIG_TEXT.as_bytes());
     plant(&bench.path(SETTINGS), SETTINGS_TEXT.as_bytes());
 }
@@ -99,14 +99,18 @@ fn ok(ran: &Ran) {
     assert_eq!(ran.code, Some(0), "the install failed: {}", ran.stderr);
 }
 
-fn exists(bench: &Bench, name: &str) -> bool {
+pub(crate) fn exists(bench: &Bench, name: &str) -> bool {
     fs::symlink_metadata(bench.path(name)).is_ok()
 }
 
-fn removed_paths(bench: &Bench) -> Vec<PathBuf> {
+pub(crate) fn removed_paths(bench: &Bench) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    for program in ["rm", "rmdir"] {
-        for call in bench.arguments_of(program) {
+    for event in events(bench) {
+        let Event::Call(call) = event else { continue };
+        if call
+            .first()
+            .is_some_and(|program| program == "rm" || program == "rmdir")
+        {
             paths.extend(
                 call.iter()
                     .skip(1)
@@ -129,12 +133,12 @@ fn removed_leftovers(bench: &Bench) -> BTreeSet<PathBuf> {
 
 /// One entry of the call log of a run whose output went into it.
 #[derive(Debug, PartialEq)]
-enum Event {
+pub(crate) enum Event {
     Printed(String),
     Call(Vec<String>),
 }
 
-fn events(bench: &Bench) -> Vec<Event> {
+pub(crate) fn events(bench: &Bench) -> Vec<Event> {
     let text = fs::read_to_string(bench.path("calls.log")).unwrap();
     // Sample input: `Removing /tmp/setup bench Ab12/home/x\n` then `rm\0-f\0--\0/tmp/setup bench Ab12/home/x\0\n`
     text.lines()
@@ -146,7 +150,12 @@ fn events(bench: &Bench) -> Vec<Event> {
 }
 
 /// Where the removal of `name` by `program` sits in the log, after its `Removing` line and never before it.
-fn removed_after_naming(log: &[Event], bench: &Bench, program: &str, name: &str) -> usize {
+pub(crate) fn removed_after_naming(
+    log: &[Event],
+    bench: &Bench,
+    program: &str,
+    name: &str,
+) -> usize {
     let path = bench.path(name).display().to_string();
     let named = Event::Printed(format!("Removing {path}"));
     let said = log.iter().position(|event| *event == named);
