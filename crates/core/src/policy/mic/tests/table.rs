@@ -413,7 +413,7 @@ fn the_table_holds_each_phase_and_fact_once() {
 
 /// The name of every `#[test]` in `suite`.
 // Sample input: "    #[test]\n    #[ignore = \"slow\"]\n    fn no_bud_worn_sends_no_start() {".
-fn test_names(suite: &str) -> Vec<&str> {
+pub(in crate::policy::mic) fn test_names(suite: &str) -> Vec<&str> {
     let mut names = Vec::new();
     let mut lines = suite.lines();
     while let Some(line) = lines.next() {

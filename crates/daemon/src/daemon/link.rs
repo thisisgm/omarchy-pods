@@ -17,7 +17,9 @@ use pods_core::link::{
 };
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
-use pods_core::policy::{Effect, Era, Fact, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge};
+use pods_core::policy::{
+    Effect, Era, Fact, MicFact, MicRequest, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge,
+};
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -30,7 +32,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroizing;
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, audio, keys, log, media, notify};
+use super::{MAX_CONNECTIONS, audio, keys, log, media, mic, notify};
 use reader::Open;
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
@@ -80,6 +82,7 @@ pub(super) enum Input {
     Media(Era, Vec<PlayerOwner>),
     Advert(Sighting),
     Monitor(MonitorFact),
+    Mic(MicFact),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +101,8 @@ pub(super) struct Outlets {
     pub(super) media: media::Outlet,
     /// Whether the advert monitor is wanted; a watch, so the latest is never dropped, and each `true` registers it anew.
     pub(super) monitor: watch::Sender<bool>,
+    /// The latest source request; a watch, so turns of the setting while an open hangs never drop the last.
+    pub(super) mic: watch::Sender<MicRequest>,
 }
 
 pub(super) type Connector = Arc<dyn Fn(BdAddr) -> Result<Channel, ChannelError> + Send + Sync>;
@@ -275,6 +280,7 @@ impl Driver {
             Input::Media(era, paused) => self.observe(Fact::Paused(era, paused)),
             Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
             Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
+            Input::Mic(fact) => self.observe(Fact::Mic(fact)),
         }
     }
 
@@ -369,6 +375,7 @@ impl Driver {
             Effect::Media(request) => self.outlets.media.offer(request),
             Effect::Monitor(wanted) => drop(self.outlets.monitor.send_replace(wanted)),
             Effect::Uplink(request) => self.send(request.sdu()),
+            Effect::Mic(request) => mic::offer(&self.outlets.mic, request),
             Effect::Log(line) => log(&line),
             Effect::Exited => {
                 if let Some(exit) = &mut self.exit {

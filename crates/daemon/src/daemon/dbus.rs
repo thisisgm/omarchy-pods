@@ -180,6 +180,7 @@ struct Properties {
     microphone: &'static str,
     mic: &'static str,
     mic_start_failures: u32,
+    mic_source: String,
 }
 
 impl Properties {
@@ -221,10 +222,11 @@ impl Properties {
             microphone: state.microphone.preference().word(),
             mic: state.microphone.code().word(),
             mic_start_failures: state.microphone.start_failures(),
+            mic_source: state.mic_source(),
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 17] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 18] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -246,6 +248,7 @@ impl Properties {
             ("Microphone", Variant::from(self.microphone)),
             ("Mic", Variant::from(self.mic)),
             ("MicStartFailures", Variant::from(self.mic_start_failures)),
+            ("MicSource", Variant::from(self.mic_source.as_str())),
         ]
     }
 
@@ -378,6 +381,11 @@ impl Omapods {
     #[zbus(property)]
     fn mic_start_failures(&self) -> u32 {
         self.now().mic_start_failures
+    }
+
+    #[zbus(property)]
+    fn mic_source(&self) -> String {
+        self.now().mic_source
     }
 
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {

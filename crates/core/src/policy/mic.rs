@@ -1,6 +1,7 @@
 //! The microphone uplink machine: when a START and a STOP go out, what the pods' markers move, the restore after a STOP and the exit; stepped only by facts and its own deadline.
 
 mod gate;
+mod node;
 mod tries;
 
 use std::time::Duration;
@@ -16,6 +17,8 @@ use crate::prefs::MicPref;
 use crate::state::{MicCode, State};
 pub use gate::{BUD_GRACE_MS, STOP_WAITS_LINE, UPLINK_LINGER_MS};
 use gate::{Hold, Next};
+use node::Node;
+pub use node::{MicFact, MicRequest, OpenId, SOURCE_BROKEN_LINE, SOURCE_UP_LINE, withdrawn_line};
 use tries::Try;
 pub use tries::{START_TRIES, start_sent_line, unanswered_line};
 
@@ -117,6 +120,7 @@ pub(super) struct Mic {
     asleep: bool,
     /// Every START whose answer deadline passed since the daemon started.
     start_failures: u32,
+    node: Node,
 }
 
 impl Default for Mic {
@@ -128,6 +132,7 @@ impl Default for Mic {
             next_restore: 0,
             asleep: false,
             start_failures: 0,
+            node: Node::default(),
         }
     }
 }
@@ -136,6 +141,7 @@ impl Mic {
     /// `state` is the state after the step the fact comes from.
     pub(super) fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
         let mut effects = Vec::new();
+        self.node.step(state, fact, now, &mut effects);
         match fact {
             Fact::Link(Signal::Down) => self.phase = Phase::Stopped { spent: None },
             Fact::Link(Signal::Lost { .. }) => {
@@ -151,7 +157,8 @@ impl Mic {
             | Fact::Changed
             | Fact::Paused(..)
             | Fact::Advert(_)
-            | Fact::Monitor(_) => {}
+            | Fact::Monitor(_)
+            | Fact::Mic(_) => {}
         }
         self.follow(state, now, &mut effects);
         effects
@@ -231,8 +238,8 @@ impl Mic {
             Phase::Stopped { .. } if self.exiting => effects.push(Effect::Exited),
             Phase::Stopped {
                 spent: Some(Spent::Unasked),
-            } if !wanted(state) => self.phase = Phase::Stopped { spent: None },
-            Phase::Stopped { spent: None } if wanted(state) && !self.asleep => {
+            } if !self.wants(state) => self.phase = Phase::Stopped { spent: None },
+            Phase::Stopped { spent: None } if self.wants(state) && !self.asleep => {
                 self.phase = start(Try::FIRST, now, effects);
             }
             // No STOP is ever written while a START is unanswered: the running marker sends it.
@@ -283,7 +290,7 @@ impl Mic {
         } else if self.asleep {
             Next::Stop(Word::Sleep)
         } else {
-            hold.follow(wanted(state), state.ear.any_in_ear(), self.quiet, now)
+            hold.follow(self.wants(state), state.ear.any_in_ear(), self.quiet, now)
         };
         self.phase = match next {
             Next::Hold(Hold::Waiting { unworn: None }) if !matches!(hold, Hold::Waiting { .. }) => {
@@ -334,7 +341,7 @@ impl Mic {
         now: Duration,
         effects: &mut Vec<Effect>,
     ) -> Phase {
-        if !wanted(state) || self.exiting {
+        if !self.wants(state) || self.exiting {
             return Phase::Stopped { spent: None };
         }
         match tried.next() {
@@ -346,7 +353,7 @@ impl Mic {
     }
 
     pub(super) fn deadline(&self) -> Option<Duration> {
-        match self.phase {
+        let uplink = match self.phase {
             Phase::Starting { since, .. } => {
                 Some(since.saturating_add(Duration::from_millis(START_ANSWER_MS)))
             }
@@ -358,11 +365,20 @@ impl Mic {
             }
             Phase::Running(hold) => hold.deadline(),
             Phase::Stopped { .. } => None,
-        }
+        };
+        uplink.into_iter().chain(self.node.deadline()).min()
+    }
+
+    /// A recorder linked to the node wants the uplink as `always` does.
+    fn wants(&self, state: &State) -> bool {
+        wanted(state) || (self.node.recording() && state.ear.any_in_ear())
     }
 
     /// What `mic` shows while the preference is not `off`, which `Microphone::show` alone decides.
     pub(super) fn code(&self, state: &State) -> MicCode {
+        if self.node.broken() {
+            return MicCode::LibraryError;
+        }
         if !state.connected {
             return MicCode::Idle;
         }
@@ -376,16 +392,19 @@ impl Mic {
             Phase::Stopping { .. } | Phase::Restoring { .. } => MicCode::Stopping,
             _ if !state.ear.any_in_ear() => MicCode::NotWorn,
             Phase::Starting { .. } => MicCode::Starting,
+            Phase::Running(_) if self.node.recording() => MicCode::Recording,
             Phase::Running(_) => MicCode::Live,
             Phase::Stopped {
                 spent: None | Some(Spent::Unasked),
-            } => MicCode::Idle,
+            } => self.node.resting(),
         }
     }
 
     pub(super) fn show(&self, state: &mut State) {
         let code = self.code(state);
-        state.microphone.show(code, self.start_failures);
+        state
+            .microphone
+            .show(code, self.start_failures, self.node.up());
     }
 }
 

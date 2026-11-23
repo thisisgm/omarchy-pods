@@ -68,6 +68,8 @@ impl Default for State {
     }
 }
 
+const MIC_NODE_PREFIX: &str = "omarchypods_input.";
+
 impl State {
     /// Forgets what the pods reported; preferences and counters stay.
     pub fn reset_device(&mut self) {
@@ -86,6 +88,22 @@ impl State {
     pub fn supports_noise_off(&self) -> bool {
         self.noise_off
             .unwrap_or_else(|| self.model.capabilities().noise_off)
+    }
+
+    /// The source node's name, the model number in lower case so each model keeps its own.
+    #[must_use]
+    pub fn mic_node_name(&self) -> String {
+        format!("{MIC_NODE_PREFIX}{}", self.model_number.to_lowercase())
+    }
+
+    /// The node's name while it is on the server, which `mic_source` shows; empty otherwise.
+    #[must_use]
+    pub fn mic_source(&self) -> String {
+        if self.microphone.source_up() {
+            self.mic_node_name()
+        } else {
+            String::new()
+        }
     }
 
     #[must_use]
@@ -157,6 +175,8 @@ pub struct Microphone {
     preference: MicPref,
     code: MicCode,
     start_failures: u32,
+    /// Whether the source node is on the audio server.
+    source_up: bool,
 }
 
 impl Microphone {
@@ -166,6 +186,7 @@ impl Microphone {
             preference,
             code: MicCode::resting(preference),
             start_failures: 0,
+            source_up: false,
         }
     }
 
@@ -184,14 +205,20 @@ impl Microphone {
         self.start_failures
     }
 
+    #[must_use]
+    pub const fn source_up(self) -> bool {
+        self.source_up
+    }
+
     pub fn set_preference(&mut self, preference: MicPref) {
         self.preference = preference;
         self.code = MicCode::resting(preference);
     }
 
-    /// Shows the uplink machine's `code` and `start_failures`, except that `off` is shown exactly while the preference is `off`.
-    pub fn show(&mut self, code: MicCode, start_failures: u32) {
+    /// Shows the uplink machine's `code` and `start_failures` and whether the node is up, except that `off` is shown exactly while the preference is `off`.
+    pub fn show(&mut self, code: MicCode, start_failures: u32, source_up: bool) {
         self.start_failures = start_failures;
+        self.source_up = source_up;
         self.code = match (self.preference, code) {
             (MicPref::Off, _) | (_, MicCode::Off) => MicCode::resting(self.preference),
             (MicPref::Auto | MicPref::Always, code) => code,
@@ -215,6 +242,10 @@ pub enum MicCode {
     Live,
     Stopping,
     Failed,
+    Ready,
+    Recording,
+    NoAudioServer,
+    LibraryError,
 }
 
 impl MicCode {
@@ -236,6 +267,10 @@ impl MicCode {
             Self::Live => "live",
             Self::Stopping => "stopping",
             Self::Failed => "failed",
+            Self::Ready => "ready",
+            Self::Recording => "recording",
+            Self::NoAudioServer => "no_audio_server",
+            Self::LibraryError => "library_error",
         }
     }
 }

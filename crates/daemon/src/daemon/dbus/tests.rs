@@ -115,6 +115,7 @@ const INTROSPECTED: &str = r#"
   <property name="EarDetection" type="s" access="read"/>
   <property name="InEar" type="a{sb}" access="read"/>
   <property name="Mic" type="s" access="read"/>
+  <property name="MicSource" type="s" access="read"/>
   <property name="MicStartFailures" type="u" access="read"/>
   <property name="Microphone" type="s" access="read"/>
   <property name="ModelName" type="s" access="read"/>

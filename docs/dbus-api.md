@@ -48,7 +48,8 @@ nothing, and a command that changes nothing sends none.
 | `InEar` | `a{sb}` | Always the keys `left` and `right`. |
 | `Capabilities` | `as` | The names of the status object's true `supports_*` keys without the prefix, sorted, for example `adaptive`. |
 | `Microphone` | `s` | The `microphone` setting: `auto`, `always` or `off`. |
-| `Mic` | `s` | What the daemon does with the AirPods' microphone, the `mic` key of `docs/protocol-1.md`: `off`, `idle`, `not_worn`, `unsupported`, `starting`, `live` or `failed`. |
+| `Mic` | `s` | What the daemon does with the AirPods' microphone, the `mic` key of `docs/protocol-1.md`: `off`, `idle`, `not_worn`, `unsupported`, `ready`, `starting`, `live`, `recording`, `stopping`, `failed`, `no_audio_server` or `library_error`. |
+| `MicSource` | `s` | The name of the daemon's microphone source while it is on the audio server, else empty, the `mic_source` key of `docs/protocol-1.md`. |
 | `MicStartFailures` | `u` | The STARTs of the AirPods' microphone uplink left unanswered since the daemon started, the `mic_start_failures` key of `docs/protocol-1.md`. |
 | `StatusJson` | `s` | The whole status object, the same JSON the state file holds, without the trailing newline. It changes whenever any key changes, counters included. No property of its own carries the `notifications` setting; it is this object's `notifications_enabled`. |
 | `AudioServer` | `s` | The daemon's connection to the desktop's audio server: `idle` while no AirPods link is up, `up` while it reads the server, `down` while it cannot reach it. |

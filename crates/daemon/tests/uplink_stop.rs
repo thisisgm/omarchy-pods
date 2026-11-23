@@ -346,7 +346,7 @@ mod tests {
     fn exit_with_the_uplink_stopped_is_answered_at_once() {
         let (mut rig, device) = rig_with("auto", &[MODEL_NUMBER], Profile::default());
         link(&rig, &device);
-        assert_eq!(mic(&rig), "idle");
+        wait_mic(&rig, "no_audio_server");
         let termed = Instant::now();
         rig.term();
         let status = rig.exited(HANG_LIMIT);

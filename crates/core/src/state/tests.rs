@@ -74,11 +74,15 @@ fn mic_shows_off_exactly_while_the_preference_is_off() {
         MicCode::Live,
         MicCode::Stopping,
         MicCode::Failed,
+        MicCode::Ready,
+        MicCode::Recording,
+        MicCode::NoAudioServer,
+        MicCode::LibraryError,
     ];
     for preference in MicPref::ALL {
         for code in codes {
             let mut microphone = Microphone::new(preference);
-            microphone.show(code, 2);
+            microphone.show(code, 2, false);
             let shown = match (preference, code) {
                 (MicPref::Off, _) => MicCode::Off,
                 (_, MicCode::Off) => MicCode::Idle,

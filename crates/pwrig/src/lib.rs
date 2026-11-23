@@ -12,6 +12,7 @@
     )
 )]
 
+mod library;
 pub mod pod;
 mod recorder;
 mod server;
@@ -29,8 +30,9 @@ use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal, kill_process};
 
+pub use library::states_latency;
 pub use recorder::Recorder;
-pub use server::{DRIVER_NODE, Server, environment, node_names, parse_dump};
+pub use server::{DRIVER_NODE, SOCKET, Server, environment, node_names, parse_dump};
 pub use wav::write_wav;
 
 /// Every program the rig runs comes in this package, on Debian and on Ubuntu.

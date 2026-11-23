@@ -143,13 +143,17 @@ A reply carries the request's `id` and `ok`.
   prints and the state file holds. Besides the keys the older daemon wrote, it
   carries `notifications_enabled`, the `notifications` setting, and
   `microphone`, the `microphone` setting. Its `mic` is `off` while that setting
-  is `off`; else `idle` while no link is up; `unsupported` once a model never
+  is `off`; else `library_error` once the audio library failed, until the
+  daemon restarts; else `idle` while no link is up; `unsupported` once a model never
   confirmed left its START unanswered three times, and `failed` once a
   confirmed one did, each until the link is lost; `stopping` from a STOP until the sink's restore
   after it is done or owed, or, for a STOP sent because the sink was suspended
   or gone, until the AirPods say the uplink stopped; `not_worn` while no bud is
   worn; `starting` from the START until the AirPods say the uplink runs, then
-  `live`; and `idle` when nothing is wanted. An uplink no longer wanted while
+  `recording` while a program records from the AirPods' microphone and `live`
+  otherwise; with the uplink stopped, `ready` while the microphone's source is
+  on the audio server, `no_audio_server` while the source is wanted and the
+  audio server is absent or refuses it, and `idle` otherwise. An uplink no longer wanted while
   the link holds, other than by `off` or a stop of the daemon, lingers: it runs
   on for a minute, or a few seconds once the last bud is out. Its STOP then
   waits, with `mic` still `live`, while a bud is worn and the AirPods' sink is
@@ -171,7 +175,15 @@ A reply carries the request's `id` and `ok`.
   and come back. At the edge into sleep a running uplink is stopped with no
   restore and a START waiting for its answer is dropped; after the wake the
   uplink starts again while it is wanted. Its `mic_start_failures` counts every
-  START left unanswered, each try once, since the daemon started. Its `audio_server` is `idle` while no AirPods
+  START left unanswered, each try once, since the daemon started. Its
+  `mic_source` is the name of the daemon's microphone source,
+  `omarchypods_input.` and the model number in lower case, while the source is
+  on the audio server, and empty otherwise. The source is wanted while the
+  link is up, the model's uplink has answered once, the setting is not `off`,
+  and a bud is worn or was taken out less than a few seconds ago; while a
+  program records from it, it stays through a bud taken out. It carries
+  silence until the AirPods' audio reaches it. A program that records from it
+  wants the uplink as `always` does, while a bud is worn. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and
   `down` while it cannot reach it. Its
   `advert_intake` is `listening` once BlueZ accepted the daemon's advert

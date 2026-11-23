@@ -115,7 +115,7 @@ mod tests {
         let at_once = Duration::ZERO..=REAL_TIME_SLACK;
         let stop = wait_stop(&device);
         assert_gap("the STOP after the suspend", suspended, stop.at, &at_once);
-        wait_mic(&rig, "idle");
+        wait_mic(&rig, "no_audio_server");
         read_up_to_now(&rig, &device);
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
         audio.assert_only_reads();
@@ -131,7 +131,7 @@ mod tests {
         device.pods.uplink().stop_unasked();
         rig.wait_logged(STOPPED_BY_THE_PODS_LINE);
         wait_restore(&audio, &device);
-        wait_mic(&rig, "idle");
+        wait_mic(&rig, "no_audio_server");
         read_up_to_now(&rig, &device);
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
@@ -221,7 +221,7 @@ mod tests {
             (!device.pods.uplink().running()).then_some(())
         });
         read_up_to_now(&rig, &device);
-        assert_eq!(mic(&rig), "idle");
+        wait_mic(&rig, "no_audio_server");
         audio.assert_only_reads();
         rig.finish();
     }
@@ -233,9 +233,9 @@ mod tests {
         link(&rig, &device);
         wait_starts(&device, 1);
         sleep(&mut rig);
-        wait_mic(&rig, "idle");
-        rig.holds_for(PAST_THE_ANSWER, "mic idle", |status| {
-            status["mic"] == "idle"
+        wait_mic(&rig, "no_audio_server");
+        rig.holds_for(PAST_THE_ANSWER, "mic no_audio_server", |status| {
+            status["mic"] == "no_audio_server"
         });
         read_up_to_now(&rig, &device);
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());

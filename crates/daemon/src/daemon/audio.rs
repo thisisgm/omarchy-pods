@@ -33,7 +33,7 @@ use wire::{Frame, Malformed, Message, PROTOCOL_VERSION, read_frame, write_frame}
 pub(super) const REQUEST_QUEUE: usize = 8;
 
 /// A restarted server is read again within 10 s, so the largest gap is 5 s, which repeats; runs only while a device is followed.
-const AUDIO_RETRY_MS: [u64; 5] = [250, 500, 1000, 2000, 5000];
+pub(super) const AUDIO_RETRY_MS: [u64; 5] = [250, 500, 1000, 2000, 5000];
 
 /// Where `libpulse` finds the server, under the runtime directory.
 const SOCKET: &str = "pulse/native";

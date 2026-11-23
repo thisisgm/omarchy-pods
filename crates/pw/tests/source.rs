@@ -19,7 +19,7 @@ mod tests {
     use pods_pw::source::PW_OPEN_MS;
     use pods_pw::{Event, Fill, OpenError, Source, Spec};
     use pods_pwrig::tone::{CHECKED, SETTLE, assert_tone, frames};
-    use pods_pwrig::{DRIVER_NODE, Recorder, Server, node_names};
+    use pods_pwrig::{DRIVER_NODE, Recorder, Server, node_names, states_latency};
     use serde_json::json;
 
     use crate::support::{DESCRIPTION, LATENCY_NS, NAME, PRIORITY, RATE, isolate, spec};
@@ -46,10 +46,6 @@ mod tests {
         "target.object",
         "remote.name",
     ];
-    /// The file name every version of the library starts with.
-    const SONAME: &str = "libpipewire-0.3.so.0";
-    /// The first library whose streams state a process latency: 1.3.81, as its file name counts it.
-    const STATES_LATENCY_SINCE: u32 = 1381;
     /// Graph cycles each half of the ratio test counts, about 5 s at the rig's cycle.
     const COUNTED_CYCLES: u64 = 120;
     /// Cycles left out before each half, for the converter to settle on its ratio.
@@ -137,19 +133,6 @@ mod tests {
 
     fn tone(hz: f64) -> Tone {
         Tone { hz, frame: 0 }
-    }
-
-    /// The version in the file name of the library this process loaded, 1402 for 1.4.2.
-    fn library() -> u32 {
-        let maps = fs::read_to_string("/proc/self/maps").unwrap();
-        // Sample input: `7f3a1c000000-7f3a1c00f000 r--p 00000000 08:01 1234 /usr/lib/x86_64-linux-gnu/libpipewire-0.3.so.0.1402.0`.
-        let file = maps
-            .lines()
-            .filter_map(|line| line.rsplit('/').next())
-            .find(|file| file.starts_with(SONAME))
-            .unwrap_or_else(|| panic!("no {SONAME} among the mapped files: {maps}"));
-        let version = file.strip_prefix(SONAME).unwrap().split('.').nth(1);
-        version.unwrap().parse().unwrap()
     }
 
     fn threads() -> usize {
@@ -281,7 +264,7 @@ mod tests {
         server.link(NAME, recorder.node());
         let node = server.wait_node(NAME, Duration::ZERO);
         // An older library keeps the parameter to itself and shows an empty list, measured on 1.0.5.
-        let (stated, times) = if library() >= STATES_LATENCY_SINCE {
+        let (stated, times) = if states_latency(Path::new("/proc/self/maps")) {
             (json!([{"quantum": 0.0, "rate": 0, "ns": LATENCY_NS}]), 1)
         } else {
             (json!([]), 0)
