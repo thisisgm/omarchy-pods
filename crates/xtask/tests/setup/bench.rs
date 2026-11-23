@@ -27,7 +27,7 @@ pub(crate) const ADAPTER_OBJECT: &str = "/org/bluez/hci0";
 /// What `busctl` prints for the manager's monitor types when BlueZ serves it.
 pub(crate) const SERVED_TYPES: &str = "as 1 \"or_patterns\"\n";
 /// The real programs the installer and the stubs run; any other name is not found.
-const REAL: [&str; 12] = [
+const REAL: [&str; 13] = [
     "bash",
     "cat",
     "dirname",
@@ -36,6 +36,7 @@ const REAL: [&str; 12] = [
     "mkdir",
     "mktemp",
     "mv",
+    "readlink",
     "rm",
     "rmdir",
     "sha256sum",
@@ -262,12 +263,23 @@ impl Bench {
 
     /// Runs `bash plugin/packaging/setup` with only `HOME`, `PATH` and `XDG_RUNTIME_DIR` set, all inside the bench.
     pub(crate) fn run(&self, args: &[&str]) -> Ran {
-        self.launch(args, self.path("home").as_os_str(), Stdio::piped())
+        self.launch(args, self.path("home").as_os_str(), None, Stdio::piped())
+    }
+
+    /// The same run with `XDG_STATE_HOME` set as well.
+    pub(crate) fn run_with_state_home(&self, args: &[&str], state_home: &str) -> Ran {
+        let home = self.path("home");
+        self.launch(
+            args,
+            home.as_os_str(),
+            Some(OsStr::new(state_home)),
+            Stdio::piped(),
+        )
     }
 
     /// The same run with another `HOME`; the run's working directory is the bench root.
     pub(crate) fn run_as(&self, args: &[&str], home: &str) -> Ran {
-        self.launch(args, OsStr::new(home), Stdio::piped())
+        self.launch(args, OsStr::new(home), None, Stdio::piped())
     }
 
     /// The same run with its standard output appended to the call log, so a printed line and the calls around it keep their order.
@@ -276,10 +288,16 @@ impl Bench {
             .append(true)
             .open(self.path("calls.log"))
             .unwrap();
-        self.launch(args, self.path("home").as_os_str(), Stdio::from(log))
+        self.launch(args, self.path("home").as_os_str(), None, Stdio::from(log))
     }
 
-    fn launch(&self, args: &[&str], home: &OsStr, stdout: Stdio) -> Ran {
+    fn launch(
+        &self,
+        args: &[&str],
+        home: &OsStr,
+        state_home: Option<&OsStr>,
+        stdout: Stdio,
+    ) -> Ran {
         let mut command = Command::new(self.path("bin/bash"));
         command
             .arg(self.path("plugin/packaging/setup"))
@@ -293,6 +311,9 @@ impl Bench {
             .stdout(stdout)
             .stderr(Stdio::piped())
             .process_group(0);
+        if let Some(state_home) = state_home {
+            command.env("XDG_STATE_HOME", state_home);
+        }
         let started = Instant::now();
         let mut running = Running {
             child: command.spawn().unwrap(),

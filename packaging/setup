@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installs the published librepods binary, or one built here with --from-source, with its systemd user service.
+# Installs the published librepods binary, or one built here with --from-source, with its systemd user service; --uninstall removes them.
 
 set -euo pipefail
 
@@ -22,6 +22,7 @@ readonly OLD_ICON_SHA256=8d3d2c7bd6ecbed70afe21c5530ce03e35811b5090087bf5b1ca2ff
 readonly manager_interface=org.bluez.AdvertisementMonitorManager1
 readonly busctl_timeout_s=2
 readonly readme_section="Case battery while away"
+readonly state_name=librepods
 
 plugin_dir=$(cd "$(dirname "$0")/.." && pwd)
 readonly plugin_dir
@@ -31,6 +32,8 @@ readonly old_build_dir="$plugin_dir/daemon/build"
 readonly old_manifest="$old_build_dir/install_manifest.txt"
 
 from_source=false
+uninstall=false
+keep_keys=false
 lock_line=
 asset=
 tag=
@@ -44,10 +47,12 @@ fail() {
 
 usage() {
     printf '%s\n' \
-        "usage: setup [--from-source]" \
+        "usage: setup [--from-source] | setup --uninstall [--keep-keys]" \
         "Installs the published librepods binary once it matches packaging/librepods.sha256," \
         "then installs, enables and restarts its systemd user service." \
-        "  --from-source  build librepods here with cargo instead of downloading it" >&2
+        "  --from-source  build librepods here with cargo instead of downloading it" \
+        "  --uninstall    stop the service and remove what setup installed, with the state directory" \
+        "  --keep-keys    with --uninstall, keep the state directory and the pairing keys in it" >&2
     exit 2
 }
 
@@ -56,9 +61,13 @@ read_arguments() {
     for argument in "$@"; do
         case "$argument" in
         --from-source) from_source=true ;;
+        --uninstall) uninstall=true ;;
+        --keep-keys) keep_keys=true ;;
         *) usage ;;
         esac
     done
+    [ "$keep_keys" = false ] || [ "$uninstall" = true ] || usage
+    [ "$uninstall" = false ] || [ "$from_source" = false ] || usage
 }
 
 check_machine() {
@@ -69,7 +78,7 @@ check_machine() {
     fi
     uid=$(id -u) || fail "could not read the user id" "id -u"
     [ "$uid" != 0 ] || fail "run setup as your own user, not as root" "uid $uid"
-    [ "$from_source" = false ] || return 0
+    [ "$from_source" = false ] && [ "$uninstall" = false ] || return 0
     machine=$(uname -m) || fail "could not read the machine type" "uname -m"
     if [ "$machine" != x86_64 ]; then
         fail "the published librepods file is for x86-64, and setup --from-source builds it on this machine" "$machine"
@@ -173,7 +182,7 @@ say_removing() {
 
 remove_file() {
     say_removing "$1"
-    rm -f -- "$1" || fail "could not remove the old file" "$1"
+    rm -f -- "$1" || fail "could not remove the file" "$1"
 }
 
 dir_is_empty() {
@@ -192,6 +201,10 @@ leave() {
     printf 'setup: left %s: it is not the file version 1.3 installed.\n' "$1" >&2
 }
 
+exists() {
+    [ -e "$1" ] || [ -L "$1" ]
+}
+
 is_plain_file() {
     [ -f "$1" ] && [ ! -L "$1" ]
 }
@@ -199,7 +212,7 @@ is_plain_file() {
 # Sample input: `a485b2f5939e9f334fa8ffcdc0a37a292b1d349e9357ec1c710e5f712e5bed23  -`
 remove_if_checksum() {
     local path=$1 expected=$2 line
-    [ -e "$path" ] || [ -L "$path" ] || return 0
+    exists "$path" || return 0
     if is_plain_file "$path"; then
         line=$(sha256sum < "$path") || fail "sha256sum could not read the old file" "$path"
         if [ "${line:0:sha256_hex_digits}" = "$expected" ]; then
@@ -222,7 +235,7 @@ old_manifest_lists() {
 
 # cmake writes its manifest after it installs, so a catalog changed or put there later is newer than it.
 remove_old_catalog() {
-    [ -e "$old_catalog_file" ] || [ -L "$old_catalog_file" ] || return 0
+    exists "$old_catalog_file" || return 0
     if is_plain_file "$old_catalog_file" && old_manifest_lists "$old_catalog_file" &&
         [ ! "$old_catalog_file" -nt "$old_manifest" ]; then
         remove_file "$old_catalog_file"
@@ -261,6 +274,69 @@ report_monitor() {
     fi
 }
 
+# The daemon's own rule: an absolute XDG_STATE_HOME, else the home's .local/state.
+state_dir() {
+    local base="${HOME:-}/.local/state"
+    [[ ${XDG_STATE_HOME:-} != /* ]] || base=${XDG_STATE_HOME%/}
+    printf '%s/%s' "$base" "$state_name"
+}
+
+remove_if_there() {
+    ! exists "$1" || remove_file "$1"
+}
+
+remove_client() {
+    local client="$bin_dir/librepods-ctl" target=
+    exists "$client" || return 0
+    if [ -L "$client" ]; then
+        target=$(readlink -- "$client") || fail "could not read the link" "$client"
+    fi
+    if [ "$target" = librepods ]; then
+        remove_file "$client"
+    else
+        printf 'setup: left %s: it is not the link setup made.\n' "$client" >&2
+    fi
+}
+
+remove_state() {
+    local dir=$1
+    exists "$dir" || return 0
+    if [ "$keep_keys" = true ]; then
+        remove_if_there "$dir/status.json"
+        if exists "$dir/keys.json"; then
+            printf 'Kept %s: its keys.json holds the pairing secrets of your AirPods.\n' "$dir"
+        else
+            printf 'Kept %s.\n' "$dir"
+        fi
+    else
+        say_removing "$dir"
+        rm -rf -- "$dir" || fail "could not remove the state directory" "$dir"
+    fi
+}
+
+remove_installed() {
+    local dir resolved unit="$unit_dir/librepods.service" had_unit=false
+    dir=$(state_dir)
+    resolved=$(readlink -m -- "$dir") || fail "could not resolve the state directory" "$dir"
+    # Checked as resolved, so dot segments and repeated slashes cannot make the base the root.
+    if [[ $dir != /* || $resolved != /*[!/]*/"$state_name" ]]; then
+        fail "refusing to remove a state directory whose base is the root or not an absolute path" "$dir"
+    fi
+    if exists "$unit"; then
+        had_unit=true
+        systemctl --user disable --now librepods.service ||
+            fail "systemctl could not stop and disable the service" "librepods.service"
+    fi
+    remove_client
+    remove_if_there "$bin_dir/librepods"
+    if [ "$had_unit" = true ]; then
+        remove_file "$unit"
+        systemctl --user daemon-reload || fail "systemctl could not reload the user units" "daemon-reload"
+    fi
+    remove_state "$dir"
+    printf '%s\n' "Removed. To remove the plugin itself: omarchy plugin remove io.github.thisisgm.omapods"
+}
+
 remove_scratch() {
     [ -n "$scratch" ] || return 0
     if [[ $scratch == "$XDG_RUNTIME_DIR"/omapods-setup.* ]]; then
@@ -273,6 +349,10 @@ remove_scratch() {
 main() {
     read_arguments "$@"
     check_machine
+    if [ "$uninstall" = true ]; then
+        remove_installed
+        return 0
+    fi
     if [ "$from_source" = true ]; then
         build_binary
     else
