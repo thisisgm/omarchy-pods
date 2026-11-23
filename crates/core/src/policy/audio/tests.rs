@@ -5,7 +5,7 @@ use std::time::Duration;
 use pods_proto::addr::BdAddr;
 use pods_proto::uplink::UplinkState;
 
-use super::{AudioFact, AudioRequest, Percent, SinkFact, server_after};
+use super::{AudioFact, AudioRequest, Percent, SinkFact, server_after, sink_prefix};
 use crate::link::Signal;
 use crate::policy::{Effect, Fact, Policy, SleepEdge};
 use crate::state::{AudioServer, State};
@@ -115,4 +115,10 @@ fn a_percent_is_0_to_100() {
     assert_eq!(Percent::new(100), Some(Percent::FULL));
     assert_eq!(Percent::FULL.get(), 100);
     assert_eq!(Percent::new(101), None);
+}
+
+#[test]
+fn the_prefix_is_the_address_in_capitals_with_underscores() {
+    let device = "02:00:00:00:00:0a".parse().unwrap();
+    assert_eq!(sink_prefix(device), "bluez_output.02_00_00_00_00_0A");
 }

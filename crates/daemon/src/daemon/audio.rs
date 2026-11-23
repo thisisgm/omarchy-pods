@@ -12,7 +12,7 @@ use std::pin::pin;
 use std::task::Poll;
 use std::time::Duration;
 
-use pods_core::policy::audio::{AudioFact, AudioRequest, SinkFact};
+use pods_core::policy::audio::{AudioFact, AudioRequest, SinkFact, sink_prefix};
 use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{AuthParams, Command, CommandTag, Prop, Props, SubscriptionMask};
 use tokio::net::UnixStream;
@@ -44,9 +44,6 @@ const COOKIE_LENGTH: usize = 256;
 
 /// Sinks added, removed or changed in volume, and the server's default sink.
 const EVENTS: SubscriptionMask = SubscriptionMask::SINK.union(SubscriptionMask::SERVER);
-
-/// How `PipeWire` names a Bluetooth device's output, before the address.
-const SINK_PREFIX: &str = "bluez_output.";
 
 const QUEUE_FULL: &str = "audio: request queue full";
 
@@ -203,7 +200,7 @@ impl<'a> Follower<'a> {
     fn new(inputs: &'a mpsc::Sender<Input>, device: BdAddr) -> Self {
         Self {
             inputs,
-            prefix: sink_prefix(device),
+            prefix: sink_prefix(device).into_bytes(),
             told: Told::Nothing,
             misses: 0,
         }
@@ -375,16 +372,6 @@ async fn within<T>(work: impl Future<Output = Result<T, Lost>>) -> Result<T, Los
     timeout(Duration::from_millis(AUDIO_CALL_TIMEOUT_MS), work)
         .await
         .unwrap_or(Err(Lost::Timeout))
-}
-
-/// `bluez_output.` then the address in capitals with underscores, as `bluez_output.02_00_00_00_00_01`.
-fn sink_prefix(device: BdAddr) -> Vec<u8> {
-    let groups: Vec<String> = device
-        .octets()
-        .iter()
-        .map(|octet| format!("{octet:02X}"))
-        .collect();
-    format!("{SINK_PREFIX}{}", groups.join("_")).into_bytes()
 }
 
 /// The device's sink: the default when its name starts with `prefix`, else the first sink whose name does.

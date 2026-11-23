@@ -14,7 +14,7 @@ use super::super::super::script::{Action, Event, Opening, Route, rescue};
 use super::super::wires::wake_of;
 use super::super::*;
 use super::case::Case;
-use super::pods::{EAR_PACKET, ack, audio_sdu, pair, queued};
+use super::pods::{EAR_PACKET, SILENT_UNIT, ack, audio_sdu, pair, queued};
 
 /// What a wake on the control channel carries, which every test here written before the routes means.
 const CONTROL: Bearer = Bearer::Accessory;
@@ -317,7 +317,7 @@ fn a_report_that_waited_out_the_connect_of_the_attribute_channel_opens_the_gate(
     let near_att = Cell::new(Some(near_att));
     // The fake pods cannot make a connect last, so this one moves the clock and queues the report behind another packet.
     let open_att = || {
-        far.send(&audio_sdu(0)).unwrap();
+        far.send(&audio_sdu(0, &SILENT_UNIT)).unwrap();
         far.send(&EAR_PACKET).unwrap();
         clock.set(SLOW_CONNECT_NS);
         let refused = ChannelError::Connect(Errno::CONNREFUSED);
@@ -436,13 +436,16 @@ fn a_packet_the_log_format_refuses_is_marked_and_counted_once() {
     let too_long = vec![0x33; sdulog::MAX_SDU_LEN + 1];
     let logged = recorder.packet(9, CONTROL, Direction::ToPods, &too_long);
     assert_eq!(logged, Ok(false));
-    recorder.received(11, &audio_sdu(0)).unwrap();
+    recorder.received(11, &audio_sdu(0, &SILENT_UNIT)).unwrap();
     let counts = (recorder.sdus_in, recorder.audio_sdus, recorder.truncated);
     assert_eq!(counts, (1, 1, 2));
     let log = String::from_utf8(log).unwrap();
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 1, "{log}");
-    assert_eq!(sdulog::parse_line(lines[0]).unwrap().sdu, audio_sdu(0));
+    assert_eq!(
+        sdulog::parse_line(lines[0]).unwrap().sdu,
+        audio_sdu(0, &SILENT_UNIT)
+    );
     let marks = String::from_utf8(marks).unwrap();
     let refused: Vec<&str> = marks.lines().collect();
     assert_eq!(refused.len(), 2, "{marks}");
@@ -470,7 +473,10 @@ fn a_packet_is_counted_only_once_its_line_or_mark_was_written() {
             kind: io::ErrorKind::Other,
         })
     };
-    assert_eq!(recorder.received(7, &audio_sdu(0)), full(LOG_NAME));
+    assert_eq!(
+        recorder.received(7, &audio_sdu(0, &SILENT_UNIT)),
+        full(LOG_NAME)
+    );
     assert_eq!(recorder.received(8, &[]), full(MARKS_NAME));
     let counts = (recorder.sdus_in, recorder.audio_sdus, recorder.truncated);
     assert_eq!(counts, (0, 0, 0));
