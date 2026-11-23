@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_fake::{Fault, Profile};
@@ -271,24 +273,49 @@ fn a_subscriber_that_never_reads_is_dropped_and_status_still_answers() {
         .unwrap_or_else(|error| panic!("the subscribe reply: {error}: {reply:?}"));
     // The daemon follows the hub before it replies, so every change from here on finds the subscriber.
     assert_eq!(subscribed["ok"], true, "{subscribed}");
-    for change in 0..CHANGES {
-        let mode = if change.is_multiple_of(2) {
-            ANC
-        } else {
-            TRANSPARENCY
-        };
-        device.pods.set_setting(NOISE, mode.wire);
-    }
+    // Changes keep coming until the gets are answered, so the daemon answered them while it took changes.
+    let reporting = AtomicBool::new(true);
+    let sent = AtomicUsize::new(0);
+    let stopped_by_gets = thread::scope(|scope| {
+        let changes = scope.spawn(|| {
+            let started = Instant::now();
+            while reporting.load(Ordering::Relaxed) {
+                if started.elapsed() >= HANG_LIMIT {
+                    return false;
+                }
+                // A batch is queued only once the last one went out, so the fake's outbox stays under its bound.
+                for change in 0..CHANGES {
+                    let mode = if change.is_multiple_of(2) {
+                        ANC
+                    } else {
+                        TRANSPARENCY
+                    };
+                    device.pods.set_setting(NOISE, mode.wire);
+                }
+                sent.fetch_add(CHANGES, Ordering::Relaxed);
+                if device.pods.wait_sent(HANG_LIMIT).is_err() {
+                    return false;
+                }
+            }
+            true
+        });
+        wait_for("the changes past the subscriber's bound", || {
+            (sent.load(Ordering::Relaxed) >= CHANGES).then_some(())
+        });
+        for _ in 0..STATUS_CALLS {
+            let reply = Proto1::connect(rig.session()).ask(GET);
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+        reporting.store(false, Ordering::Relaxed);
+        changes.join().unwrap()
+    });
+    assert!(
+        stopped_by_gets,
+        "the changes' deadline ended them, not the gets"
+    );
+    device.pods.set_setting(NOISE, TRANSPARENCY.wire);
     // The last report on the channel, so its level in the status means every change before it was taken.
     device.pods.set_battery(NEW_LEVEL, NEW_LEVEL, NEW_LEVEL);
-    for call in 0..STATUS_CALLS {
-        let reply = Proto1::connect(rig.session()).ask(GET);
-        assert_eq!(reply["ok"], true, "{reply}");
-        // The burst ends with the new level, so the daemon answered this get while it took the changes.
-        if call == 0 {
-            assert_ne!(reply["state"]["left"]["level"], NEW_LEVEL.level, "{reply}");
-        }
-    }
     let taken = rig.wait_status("every change taken", |status| {
         status["left"]["level"] == NEW_LEVEL.level
     });
