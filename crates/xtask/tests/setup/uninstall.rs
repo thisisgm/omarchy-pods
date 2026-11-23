@@ -63,6 +63,16 @@ fn outside_home(dir: &str) -> String {
     format!("setup: refusing to remove a state directory outside the home: {dir}\n")
 }
 
+/// Where a linked state directory's files live, inside the home.
+const LINKED: &str = "home/elsewhere/librepods";
+
+/// Plants the state in `LINKED` and makes the daemon's state directory a link to it.
+fn plant_linked_state(bench: &Bench) {
+    plant_state(bench, LINKED);
+    fs::create_dir_all(bench.path("home/.local/state")).unwrap();
+    symlink(bench.path(LINKED), bench.path(STATE)).unwrap();
+}
+
 /// What the daemon keeps in its state directory while it runs.
 fn plant_state(bench: &Bench, dir: &str) {
     plant(
@@ -296,6 +306,64 @@ fn a_rerun_after_a_failed_reload_still_finds_the_state() {
     ok(&ran);
     assert_eq!(ran.stderr, "");
     assert_eq!(files(&bench.home_tree()), BTreeSet::new());
+}
+
+#[test]
+fn a_linked_state_directory_is_removed_through_its_target_then_the_link() {
+    let bench = Bench::new();
+    install(&bench);
+    plant_linked_state(&bench);
+    let ran = bench.run(&UNINSTALL);
+    ok(&ran);
+    let removing = format!(
+        "Removing {}\nRemoving {}\n",
+        bench.path(LINKED).display(),
+        bench.path(STATE).display()
+    );
+    assert!(!exists(&bench, LINKED), "{}", ran.stdout);
+    assert!(!exists(&bench, STATE), "{}", ran.stdout);
+    assert!(ran.stdout.contains(&removing), "{}", ran.stdout);
+}
+
+#[test]
+fn keep_keys_keeps_a_linked_state_directory_and_its_link() {
+    let bench = Bench::new();
+    install(&bench);
+    plant_linked_state(&bench);
+    let ran = bench.run(&KEEP_KEYS);
+    ok(&ran);
+    assert!(
+        ran.stdout.contains(&kept_line(&bench, LINKED)),
+        "{}",
+        ran.stdout
+    );
+    let keys = fs::read_to_string(bench.path(&format!("{LINKED}/keys.json"))).unwrap();
+    assert_eq!(keys, KEYS_TEXT);
+    assert!(exists(&bench, &format!("{LINKED}/settings.json")));
+    assert!(!exists(&bench, &format!("{LINKED}/status.json")));
+    assert_eq!(
+        fs::read_link(bench.path(STATE)).unwrap(),
+        bench.path(LINKED)
+    );
+}
+
+#[test]
+fn a_state_link_out_of_the_home_stops_before_any_removal() {
+    let bench = Bench::new();
+    install(&bench);
+    plant_state(&bench, "outside/librepods");
+    fs::create_dir_all(bench.path("home/.local/state")).unwrap();
+    symlink(bench.path("outside/librepods"), bench.path(STATE)).unwrap();
+    bench.record_removals();
+    let before = bench.home_tree();
+    let ran = bench.run(&UNINSTALL);
+    assert_refused(
+        &bench,
+        &ran,
+        &outside_home(&bench.path(STATE).display().to_string()),
+        &before,
+    );
+    assert!(exists(&bench, "outside/librepods/keys.json"));
 }
 
 fn assert_only_the_state_is_left(bench: &Bench) {

@@ -40,6 +40,7 @@ tag=
 binary=
 scratch=
 state_dir=
+state_link=
 
 fail() {
     printf 'setup: %s: %s\n' "$1" "$2" >&2
@@ -289,14 +290,18 @@ find_state_dir() {
         state_dir=
         return 0
     fi
-    inside_home "$state_dir" || fail "refusing to remove a state directory outside the home" "$state_dir"
+    local named=$state_dir
+    state_dir=$(readlink -m -- "$named") && inside_home "$named" "$state_dir" ||
+        fail "refusing to remove a state directory outside the home" "$named"
+    # The checked target is what gets removed, so a linked state directory is not left behind its link.
+    [ ! -L "$named" ] || state_link=$named
 }
 
-# Resolved first, so repeated slashes and dot segments cannot climb out of the home.
+# Checked as resolved, so repeated slashes, dot segments and links cannot climb out of the home.
 inside_home() {
-    local resolved home
-    resolved=$(readlink -m -- "$1") && home=$(readlink -m -- "$HOME") || return 1
-    [[ $1 == /* && $resolved == "$home"/?* ]]
+    local named=$1 resolved=$2 home
+    home=$(readlink -m -- "$HOME") || return 1
+    [[ $named == /* && $resolved == "$home"/?* ]]
 }
 
 remove_if_there() {
@@ -329,6 +334,7 @@ remove_state() {
     else
         say_removing "$dir"
         rm -rf -- "$dir" || fail "could not remove the state directory" "$dir"
+        [ -z "$state_link" ] || remove_file "$state_link"
     fi
 }
 
