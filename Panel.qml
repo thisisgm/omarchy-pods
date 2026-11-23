@@ -360,7 +360,9 @@ Panel {
             textFormat: Text.PlainText
             visible: root.guidanceVisible
             width: parent.width
-            text: pods.daemonReachable
+            text: pods.advertHint
+              ? "The case battery shows while the AirPods are away only with BlueZ experimental features on. See \"Case battery while away\" in the README."
+              : pods.daemonReachable
               ? "Open the case or connect your AirPods to see battery and listening controls."
               : "Start the librepods daemon to see battery and listening controls."
             color: root.dim

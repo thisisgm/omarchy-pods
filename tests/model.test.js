@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
+  source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, advertHint, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
 
 let failures = 0
@@ -239,6 +239,20 @@ for (const [name, status, mark] of [
   check("a_document_of_the_old_daemon_gives_the_mark_it_gave: " + name, Model.markVariant(status.isHeadset, status.isProSeries), mark)
 }
 check("a document of the old daemon is not current", oldDocument({}).daemonCurrent, false)
+check("an_old_document_keeps_the_ordinary_guidance", Model.advertHint(oldDocument({})), false)
+
+// The pods away and the daemon holding their keys, then with the link up and from a daemon too old to say.
+function intakeDocument(word, connected) {
+  return Model.parseStatus(JSON.stringify({ advert_intake: word, connected: connected, schema_version: 1 }))
+}
+check("advertHint while listening", Model.advertHint(intakeDocument("listening", false)), false)
+check("advertHint while paused", Model.advertHint(intakeDocument("paused", false)), false)
+check("advertHint while unavailable", Model.advertHint(intakeDocument("unavailable", false)), true)
+check("advertHint with the pods connected", Model.advertHint(intakeDocument("unavailable", true)), false)
+check("advertHint of a word this panel does not know", Model.advertHint(intakeDocument("deaf", false)), false)
+check("advertHint of a file that does not parse", Model.advertHint(Model.parseStatus("")), false)
+check("a_document_without_the_new_keys_hides_their_rows: advertIntake", good.advertIntake, "")
+check("a_document_without_the_new_keys_hides_their_rows: no hint", Model.advertHint(good), false)
 
 if (failures > 0) {
   console.log(failures + " failed")

@@ -10,6 +10,7 @@ Item {
 
   property bool daemonReachable: false
   property bool daemonCurrent: false
+  property bool advertHint: false
   property bool connected: false
   property string deviceName: ""
   property string modelName: ""
@@ -96,6 +97,7 @@ Item {
   function stateGone() {
     daemonReachable = false
     daemonCurrent = false
+    advertHint = false
     connected = false
     schemaUnsupported = false
     lastError = ""
@@ -103,6 +105,7 @@ Item {
 
   function applyStatus(status) {
     daemonCurrent = status.daemonCurrent
+    advertHint = Model.advertHint(status)
     connected = status.connected
     deviceName = status.deviceName
     modelName = status.modelName

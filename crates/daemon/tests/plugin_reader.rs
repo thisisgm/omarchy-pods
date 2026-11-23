@@ -15,7 +15,7 @@ mod tests {
     use std::path::Path;
 
     use pods_core::command::CommandError;
-    use pods_core::state::{EarDetectionBehavior, LidState, State};
+    use pods_core::state::{AdvertIntake, EarDetectionBehavior, LidState, State};
     use pods_core::status::to_status_object;
     use pods_fake::Profile;
     use pods_proto::noise::NoiseMode;
@@ -362,6 +362,27 @@ mod tests {
             linked.get(key).is_some(),
             "no {key} with the link up: {linked}"
         );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_daemon_whose_bluez_has_no_monitor_writes_unavailable_and_the_panel_reads_it() {
+        let word = AdvertIntake::Unavailable.word();
+        assert_eq!(var_string(MODEL_JS, "ADVERT_UNAVAILABLE"), word);
+        assert!(
+            function_body(MODEL_JS, "advertHint").contains("=== ADVERT_UNAVAILABLE"),
+            "Model.js: advertHint does not compare with ADVERT_UNAVAILABLE"
+        );
+        let mut rig = Rig::new();
+        rig.session().store_sample_keys();
+        rig.start();
+        rig.wait_status(&format!("advert_intake {word}"), |status| {
+            status["advert_intake"] == word
+        });
+        let document = settled_state_file(rig.session());
+        assert_eq!(document["advert_intake"], word, "{document}");
+        assert_eq!(document["connected"], false, "{document}");
+        rig.session().keep_state("bluez-off");
         rig.finish();
     }
 

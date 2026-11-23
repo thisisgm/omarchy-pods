@@ -40,6 +40,9 @@ var SURROGATE_LAST = 0xDFFF
 // A key the Rust daemon always writes and the C++ daemon never did, so its document says `librepods set` exists.
 var CURRENT_DAEMON_KEY = "advert_intake"
 
+// The advert_intake word of a daemon that holds the pods' keys and cannot hear their adverts.
+var ADVERT_UNAVAILABLE = "unavailable"
+
 // Found on PATH, where setup installs it.
 var SET_PROGRAM = "librepods"
 
@@ -59,6 +62,7 @@ function defaultStatus() {
     schemaVersion: 0,
     schemaTooNew: false,
     daemonCurrent: false,
+    advertIntake: "",
     connected: false,
     deviceName: "",
     modelName: "",
@@ -166,6 +170,7 @@ function parseStatus(raw) {
 
   status.ok = true
   status.daemonCurrent = parsed[CURRENT_DAEMON_KEY] !== undefined
+  status.advertIntake = String(parsed.advert_intake || "")
   status.connected = parsed.connected === true
   status.deviceName = String(parsed.device_name || "")
   status.modelName = String(parsed.model_name || "")
@@ -258,6 +263,11 @@ function adaptiveChange(level) {
 function commandFor(daemonCurrent, ctlPath, change) {
   if (daemonCurrent) return [SET_PROGRAM, "set", change.key, change.value]
   return [String(ctlPath || "librepods-ctl"), change.verb]
+}
+
+// Only the current daemon writes advert_intake, so an older daemon's document never shows the hint.
+function advertHint(status) {
+  return !status.connected && status.advertIntake === ADVERT_UNAVAILABLE
 }
 
 function earDetectionName(behavior) {
