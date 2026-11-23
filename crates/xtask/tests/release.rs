@@ -234,6 +234,24 @@ mod tests {
     }
 
     #[test]
+    fn a_binary_without_its_line_section_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = build(dir.path(), PROGRAM, &[]);
+        let removed = Command::new("objcopy")
+            .args(["--remove-section", ".debug_line"])
+            .arg(&file)
+            .status()
+            .unwrap();
+        assert!(
+            removed.success(),
+            "objcopy --remove-section failed with {removed}"
+        );
+        let output = release_check(&file, VERSION);
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(checks(&output)[3], NO_LINE_TABLES);
+    }
+
+    #[test]
     fn line_tables_moved_to_a_linked_debug_file_fail() {
         let dir = tempfile::tempdir().unwrap();
         let file = build(dir.path(), PROGRAM, &[]);

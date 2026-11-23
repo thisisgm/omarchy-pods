@@ -63,11 +63,14 @@ pub(crate) fn run(file: &Path, version: &OsStr) -> ExitCode {
     let Some(debug_info) = readelf("--debug-dump=info,no-follow-links", file) else {
         return ExitCode::FAILURE;
     };
+    let Some(line_programs) = readelf("--debug-dump=rawline,no-follow-links", file) else {
+        return ExitCode::FAILURE;
+    };
     let checks = [
         version_check(file, &version.to_string_lossy()),
         needed_check(&needed(&dynamic)),
         glibc_check(glibc_versions(&versions)),
-        line_tables_check(crate_source(&debug_info, DAEMON_CRATE)),
+        line_tables_check(&debug_info, &line_programs),
     ];
     for check in &checks {
         match check {
@@ -214,10 +217,39 @@ fn crate_source<'a>(text: &'a str, name: &str) -> Option<&'a str> {
         .map(|(source, _)| source)
 }
 
-fn line_tables_check(source: Option<&str>) -> Result<String, String> {
-    match source {
-        Some(source) => Ok(format!("line tables: {source}")),
-        None => Err(format!(
+/// The `.debug_line` offset of the compile unit `readelf --debug-dump=info` lists for crate `name`, if it names one.
+// Sample input: the unit's `DW_AT_name` line as above, then `    <16>   DW_AT_stmt_list   : 0x16a`.
+fn crate_line_offset<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+    let unit = format!("/@/{name}.");
+    let mut in_unit = false;
+    for line in text.lines() {
+        if line.contains("DW_TAG_compile_unit") {
+            in_unit = false;
+        } else if line.contains("DW_AT_name") && line.contains(&unit) {
+            in_unit = true;
+        } else if in_unit && line.contains("DW_AT_stmt_list") {
+            return line.split_whitespace().last();
+        }
+    }
+    None
+}
+
+/// The offset of each line program `readelf --debug-dump=rawline` lists.
+// Sample input: `  Offset:                      0x16a`.
+fn line_program_offsets(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter_map(|line| line.trim_start().strip_prefix("Offset:"))
+        .map(str::trim)
+        .collect()
+}
+
+/// Passes when the daemon's compile unit points at a line program that `.debug_line` holds.
+fn line_tables_check(debug_info: &str, line_programs: &str) -> Result<String, String> {
+    let has_program = crate_line_offset(debug_info, DAEMON_CRATE)
+        .is_some_and(|offset| line_program_offsets(line_programs).contains(&offset));
+    match crate_source(debug_info, DAEMON_CRATE) {
+        Some(source) if has_program => Ok(format!("line tables: {source}")),
+        _ => Err(format!(
             "line tables: the {DAEMON_CRATE} crate has no line table, so a backtrace has no file and line"
         )),
     }
@@ -225,7 +257,9 @@ fn line_tables_check(source: Option<&str>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{crate_source, glibc_check, glibc_versions, needed};
+    use super::{
+        crate_line_offset, crate_source, glibc_check, glibc_versions, line_program_offsets, needed,
+    };
 
     #[test]
     fn needed_reads_each_library_and_nothing_else() {
@@ -274,5 +308,16 @@ mod tests {
         );
         assert_eq!(crate_source(text, "zbus"), None);
         assert_eq!(crate_source("", "librepods"), None);
+    }
+
+    #[test]
+    fn the_line_offset_is_the_named_units_own() {
+        let text = " <0><b>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <12>   DW_AT_name        : (strp) (offset: 0x1b2e8e): library/std/src/lib.rs/@/std.6c98fd8553dbae28-cgu.0\n    <16>   DW_AT_stmt_list   : 0\n <0><2c>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <38>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/librepods.f9d5f7b3489be63c-cgu.0\n    <3c>   DW_AT_stmt_list   : 0x16a\n <0><5e>: Abbrev Number: 2 (DW_TAG_compile_unit)\n    <6a>   DW_AT_name        : (strp) (offset: 0x5): zbus/src/lib.rs/@/zbus.1-cgu.0\n";
+        assert_eq!(crate_line_offset(text, "librepods"), Some("0x16a"));
+        assert_eq!(crate_line_offset(text, "std"), Some("0"));
+        assert_eq!(crate_line_offset(text, "zbus"), None);
+        let programs = "Raw dump of debug contents of section .debug_line:\n\n  Offset:                      0\n  Length:                      102\n  Offset:                      0x16a\n";
+        assert_eq!(line_program_offsets(programs), ["0", "0x16a"]);
+        assert_eq!(line_program_offsets(""), Vec::<&str>::new());
     }
 }
