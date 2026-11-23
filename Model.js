@@ -28,11 +28,17 @@ var EAR_BEHAVIOR_COUNT = 3
 // nf-md-check U+F012C, the one candidate glyph that rendered on the box.
 var GLYPH_CHECK = "\uDB80\uDD2C"
 
-// Longest error the panel will show inside a row, and the cut that leaves room for the ellipsis.
-var MAX_ERROR_CHARS = 140
-
 // The real file is about 1 KB; the read is capped one byte past this so an oversized file is detectable.
 var MAX_STATUS_BYTES = 65536
+
+// UTF-8 widths: below 0x80 one byte, below 0x800 two, the rest of the basic plane three.
+var UTF8_ONE_BYTE_BELOW = 0x80
+var UTF8_TWO_BYTES_BELOW = 0x800
+var SURROGATE_FIRST = 0xD800
+var SURROGATE_LAST = 0xDFFF
+
+// Longest error the panel will show inside a row, and the cut that leaves room for the ellipsis.
+var MAX_ERROR_CHARS = 140
 var ELIDED_ERROR_CHARS = 137
 
 function defaultPod() {
@@ -90,6 +96,19 @@ function podFrom(raw) {
   return pod
 }
 
+// The bytes a decoded line took on disk, because the reader cuts the file at a byte count.
+function utf8Length(text) {
+  var bytes = 0
+  for (var i = 0; i < text.length; i++) {
+    var unit = text.charCodeAt(i)
+    if (unit < UTF8_ONE_BYTE_BELOW) bytes += 1
+    // Each half of a surrogate pair counts two, so a four byte character counts four.
+    else if (unit < UTF8_TWO_BYTES_BELOW || (unit >= SURROGATE_FIRST && unit <= SURROGATE_LAST)) bytes += 2
+    else bytes += 3
+  }
+  return bytes
+}
+
 // The whole of $XDG_STATE_HOME/librepods/status.json, one line, keys sorted by QJsonObject rather than by insert order:
 // {"adaptive_level_changes_total":0,"adaptive_noise_level":50,"ca_changes_total":0,
 //  "case":{"available":true,"charging":false,"level":100},"connect_calls_total":0,
@@ -108,7 +127,7 @@ function podFrom(raw) {
 // A headset (AirPods Max) instead sends "is_headset":true and "headset":{"available":true,"charging":false,"level":100}, with no pods and no case.
 function parseStatus(raw) {
   var status = defaultStatus()
-  if (String(raw || "").length > MAX_STATUS_BYTES) {
+  if (utf8Length(String(raw || "")) > MAX_STATUS_BYTES) {
     status.lastError = "The librepods status file is too large to read"
     return status
   }

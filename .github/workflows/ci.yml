@@ -155,9 +155,29 @@ jobs:
         with:
           advanced-security: false
 
+  plugin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: 2.9.8
+      - run: deno run --allow-read tests/model.test.js
+      # The stock plugin validator refuses a plugin folder that holds a symlink.
+      - run: |
+          tracked=$(git ls-files -s)
+          links=$(printf '%s\n' "$tracked" | grep '^120000 ' || true)
+          if [ -n "$links" ]; then
+            echo "the repository tracks a symlink, which the plugin validator refuses: $links"
+            exit 1
+          fi
+
   ci-ok:
     if: always()
-    needs: [fmt, clippy, test, slow, pw-ffi, sanitize, deny, zizmor]
+    needs: [fmt, clippy, test, slow, pw-ffi, sanitize, deny, zizmor, plugin]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -56,6 +56,11 @@ records: a commit is refused while the tree differs from the index, a push while
 differs from the checked out commit, and either while an untracked file is present.
 A push is judged by the checked out commit, so push the branch you have checked out.
 
+The plugin's `Model.js` has its own suite, which the hosted `plugin` job runs:
+`deno run --allow-read tests/model.test.js`. The real `Service.qml` runs in the
+real Quickshell through [tests/harness](tests/harness/README.md), against a state
+directory the run makes; it needs a desktop session.
+
 A green suite is not evidence that a fix works. See the next section.
 
 ## Prove it, then send it
