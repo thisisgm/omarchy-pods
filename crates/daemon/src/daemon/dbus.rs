@@ -217,8 +217,8 @@ impl Properties {
             status_json: status.to_string(),
             audio_server: state.audio_server.word(),
             advert_intake: state.advert_intake.word(),
-            microphone: state.microphone.word(),
-            mic: state.mic.code.word(),
+            microphone: state.microphone.preference().word(),
+            mic: state.microphone.code().word(),
         }
     }
 

@@ -33,15 +33,13 @@ pub struct State {
     pub counters: Counters,
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
-    pub microphone: MicPref,
-    pub mic: MicStatus,
+    pub microphone: Microphone,
     pub audio_server: AudioServer,
     pub advert_intake: AdvertIntake,
 }
 
 impl Default for State {
     fn default() -> Self {
-        let microphone = MicPref::default();
         Self {
             connected: false,
             device_name: String::new(),
@@ -60,10 +58,7 @@ impl Default for State {
             counters: Counters::default(),
             // The C++ `Notifier` starts enabled.
             notifications: true,
-            microphone,
-            mic: MicStatus {
-                code: MicCode::resting(microphone),
-            },
+            microphone: Microphone::default(),
             audio_server: AudioServer::Idle,
             advert_intake: AdvertIntake::Paused,
         }
@@ -81,11 +76,6 @@ impl State {
         self.batteries = Batteries::default();
         self.ear = EarReport::default();
         self.primary = None;
-    }
-
-    pub fn set_microphone(&mut self, preference: MicPref) {
-        self.microphone = preference;
-        self.mic.code = MicCode::resting(preference);
     }
 
     /// The pods' own report when they sent one, else the model table.
@@ -158,10 +148,41 @@ impl LidState {
     }
 }
 
-/// What the `mic` status key shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MicStatus {
-    pub code: MicCode,
+/// The microphone preference and what the `mic` status key shows, held together so neither moves without the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Microphone {
+    preference: MicPref,
+    code: MicCode,
+}
+
+impl Microphone {
+    #[must_use]
+    pub const fn new(preference: MicPref) -> Self {
+        Self {
+            preference,
+            code: MicCode::resting(preference),
+        }
+    }
+
+    #[must_use]
+    pub const fn preference(self) -> MicPref {
+        self.preference
+    }
+
+    #[must_use]
+    pub const fn code(self) -> MicCode {
+        self.code
+    }
+
+    pub fn set_preference(&mut self, preference: MicPref) {
+        *self = Self::new(preference);
+    }
+}
+
+impl Default for Microphone {
+    fn default() -> Self {
+        Self::new(MicPref::default())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

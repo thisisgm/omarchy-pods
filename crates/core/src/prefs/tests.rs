@@ -77,8 +77,8 @@ fn a_fresh_state_reads_the_kept_microphone_on_both_keys() {
         } else {
             MicCode::Idle
         };
-        assert_eq!(state.microphone, prefs.microphone, "{prefs:?}");
-        assert_eq!(state.mic.code, resting, "{prefs:?}");
+        assert_eq!(state.microphone.preference(), prefs.microphone, "{prefs:?}");
+        assert_eq!(state.microphone.code(), resting, "{prefs:?}");
     }
 }
 

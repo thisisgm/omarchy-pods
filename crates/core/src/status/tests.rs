@@ -10,7 +10,7 @@ use super::*;
 use crate::command::tests::level;
 use crate::prefs::MicPref;
 use crate::state::{
-    AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, MicCode, MicStatus,
+    AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, Microphone,
 };
 
 fn status(state: &State) -> Value {
@@ -62,8 +62,7 @@ fn populated_state_lands_every_field_on_its_key() {
             reopen_calls: 13,
         },
         notifications: false,
-        microphone: MicPref::Off,
-        mic: MicStatus { code: MicCode::Off },
+        microphone: Microphone::new(MicPref::Off),
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
     };
@@ -241,7 +240,7 @@ fn every_microphone_word_lands_on_its_key() {
             MicPref::Auto | MicPref::Always => "idle",
         };
         let mut state = State::default();
-        state.set_microphone(preference);
+        state.microphone.set_preference(preference);
         let line = status(&state);
         assert_eq!(line["microphone"], Value::from(preference.word()));
         assert_eq!(line["mic"], Value::from(mic), "{preference:?}");

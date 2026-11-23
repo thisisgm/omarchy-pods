@@ -179,7 +179,7 @@ pub fn apply(state: &mut State, command: &Command) -> Outcome {
             Outcome::Confirmed
         }
         Command::SetMicrophone(preference) => {
-            state.set_microphone(preference);
+            state.microphone.set_preference(preference);
             Outcome::Confirmed
         }
         Command::SetConversationalAwareness(enabled) => {

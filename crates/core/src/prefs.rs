@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde_json::{Value, json};
 
-use crate::state::{EarDetectionBehavior, State};
+use crate::state::{EarDetectionBehavior, Microphone, State};
 
 pub const VERSION: u32 = 1;
 
@@ -72,20 +72,19 @@ impl Prefs {
         Self {
             ear_detection: state.ear_detection_behavior,
             notifications: state.notifications,
-            microphone: state.microphone,
+            microphone: state.microphone.preference(),
         }
     }
 
     /// A fresh state that carries these choices.
     #[must_use]
     pub fn into_state(self) -> State {
-        let mut state = State {
+        State {
             ear_detection_behavior: self.ear_detection,
             notifications: self.notifications,
+            microphone: Microphone::new(self.microphone),
             ..State::default()
-        };
-        state.set_microphone(self.microphone);
-        state
+        }
     }
 }
 
