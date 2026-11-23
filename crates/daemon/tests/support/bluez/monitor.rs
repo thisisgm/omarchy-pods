@@ -188,13 +188,6 @@ impl Bluez {
 }
 
 impl Advertiser {
-    /// Whether the daemon has read the device this advertiser shows, on any adapter.
-    pub(crate) fn was_read(&self) -> bool {
-        let suffix = device_path("", &self.address);
-        let reads = &self.bluez.lock().reads;
-        reads.iter().any(|path| path.ends_with(&suffix))
-    }
-
     /// The next advert: each powered adapter with a monitor it matches shows the device, then tells those monitors.
     pub(crate) fn update(&self, apple_data: &[u8]) {
         let messages = {
