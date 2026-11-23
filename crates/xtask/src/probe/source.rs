@@ -29,6 +29,10 @@ const SERVER_SOCKET: &str = "pipewire-0";
 /// Bounds how late a signal is seen; chosen here.
 const POLL: Duration = Duration::from_millis(10);
 const STATUS_EVERY: Duration = Duration::from_secs(1);
+/// Reads in a row past the capture's last frame before the node goes; on a test server two still cut the recording's end and three do not.
+const DRAIN_READS: u32 = 3;
+/// A graph that runs no cycle for a second has stalled, so the node goes without its tail.
+const TAIL_BOUND: Duration = Duration::from_secs(1);
 const NS_PER_MS: u64 = 1_000_000;
 const PARTS_PER_MILLION: f64 = 1e6;
 /// What the status line shows for a figure no read has given yet.
@@ -57,6 +61,8 @@ enum SourceError {
     Open(#[from] OpenError),
     #[error("the audio server went away")]
     Lost,
+    #[error("the recorder had not read the capture's end {} ms after it was due, so its last audio may be missing", TAIL_BOUND.as_millis())]
+    TailUnread,
     #[error("could not print the status line: {0}")]
     Print(io::Error),
 }
@@ -73,30 +79,40 @@ struct Audio {
     cut_short: usize,
 }
 
-/// What the real time half last saw, as the bits of two floats, and whether it has read at all.
+/// What the real time half last saw, as the bits of two floats, whether it has read at all, how often, and how many reads in a row ended past the last frame written.
 #[derive(Debug, Default)]
 struct Seen {
     read: AtomicBool,
     ahead_ms: AtomicU64,
     rate_ppm: AtomicU64,
+    reads: AtomicU64,
+    past_end: AtomicU32,
 }
 
-/// The real time half: the reader, and the instant it and the feeding half count from.
+/// The real time half: the reader, the instant it and the feeding half count from, and its reads in a row past the end.
 struct Held {
     reader: Reader,
     since: Instant,
     seen: Arc<Seen>,
+    past_end: u32,
 }
 
 impl Fill for Held {
     fn fill(&mut self, out: &mut [f32]) -> f64 {
         let ratio = self.reader.read(self.since.elapsed(), out);
+        self.past_end = if self.reader.read_all() {
+            self.past_end.saturating_add(1)
+        } else {
+            0
+        };
         let ahead_ms = self.reader.ahead_ms().to_bits();
         self.seen.ahead_ms.store(ahead_ms, Ordering::Relaxed);
         let rate_ppm = ((ratio - 1.0) * PARTS_PER_MILLION).to_bits();
         self.seen.rate_ppm.store(rate_ppm, Ordering::Relaxed);
-        // Release after the figures, so a status line that sees the flag sees them too.
+        self.seen.past_end.store(self.past_end, Ordering::Relaxed);
+        // Release after the figures, so a status line or a tail that sees the flag or the count sees them too.
         self.seen.read.store(true, Ordering::Release);
+        self.seen.reads.fetch_add(1, Ordering::Release);
         ratio
     }
 }
@@ -174,6 +190,7 @@ fn replay(file: &Path, host: &mut Host<'_>, interrupted: &AtomicBool) -> Result<
         reader,
         since,
         seen: Arc::clone(&seen),
+        past_end: 0,
     };
     let spec = Spec {
         remote: &socket,
@@ -262,17 +279,45 @@ fn feed(
     let mut handed = began;
     for packet in packets {
         let after_first = Duration::from_nanos(packet.at_ns.saturating_sub(first_ns));
-        if !clock.wait_until(began.saturating_add(after_first), served)? {
+        let due = began.saturating_add(after_first);
+        if clock.wait_until(due, &|| false, served)? == Waited::Signal {
             return Ok(());
         }
         handed = served.since.elapsed();
         let units = packet.units.iter();
         chain.sdu(handed, units.map(|(stamp, body)| (*stamp, body.as_slice())));
     }
+    let seen = &served.seen;
     // The reader holds the node's stated latency of audio behind the last packet it was given.
-    let played = Duration::from_millis(u64::from(NODE_LATENCY_MS));
-    clock.wait_until(handed.saturating_add(played), served)?;
-    Ok(())
+    let played = handed.saturating_add(Duration::from_millis(u64::from(NODE_LATENCY_MS)));
+    if clock.wait_until(played, &|| false, served)? == Waited::Signal
+        || !seen.read.load(Ordering::Acquire)
+    {
+        return Ok(());
+    }
+    // Counted from a latency after the last write, so no read begun before that write is among them.
+    let reads_at_end = seen.reads.load(Ordering::Acquire);
+    let carried = || {
+        let reads = seen
+            .reads
+            .load(Ordering::Acquire)
+            .saturating_sub(reads_at_end);
+        reads >= u64::from(DRAIN_READS) && seen.past_end.load(Ordering::Relaxed) >= DRAIN_READS
+    };
+    // A recorder that reads and stops short of the end, or a stalled graph, leaves the recording without its end.
+    match clock.wait_until(played.saturating_add(TAIL_BOUND), &carried, served)? {
+        Waited::Done | Waited::Signal => Ok(()),
+        Waited::Due => Err(SourceError::TailUnread),
+    }
+}
+
+/// Why a wait of the replay ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Waited {
+    Due,
+    /// What it waited for came first.
+    Done,
+    Signal,
 }
 
 /// The waits of a replay: the next status line, where it goes, and the signal that ends the replay.
@@ -283,11 +328,19 @@ struct Clock<'a> {
 }
 
 impl Clock<'_> {
-    /// Waits until `due` on the replay's clock, printing each status line as it falls due; false when a signal came first.
-    fn wait_until(&mut self, due: Duration, served: &Served) -> Result<bool, SourceError> {
+    /// Waits until `due` on the replay's clock or until `done` holds, printing each status line as it falls due.
+    fn wait_until(
+        &mut self,
+        due: Duration,
+        done: &dyn Fn() -> bool,
+        served: &Served,
+    ) -> Result<Waited, SourceError> {
         loop {
             if self.interrupted.load(Ordering::SeqCst) {
-                return Ok(false);
+                return Ok(Waited::Signal);
+            }
+            if done() {
+                return Ok(Waited::Done);
             }
             let now = served.since.elapsed();
             if now >= self.status_due {
@@ -302,7 +355,7 @@ impl Clock<'_> {
                 Ok(()) | Err(RecvTimeoutError::Disconnected) => return Err(SourceError::Lost),
             }
             if now >= due {
-                return Ok(true);
+                return Ok(Waited::Due);
             }
         }
     }
@@ -351,6 +404,7 @@ mod tests {
             reader,
             since: Instant::now(),
             seen: Arc::default(),
+            past_end: 0,
         };
         let unit = tone_unit(LINE, LEVEL);
         for packet in 0..PACKETS {
