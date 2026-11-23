@@ -245,8 +245,12 @@ holds for it, on the monotonic clock, and offers the result as the node
 `omapods_input.probe`, described as `AirPods Microphone (probe)`. So the
 jitter a capture recorded is the jitter the node is fed. After the last
 packet the node stays for the latency it states, while the reader plays what
-it holds. A packet from the pods cut short before its fixed fields carries no
-audio; it is left out, and one line on standard error counts them.
+it holds; with a recorder linked it stays until three reads in a row have
+passed the last sample, which on a test server is enough for the recording to
+hold it. When those reads have not come one second later, the command fails
+and says the recording may be missing its end. A packet from the pods cut
+short before its fixed fields carries no audio; it is left out, and one line
+on standard error counts them.
 
 It opens no channel to the AirPods, stops no unit and writes no file. It needs
 only the session's audio server, whose socket it takes from
@@ -289,9 +293,11 @@ otherwise one bud has to be worn for it. The long run is at least 30 minutes
 network in ordinary use.
 
 `cargo xtask probe analyse` then holds, for each start, how late each audio
-packet landed: its arrival, less the time the stamp of its last unit stands
-for, less the smallest such figure of the packets of about one second up to
-it. That is the lateness the reader's buffer has to cover.
+packet landed: its arrival, less the time of the audio the decode chain has
+written up to its end, lost units filled in, less the smallest such figure of
+the packets of about one second up to it. Stamps that start again, as a new
+run of the stream does, empty that second, as they reset the chain. That is
+the lateness the reader's buffer has to cover.
 
 | Row | What it holds |
 |---|---|

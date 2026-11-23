@@ -45,6 +45,12 @@ mod tests {
     /// Two packets from the pods too short for an opcode, and one sent to the pods, which no count from the pods reads.
     const NO_OPCODE_LOG: &str = "1 < 01\n2 < 010004\n3 > 040004000600\n";
 
+    /// The SDU at which the stamps of the short run start again from zero, as a new run of the pods' stream would.
+    const RESTART_SDU: usize = 500;
+    /// How long the stream pauses before that new run.
+    const PAUSE_MS: u64 = 2_000;
+    /// An SDU before it that never arrives, so the stamps skip one packet, which the decode chain fills.
+    const LOST_SDU: usize = 200;
     /// The SDU the lateness test holds back, far from both ends of the short run.
     const LATE_SDU: usize = 500;
     /// How long it is held back: over one interval, so the SDU due meanwhile lands with it, 10 ms late.
@@ -359,6 +365,33 @@ mod tests {
         assert_eq!(value("lateness_bin_10_ms"), "1");
         let on_time = records.len() - 2;
         assert_eq!(value("lateness_bin_0_ms"), on_time.to_string());
+    }
+
+    #[test]
+    fn stamps_that_skip_a_packet_or_start_again_mid_start_add_no_lateness() {
+        let generate = || {
+            synth(
+                RATE_HZ,
+                SAMPLES_PER_UNIT,
+                UNITS_PER_SDU,
+                SHORT_RUN_S,
+                NO_JITTER_MS,
+                SEED,
+            )
+        };
+        let mut records = generate();
+        let fresh = generate();
+        // After a pause the stamps go back to those of the run's first SDU, and the arrivals keep time again.
+        for (record, restarted) in records[RESTART_SDU..].iter_mut().zip(fresh) {
+            record.sdu = restarted.sdu;
+            record.at_ns += PAUSE_MS * NS_PER_MS;
+        }
+        records.remove(LOST_SDU);
+        let table = table_of("restart", &records);
+        let value = |key: &str| row(&table, key).0.to_owned();
+        assert_eq!(value("lateness_sdus"), records.len().to_string());
+        assert_eq!(value("lateness_max_ms"), "0.000");
+        assert_eq!(value("lateness_over_30_ms"), "0");
     }
 
     #[test]

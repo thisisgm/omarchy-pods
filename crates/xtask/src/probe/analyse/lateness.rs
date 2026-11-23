@@ -1,6 +1,8 @@
 //! How late each audio SDU of a start landed, against the window of arrivals the reader of `pods-mic` keeps. The unit tests are support for the tests of the built `probe analyse`.
 
-use pods_mic::{ARRIVAL_WINDOW, Arrivals, RATE_HZ};
+use pods_mic::{
+    ARRIVAL_WINDOW, Arrivals, MAX_UNITS_PER_SDU, RATE_HZ, SAMPLES_PER_UNIT, STAMP_STEP, unit_writes,
+};
 
 use super::load::AudioPacket;
 use super::report::{MS, NONE, PACKETS, Row, labelled};
@@ -22,20 +24,25 @@ const PERCENTILES: [(&str, usize, usize); 3] = [
     ("lateness_p99_99_ms", 9999, 10_000),
 ];
 
-/// The lateness of each SDU that holds a whole unit, in ns: its arrival offset less the smallest offset of the `ARRIVAL_WINDOW` SDUs up to it, where the offset is the arrival less the time the stamp of the SDU's last unit stands for at `RATE_HZ`, counted from the first unit.
+/// The lateness of each SDU that holds a whole unit, in ns, as the chain of `pods-mic` judges it: its arrival less the time of the samples written up to its end at `RATE_HZ`, less the smallest such offset of the `ARRIVAL_WINDOW` SDUs up to it; a stamp that starts a new run empties the window.
 fn lateness(audio: &[AudioPacket]) -> Vec<u64> {
-    let whole = audio
-        .iter()
-        .filter_map(|sdu| Some((sdu.at_ns, sdu.units.first()?.stamp, sdu.units.last()?.stamp)));
-    let mut first_stamp = None;
+    let mut expected = None;
+    let mut written = 0_u64;
     let mut window = Arrivals::default();
     let mut late = Vec::new();
-    for (at_ns, first, last) in whole {
-        let from = *first_stamp.get_or_insert(first);
-        let samples = last.wrapping_sub(from);
-        let stood_ns = u64::from(samples).saturating_mul(u64::from(NS_PER_SAMPLE));
+    for sdu in audio.iter().filter(|sdu| !sdu.units.is_empty()) {
+        for unit in sdu.units.iter().take(MAX_UNITS_PER_SDU) {
+            let writes = unit_writes(expected, unit.stamp);
+            if writes.new_run {
+                window = Arrivals::default();
+            }
+            let samples = u64::from(writes.units).saturating_mul(u64::from(SAMPLES_PER_UNIT));
+            written = written.saturating_add(samples);
+            expected = Some(unit.stamp.wrapping_add(STAMP_STEP));
+        }
+        let stood_ns = written.saturating_mul(u64::from(NS_PER_SAMPLE));
         let ns = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
-        let offset = ns(at_ns).saturating_sub(ns(stood_ns));
+        let offset = ns(sdu.at_ns).saturating_sub(ns(stood_ns));
         let earliest = window.push(offset);
         late.push(u64::try_from(offset.saturating_sub(earliest)).unwrap_or(0));
     }
@@ -55,7 +62,7 @@ pub(crate) fn rows(label: &str, audio: &[AudioPacket]) -> Vec<Row> {
     let ms =
         |ns: Option<u64>| ns.map_or_else(|| NONE.to_owned(), |ns| format!("{:.3}", millis(ns)));
     let rule = format!(
-        "SDUs with a whole unit; arrival less the time of the last unit by its stamp at {RATE_HZ} Hz, less the smallest of the {ARRIVAL_WINDOW} SDUs up to it"
+        "SDUs with a whole unit; arrival less the time of the samples the decode chain writes up to its end at {RATE_HZ} Hz, less the smallest of the {ARRIVAL_WINDOW} SDUs up to it since the stamps last started a new run"
     );
     let mut rows = vec![Row::new(
         "lateness_sdus",

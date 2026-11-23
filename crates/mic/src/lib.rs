@@ -77,6 +77,39 @@ pub fn chain(counters: Arc<Counters>) -> Option<(Chain, Reader, Resync)> {
     Some((chain, reader, resync))
 }
 
+/// The units a unit's stamp says were lost before it, against the stamp the run expected next; none when the stamp starts a new run.
+fn lost_before(expected: Option<u32>, stamp: u32) -> Option<u32> {
+    let Some(expected) = expected else {
+        return Some(0);
+    };
+    let lost = stamp.wrapping_sub(expected) / STAMP_STEP;
+    (lost <= MAX_GAP_UNITS).then_some(lost)
+}
+
+/// What the chain writes for one unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitWrites {
+    /// One unit in place of each lost before it, then the unit itself.
+    pub units: u32,
+    /// The stamp started a new run, which empties the window of arrivals.
+    pub new_run: bool,
+}
+
+/// What the chain writes for a unit with `stamp`, when the run expected `expected` next.
+#[must_use]
+pub fn unit_writes(expected: Option<u32>, stamp: u32) -> UnitWrites {
+    match lost_before(expected, stamp) {
+        Some(lost) => UnitWrites {
+            units: lost.saturating_add(1),
+            new_run: false,
+        },
+        None => UnitWrites {
+            units: 1,
+            new_run: true,
+        },
+    }
+}
+
 /// The arrivals of the last `ARRIVAL_WINDOW` packets of a run, each its landing less the time its audio stands for, in ns.
 #[derive(Debug)]
 pub struct Arrivals(VecDeque<i64>);
@@ -149,13 +182,9 @@ impl Chain {
 
     /// Writes what the stamp says was lost before this unit, then the unit or what stands for it.
     fn unit(&mut self, stamp: u32, decode: impl FnOnce(&mut Decoder) -> Decoded<'_>) {
-        match self
-            .expected
-            .map(|expected| stamp.wrapping_sub(expected) / STAMP_STEP)
-        {
-            None => {}
-            Some(lost) if lost <= MAX_GAP_UNITS => (0..lost).for_each(|_| self.conceal()),
-            Some(_) => self.reset(),
+        match lost_before(self.expected, stamp) {
+            Some(lost) => (0..lost).for_each(|_| self.conceal()),
+            None => self.reset(),
         }
         self.expected = Some(stamp.wrapping_add(STAMP_STEP));
         match decode(&mut self.decoder) {

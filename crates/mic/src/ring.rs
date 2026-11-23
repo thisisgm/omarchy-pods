@@ -276,6 +276,12 @@ impl Reader {
         self.ahead_ms
     }
 
+    /// Whether the last read reached past the last frame written so far.
+    #[must_use]
+    pub fn read_all(&self) -> bool {
+        self.next >= self.ring.end()
+    }
+
     /// The audio a jump leaves falls away while the new fades in.
     fn jump(&mut self, to: i64) {
         if let (Was::Sample, Some(run)) = (self.was, self.heard) {

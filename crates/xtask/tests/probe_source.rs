@@ -24,7 +24,7 @@ mod tests {
     use pods_proto::uplink::{AUDIO_HEADER_LEN, START};
     use pods_pwrig::tone::{CHECKED, SETTLE, assert_tone, frames};
     use pods_pwrig::{Recorder, Server};
-    use pods_samples::uplink::{audio_sdu, tone_unit};
+    use pods_samples::uplink::{audio_sdu, silent_unit, tone_unit};
     use rustix::process::{Pid, Signal, kill_process};
     use serde_json::{Value, json};
 
@@ -59,6 +59,12 @@ mod tests {
     const GAPS_RECORDED: Duration = Duration::from_secs(3);
     /// Recorded beyond the settle and the checked span, for the silence before the first sound.
     const LEAD: Duration = Duration::from_millis(200);
+    /// Silence a tape must end in once the capture's last unit has fallen away: well under the reads that carry it out.
+    const SILENT_END: Duration = Duration::from_millis(2);
+    /// Silent packets that land first, about a second, so the recorder is linked before the tone begins.
+    const SILENT_PACKETS: u32 = 34;
+    /// How far the tone's recorded span may stand from the capture's at each end: the resampler's edges, well under one unit.
+    const SPAN_SLACK: Duration = Duration::from_millis(1);
     /// A local server and a loaded host answer well inside this; past it something hung.
     const WITHIN: Duration = Duration::from_secs(10);
     /// A replay that prints no line and does not end for this long has hung.
@@ -241,6 +247,13 @@ mod tests {
         samples
     }
 
+    // Sample input: `the recorder had not read the capture's end 1000 ms after it was due, so ...`, which gives 1000 ms.
+    fn tail_bound(stderr: &str) -> Duration {
+        let after = stderr.split_once("the capture's end ").expect(stderr).1;
+        let ms = after.split(' ').next().unwrap();
+        Duration::from_millis(ms.parse().unwrap())
+    }
+
     /// Where the recording's first sound is.
     fn first_sound(recorded: &[i16]) -> usize {
         let found = recorded.iter().position(|sample| sample.abs() > NEAR_ZERO);
@@ -313,6 +326,81 @@ mod tests {
             OWN_TOLERANCE_DB,
         );
         assert_tone(&tape, rate, tone_hz(), TONE_AMPLITUDE, ENERGY_TOLERANCE_DB);
+    }
+
+    #[test]
+    fn a_recording_to_the_captures_end_holds_its_last_unit_and_ends_in_silence() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start(dir.path());
+        let mut records = capture(SILENT_PACKETS + SHORT_PACKETS, on_time);
+        let silent = vec![silent_unit(); usize::try_from(UNITS_PER_SDU).unwrap()];
+        for (record, packet) in records.iter_mut().zip(0..SILENT_PACKETS) {
+            record.sdu = audio_sdu(packet.wrapping_mul(UNITS_PER_SDU * STAMP_STEP), &silent);
+        }
+        let capture = kept(dir.path(), &records);
+        let replay = Replay::start(&server, dir.path(), &capture);
+        server.wait_node(NODE, WITHIN);
+        let recorder = Recorder::superwhisper(&server, NODE, &dir.path().join("recorded.wav"));
+        server.link(NODE, recorder.node());
+        let rate = recorder.rate();
+        let ran = replay.finish();
+        assert!(ran.status.success(), "{}", ran.stderr);
+        assert_eq!(ran.stderr, "");
+        let tape = recorder.finish();
+        let start = first_sound(&tape);
+        assert!(start > 0, "the recorder was linked after the tone began");
+        let end = tape
+            .iter()
+            .rposition(|sample| sample.abs() > NEAR_ZERO)
+            .unwrap();
+        let sounding = end.saturating_sub(start).saturating_add(1);
+        let unit = Duration::from_secs(u64::from(SAMPLES_PER_UNIT)) / RATE_HZ;
+        let tone = unit * SHORT_PACKETS * UNITS_PER_SDU;
+        // Once the reader passes the last unit it falls away over one more unit at most.
+        let not_before = frames(tone.checked_sub(SPAN_SLACK).unwrap(), rate);
+        let not_after = frames(tone + unit + SPAN_SLACK, rate);
+        assert!(
+            (not_before..=not_after).contains(&sounding),
+            "the tone sounds for {sounding} samples, not {not_before} to {not_after}"
+        );
+        // The last unit sounds and falls away, so the tape ends in silence rather than inside the tone.
+        let quiet = tape
+            .iter()
+            .rev()
+            .take_while(|sample| sample.abs() <= NEAR_ZERO);
+        let silent_end = quiet.count();
+        assert!(
+            silent_end >= frames(SILENT_END, rate),
+            "the tape of {} samples ends with {silent_end} near zero",
+            tape.len()
+        );
+    }
+
+    #[test]
+    fn a_recorder_gone_before_the_end_fails_the_replay_once_the_tail_bound_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::start(dir.path());
+        let capture = kept(dir.path(), &capture(SHORT_PACKETS, on_time));
+        let started = Instant::now();
+        let replay = Replay::start(&server, dir.path(), &capture);
+        server.wait_node(NODE, WITHIN);
+        let recorder = Recorder::superwhisper(&server, NODE, &dir.path().join("recorded.wav"));
+        server.link(NODE, recorder.node());
+        recorder.wait_frames(frames(LEAD, recorder.rate()), WITHIN);
+        // Nothing reads the node from here on, so no read ever passes the capture's end.
+        drop(recorder.finish());
+        let ran = replay.finish();
+        let took = started.elapsed();
+        assert_eq!(ran.status.code(), FAILED, "{}", ran.stderr);
+        let bound = tail_bound(&ran.stderr);
+        // The replay begins after its start, so its last packet, the node's latency and the bound all pass first.
+        let last = Duration::from_millis(u64::from(on_time(SHORT_PACKETS - 1) + NODE_LATENCY_MS));
+        let due = last + bound;
+        assert!(
+            took >= due && took <= due + WITHIN,
+            "the replay ended {took:?} after its start, due {due:?}"
+        );
+        server.wait_no_node(NODE, WITHIN);
     }
 
     #[test]
