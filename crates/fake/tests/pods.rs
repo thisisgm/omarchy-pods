@@ -2,10 +2,13 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+mod support;
+
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pods_fake::{Fault, Pods, Profile, pair};
+    use pods_fake::{Fault, Pods, Profile};
     use pods_samples::{
         CONVERSATION_AWARENESS, Cell, NOISE, ONE_BUD_ANC, Placed, battery, battery_of,
         burst_others, burst_settings, ear, ear_of, features_ack, first_burst, handshake_ack, host,
@@ -15,16 +18,11 @@ mod tests {
     use proptest::prelude::*;
     use rustix::io::Errno;
 
-    /// Longer than any loaded host takes to hand over a packet already queued.
-    const RECV_TIMEOUT: Duration = Duration::from_secs(5);
-    /// Ten times the fake's poll: a packet not here by then is not coming.
-    const QUIET: Duration = Duration::from_millis(200);
-    /// The slack a real time check allows past its bound.
-    const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
-    /// Larger than any SDU the fake sends.
-    const BUFFER_LEN: usize = 65_536;
-    /// The burst after the handshake and features acknowledgements.
-    const BURST_LEN: usize = 36;
+    use super::support::{
+        BUFFER_LEN, BURST_LEN, QUIET, REAL_TIME_SLACK, RECV_TIMEOUT, ask, assert_quiet, open,
+        opening, recv, recv_many,
+    };
+
     /// The largest random SDU and the most random SDUs the property test sends.
     const ARBITRARY_SDU_MAX: usize = 4096;
     const ARBITRARY_SDUS_MAX: usize = 50;
@@ -35,51 +33,9 @@ mod tests {
     /// Past the 672 byte default L2CAP MTU and a 4096 byte receive buffer: an SDU no real pods send.
     const OVERSIZE_SDU_LEN: usize = 5000;
 
-    fn open(pods: &Pods) -> Channel {
-        let (host, end) = pair();
-        host.set_recv_timeout(RECV_TIMEOUT).unwrap();
-        pods.serve(end);
-        host
-    }
-
-    fn recv(host: &Channel) -> Vec<u8> {
-        let mut buffer = vec![0; BUFFER_LEN];
-        match host.recv(&mut buffer).unwrap() {
-            Received::Sdu(len) => buffer[..len].to_vec(),
-            other @ (Received::Truncated { .. } | Received::TimedOut | Received::Closed) => {
-                panic!("wanted one SDU within {RECV_TIMEOUT:?}, got {other:?}")
-            }
-        }
-    }
-
-    fn recv_many(host: &Channel, count: usize) -> Vec<Vec<u8>> {
-        (0..count).map(|_| recv(host)).collect()
-    }
-
-    fn assert_quiet(host: &Channel) {
-        host.set_recv_timeout(QUIET).unwrap();
-        let got = host.recv(&mut vec![0; BUFFER_LEN]).unwrap();
-        host.set_recv_timeout(RECV_TIMEOUT).unwrap();
-        assert_eq!(got, Received::TimedOut, "nothing more within {QUIET:?}");
-    }
-
     fn assert_closed(host: &Channel) {
         let got = host.recv(&mut vec![0; BUFFER_LEN]).unwrap();
         assert_eq!(got, Received::Closed, "closed within {RECV_TIMEOUT:?}");
-    }
-
-    fn ask(host: &Channel, frame: &[u8]) {
-        host.send(frame).unwrap();
-    }
-
-    /// Runs the opening and returns the burst.
-    fn opening(host: &Channel) -> Vec<Vec<u8>> {
-        ask(host, &host::handshake());
-        assert_eq!(recv(host), handshake_ack());
-        ask(host, &host::set_specific_features());
-        assert_eq!(recv(host), features_ack());
-        ask(host, &host::request_notifications());
-        recv_many(host, BURST_LEN)
     }
 
     fn finish(pods: Pods, host: Channel) {

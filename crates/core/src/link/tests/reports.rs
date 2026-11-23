@@ -257,7 +257,12 @@ fn one_packet_makes_at_most_one_change() {
 fn unknown_opcodes_and_bad_packets_change_nothing() {
     let mut packets: Vec<Vec<u8>> = pods_samples::first_burst()
         .into_iter()
-        .filter(|packet| matches!(classify(packet), Ok(Incoming::Other { .. })))
+        .filter(|packet| {
+            matches!(
+                classify(packet),
+                Ok(Incoming::Other { .. } | Incoming::UplinkState(_))
+            )
+        })
         .collect();
     assert_eq!(packets.len(), 12);
     let mut short_battery = pods_samples::battery();

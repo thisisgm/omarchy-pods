@@ -46,6 +46,19 @@ impl Change {
     }
 }
 
+/// Whether a channel opened with `fault` answers what the host sends.
+pub(crate) fn answers(fault: Fault) -> bool {
+    match fault {
+        Fault::NeverAcknowledge | Fault::ReportsBeforeAck => false,
+        Fault::None
+        | Fault::CloseAfter(_)
+        | Fault::WithholdBattery
+        | Fault::CutBattery
+        | Fault::TrailingFragment
+        | Fault::NeverConfirm => true,
+    }
+}
+
 /// Whether a channel opened with `fault` closes once it has sent `sent` packets.
 pub(crate) fn closes(fault: Fault, sent: usize) -> bool {
     matches!(fault, Fault::CloseAfter(limit) if sent >= limit)
@@ -107,14 +120,8 @@ impl Model {
 
     /// The answer to one frame from the host on a channel opened with `fault`.
     pub(crate) fn on_host(&mut self, fault: Fault, sdu: &[u8]) -> Vec<Vec<u8>> {
-        match fault {
-            Fault::NeverAcknowledge | Fault::ReportsBeforeAck => return Vec::new(),
-            Fault::None
-            | Fault::CloseAfter(_)
-            | Fault::WithholdBattery
-            | Fault::CutBattery
-            | Fault::TrailingFragment
-            | Fault::NeverConfirm => {}
+        if !answers(fault) {
+            return Vec::new();
         }
         // Measured: each opening frame is answered in turn, the notification request by the burst.
         if sdu == host::handshake() {
@@ -165,7 +172,7 @@ impl Model {
         change.report(fault).into_iter().collect()
     }
 
-    fn either_bud_in_an_ear(&self) -> bool {
+    pub(crate) fn either_bud_in_an_ear(&self) -> bool {
         self.primary == Placed::InEar || self.secondary == Placed::InEar
     }
 

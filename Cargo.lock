@@ -529,6 +529,7 @@ dependencies = [
 name = "pods-fake"
 version = "0.0.0"
 dependencies = [
+ "pods-mic",
  "pods-samples",
  "pods-sys",
  "proptest",
