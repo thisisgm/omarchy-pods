@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseModeVerb, earDetectionVerb, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
+  source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
 
 let failures = 0
@@ -101,12 +101,55 @@ check("a newer schema reports both versions", tooNew.lastError, "librepods speak
 
 check("null parses to the default shape", Model.parseStatus("null").ok, false)
 
-// Verbs, and the out-of-range guards that keep a bad index off the command line.
-check("noise verb for Adaptive", Model.noiseModeVerb(3), "noise:adaptive")
-check("noise verb for an unknown mode is empty", Model.noiseModeVerb(Model.NOISE_UNKNOWN), "")
-check("noise verb past the end is empty", Model.noiseModeVerb(4), "")
-check("ear verb for never pause", Model.earDetectionVerb(2), "ear:off")
-check("ear verb past the end is empty", Model.earDetectionVerb(3), "")
+// Each change is what `librepods set` takes and the librepods-ctl verb for the same thing.
+for (const [mode, value] of [[Model.NOISE_OFF, "off"], [Model.NOISE_ANC, "anc"],
+  [Model.NOISE_TRANSPARENCY, "transparency"], [Model.NOISE_ADAPTIVE, "adaptive"]]) {
+  check("noiseChange " + value, Model.noiseChange(mode), { key: "noise", value: value, verb: "noise:" + value })
+}
+check("noiseChange of an unknown mode is null", Model.noiseChange(Model.NOISE_UNKNOWN), null)
+check("noiseChange past the end is null", Model.noiseChange(4), null)
+for (const [behavior, value] of [[Model.EAR_PAUSE_ONE_OUT, "one"], [Model.EAR_PAUSE_BOTH_OUT, "both"], [Model.EAR_DISABLED, "off"]]) {
+  check("earChange " + value, Model.earChange(behavior), { key: "ear_detection", value: value, verb: "ear:" + value })
+}
+check("earChange below the start is null", Model.earChange(-1), null)
+check("earChange past the end is null", Model.earChange(3), null)
+check("switchChange conversational_awareness on", Model.switchChange("conversational_awareness", true),
+  { key: "conversational_awareness", value: "true", verb: "ca:on" })
+check("switchChange conversational_awareness off", Model.switchChange("conversational_awareness", false),
+  { key: "conversational_awareness", value: "false", verb: "ca:off" })
+check("switchChange one_bud_anc on", Model.switchChange("one_bud_anc", true), { key: "one_bud_anc", value: "true", verb: "onebud:on" })
+check("switchChange one_bud_anc off", Model.switchChange("one_bud_anc", false), { key: "one_bud_anc", value: "false", verb: "onebud:off" })
+check("switchChange of a key that is not a switch is null", Model.switchChange("noise", true), null)
+check("adaptiveChange 40", Model.adaptiveChange(40), { key: "adaptive_level", value: "40", verb: "adaptive:40" })
+check("adaptiveChange 0", Model.adaptiveChange(0), { key: "adaptive_level", value: "0", verb: "adaptive:0" })
+
+// What the released plugin sends to librepods-ctl, one row per control and value.
+const releasedVerbs = ["noise:off", "noise:anc", "noise:transparency", "noise:adaptive", "ear:one", "ear:both", "ear:off",
+  "ca:on", "ca:off", "onebud:on", "onebud:off", "adaptive:0", "adaptive:40", "adaptive:100"]
+const everyChange = [0, 1, 2, 3].map(Model.noiseChange).concat([0, 1, 2].map(Model.earChange), [
+  Model.switchChange("conversational_awareness", true), Model.switchChange("conversational_awareness", false),
+  Model.switchChange("one_bud_anc", true), Model.switchChange("one_bud_anc", false),
+  Model.adaptiveChange(0), Model.adaptiveChange(40), Model.adaptiveChange(100)])
+check("every_old_verb_is_the_verb_the_released_plugin_sends", everyChange.map(function (change) { return change && change.verb }), releasedVerbs)
+
+// The released plugin runs [ctlPath or "librepods-ctl", verb]; a current daemon takes `librepods set`.
+const anc = Model.noiseChange(Model.NOISE_ANC)
+check("commandFor an old daemon", Model.commandFor(false, "", anc), ["librepods-ctl", "noise:anc"])
+check("commandFor an old daemon with a ctlPath", Model.commandFor(false, "/opt/pods/librepods-ctl", anc), ["/opt/pods/librepods-ctl", "noise:anc"])
+check("commandFor a current daemon", Model.commandFor(true, "", anc), ["librepods", "set", "noise", "anc"])
+check("commandFor a current daemon ignores the ctlPath", Model.commandFor(true, "/opt/pods/librepods-ctl", anc), ["librepods", "set", "noise", "anc"])
+
+// librepods set prints the refusal as one sentence, then for a bad value a line of the values it takes.
+check("refusalText drops the Values line", Model.refusalText("That setting does not take this value.\nValues: off, anc, transparency, adaptive, cycle\n"),
+  "That setting does not take this value.")
+check("refusalText of one sentence", Model.refusalText("The AirPods are not connected.\n"), "The AirPods are not connected.")
+check("refusalText of a long first line fits the row", Model.refusalText("x ".repeat(200) + "\nValues: a").length <= Model.MAX_ERROR_CHARS, true)
+check("refusalText copes with nothing", Model.refusalText(null), "")
+
+// Only the current daemon writes this key, so a document without it is the old daemon's.
+check("daemonCurrent of the line from the box", good.daemonCurrent, false)
+check("daemonCurrent of a line with advert_intake", Model.parseStatus('{"advert_intake":"paused","connected":false,"schema_version":1}').daemonCurrent, true)
+check("daemonCurrent of a file that does not parse", Model.parseStatus("").daemonCurrent, false)
 
 // Meter and label edges.
 check("an unknown level draws an empty track", Model.levelFraction(Model.LEVEL_UNKNOWN), 0)
@@ -195,6 +238,7 @@ for (const [name, status, mark] of [
 ]) {
   check("a_document_of_the_old_daemon_gives_the_mark_it_gave: " + name, Model.markVariant(status.isHeadset, status.isProSeries), mark)
 }
+check("a document of the old daemon is not current", oldDocument({}).daemonCurrent, false)
 
 if (failures > 0) {
   console.log(failures + " failed")

@@ -3,10 +3,10 @@
 `shell.qml` is a Quickshell configuration that runs the plugin's real
 `Service.qml` in the real Quickshell, against a state directory the run made,
 and prints one line for every change of `daemonReachable`, `connected`,
-`lastError`, `actionStatus` and `schemaUnsupported`:
+`lastError`, `actionStatus`, `schemaUnsupported` and `noiseMode`:
 
 ```
-harness {"daemonReachable":true,"connected":false,"lastError":"","actionStatus":"","schemaUnsupported":false}
+harness {"daemonReachable":true,"connected":false,"lastError":"","actionStatus":"","schemaUnsupported":false,"noiseMode":-1}
 ```
 
 The first line is the state before the first read. Quickshell prefixes each
@@ -21,7 +21,7 @@ runs Quickshell on that folder.
 |---|---|
 | `XDG_STATE_HOME` | Required, absolute. The harness refuses to start without it, so the real state directory is never read. |
 | `OMAPODS_HARNESS_SECONDS` | How long the harness runs before it ends itself. Default 10. |
-| `OMAPODS_HARNESS_CHANGE` | A noise verb, such as `noise:anc`. The harness calls `setNoiseMode` with it once, one second after start, and prints `harness sent noise:anc`. Refused unless `XDG_RUNTIME_DIR` sits beside `XDG_STATE_HOME` in the run's directory, because with the session's own runtime directory and a client on `PATH` the change would reach real AirPods. |
+| `OMAPODS_HARNESS_CHANGE` | The key `noise` and a mode as `librepods set` takes them, such as `noise anc`. The harness calls `setNoiseMode` with that mode once, one second after start, and prints `harness sent noise anc`. Refused unless `XDG_RUNTIME_DIR` sits beside `XDG_STATE_HOME` in the run's directory, because with the session's own runtime directory and a client on `PATH` the change would reach real AirPods. |
 
 Exit status 0 is a run that ended on its timer, 2 is a refusal, and its
 reason is printed as `harness refused: ...`.
@@ -50,6 +50,14 @@ sandbox=(env HOME="$run/home" XDG_STATE_HOME="$run/state"
   XDG_RUNTIME_DIR="$run/runtime" WAYLAND_DISPLAY="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY")
 away='{"connected":false,"noise_mode":-1,"schema_version":1}'
 near='{"connected":true,"noise_mode":2,"schema_version":1,"supports_noise_control":true}'
+# The same with advert_intake, the key only the Rust daemon writes.
+current='{"advert_intake":"paused","connected":true,"noise_mode":2,"schema_version":1,"supports_noise_control":true}'
+# Stubs that record their arguments, one run per line, in $run/<name>.log, and exit 0; each arm removes the logs before every run.
+mkdir "$run/bin"
+for name in librepods librepods-ctl; do
+  printf '#!/bin/sh\necho "$*" >> "%s/%s.log"\n' "$run" "$name" > "$run/bin/$name"
+  chmod +x "$run/bin/$name"
+done
 # Replaces the file whole, as both daemons do.
 publish() { printf '%s\n' "$1" > "$state.new" && mv -f "$state.new" "$state"; }
 # Waits until the output holds at least $2 lines holding $1, for at most 50 tries of 0.2 s.
@@ -143,7 +151,7 @@ and reachable again (the daemon is back).
 
 ```bash
 publish "$near"
-"${sandbox[@]}" PATH=/usr/bin OMAPODS_HARNESS_CHANGE=noise:anc OMAPODS_HARNESS_SECONDS=8 \
+"${sandbox[@]}" PATH=/usr/bin OMAPODS_HARNESS_CHANGE="noise anc" OMAPODS_HARNESS_SECONDS=8 \
   qs --no-color -p "$run/config" > "$run/out" 2>&1
 grep -F -e 'harness' -e 'failed to start' "$run/out"
 ```
@@ -151,8 +159,98 @@ grep -F -e 'harness' -e 'failed to start' "$run/out"
 `PATH=/usr/bin` still holds `qs` and `head`, and not `librepods-ctl`, which
 `setup` installs under `~/.local/bin`. This arm records what the panel shows a
 person whose client is missing; it is not a pass rule. The head and the
-released `Service.qml` print the same: `harness sent noise:anc`, then
+released `Service.qml` print the same: `harness sent noise anc`, then
 Quickshell's
 `WARN: Process failed to start, likely because the binary could not be found`,
 and no further `harness {` line, because Quickshell emits no `exited` for a
 process that failed to start, so `actionStatus` stays empty.
+
+## a_current_daemon_gets_set
+
+```bash
+publish "$current"
+rm -f -- "$run/librepods.log" "$run/librepods-ctl.log"
+"${sandbox[@]}" PATH="$run/bin:/usr/bin" OMAPODS_HARNESS_CHANGE="noise anc" OMAPODS_HARNESS_SECONDS=3 \
+  qs --no-color -p "$run/config" > "$run/out" 2>&1
+grep -F 'harness sent' "$run/out"; cat "$run/librepods.log"; ls "$run/librepods-ctl.log"
+```
+
+Passes when `librepods.log` holds the one line `set noise anc` and
+`librepods-ctl.log` does not exist. The released `Service.qml` runs
+`librepods-ctl noise:anc` for the same document, so its `librepods.log` does
+not exist and its `librepods-ctl.log` holds `noise:anc`.
+
+## an_old_daemon_gets_the_old_verb_and_never_set
+
+With a 1.3.6 daemon running, copy its document into the sandbox:
+
+```bash
+cp "${XDG_STATE_HOME:-$HOME/.local/state}/librepods/status.json" "$state"
+rm -f -- "$run/librepods.log" "$run/librepods-ctl.log"
+"${sandbox[@]}" PATH="$run/bin:/usr/bin" OMAPODS_HARNESS_CHANGE="noise anc" OMAPODS_HARNESS_SECONDS=3 \
+  qs --no-color -p "$run/config" > "$run/out" 2>&1
+grep -F 'harness sent' "$run/out"; cat "$run/librepods-ctl.log"; ls "$run/librepods.log"
+```
+
+Passes when `librepods-ctl.log` holds the one line `noise:anc` and
+`librepods.log` does not exist, and when the released `Service.qml` leaves the
+same two files for the same copy.
+
+## a_refusal_reaches_action_status_and_clears_the_hold
+
+The `librepods` stub prints what `librepods set` prints for a bad value and
+exits 1:
+
+```bash
+cat > "$run/bin/librepods" <<STUB
+#!/bin/sh
+echo "\$*" >> "$run/librepods.log"
+printf 'That setting does not take this value.\\nValues: off, anc, transparency, adaptive, cycle\\n' >&2
+exit 1
+STUB
+publish "$current"
+rm -f -- "$run/librepods.log" "$run/librepods-ctl.log"
+"${sandbox[@]}" PATH="$run/bin:/usr/bin" OMAPODS_HARNESS_CHANGE="noise anc" OMAPODS_HARNESS_SECONDS=6 \
+  qs --no-color -p "$run/config" > "$run/out" 2>&1
+grep -F -e 'harness' -e 'Values' "$run/out"; cat "$run/librepods.log"
+```
+
+Passes when `librepods.log` holds `set noise anc`, no line of the output holds
+`Values`, and the `harness {` lines after `harness sent noise anc` read, in
+order: `"noiseMode":1` (the click, held), a line with
+`"actionStatus":"That setting does not take this value."`, a line with that
+`actionStatus` and `"noiseMode":2` (the hold dropped and the file read again),
+then `"actionStatus":""`. The hold lasts 4 s and the status 2.2 s, so
+`"noiseMode":2` before `"actionStatus":""` shows the refusal dropped the hold.
+The released `Service.qml` sends `librepods-ctl noise:anc` instead, which the
+stub takes, so it shows no `actionStatus` at all.
+
+## a_refusal_is_worded_by_the_program_that_ran
+
+The `librepods` stub replaces the document with one of the old daemon while it
+runs, waits for the panel to read it, then refuses:
+
+```bash
+cat > "$run/bin/librepods" <<STUB
+#!/bin/sh
+echo "\$*" >> "$run/librepods.log"
+printf '%s\n' '$away' > "$state.new" && mv -f "$state.new" "$state"
+sleep 1
+printf 'That setting does not take this value.\\nValues: off, anc, transparency, adaptive, cycle\\n' >&2
+exit 1
+STUB
+publish "$current"
+rm -f -- "$run/librepods.log" "$run/librepods-ctl.log"
+"${sandbox[@]}" PATH="$run/bin:/usr/bin" OMAPODS_HARNESS_CHANGE="noise anc" OMAPODS_HARNESS_SECONDS=6 \
+  qs --no-color -p "$run/config" > "$run/out" 2>&1
+grep -F -e 'harness' -e 'Values' "$run/out"; cat "$run/librepods.log"
+```
+
+Passes when `librepods.log` holds `set noise anc`, a `harness {` line with
+`"connected":false` comes before the first line with
+`"actionStatus":"That setting does not take this value."`, and no line of the
+output holds `Values`. The negative control is the same run with
+`root.actionStatus = commandProcess.command[0] === Model.SET_PROGRAM` in the
+run's copy of `Service.qml` replaced by `root.actionStatus = root.daemonCurrent`:
+the panel has read the old daemon's document by the exit, so it words the
+refusal as `librepods-ctl`'s, and `actionStatus` holds the `Values` line.

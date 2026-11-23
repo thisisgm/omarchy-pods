@@ -39,10 +39,15 @@ ShellRoot {
     return parentOf(stateHome) !== "" && parentOf(runtimeDir) === parentOf(stateHome)
   }
 
-  // The noise mode whose verb is the change, or -1; only noise changes are sent.
+  // The released Model.js has only the verb, and its word after noise: is the word set takes.
+  function noiseWord(mode) {
+    return Model.noiseChange ? Model.noiseChange(mode).value : Model.noiseModeVerb(mode).split(":")[1]
+  }
+
+  // The noise mode the change names as a key and a value, such as "noise anc", or -1; only noise changes are sent.
   function changeMode() {
     for (var mode = Model.NOISE_OFF; mode <= Model.NOISE_ADAPTIVE; mode++) {
-      if (Model.noiseModeVerb(mode) === change) return mode
+      if ("noise " + noiseWord(mode) === change) return mode
     }
     return -1
   }
@@ -53,7 +58,8 @@ ShellRoot {
       connected: service.connected,
       lastError: service.lastError,
       actionStatus: service.actionStatus,
-      schemaUnsupported: service.schemaUnsupported
+      schemaUnsupported: service.schemaUnsupported,
+      noiseMode: service.noiseMode
     }))
   }
 
@@ -61,7 +67,7 @@ ShellRoot {
     // Checked before Service exists, because Service reads its file as soon as it is made.
     if (stateHome.charAt(0) !== "/") return refuse("XDG_STATE_HOME must be the absolute path of a directory this run made")
     if (seconds() < 0) return refuse("OMAPODS_HARNESS_SECONDS must be a whole number of seconds above zero, got " + secondsText)
-    if (change !== "" && changeMode() < 0) return refuse("OMAPODS_HARNESS_CHANGE must be a noise verb such as noise:anc, got " + change)
+    if (change !== "" && changeMode() < 0) return refuse("OMAPODS_HARNESS_CHANGE must be the key noise and a mode, such as noise anc, got " + change)
     if (change !== "" && !runtimeIsPrivate()) return refuse("OMAPODS_HARNESS_CHANGE needs XDG_RUNTIME_DIR beside XDG_STATE_HOME in the run's own directory, or the change could reach real AirPods")
     service = serviceComponent.createObject(harness)
     report()
@@ -81,6 +87,7 @@ ShellRoot {
     function onLastErrorChanged() { harness.report() }
     function onActionStatusChanged() { harness.report() }
     function onSchemaUnsupportedChanged() { harness.report() }
+    function onNoiseModeChanged() { harness.report() }
   }
 
   Timer {

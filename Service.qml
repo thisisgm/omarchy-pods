@@ -9,6 +9,7 @@ Item {
   property var settings: ({})
 
   property bool daemonReachable: false
+  property bool daemonCurrent: false
   property bool connected: false
   property string deviceName: ""
   property string modelName: ""
@@ -33,7 +34,6 @@ Item {
   property string lastError: ""
   property string actionStatus: ""
 
-  readonly property string ctlPath: String(setting("ctlPath", "") || "librepods-ctl")
   readonly property bool busy: commandProcess.running
   // The daemon publishes here on change, so there is nothing to poll.
   readonly property string statePath: (Quickshell.env("XDG_STATE_HOME")
@@ -56,7 +56,7 @@ Item {
   property string _pendingField: ""
   property var _pendingValue: null
 
-  // Single slot: a verb sent while another is in flight replaces the queued one
+  // Single slot: a change sent while another is in flight replaces the queued one
   // rather than being dropped, which is what arrow-key repeat produces.
   property var _queued: null
 
@@ -95,12 +95,14 @@ Item {
   // The daemon removes the file when it stops, so an absent file is a stopped daemon.
   function stateGone() {
     daemonReachable = false
+    daemonCurrent = false
     connected = false
     schemaUnsupported = false
     lastError = ""
   }
 
   function applyStatus(status) {
+    daemonCurrent = status.daemonCurrent
     connected = status.connected
     deviceName = status.deviceName
     modelName = status.modelName
@@ -139,10 +141,10 @@ Item {
     settleTimer.stop()
   }
 
-  function _send(verb, field, optimistic) {
-    if (verb === "") return
+  function _send(change, field, optimistic) {
+    if (change === null) return
     if (commandProcess.running) {
-      _queued = { verb: verb, field: field, optimistic: optimistic }
+      _queued = { change: change, field: field, optimistic: optimistic }
       _pendingField = field
       _pendingValue = optimistic
       root[field] = optimistic
@@ -153,14 +155,14 @@ Item {
     _pendingValue = optimistic
     root[field] = optimistic
     settleTimer.restart()
-    commandProcess.command = [ctlPath, verb]
+    commandProcess.command = Model.commandFor(daemonCurrent, setting("ctlPath", ""), change)
     commandProcess.running = true
   }
 
   // Guards the keyboard and the bar's right click too, not just the panel rows.
   function setNoiseMode(mode) {
     if (availableModes().indexOf(mode) < 0) return
-    _send(Model.noiseModeVerb(mode), "noiseMode", mode)
+    _send(Model.noiseChange(mode), "noiseMode", mode)
   }
 
   function availableModes() {
@@ -178,19 +180,19 @@ Item {
 
   function setAdaptiveNoiseLevel(level) {
     var clamped = Math.max(0, Math.min(100, Math.round(level)))
-    _send("adaptive:" + clamped, "adaptiveNoiseLevel", clamped)
+    _send(Model.adaptiveChange(clamped), "adaptiveNoiseLevel", clamped)
   }
 
   function setConversationalAwareness(enabled) {
-    _send(enabled ? "ca:on" : "ca:off", "conversationalAwareness", enabled)
+    _send(Model.switchChange("conversational_awareness", enabled), "conversationalAwareness", enabled)
   }
 
   function setOneBudANC(enabled) {
-    _send(enabled ? "onebud:on" : "onebud:off", "oneBudANC", enabled)
+    _send(Model.switchChange("one_bud_anc", enabled), "oneBudANC", enabled)
   }
 
   function setEarDetectionBehavior(behavior) {
-    _send(Model.earDetectionVerb(behavior), "earDetectionBehavior", behavior)
+    _send(Model.earChange(behavior), "earDetectionBehavior", behavior)
   }
 
   function cycleEarDetection() {
@@ -198,7 +200,7 @@ Item {
   }
 
   Timer {
-    // Bounds the optimistic hold, and re-reads because a verb that changed nothing
+    // Bounds the optimistic hold, and re-reads because a command that changed nothing
     // leaves the daemon's file untouched, so no watch fires to correct the display.
     id: settleTimer
     interval: root.settleHoldMs
@@ -250,14 +252,16 @@ Item {
         root._clearPending()
         root.refresh()
         root._queued = null
-        // Its own field with its own timer, or the next status read wipes it unread.
-        root.actionStatus = Model.elideError(commandErr.text || "librepods-ctl rejected the command")
+        // Its own field and timer, or the next read wipes it unread; the program that ran, not daemonCurrent now, picks the text.
+        root.actionStatus = commandProcess.command[0] === Model.SET_PROGRAM
+          ? Model.refusalText(commandErr.text || "librepods refused the change")
+          : Model.elideError(commandErr.text || "librepods-ctl rejected the command")
         actionStatusTimer.restart()
       }
       if (root._queued) {
         var next = root._queued
         root._queued = null
-        root._send(next.verb, next.field, next.optimistic)
+        root._send(next.change, next.field, next.optimistic)
       }
     }
   }

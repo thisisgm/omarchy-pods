@@ -37,6 +37,12 @@ var UTF8_TWO_BYTES_BELOW = 0x800
 var SURROGATE_FIRST = 0xD800
 var SURROGATE_LAST = 0xDFFF
 
+// A key the Rust daemon always writes and the C++ daemon never did, so its document says `librepods set` exists.
+var CURRENT_DAEMON_KEY = "advert_intake"
+
+// Found on PATH, where setup installs it.
+var SET_PROGRAM = "librepods"
+
 // Longest error the panel will show inside a row, and the cut that leaves room for the ellipsis.
 var MAX_ERROR_CHARS = 140
 var ELIDED_ERROR_CHARS = 137
@@ -52,6 +58,7 @@ function defaultStatus() {
     lastError: "",
     schemaVersion: 0,
     schemaTooNew: false,
+    daemonCurrent: false,
     connected: false,
     deviceName: "",
     modelName: "",
@@ -158,6 +165,7 @@ function parseStatus(raw) {
   }
 
   status.ok = true
+  status.daemonCurrent = parsed[CURRENT_DAEMON_KEY] !== undefined
   status.connected = parsed.connected === true
   status.deviceName = String(parsed.device_name || "")
   status.modelName = String(parsed.model_name || "")
@@ -213,17 +221,43 @@ function noiseModeName(mode) {
   return "Unknown"
 }
 
-// The four AAP verbs, indexed by mode, in the order librepods-ctl accepts them.
-function noiseModeVerb(mode) {
-  var verbs = ["noise:off", "noise:anc", "noise:transparency", "noise:adaptive"]
-  if (mode < 0 || mode >= verbs.length) return ""
-  return verbs[mode]
+// What `librepods set` takes, and the librepods-ctl verb an older daemon takes for the same thing.
+function changeOf(key, value, verb) {
+  return { key: key, value: value, verb: verb }
 }
 
-function earDetectionVerb(behavior) {
-  var verbs = ["ear:one", "ear:both", "ear:off"]
-  if (behavior < 0 || behavior >= verbs.length) return ""
-  return verbs[behavior]
+// Indexed by mode; librepods-ctl takes the same word after noise:.
+function noiseChange(mode) {
+  var values = ["off", "anc", "transparency", "adaptive"]
+  if (mode < 0 || mode >= values.length) return null
+  return changeOf("noise", values[mode], "noise:" + values[mode])
+}
+
+// Indexed by behaviour; librepods-ctl takes the same word after ear:.
+function earChange(behavior) {
+  var values = ["one", "both", "off"]
+  if (behavior < 0 || behavior >= values.length) return null
+  return changeOf("ear_detection", values[behavior], "ear:" + values[behavior])
+}
+
+// The two switches, each with the name librepods-ctl's verbs give it; values is indexed off then on.
+function switchChange(key, on) {
+  var keys = ["conversational_awareness", "one_bud_anc"]
+  var verbNames = ["ca", "onebud"]
+  var values = ["false", "true"]
+  var at = keys.indexOf(key)
+  if (at < 0) return null
+  return changeOf(key, values[on ? 1 : 0], verbNames[at] + (on ? ":on" : ":off"))
+}
+
+function adaptiveChange(level) {
+  return changeOf("adaptive_level", String(level), "adaptive:" + level)
+}
+
+// The released plugin runs [ctlPath or "librepods-ctl", verb], and an older daemon gets exactly that.
+function commandFor(daemonCurrent, ctlPath, change) {
+  if (daemonCurrent) return [SET_PROGRAM, "set", change.key, change.value]
+  return [String(ctlPath || "librepods-ctl"), change.verb]
 }
 
 function earDetectionName(behavior) {
@@ -259,4 +293,9 @@ function podMeta(pod) {
 function elideError(text) {
   var value = String(text || "").replace(/\s+/g, " ").trim()
   return value.length > MAX_ERROR_CHARS ? value.substring(0, ELIDED_ERROR_CHARS) + "…" : value
+}
+
+// The refusal is the first line: "That setting does not take this value.\nValues: off, anc, transparency, adaptive, cycle\n".
+function refusalText(stderr) {
+  return elideError(String(stderr || "").split("\n")[0])
 }
