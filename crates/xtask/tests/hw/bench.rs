@@ -82,7 +82,8 @@ daemon_start() {
     n=$(read_file starts); echo $(( n + 1 )) > "$STUB/starts"
     t=$(tick); emit "$t" "Started librepods-hw.service." 39f53479d3a045ac8e11786248231fbf
     run=$(read_file run-dir); state=$(read_file state-dir)
-    inside "$run" && { [ -e "$run/librepods.sock" ] || : > "$run/librepods.sock"; }
+    # touch, never a redirect: a redirect onto the listening socket the bench may have put here ends this shell with status 2.
+    inside "$run" && touch "$run/librepods.sock"
     inside "$state" && mkdir -p "$state/librepods" && echo '{}' > "$state/librepods/status.json"
     [ -e "$STUB/pods-absent" ] && return 0
     d=$(( 100000 + 10000 * n ))
