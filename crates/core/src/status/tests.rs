@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::command::tests::level;
-use crate::prefs::MicPref;
+use crate::prefs::{MicModels, MicPref};
 use crate::state::{
     AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, Microphone,
 };
@@ -63,6 +63,7 @@ fn populated_state_lands_every_field_on_its_key() {
         },
         notifications: false,
         microphone: Microphone::new(MicPref::Off),
+        mic_models: MicModels::default(),
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
     };

@@ -84,14 +84,17 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
-| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. The daemon keeps the choice and shows it; it does not use the microphone yet |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn; `auto` starts it the same way on each link until the model's uplink has answered once, then not again for that model; `off` stops it at once |
 
 `ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
 file is absent, the daemon takes the first two choices once from the older
 `${XDG_CONFIG_HOME:-$HOME/.config}/AirPodsTrayApp/AirPodsTrayApp.conf` and
 writes `settings.json`; it never changes the older file. A `settings.json`
-without `microphone` reads `auto`. A `settings.json` the daemon cannot read or
+without `microphone` reads `auto`. `settings.json` also keeps `mic_models`, the
+model numbers whose uplink answered, oldest first and at most 16, each 1 to 8
+characters of `A` to `Z` and `0` to `9`; a seventeenth drops the oldest, and a
+file without the key reads an empty list. A `settings.json` the daemon cannot read or
 parse, or finds larger than 65536 bytes, gives the defaults, `one`, `true` and
 `auto`, and one line in the log; the next change replaces it unless it is a
 directory or a symbolic link, which stay in place. `notifications` and
@@ -140,7 +143,11 @@ A reply carries the request's `id` and `ok`.
   prints and the state file holds. Besides the keys the older daemon wrote, it
   carries `notifications_enabled`, the `notifications` setting, and
   `microphone`, the `microphone` setting. Its `mic` is `off` while that setting
-  is `off` and `idle` otherwise. Its `audio_server` is `idle` while no AirPods
+  is `off`; else `idle` while no link is up; `unsupported` once a model never
+  confirmed left its START unanswered, and `failed` once a confirmed one did,
+  each until the link is lost; `not_worn` while no bud is worn; `starting` from
+  the START until the AirPods say the uplink runs, then `live`; and `idle` when
+  nothing is wanted. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and
   `down` while it cannot reach it. Its
   `advert_intake` is `listening` once BlueZ accepted the daemon's advert

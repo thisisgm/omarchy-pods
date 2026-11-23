@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::time::Duration;
 
+use pods_fake::Profile;
 use pods_samples::{CASE, LEFT, RIGHT, host, metadata};
 use rustix::process::Pid;
 
-use crate::support::rig::Rig;
+use crate::support::uplink::rig_with;
 use crate::support::{HANG_LIMIT, pause, wait_for};
 
 /// Reports sent, each the same as the profile's own, so none changes the state.
@@ -50,7 +51,9 @@ fn name(pid: Pid, thread: &str) -> Option<String> {
 
 #[test]
 fn a_report_that_changes_nothing_wakes_only_the_first_thread() {
-    let (mut rig, device) = Rig::with_linked_pods();
+    let (mut rig, device) = rig_with("off", &[], Profile::default());
+    rig.link_up(&device);
+    rig.wait_filled();
     let request = host::request_proximity_keys();
     // The daemon asks for the keys once for each metadata and at no other time, and its answer to the link's own may come after the status filled.
     let asked = device

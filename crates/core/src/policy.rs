@@ -4,21 +4,25 @@ mod adverts;
 pub mod audio;
 mod battery;
 mod ear;
+pub mod mic;
 pub mod notices;
 mod sleep;
 
 use std::time::Duration;
 
 use pods_proto::keys::ProximityKeys;
+use pods_proto::uplink::UplinkState;
 
 use crate::link::Signal;
-use crate::state::{AdvertIntake, State};
+use crate::state::{AdvertIntake, MicCode, State};
 use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
 use audio::{AudioFact, AudioRequest};
 use battery::Latches;
 use ear::Ear;
 pub use ear::{BOTH_OUT_SETTLE_MS, Era, MediaRequest, PAUSED_MAX, PlayerOwner};
+use mic::Mic;
+pub use mic::UplinkRequest;
 use notices::Notice;
 pub use sleep::SleepEdge;
 use sleep::Suspend;
@@ -50,6 +54,10 @@ pub enum Effect {
     Media(MediaRequest),
     /// Whether the BlueZ advert monitor is wanted; `true` again after a wake asks for it anew.
     Monitor(bool),
+    /// Written on the open channel; a closed channel drops it.
+    Uplink(UplinkRequest),
+    /// A line for the daemon's log.
+    Log(String),
 }
 
 /// Lives as long as the driver, so a latch outlives the link that set it.
@@ -59,6 +67,7 @@ pub struct Policy {
     suspend: Suspend,
     ear: Ear,
     adverts: Adverts,
+    mic: Mic,
 }
 
 impl Policy {
@@ -77,7 +86,7 @@ impl Policy {
         Vec::from_iter(self.adverts.wanted().then_some(Effect::Monitor(true)))
     }
 
-    /// Folds a fact into `state` before `step` sees it: an advert from our pods, and what the advert monitor reads.
+    /// Folds a fact into `state` before `step` sees it: an advert from our pods, what the advert monitor reads, and a model whose uplink runs.
     pub fn apply(&self, state: &mut State, fact: &Fact) {
         match fact {
             Fact::Link(Signal::Up { .. }) => state.advert_intake = AdvertIntake::Paused,
@@ -89,8 +98,14 @@ impl Policy {
             Fact::Monitor(monitor) if self.adverts.wanted() => {
                 state.advert_intake = monitor.intake();
             }
+            Fact::Link(Signal::Uplink(UplinkState::Running)) => {
+                state.mic_models.confirm(&state.model_number);
+            }
             Fact::Link(
-                Signal::Down | Signal::Lost { .. } | Signal::Keys(_) | Signal::Uplink(_),
+                Signal::Down
+                | Signal::Lost { .. }
+                | Signal::Keys(_)
+                | Signal::Uplink(UplinkState::Stopped),
             )
             | Fact::Monitor(_)
             | Fact::Changed
@@ -104,6 +119,7 @@ impl Policy {
     /// `state` is the state after the step the fact comes from; `now` is on the link machine's clock.
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
+        let mic = self.mic.step(state, &fact, now);
         let monitor = if let Fact::Link(signal) = &fact {
             self.adverts.follow(signal)
         } else {
@@ -141,6 +157,7 @@ impl Policy {
             Fact::Advert(_) | Fact::Monitor(_) => Vec::new(),
         };
         effects.extend(monitor);
+        effects.extend(mic);
         // After the fact, so a window that closes with the link up is forgotten in the same step.
         if state.connected {
             self.suspend.relinked();
@@ -164,7 +181,14 @@ impl Policy {
             .deadline()
             .into_iter()
             .chain(self.ear.deadline())
+            .chain(self.mic.deadline())
             .min()
+    }
+
+    /// What the `mic` status key shows unless the preference is `off`; the driver hands it to `Microphone::show` before each publish.
+    #[must_use]
+    pub fn mic(&self, state: &State) -> MicCode {
+        self.mic.code(state)
     }
 }
 

@@ -13,6 +13,7 @@ pub(crate) mod relay;
 pub(crate) mod rig;
 pub(crate) mod settings;
 pub(crate) mod sleep;
+pub(crate) mod uplink;
 pub(crate) mod watch;
 
 use std::env::{self, VarError};

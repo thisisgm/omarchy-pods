@@ -19,6 +19,7 @@ use zbus::connection::Builder;
 
 use crate::support::bus::{BUS_NAME, INTERFACE, OBJECT_PATH};
 use crate::support::rig::{ANC, Rig, TRANSPARENCY, assert_gap, connected, not_before};
+use crate::support::uplink::rig_with;
 use crate::support::{HANG_LIMIT, Proto1, read_to_close, wait_for, wait_within};
 
 /// The control PSM AirPods listen on.
@@ -157,9 +158,7 @@ fn wait_dbus_status(bus_address: &str, wanted: &Value) {
 
 #[test]
 fn adoption_fills_status_file_and_dbus_alike() {
-    let mut rig = Rig::new();
-    let device = rig.add_pods(Profile::default());
-    rig.start();
+    let (rig, device) = rig_with("off", &[], Profile::default());
     rig.link_up(&device);
     let status = rig.wait_filled();
     assert_eq!(status["device_name"], Profile::default().name);
@@ -222,12 +221,14 @@ fn adoption_fills_status_file_and_dbus_alike() {
 
 #[test]
 fn watch_prints_every_change_of_the_burst_in_order() {
-    let mut rig = Rig::new();
-    let device = rig.add_pods(Profile {
-        noise: ANC.wire,
-        ..Profile::default()
-    });
-    rig.start();
+    let (rig, device) = rig_with(
+        "off",
+        &[],
+        Profile {
+            noise: ANC.wire,
+            ..Profile::default()
+        },
+    );
     let watch = rig.watch();
     let first = watch
         .next(HANG_LIMIT)

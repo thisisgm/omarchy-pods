@@ -1,4 +1,4 @@
-//! The enum numbers the status line publishes, read against the C++ enums they mirror, and the Off option's one decision.
+//! The enum numbers the status line publishes, read against the C++ enums they mirror, the Off option's one decision, and what `mic` shows.
 
 use cpp_source::{BLE_MANAGER, MEDIA_CONTROLLER};
 
@@ -61,4 +61,34 @@ fn lid_state_numbers_match_the_cpp_enum() {
     .map(|(name, lid)| (name, lid.number()))
     .collect();
     assert_eq!(rust, BLE_MANAGER.enumerators("enum class LidState"));
+}
+
+#[test]
+fn mic_shows_off_exactly_while_the_preference_is_off() {
+    let codes = [
+        MicCode::Off,
+        MicCode::Idle,
+        MicCode::NotWorn,
+        MicCode::Unsupported,
+        MicCode::Starting,
+        MicCode::Live,
+        MicCode::Failed,
+    ];
+    for preference in MicPref::ALL {
+        for code in codes {
+            let mut microphone = Microphone::new(preference);
+            microphone.show(code);
+            let shown = match (preference, code) {
+                (MicPref::Off, _) => MicCode::Off,
+                (_, MicCode::Off) => MicCode::Idle,
+                (_, code) => code,
+            };
+            assert_eq!(microphone.code(), shown, "{preference:?} {code:?}");
+            assert_eq!(
+                microphone.preference(),
+                preference,
+                "{preference:?} {code:?}"
+            );
+        }
+    }
 }

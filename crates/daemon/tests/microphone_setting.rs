@@ -16,8 +16,9 @@ mod tests {
 
     use pods_core::prefs::PrefsError;
     use pods_core::status::{ADDITIVE_KEYS, CPP_KEY_COUNT};
+    use pods_fake::Profile;
     use pods_proto::packets::REQUEST_PROXIMITY_KEYS;
-    use pods_samples::{CONVERSATION_AWARENESS, setting};
+    use pods_samples::{CONVERSATION_AWARENESS, MODEL_NUMBER, setting};
     use serde_json::Value;
 
     use super::support::bus::{
@@ -27,6 +28,7 @@ mod tests {
     use super::support::settings::{
         UNREADABLE, plant_settings, set, status, stop, unreadable_lines, wait_settings,
     };
+    use super::support::uplink::rig_with;
     use super::support::{
         DAEMON_LOG, HANG_LIMIT, Proto1, Session, binary, outcome, set_request, wait_for,
     };
@@ -246,7 +248,10 @@ mod tests {
 
     #[test]
     fn set_microphone_with_the_link_up_writes_nothing_and_outlives_the_device() {
-        let (rig, device) = Rig::with_linked_pods();
+        // A confirmed model under `auto` sends no START, so the key request stays the last write of the burst.
+        let (rig, device) = rig_with("auto", &[MODEL_NUMBER], Profile::default());
+        rig.link_up(&device);
+        rig.wait_filled();
         let pods = &device.pods;
         // The daemon's last write of its own after the link comes up, so nothing of the burst is still on its way.
         pods.wait_heard(&REQUEST_PROXIMITY_KEYS, 1, HANG_LIMIT)

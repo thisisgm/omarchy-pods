@@ -21,6 +21,7 @@ mod tests {
 
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
     use super::support::rig::{Device, Rig, connected};
+    use super::support::uplink::keep_off;
     use super::support::{DIR_MODE, FILE_MODE, HANG_LIMIT, Session, wait_for};
 
     const UNREADABLE: &str = "keys: cannot read";
@@ -183,6 +184,7 @@ mod tests {
 
     /// Starts the daemon of `rig` with pods of `profile` and links them until the key request is heard.
     fn link(mut rig: Rig, profile: Profile) -> (Rig, Device) {
+        keep_off(rig.session());
         let device = rig.add_pods(profile);
         rig.start();
         rig.link_up(&device);

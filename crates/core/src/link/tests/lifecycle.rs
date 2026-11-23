@@ -13,7 +13,7 @@ use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::{Attempt, KNOWN_MAX};
 use crate::link::{DeviceAction, Event, Machine, Phase};
-use crate::prefs::MicPref;
+use crate::prefs::{MicModels, MicPref};
 use crate::state::{AdvertIntake, AudioServer, EarDetectionBehavior, LidState, Microphone, State};
 
 #[test]
@@ -546,6 +546,7 @@ fn reset_device_covers_the_cpp_reset() {
         },
         notifications: false,
         microphone: Microphone::new(MicPref::Off),
+        mic_models: confirmed_models(),
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
     };
@@ -566,4 +567,11 @@ fn reset_device_covers_the_cpp_reset() {
             ..kept
         }
     );
+}
+
+/// One confirmed model, so a reset is seen to keep the list.
+fn confirmed_models() -> MicModels {
+    let mut models = MicModels::default();
+    models.confirm("A3063");
+    models
 }

@@ -466,7 +466,9 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
             | Effect::Wake
             | Effect::Audio(_)
             | Effect::StoreKeys(_)
-            | Effect::Monitor(_) => {}
+            | Effect::Monitor(_)
+            | Effect::Uplink(_)
+            | Effect::Log(_) => {}
         }
     }
     asked

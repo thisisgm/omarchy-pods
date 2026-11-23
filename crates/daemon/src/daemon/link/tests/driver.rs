@@ -188,6 +188,8 @@ fn handshake_runs_against_the_fake_pods_and_the_state_fills() {
 #[test]
 fn burst_of_38_packets_reaches_a_healthy_subscriber_in_order() {
     let pods = Pods::new(Profile::default());
+    // Held, so no running marker can follow the sentinel inside the answer window.
+    pods.uplink().hold_starts(true);
     let (connector, _connects) = fake_connector(&pods);
     let running = Running::start(connector, None);
     let hub = running.hub();

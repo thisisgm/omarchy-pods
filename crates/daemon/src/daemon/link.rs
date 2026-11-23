@@ -4,7 +4,6 @@ mod reader;
 
 use std::collections::{HashMap, VecDeque};
 use std::future::{self, poll_fn};
-use std::mem;
 use std::ops::ControlFlow;
 use std::pin::pin;
 use std::sync::Arc;
@@ -296,10 +295,15 @@ impl Driver {
             .into_iter()
             .flat_map(|fact| self.policy.step(&next, fact, now))
             .collect();
+        next.microphone.show(self.policy.mic(&next));
         let prefs = Prefs::of(&next);
-        self.outlets
-            .prefs
-            .send_if_modified(|kept| mem::replace(kept, prefs) != prefs);
+        self.outlets.prefs.send_if_modified(|kept| {
+            let changed = *kept != prefs;
+            if changed {
+                *kept = prefs;
+            }
+            changed
+        });
         self.hub.publish(next);
         for action in actions {
             self.execute(action);
@@ -320,6 +324,7 @@ impl Driver {
         if next != last {
             effects.extend(self.policy.step(&next, Fact::Changed, now));
         }
+        next.microphone.show(self.policy.mic(&next));
         self.hub.publish(next);
         for effect in effects {
             self.route(effect);
@@ -335,6 +340,8 @@ impl Driver {
             Effect::StoreKeys(keys) => keys::offer(&self.outlets.keys, keys),
             Effect::Media(request) => self.outlets.media.offer(request),
             Effect::Monitor(wanted) => drop(self.outlets.monitor.send_replace(wanted)),
+            Effect::Uplink(request) => self.send(request.sdu()),
+            Effect::Log(line) => log(&line),
         }
     }
 
