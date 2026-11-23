@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -26,7 +27,7 @@ const LOG_FILE: &str = "pipewire.log";
 /// The configuration line of the module that makes the node of a client.
 const CLIENT_NODE_MODULE: &str = "{ name = libpipewire-module-client-node }";
 
-/// A local server opens its socket, and exits after SIGTERM, in milliseconds; this is a hung one.
+/// A local server takes a connection, and exits after SIGTERM, in milliseconds; this is a hung one.
 const SERVER_WITHIN: Duration = Duration::from_secs(5);
 /// How long a stock tool may run against the local server.
 const TOOL_WITHIN: Duration = Duration::from_secs(5);
@@ -56,7 +57,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// Writes the configuration into `runtime_dir`, starts `pipewire` there and waits for its socket.
+    /// Writes the configuration into `runtime_dir`, starts `pipewire` there and waits until its socket takes a connection.
     #[must_use]
     pub fn start(runtime_dir: &Path) -> Self {
         Self::start_with(runtime_dir, CLIENT_NODE_MODULE)
@@ -177,7 +178,8 @@ impl Server {
         // Kept before the wait, so a failed start still ends the process when the server drops.
         *self.process.borrow_mut() = Some(spawn(&mut command));
         let started = wait_until(SERVER_WITHIN, || {
-            if self.socket().exists() {
+            // The socket file appears at bind, before listen, so only a connect shows the server ready.
+            if UnixStream::connect(self.socket()).is_ok() {
                 return Some(Ok(()));
             }
             let mut process = self.process.borrow_mut();
@@ -190,7 +192,7 @@ impl Server {
         let failure = match started {
             Some(Ok(())) => return,
             Some(Err(status)) => format!("pipewire exited with {status}"),
-            None => format!("pipewire opened no socket within {SERVER_WITHIN:?}"),
+            None => format!("pipewire took no connection within {SERVER_WITHIN:?}"),
         };
         panic!("{failure}; its log: {}", self.server_log())
     }
