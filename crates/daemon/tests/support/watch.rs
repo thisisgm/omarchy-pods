@@ -76,14 +76,22 @@ impl Watch {
 
     /// Every line up to and including the first equal to `last`, failing once `HANG_LIMIT` passes in all.
     pub(crate) fn lines_until(&self, last: &Value) -> Vec<Value> {
+        self.printed_until(last)
+            .into_iter()
+            .map(|printed| printed.state)
+            .collect()
+    }
+
+    /// As `lines_until`, each line with when the reader took it.
+    pub(crate) fn printed_until(&self, last: &Value) -> Vec<Printed> {
         let started = Instant::now();
-        let mut lines = Vec::new();
-        while lines.last() != Some(last) {
+        let mut lines: Vec<Printed> = Vec::new();
+        while lines.last().map(|printed| &printed.state) != Some(last) {
             let left = HANG_LIMIT.saturating_sub(started.elapsed());
             let Some(printed) = self.next(left) else {
                 panic!("watch never printed {last}; it printed {lines:#?}");
             };
-            lines.push(printed.state);
+            lines.push(printed);
         }
         lines
     }
