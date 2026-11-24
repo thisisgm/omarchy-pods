@@ -1,4 +1,4 @@
-//! The pods' audio through the built daemon into a recorder at real time, against the fake pods and a private `PipeWire`: the tone whole, late packets unheard, a stall, a bud taken out and ten minutes; a gap the rig itself missed fails as the rig's.
+//! The pods' audio through the built daemon into a recorder at real time, against the fake pods and a private `PipeWire`: the tone whole, late packets unheard, a stall, a bud taken out and ten minutes; a check a late fake can fail names the rig when the fake missed its timing.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -22,9 +22,10 @@ mod tests {
     use super::support::HANG_LIMIT;
     use super::support::pipewire::{daemon_states_latency, node_name, ready, record, wait_node};
     use super::support::recording::{
-        RECORDER_RATE, WORST_GAP, assert_rig_gap, counts_after_leaving, first_sound, frames,
-        gap_every, largest_step, line_hz, longest_zero_run, mark_next, marked, own_amplitude, pace,
-        packets_span, span_at, span_of, tone_step_bound, wait_packets,
+        RECORDER_RATE, WORST_GAP, assert_rig_gap, assert_sounds, counts_after_leaving, first_sound,
+        frames, gap_every, largest_step, line_hz, longest_zero_run, mark_next, marked,
+        own_amplitude, pace, packets_span, rig_gap, span_at, span_of, tone_step_bound,
+        wait_packets,
     };
     use super::support::uplink::{start_failures, starts, wait_mic, wait_starts};
 
@@ -101,13 +102,14 @@ mod tests {
         wait_mic(&rig, "recording");
         second.wait_frames(frames(LEAD), HANG_LIMIT);
         let samples = second.finish();
-        assert_rig_gap(&device.pods.uplink(), WORST_GAP);
+        let (_, late) = rig_gap(&device.pods.uplink(), WORST_GAP);
+        assert_sounds(&samples, &late);
         let heard_at = span_of(first_sound(&samples));
         assert!(
             heard_at < FIRST_AUDIO_WITHIN,
-            "the first sound at {heard_at:?}"
+            "the first sound at {heard_at:?}{late}"
         );
-        assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        assert_eq!(starts(&device).len(), 1, "{:?}{late}", device.pods.heard());
         rig.finish();
     }
 
@@ -125,28 +127,29 @@ mod tests {
             uplink.sent_packets() + u64::from(MARKED) + AROUND_THE_GAP,
         );
         let samples = recorder.finish();
-        assert_rig_gap(&uplink, WORST_GAP);
+        let (_, late) = rig_gap(&uplink, WORST_GAP);
+        assert_sounds(&samples, &late);
         let runs = marked(&samples);
         let [run] = runs.as_slice() else {
-            panic!("one run of the second tone, not {runs:?}");
+            panic!("one run of the second tone, not {runs:?}{late}");
         };
         let span = span_of(run.len());
         let wanted = packets_span(u64::from(MARKED));
         assert!(
             span.abs_diff(wanted) <= MARK_SLACK,
-            "the second tone for {span:?}, its packets hold {wanted:?}"
+            "the second tone for {span:?}, its packets hold {wanted:?}{late}"
         );
         // Sound that is not the mark stands on both sides of it, with no unit of silence anywhere.
-        assert!(run.start > first_sound(&samples), "{run:?}");
+        assert!(run.start > first_sound(&samples), "{run:?}{late}");
         let last = samples.iter().rposition(|&sample| sample != 0).unwrap();
         assert!(
             run.end + frames(PERIOD) < last,
-            "{run:?}, the last sound at {last}"
+            "{run:?}, the last sound at {last}{late}"
         );
         let zeros = longest_zero_run(&samples);
         assert!(
             zeros < usize::from(SAMPLES_PER_UNIT),
-            "a run of {zeros} zeros"
+            "a run of {zeros} zeros{late}"
         );
         rig.finish();
     }
@@ -162,17 +165,18 @@ mod tests {
         let packets = u64::try_from(GAPS_RECORDED.as_millis() / PERIOD.as_millis()).unwrap();
         gap_every(&uplink, GAP_EVERY, ASKED_GAP, packets);
         let samples = recorder.finish();
-        let gap = assert_rig_gap(&uplink, WORST_GAP);
+        let (gap, late) = rig_gap(&uplink, WORST_GAP);
         assert!(
             gap >= ASKED_GAP,
             "the fake made no gap of {ASKED_GAP:?}: {gap:?}"
         );
         let counted = counts_after_leaving(&rig);
-        assert_eq!(counted.underruns, 0, "{counted:?}");
+        assert_eq!(counted.underruns, 0, "{counted:?}{late}");
+        assert_sounds(&samples, &late);
         let zeros = longest_zero_run(&samples);
         assert!(
             zeros < usize::from(SAMPLES_PER_UNIT),
-            "a run of {zeros} zeros"
+            "a run of {zeros} zeros{late}"
         );
         let node = wait_node(&pipewire);
         if daemon_states_latency(rig.daemon().pid()) {
@@ -282,17 +286,18 @@ mod tests {
             status["mic_source"] == node_name()
         });
         let samples = recorder.finish();
-        assert_rig_gap(&device.pods.uplink(), WORST_GAP);
+        let (_, late) = rig_gap(&device.pods.uplink(), WORST_GAP);
+        assert_sounds(&samples, &late);
         let tail = samples.len() - frames(SILENT_END);
         assert!(
             samples[tail..].iter().all(|&sample| sample == 0),
-            "no silence at the end"
+            "no silence at the end{late}"
         );
         let fade = largest_step(&samples[first_sound(&samples) + frames(SETTLE)..]);
         let bound = tone_step_bound();
         assert!(
             fade <= bound,
-            "a step of {fade}, the tone's own reach {bound}"
+            "a step of {fade}, the tone's own reach {bound}{late}"
         );
         // A cut falls between the two shares within a few samples wherever it lands; the reader's fall over one unit takes about a third of it.
         let peak = own_amplitude() * f64::from(i16::MAX);
@@ -307,10 +312,13 @@ mod tests {
         let unit = span_at(u64::from(SAMPLES_PER_UNIT), RATE_HZ);
         assert!(
             period <= fall && fall <= unit,
-            "the sound fell from {FALL_FROM} of its peak to {FALL_TO} in {fall:?}, not between the tone's period of {period:?} and a unit of {unit:?}"
+            "the sound fell from {FALL_FROM} of its peak to {FALL_TO} in {fall:?}, not between the tone's period of {period:?} and a unit of {unit:?}{late}"
         );
         let log = rig.daemon().log();
-        assert!(!log.contains(STALLED), "a stall with no bud worn: {log}");
+        assert!(
+            !log.contains(STALLED),
+            "a stall with no bud worn: {log}{late}"
+        );
         rig.finish();
     }
 
@@ -341,18 +349,20 @@ mod tests {
             graph.abs_diff(wall) <= slack,
             "the rig missed its timing: the graph gave a stock player {graph:?} over {wall:?}, so this run cannot judge the daemon"
         );
+        // The source fills every buffer whole whether the fake sent audio or not, so a late fake cannot change the length and this check names no rig.
         assert!(
             length.abs_diff(wall) <= slack,
             "{length:?} of audio over {wall:?}"
         );
         let samples = recorder.finish();
-        assert_rig_gap(&device.pods.uplink(), WORST_GAP);
+        let (_, late) = rig_gap(&device.pods.uplink(), WORST_GAP);
         let counted = counts_after_leaving(&rig);
-        assert_eq!(counted.underruns, 0, "{counted:?}");
+        assert_eq!(counted.underruns, 0, "{counted:?}{late}");
+        assert_sounds(&samples, &late);
         let zeros = longest_zero_run(&samples);
         assert!(
             zeros < usize::from(SAMPLES_PER_UNIT),
-            "a run of {zeros} zeros"
+            "a run of {zeros} zeros{late}"
         );
         rig.finish();
     }

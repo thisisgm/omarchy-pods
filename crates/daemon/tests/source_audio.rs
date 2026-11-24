@@ -19,7 +19,7 @@ mod tests {
     use super::support::HANG_LIMIT;
     use super::support::pipewire::{ready, record};
     use super::support::recording::{
-        counts, counts_after_leaving, first_sound, frames, wait_packets,
+        assert_sounds, counts, counts_after_leaving, first_sound, frames, wait_packets,
     };
     use super::support::settings::set;
     use super::support::uplink::{lose, read_up_to_now, wait_mic};
@@ -198,5 +198,16 @@ mod tests {
             assert!(!log.contains(form), "{log}");
         }
         rig.finish();
+    }
+
+    #[test]
+    #[should_panic(expected = "the recording of 3 samples is silent; the rig missed its timing")]
+    fn a_silent_recording_fails_with_the_rig_s_name() {
+        assert_sounds(&[0, 0, 0], "; the rig missed its timing");
+    }
+
+    #[test]
+    fn one_sample_of_sound_is_not_silent() {
+        assert_sounds(&[0, 5, 0], "");
     }
 }
