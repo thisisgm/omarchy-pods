@@ -455,6 +455,7 @@ impl Engine<'_, '_> {
     fn fire(&mut self, action: &Action) -> Flow {
         match action {
             Action::Start => self.start(),
+            Action::StartCodec(start) => self.start_with(&start.packet(), start),
             Action::Stop => {
                 // A script may stop an uplink this run did not start, as the rescue does.
                 let (link, dropped) = (self.wires.link(Bearer::Accessory)?, self.dropped);
@@ -496,19 +497,20 @@ impl Engine<'_, '_> {
     }
 
     fn start(&mut self) -> Flow {
+        self.start_with(&uplink::START, &"uplink start")
+    }
+
+    fn start_with(&mut self, packet: &[u8], text: &dyn fmt::Display) -> Flow {
         let link = self.wires.link(Bearer::Accessory)?;
         let dropped = self.dropped;
         // The guard exists before the send, so a START that failed half way still gets its STOP; a START while the uplink runs goes out under the guard of the first.
         self.uplink.get_or_insert_with(|| Uplink { link, dropped });
-        let sent = link.send(&uplink::START);
+        let sent = link.send(packet);
         if sent.result.is_ok() {
             self.recorder.starts = self.recorder.starts.saturating_add(1);
             self.recorder.uplink_running = true;
         }
-        let recorded = self
-            .recorder
-            .sent(sent, &uplink::START, Mark::Start, &"uplink start");
-        Ok(recorded?)
+        Ok(self.recorder.sent(sent, packet, Mark::Start, text)?)
     }
 
     fn set_side(&mut self, side: MicSide) -> Flow {

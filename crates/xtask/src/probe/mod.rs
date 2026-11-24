@@ -136,6 +136,9 @@ struct CaptureArgs {
     /// A step file to follow in place of a script, on the dictation route: one write-request, write-command, read, control, wait or cue a line; a cue is shown and waits for a line on standard input; end it with a wait to keep the last answers.
     #[arg(long, conflicts_with_all = ["script", "minutes", "no_marker"])]
     steps: Option<PathBuf>,
+    /// Lets the step file send control commands, opcode 0x0009, as written; the run cannot put a setting back, so it lasts until the pods reconnect.
+    #[arg(long, conflicts_with = "script")]
+    allow_control: bool,
     /// How many minutes listen and soak run, 1 to 90; no other script takes it.
     #[arg(long)]
     minutes: Option<u32>,
@@ -401,9 +404,11 @@ fn plan(args: &CaptureArgs) -> Result<(Script, Option<Vec<u8>>), ProbeError> {
     match (&args.steps, args.script) {
         (Some(path), _) => {
             let text = store::read_trace(path, script::MAX_STEPS_FILE_BYTES)?;
-            let events = script::parse_steps(&text).map_err(|error| ProbeError::Steps {
-                path: path.clone(),
-                error,
+            let events = script::parse_steps(&text, args.allow_control).map_err(|error| {
+                ProbeError::Steps {
+                    path: path.clone(),
+                    error,
+                }
             })?;
             Ok((script::stepped(args.route, events)?, Some(text)))
         }

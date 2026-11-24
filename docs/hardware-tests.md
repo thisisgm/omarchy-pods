@@ -193,6 +193,11 @@ run says `STOP was sent` because the stop left, not because the uplink ended.
 If audio packets still come after the stop, run `./xtask probe stop --route
 uplink` before anything else.
 
+A step file refuses control commands, opcode 0x0009, unless the run is given
+`--allow-control`; the run cannot put a setting back, so a setting a step
+changes lasts until the pods reconnect. An uplink start with another codec id
+goes out under the run's own uplink guard, so the run still sends the stop.
+
 The restore forms, with `<sink>` the pods' sink in `pactl list sinks short`:
 
 ```bash

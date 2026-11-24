@@ -36,6 +36,11 @@ const GUARDED_CONTROL: [(&[u8], Action); 4] = [
     (&dictation::SESSION_ACTIVE, Action::MarkActive),
     (&dictation::SESSION_IDLE, Action::MarkIdle),
 ];
+/// Header, subtype, the declared length 9 and the message 0x0100: the bytes every uplink START begins with.
+const START_PREFIX: [u8; 12] = {
+    let [prefix @ .., _, _, _, _, _, _, _] = uplink::START;
+    prefix
+};
 /// The same for the attribute channel.
 const GUARDED_ATT: [(&[u8], Action); 2] = [
     (&dictation::START, Action::DictationStart),
@@ -84,6 +89,39 @@ impl fmt::Display for StepPacket {
     }
 }
 
+/// An uplink START that asks for its own codec id, frames and last field, sent under the uplink's guard as `uplink::START` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UplinkStart {
+    codec: u32,
+    frames: u8,
+    last: u16,
+}
+
+impl UplinkStart {
+    // Sample input: `04 00 04 00 58 00 00 00 09 00 00 01 | 01 01 00 00 | 04 | 96 00`, `START_PREFIX` then codec id 257 u32 LE, frames u8 and a u16 LE.
+    fn parse(packet: &[u8]) -> Option<Self> {
+        let packet: [u8; uplink::START.len()] = packet.try_into().ok()?;
+        let [prefix @ .., c0, c1, c2, c3, frames, l0, l1] = packet;
+        (prefix == START_PREFIX).then_some(Self {
+            codec: u32::from_le_bytes([c0, c1, c2, c3]),
+            frames,
+            last: u16::from_le_bytes([l0, l1]),
+        })
+    }
+
+    pub(crate) fn packet(self) -> Vec<u8> {
+        let codec = self.codec.to_le_bytes();
+        let last = self.last.to_le_bytes();
+        [START_PREFIX.as_slice(), &codec, &[self.frames], &last].concat()
+    }
+}
+
+impl fmt::Display for UplinkStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "uplink start codec {}", self.codec)
+    }
+}
+
 /// Why a line was refused; it never repeats the line, whose bytes may identify a device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum Fault {
@@ -119,11 +157,11 @@ pub(crate) enum Fault {
     )]
     GuardedHandle,
     #[error(
-        "a control command, opcode {OPCODE_CONTROL:#06x}, changes a device setting the run cannot restore, so no step may send one"
+        "a control command, opcode {OPCODE_CONTROL:#06x}, changes a device setting the run cannot restore, so no step may send one without --allow-control"
     )]
     SettingCommand,
     #[error(
-        "a packet with the opcode of the uplink start or stop or of a session marker may only be one of those exact packets, which the run undoes itself"
+        "a packet with the opcode of the uplink start or stop or of a session marker may only be one of those exact packets or an uplink start with any codec id, frames and last field, which the run undoes itself"
     )]
     GuardedPacket,
 }
@@ -137,7 +175,7 @@ pub(crate) struct StepsError {
 }
 
 // Sample input: "# arm, then start\nwrite-request 0x0010 0100010101\nwait 80\ncontrol 040004004b000300030103\nwrite-command 0x0007 0100\nwait 2000\n"; a step fires at the sum of the waits above it, and the run ends at the last.
-pub(crate) fn parse_steps(text: &[u8]) -> Result<Vec<Event>, StepsError> {
+pub(crate) fn parse_steps(text: &[u8], allow_control: bool) -> Result<Vec<Event>, StepsError> {
     let text = text.strip_suffix(b"\n").unwrap_or(text);
     let mut at_ms = 0_u32;
     let mut events = Vec::new();
@@ -151,7 +189,7 @@ pub(crate) fn parse_steps(text: &[u8]) -> Result<Vec<Event>, StepsError> {
             return Err(refused(Fault::TooManyLines));
         }
         let line = std::str::from_utf8(line).map_err(|_not_text| refused(Fault::NotText))?;
-        match parse_line(line, line_number).map_err(refused)? {
+        match parse_line(line, line_number, allow_control).map_err(refused)? {
             Line::Blank => {}
             Line::Wait(ms) => {
                 at_ms = at_ms
@@ -174,7 +212,7 @@ enum Line {
 }
 
 // Sample input: `write-request 0x000e 0100`, a step, then its fields separated by spaces.
-fn parse_line(text: &str, line: usize) -> Result<Line, Fault> {
+fn parse_line(text: &str, line: usize, allow_control: bool) -> Result<Line, Fault> {
     let mut words = text.split_ascii_whitespace();
     let Some(step) = words.next() else {
         return Ok(Line::Blank);
@@ -200,7 +238,7 @@ fn parse_line(text: &str, line: usize) -> Result<Line, Fault> {
         }
         "control" => {
             let [packet] = take(words).ok_or(fields("control", "one packet in hex"))?;
-            control_action(line, parse_value(packet)?)?
+            control_action(line, parse_value(packet)?, allow_control)?
         }
         "wait" => {
             let [ms] = take(words).ok_or(fields("wait", "a number of milliseconds"))?;
@@ -305,8 +343,8 @@ fn att_action(line: usize, step: AttStep) -> Result<Action, Fault> {
     }
 }
 
-/// The same on the control channel, where a control command is refused as well.
-fn control_action(line: usize, packet: Vec<u8>) -> Result<Action, Fault> {
+/// The same on the control channel, where a control command is refused unless `allow_control`, and any other uplink START goes out under the uplink's guard.
+fn control_action(line: usize, packet: Vec<u8>, allow_control: bool) -> Result<Action, Fault> {
     let guarded = GUARDED_CONTROL
         .into_iter()
         .find(|(known, _)| *known == packet.as_slice());
@@ -314,8 +352,11 @@ fn control_action(line: usize, packet: Vec<u8>) -> Result<Action, Fault> {
         return Ok(action);
     }
     let opcode = opcode_of(&packet);
-    if opcode == Some(OPCODE_CONTROL) {
+    if opcode == Some(OPCODE_CONTROL) && !allow_control {
         return Err(Fault::SettingCommand);
+    }
+    if let Some(start) = UplinkStart::parse(&packet) {
+        return Ok(Action::StartCodec(start));
     }
     let mut known = GUARDED_CONTROL.iter();
     if opcode.is_some() && known.any(|(known, _)| opcode_of(known) == opcode) {

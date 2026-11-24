@@ -32,11 +32,9 @@ mod pods;
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-    use std::fs::{self, OpenOptions};
-    use std::io::Write;
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    use std::path::{Path, PathBuf};
+    use std::fs;
+    use std::os::unix::fs::symlink;
+    use std::path::Path;
     use std::process::Stdio;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -45,9 +43,7 @@ mod tests {
 
     use pods_proto::att;
     use pods_proto::dictation::{self, SESSION_ACTIVE, SESSION_IDLE};
-    use pods_proto::packets::{
-        ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
-    };
+    use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
     use pods_proto::sdulog::Direction;
     use pods_samples::uplink::{START, STOP};
     use pods_trap::Outcome;
@@ -58,14 +54,13 @@ mod tests {
         READ_NOT_PERMITTED, READ_RESPONSE, READ_VALUE, WRITE_NOT_PERMITTED, WRITE_RESPONSE,
     };
     use super::capture::{
-        FAILED, Ran, Running, assert_att_ran, assert_control_logged, capture, far_end, files_of,
-        hand_over, home_with_device, kinds, logged, read, route, run_path, stamp_of, transcript,
-        wait_for_cue, wait_for_packets_after,
+        FAILED, HANDSHAKE_SENT, OWNER_FILE, Ran, Running, after_handshake, assert_att_ran,
+        assert_control_logged, capture, control_step, far_end, files_of, hand_over,
+        home_with_device, kinds, logged, plan, read, refusal_of, route, run_path, run_steps,
+        stamp_of, step_marks, steps_args, transcript, wait_for_cue, wait_for_packets_after,
     };
     use super::pods::{self, Pods, Transcript};
 
-    /// The three packets of the handshake, in the order the command sends them.
-    const HANDSHAKE_SENT: [&[u8]; 3] = [&HANDSHAKE, &SET_SPECIFIC_FEATURES, &REQUEST_NOTIFICATIONS];
     /// One step of each kind, with a comment, a blank line and a wait between each two.
     const EVERY_KIND: &str = "# one step of each kind\nwrite-request 0x0019 0100\nwait 100\nread 0x0024\n\nwait 100\nwrite-command 0x0028 31\nwait 100\ncontrol 0400040017000000\nwait 300\n";
     /// What each step of `EVERY_KIND` is marked with, and its offset from the gate in milliseconds.
@@ -102,14 +97,15 @@ mod tests {
     /// The longest wait, and how many of them make up the longest run.
     const MAX_WAIT_MS: u32 = 60_000;
     const MAX_WAITS: usize = 90;
-    /// The step file's mode: the caller's alone, as the store reads every file from outside it.
-    const OWNER_FILE: u32 = 0o600;
     /// A mode that lets the group read.
     const GROUP_READABLE: u32 = 0o640;
     /// A mode that lets others read.
     const OTHERS_READABLE: u32 = 0o604;
     /// When the start write of `STARTS_ONLY` leaves, in milliseconds from the gate.
     const STARTS_ONLY_START_MS: u64 = 480;
+
+    /// What the command says of an uplink opcode packet that is neither an exact packet nor a START.
+    const GUARDED_PACKET: &str = "a packet with the opcode of the uplink start or stop or of a session marker may only be one of those exact packets or an uplink start with any codec id, frames and last field, which the run undoes itself";
 
     /// The four step files of the uplink sitting, each with the number of cues it holds.
     const SITTING_FILES: [(&str, usize); 4] = [
@@ -131,47 +127,6 @@ mod tests {
     const MAX_CUE_CHARS: usize = 120;
     /// What the end of standard input at a cue is called, in the marks and to the owner.
     const NO_LINE: &str = "standard input ended at a cue, which waits for a line";
-
-    /// Writes `contents` to a new file of `mode` in `dir` and returns its path; the mode is set after the umask has had its say.
-    fn plan(dir: &Path, name: &str, contents: &[u8], mode: u32) -> PathBuf {
-        let path = dir.join(name);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(contents).unwrap();
-        file.set_permissions(fs::Permissions::from_mode(mode))
-            .unwrap();
-        path
-    }
-
-    fn steps_args(path: &Path) -> [&str; 4] {
-        ["--route", "dictation", "--steps", path.to_str().unwrap()]
-    }
-
-    /// Runs the step file at `path` into run `name` against fake pods playing `part`.
-    fn run_steps(home: &TempDir, name: &str, path: &Path, part: Pods) -> (Ran, Transcript) {
-        let (control, control_far) = hand_over();
-        let (att, att_far) = hand_over();
-        let command = capture(home, name, &steps_args(path));
-        let routes = vec![route(CONTROL_PSM, control), route(ATT_PSM, att)];
-        let running = Running::start(command, routes);
-        let flag = Arc::new(AtomicBool::new(false));
-        let played = pods::spawn_dialled(Some(far_end(&control_far)), att_far, part, flag);
-        let ran = running.finish();
-        (ran, transcript(&played))
-    }
-
-    /// The step that sends `sdu` on the control channel, as the line `control 0400040017000000`.
-    fn control_step(sdu: &[u8]) -> String {
-        let mut line = String::from("control ");
-        for byte in sdu {
-            write!(line, "{byte:02x}").unwrap();
-        }
-        line.push('\n');
-        line
-    }
 
     /// A start, a cue and a packet no guard covers that follows the cue with no wait between them.
     fn cue_then_step() -> String {
@@ -255,13 +210,6 @@ mod tests {
         assert_eq!(ran.code, Some(0), "{}", ran.stderr);
         assert_eq!(ran.stdout.lines().count(), cues, "{}", ran.stdout);
         after_handshake(&pods)
-    }
-
-    fn after_handshake(pods: &Transcript) -> Vec<Vec<u8>> {
-        let got = pods.got();
-        let (handshake, rest) = got.split_at(HANDSHAKE_SENT.len());
-        assert_eq!(handshake, HANDSHAKE_SENT);
-        rest.iter().map(|sdu| sdu.to_vec()).collect()
     }
 
     #[test]
@@ -350,7 +298,7 @@ mod tests {
         let home = home_with_device();
         let contents = cue_never_answered();
         let path = plan(home.path(), "plan", contents.as_bytes(), OWNER_FILE);
-        let (ran, pods) = run_steps(&home, "unanswered", &path, Pods::default());
+        let (ran, pods) = run_steps(&home, "unanswered", &steps_args(&path), Pods::default());
 
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
         assert_eq!(ran.stdout, "cue nobody answers\n");
@@ -360,18 +308,6 @@ mod tests {
         assert_eq!(after_handshake(&pods), expected);
         let marks = read(&run_path(&home, "unanswered"), "marks.tsv");
         assert!(marks.ends_with(&format!("\tend\t{NO_LINE}\n")), "{marks}");
-    }
-
-    /// The stamp and the text of every step mark, each line `1203456789\tstep\tline 2 read 0x0024`.
-    fn step_marks(marks: &str) -> Vec<(u64, &str)> {
-        let fields = marks.lines().map(|line| {
-            let [stamp, kind, text] = line.splitn(3, '\t').collect::<Vec<_>>()[..] else {
-                panic!("{line}");
-            };
-            (stamp.parse().unwrap(), kind, text)
-        });
-        let steps = fields.filter(|(_, kind, _)| *kind == "step");
-        steps.map(|(stamp, _, text)| (stamp, text)).collect()
     }
 
     /// Asserts the mark stamped `at_ns` is not before `due_ns` and not more than `LATE_LIMIT` after it.
@@ -407,7 +343,7 @@ mod tests {
     fn a_step_file_sends_each_step_in_order_at_its_offset_and_records_the_answers() {
         let home = home_with_device();
         let path = plan(home.path(), "plan", EVERY_KIND.as_bytes(), OWNER_FILE);
-        let (ran, pods) = run_steps(&home, "steps", &path, Pods::default());
+        let (ran, pods) = run_steps(&home, "steps", &steps_args(&path), Pods::default());
 
         assert_completed(&ran);
         assert_eq!(pods.att_got, EVERY_KIND_ATT);
@@ -458,7 +394,7 @@ mod tests {
         let path = plan(home.path(), "plan", EVERY_KIND.as_bytes(), OWNER_FILE);
         let mut part = Pods::default();
         part.att.refused = ASKED.to_vec();
-        let (ran, pods) = run_steps(&home, "refused", &path, part);
+        let (ran, pods) = run_steps(&home, "refused", &steps_args(&path), part);
 
         assert_completed(&ran);
         assert_eq!(pods.att_got, EVERY_KIND_ATT);
@@ -478,7 +414,7 @@ mod tests {
     fn a_start_in_a_step_file_is_checked_and_stopped_by_the_run() {
         let home = home_with_device();
         let path = plan(home.path(), "plan", STARTS_ONLY.as_bytes(), OWNER_FILE);
-        let (ran, pods) = run_steps(&home, "guarded", &path, Pods::default());
+        let (ran, pods) = run_steps(&home, "guarded", &steps_args(&path), Pods::default());
 
         assert_eq!(ran.code, Some(0), "{}", ran.stderr);
         let counted = ", dictation start sent 1, dictation stop sent 1, requests refused 0\n";
@@ -622,52 +558,38 @@ mod tests {
                 1,
                 "a write to handle 0x0007 or 0x000a may only be the stream's own start or stop write, which the run stops itself",
             ),
+            refused("control 0400040058000000\n", 1, GUARDED_PACKET),
             refused(
-                "control 0400040009000102000000\n",
+                "control 04000400580000000900000282000000049600\n",
                 1,
-                "a control command, opcode 0x0009, changes a device setting the run cannot restore, so no step may send one",
-            ),
-            refused(
-                "control 0400040058000000\n",
-                1,
-                "a packet with the opcode of the uplink start or stop or of a session marker may only be one of those exact packets, which the run undoes itself",
+                GUARDED_PACKET,
             ),
         ]
-    }
-
-    /// Runs the command with `args` under the trap, which takes any dial, and returns what it said after asserting it dialled nothing and made no run.
-    fn refusal_of(home: &TempDir, args: &[&str]) -> String {
-        let (control, _) = hand_over();
-        let (att, _) = hand_over();
-        let routes = vec![route(CONTROL_PSM, control), route(ATT_PSM, att)];
-        let running = Running::start(capture(home, "refused", args), routes);
-        let ran = running.finish();
-        assert_eq!(ran.code, FAILED, "{}", ran.stderr);
-        assert_eq!(ran.stdout, "");
-        assert!(ran.dials.is_empty(), "{:?}", ran.dials);
-        assert!(!run_path(home, "refused").exists());
-        ran.stderr
     }
 
     #[test]
     fn a_bad_line_is_named_and_nothing_is_sent() {
         let home = home_with_device();
         let files = tempfile::tempdir().unwrap();
-        for (index, case) in refused_files().into_iter().enumerate() {
-            let path = plan(
-                files.path(),
-                &format!("plan-{index}"),
-                &case.contents,
-                OWNER_FILE,
-            );
-            let said = refusal_of(&home, &steps_args(&path));
-            let expected = format!(
-                "xtask probe: {}: line {}: {}\n",
-                path.display(),
-                case.line,
-                case.fault
-            );
-            assert_eq!(said, expected);
+        for allow_control in [false, true] {
+            for (index, case) in refused_files().into_iter().enumerate() {
+                // corner: the control command refusal --allow-control lifts is checked in probe_steps_control.rs.
+                let name = format!("plan-{allow_control}-{index}");
+                let path = plan(files.path(), &name, &case.contents, OWNER_FILE);
+                let flag: &[&str] = if allow_control {
+                    &["--allow-control"]
+                } else {
+                    &[]
+                };
+                let said = refusal_of(&home, &[&steps_args(&path)[..], flag].concat());
+                let expected = format!(
+                    "xtask probe: {}: line {}: {}\n",
+                    path.display(),
+                    case.line,
+                    case.fault
+                );
+                assert_eq!(said, expected, "allow_control {allow_control}");
+            }
         }
     }
 
