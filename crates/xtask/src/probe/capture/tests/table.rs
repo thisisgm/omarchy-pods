@@ -1,9 +1,10 @@
 //! The walk of the pods' attribute table against fake pods on the attribute channel alone: the map, what cuts it, and what the pods ask meanwhile.
 
 use pods_proto::att;
+use pods_proto::doap::ARM_MAX_REQUESTS;
 use pods_proto::sdulog::Direction;
 
-use super::super::super::dictate::{HANDLE_WALK_MAX_REQUESTS, HandleWalk, declarations_request};
+use super::super::super::dictate::{HandleWalk, declarations_request};
 use super::super::*;
 use super::at;
 use super::att_pods::{DECLARED, FIND_INFORMATION, READ_BY_TYPE, TABLE_END};
@@ -164,7 +165,7 @@ fn a_map_closes_the_channel_on_a_reply_its_walk_cannot_follow() {
 #[test]
 fn a_map_reads_a_table_that_takes_every_request_it_may_send_and_one_longer_cuts_it() {
     // The pods list one attribute a reply, so a table takes one request more than it holds.
-    let most = u16::try_from(HANDLE_WALK_MAX_REQUESTS).unwrap();
+    let most = u16::try_from(ARM_MAX_REQUESTS).unwrap();
     let mut whole = map_case();
     whole.pods.att.page = 1;
     whole.pods.att.table = Some((1..most).collect());

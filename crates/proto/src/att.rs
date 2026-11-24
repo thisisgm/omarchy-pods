@@ -7,17 +7,21 @@ use crate::error::{ParseError, Parser};
 /// `ATT_ERROR_RSP` (Vol 3, Part F, 3.4.1.1).
 const ERROR_RESPONSE: u8 = 0x01;
 /// `ATT_FIND_INFORMATION_REQ` (Vol 3, Part F, 3.4.3.1).
-const FIND_INFORMATION_REQUEST: u8 = 0x04;
+pub(crate) const FIND_INFORMATION_REQUEST: u8 = 0x04;
 /// `ATT_FIND_INFORMATION_RSP` (Vol 3, Part F, 3.4.3.2).
-const FIND_INFORMATION_RESPONSE: u8 = 0x05;
+pub(crate) const FIND_INFORMATION_RESPONSE: u8 = 0x05;
 /// `ATT_READ_BY_TYPE_REQ` (Vol 3, Part F, 3.4.4.1).
-const READ_BY_TYPE_REQUEST: u8 = 0x08;
+pub(crate) const READ_BY_TYPE_REQUEST: u8 = 0x08;
 /// `ATT_READ_BY_TYPE_RSP` (Vol 3, Part F, 3.4.4.2).
-const READ_BY_TYPE_RESPONSE: u8 = 0x09;
+pub(crate) const READ_BY_TYPE_RESPONSE: u8 = 0x09;
 /// `ATT_READ_REQ` (Vol 3, Part F, 3.4.4.3).
 pub const READ_REQUEST: u8 = 0x0a;
+/// `ATT_READ_RSP` (Vol 3, Part F, 3.4.4.4).
+pub(crate) const READ_RESPONSE: u8 = 0x0b;
 /// `ATT_WRITE_REQ` (Vol 3, Part F, 3.4.5.1).
 pub const WRITE_REQUEST: u8 = 0x12;
+/// `ATT_WRITE_RSP` (Vol 3, Part F, 3.4.5.2).
+pub(crate) const WRITE_RESPONSE: u8 = 0x13;
 /// `ATT_WRITE_CMD` (Vol 3, Part F, 3.4.5.3).
 pub const WRITE_COMMAND: u8 = 0x52;
 /// `ATT_HANDLE_VALUE_NTF` (Vol 3, Part F, 3.4.7.1).
@@ -44,9 +48,9 @@ const REQUEST_OPCODES: [u8; 12] = [
 ];
 
 /// Format byte for 16 bit identifiers (Vol 3, Part F, 3.4.3.2, Table 3.9).
-const FORMAT_SHORT: u8 = 0x01;
+pub(crate) const FORMAT_SHORT: u8 = 0x01;
 /// Format byte for 128 bit identifiers (Vol 3, Part F, 3.4.3.2, Table 3.9).
-const FORMAT_LONG: u8 = 0x02;
+pub(crate) const FORMAT_LONG: u8 = 0x02;
 /// The opcode alone, the shortest PDU.
 const OPCODE_LEN: usize = 1;
 /// An attribute handle is a little endian u16 (Vol 3, Part F, 3.3.1).
@@ -68,6 +72,8 @@ const DECLARATION_FIXED_LEN: usize = 3;
 
 /// The attribute type of a characteristic declaration (Vol 3, Part G, 3.3.1).
 pub const CHARACTERISTIC_DECLARATION: u16 = 0x2803;
+/// The attribute type of the descriptor that turns notifications on (Vol 3, Part G, 3.3.3.3).
+pub const CLIENT_CHARACTERISTIC_CONFIGURATION: u16 = 0x2902;
 /// The property bit of a value that takes a write with no response (Vol 3, Part G, 3.3.1.1).
 pub const PROPERTY_WRITE_WITHOUT_RESPONSE: u8 = 0x04;
 /// The property bit of a value the peer may notify (Vol 3, Part G, 3.3.1.1).
@@ -169,6 +175,10 @@ pub enum AttPdu<'a> {
     ByType(ByType<'a>),
     /// `ATTRIBUTE_NOT_FOUND` is the ordinary end of a walk.
     Error { request: u8, handle: u16, code: u8 },
+    /// The reply to a Read Request, the whole value or as much as one PDU holds.
+    ReadResponse { value: &'a [u8] },
+    /// The reply to a Write Request.
+    WriteResponse,
     /// A value the peer sent unasked, which gets no answer.
     Notification { handle: u16, value: &'a [u8] },
     /// A value the peer sent unasked, which must be answered with `CONFIRMATION`.
@@ -193,6 +203,14 @@ impl<'a> AttPdu<'a> {
             FIND_INFORMATION_RESPONSE => Information::parse(body, pdu.len()).map(Self::Information),
             READ_BY_TYPE_RESPONSE => ByType::parse(body, pdu.len()).map(Self::ByType),
             ERROR_RESPONSE => Self::parse_error(body, pdu.len()),
+            READ_RESPONSE => Ok(Self::ReadResponse { value: body }),
+            // `13`: the opcode and nothing after (Vol 3, Part F, 3.4.5.2).
+            WRITE_RESPONSE if body.is_empty() => Ok(Self::WriteResponse),
+            WRITE_RESPONSE => Err(ParseError::WrongLength {
+                parser: Parser::AttWriteResponse,
+                expected: OPCODE_LEN,
+                got: pdu.len(),
+            }),
             HANDLE_VALUE_NOTIFICATION => handle_value(Parser::AttNotification, body, pdu.len())
                 .map(|(handle, value)| Self::Notification { handle, value }),
             HANDLE_VALUE_INDICATION => handle_value(Parser::AttIndication, body, pdu.len())

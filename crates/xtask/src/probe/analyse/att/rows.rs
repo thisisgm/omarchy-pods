@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Display;
 
-use pods_proto::dictation::{AUDIO_HANDLE, TOC_CELT_WIDEBAND_20MS_MONO};
+use pods_proto::dictation::TOC_CELT_WIDEBAND_20MS_MONO;
+use pods_proto::doap::Handles;
 
 use super::super::input::ATT_LOG_FILE;
 use super::super::lead::{LEAD_MIN_PACKETS, LEAD_WINDOW_NS, Lead};
@@ -41,7 +42,8 @@ pub(super) fn log_rows(
     let cut_note = format!(
         "last line of {ATT_LOG_FILE} without its newline, left out: a capture killed while writing"
     );
-    let audio_note = format!("notifications on handle {AUDIO_HANDLE:#06x} that open with 01 00");
+    let audio_handle = Handles::OBSERVED.send_data;
+    let audio_note = format!("notifications on handle {audio_handle:#06x} that open with 01 00");
     let mut rows = vec![
         Row::new("att_log_cut_lines", &u8::from(cut), "lines", &cut_note),
         Row::new("att_packets_from_pods", &whole.from_pods, PACKETS, ""),

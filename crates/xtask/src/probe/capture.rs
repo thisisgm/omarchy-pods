@@ -20,7 +20,7 @@ use pods_proto::packets::ATT_PSM;
 use pods_proto::uplink::{self, MicSide};
 use pods_sys::l2cap::{Channel, ChannelError};
 
-use super::dictate::{HANDLE_WALK_TIMEOUT_MS, HandleCheck};
+use super::dictate::{self, HANDLE_WALK_TIMEOUT_MS, HandleCheck};
 use super::script::{Action, Opening, Script, StepPacket};
 use answer::NoLine;
 use att::Asked;
@@ -574,7 +574,7 @@ fn record_dropped(recorder: &mut Recorder<'_>, dropped: &Dropped) -> Result<(), 
         if sent.result.is_ok() {
             recorder.dictation_stops = recorder.dictation_stops.saturating_add(1);
         }
-        let stop = dictation::STOP;
+        let stop = dictate::STOP;
         recorder.sent(sent, &stop, Mark::DictationStop, &"dictation stop")
     });
     let idle = dropped.idle.take().map_or(Ok(()), |sent| {

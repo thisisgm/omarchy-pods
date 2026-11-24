@@ -5,7 +5,6 @@ use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use pods_proto::dictation;
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{Direction, LogError, Record, format_line};
 
@@ -17,6 +16,7 @@ use super::{
 use crate::probe::a2dp::{self, AVDTP_PSM, Codec, CodecKind, Music, Second, Unread, VENDOR_CODEC};
 use crate::probe::analyse::input::{ATT_LOG_FILE, LOG_FILE, META_FILE, meta_text};
 use crate::probe::capture::{MARKS_NAME, Mark, mark_line};
+use crate::probe::dictate;
 use crate::probe::store::{self, Run, Session, StoreError};
 
 /// The log of the first channel on the control PSM; a second channel gets `sdu-2.log`.
@@ -248,10 +248,10 @@ fn music_tables(number: usize, first: &Channel, found: &Channels) -> (String, [O
 fn dictation_marks(sdus: &[Record]) -> String {
     let from_host = sdus.iter().filter(|sdu| sdu.direction == Direction::ToPods);
     let marks = from_host.filter_map(|sdu| {
-        if sdu.sdu == dictation::START {
+        if sdu.sdu == dictate::START {
             let text = &"the start write of the trace";
             Some(mark_line(sdu.at_ns, Mark::DictationStart, text))
-        } else if sdu.sdu == dictation::STOP {
+        } else if sdu.sdu == dictate::STOP {
             let text = &"the stop write of the trace";
             Some(mark_line(sdu.at_ns, Mark::DictationStop, text))
         } else {

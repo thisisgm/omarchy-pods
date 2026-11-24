@@ -28,6 +28,7 @@ mod xorshift;
 #[cfg(test)]
 mod tests {
     use pods_proto::dictation::DictationPacket;
+    use pods_proto::doap::Handles;
     use pods_proto::sdulog::{Direction, Record};
     use tempfile::TempDir;
 
@@ -87,7 +88,9 @@ mod tests {
     fn frames_of(records: &[Record]) -> Vec<(u8, u8, u16, Vec<u8>)> {
         let mut frames = Vec::new();
         for record in records {
-            if let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&record.sdu) {
+            if let Ok(Some(DictationPacket::Audio(audio))) =
+                DictationPacket::parse(&record.sdu, &Handles::OBSERVED)
+            {
                 frames.extend(
                     audio
                         .frames()
@@ -314,10 +317,12 @@ mod tests {
         let counters: Vec<u8> = session
             .records
             .iter()
-            .filter_map(|record| match DictationPacket::parse(&record.sdu) {
-                Ok(Some(DictationPacket::Audio(audio))) => Some(audio.packet_counter),
-                _ => None,
-            })
+            .filter_map(
+                |record| match DictationPacket::parse(&record.sdu, &Handles::OBSERVED) {
+                    Ok(Some(DictationPacket::Audio(audio))) => Some(audio.packet_counter),
+                    _ => None,
+                },
+            )
             .collect();
         assert!(counters.windows(2).any(|pair| pair == [255, 0]));
         let found = analyse_sessions(&home, "wrap", &[session]);
@@ -674,7 +679,7 @@ mod tests {
 
         let mut mute = synth(Plan::seen(START_NS, 200));
         mute.records.retain(|record| {
-            let read = DictationPacket::parse(&record.sdu);
+            let read = DictationPacket::parse(&record.sdu, &Handles::OBSERVED);
             !matches!(read, Ok(Some(DictationPacket::Audio(_))))
         });
         let mute = analyse_sessions(&home, "mute", &[mute]);

@@ -5,6 +5,7 @@ use std::cell::Cell;
 use pods_proto::control::ControlCommand;
 use pods_proto::{dictation, uplink};
 
+use super::super::dictate;
 use super::RECV_BUFFER_LEN;
 use super::record::{Bearer, Sent};
 use super::wires::{Link, Wake, Wires, receive};
@@ -53,7 +54,7 @@ pub(super) struct Dictation<'a> {
 
 impl Drop for Dictation<'_> {
     fn drop(&mut self) {
-        let sent = self.link.send(&dictation::STOP);
+        let sent = self.link.send(&dictate::STOP);
         if sent.result.is_ok() {
             self.dropped.tail_from_ns.set(Some(sent.at_ns));
             self.dropped.dictation_stop_ns.set(Some(sent.at_ns));

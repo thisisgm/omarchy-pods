@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use pods_proto::att::{self, AttPdu, CHARACTERISTIC_DECLARATION};
-use pods_proto::dictation::{AudioNotification, DictationPacket, Status};
+use pods_proto::dictation::{AudioNotification, DictationPacket, Event};
+use pods_proto::doap::Handles;
 use pods_proto::sdulog::{Direction, Record};
 
 use crate::probe::dictate::TypeText;
@@ -59,7 +60,7 @@ pub(crate) struct LoadedAtt {
     pub(crate) replies: Vec<Reply>,
     pub(crate) handles: BTreeMap<u16, Listed>,
     pub(crate) requests: BTreeMap<u8, u32>,
-    /// Packets from the pods no parser reads: one cut before its fixed fields, a list with no whole entry, a value on the audio handle without its marker.
+    /// Packets from the pods no parser reads: one cut before its fixed fields, a list with no whole entry, a value on a handle of the stream that is not of its layout.
     pub(crate) parse_failures: u32,
     pub(crate) from_pods: u32,
     /// Packets the host sent, which no figure reads.
@@ -80,17 +81,27 @@ impl LoadedAtt {
             at_ns: record.at_ns,
             answers,
         };
-        match DictationPacket::parse(&record.sdu) {
+        match DictationPacket::parse(&record.sdu, &Handles::OBSERVED) {
             Ok(Some(DictationPacket::Audio(audio))) => {
                 self.audio.push(read_audio(index, record, &audio));
             }
-            Ok(Some(DictationPacket::Status(Status::Started))) => {
+            Ok(Some(DictationPacket::Event(Event::STARTED))) => {
                 self.replies.push(reply(Answers::Start));
             }
-            Ok(Some(DictationPacket::Status(Status::Stopped))) => {
+            Ok(Some(DictationPacket::Event(Event::StreamingEnd))) => {
                 self.replies.push(reply(Answers::Stop));
             }
-            Ok(Some(DictationPacket::Status(Status::Other(_)))) => {}
+            Ok(Some(
+                DictationPacket::Event(
+                    Event::Score { .. }
+                    | Event::SiriActivation(_)
+                    | Event::SiriState(_)
+                    | Event::SiriCancel
+                    | Event::Button(_)
+                    | Event::Other { .. },
+                )
+                | DictationPacket::Stopped { .. },
+            )) => {}
             Ok(Some(DictationPacket::Unknown { .. })) | Err(_) => {
                 self.parse_failures = self.parse_failures.saturating_add(1);
             }
@@ -124,6 +135,8 @@ impl LoadedAtt {
             Ok(
                 AttPdu::ByType(_)
                 | AttPdu::Error { .. }
+                | AttPdu::ReadResponse { .. }
+                | AttPdu::WriteResponse
                 | AttPdu::Notification { .. }
                 | AttPdu::Indication { .. }
                 | AttPdu::Other { .. },

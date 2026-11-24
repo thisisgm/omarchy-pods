@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use pods_proto::addr::BdAddr;
-use pods_proto::dictation::{SESSION_ACTIVE, SESSION_IDLE, START, STOP};
+use pods_proto::dictation::{SESSION_ACTIVE, SESSION_IDLE};
 use pods_proto::packets::{
     ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
 };
@@ -15,7 +15,7 @@ use pods_proto::sdulog::{self, Direction};
 use pods_sys::l2cap::ChannelError;
 use rustix::io::Errno;
 
-use super::super::super::dictate::HandleCheck;
+use super::super::super::dictate::{HandleCheck, START, STOP};
 use super::super::super::script::{Route, ScriptName};
 use super::super::super::{CaptureArgs, Host, capture, stop, summary};
 use super::super::{EndReason, Outcome};

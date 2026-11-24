@@ -3,10 +3,8 @@
 use std::time::{Duration, Instant};
 
 use pods_proto::att;
-use pods_proto::dictation::{
-    AUDIO_HANDLE, Frame, START, START_HANDLE, STARTED, STATUS_HANDLE, STOP, STOP_HANDLE, STOPPED,
-    TOC_CELT_WIDEBAND_20MS_MONO, encode_audio,
-};
+use pods_proto::dictation::{Frame, STARTED, STOPPED, TOC_CELT_WIDEBAND_20MS_MONO, encode_audio};
+use pods_proto::doap::{self, Handles};
 
 use super::pods::noise;
 
@@ -52,11 +50,16 @@ const FRAME_PREFIX: (u8, u8) = (0x80, 0xd5);
 pub(super) const MADE_UP_TYPE: [u8; 2] = [0x2a, 0x2b];
 const WRITES: u8 = att::PROPERTY_WRITE_WITHOUT_RESPONSE;
 const NOTIFIES: u8 = att::PROPERTY_NOTIFY;
+/// The table these pods serve, the one firmware's.
+const TABLE: Handles = Handles::OBSERVED;
+/// The stream's start write as these pods take it.
+pub(super) const DICTATION_START: [u8; 5] = doap::start(&TABLE);
+pub(super) const DICTATION_STOP: [u8; 6] = doap::stop(&TABLE, doap::STOP_REASON_HOST);
 pub(super) const DECLARED: [(u16, u8); 4] = [
-    (START_HANDLE, WRITES),
-    (STOP_HANDLE, WRITES),
-    (AUDIO_HANDLE, NOTIFIES),
-    (STATUS_HANDLE, NOTIFIES),
+    (TABLE.start, WRITES),
+    (TABLE.stop, WRITES),
+    (TABLE.send_data, NOTIFIES),
+    (TABLE.event, NOTIFIES),
 ];
 
 pub(super) fn declared_at(value: u16) -> u16 {
@@ -196,7 +199,7 @@ pub(super) struct AttState {
 
 impl AttState {
     pub(super) fn answer(&mut self, part: &AttPods, pdu: &[u8]) -> Vec<Vec<u8>> {
-        if pdu == START {
+        if pdu == DICTATION_START {
             self.streaming = true;
             self.started = Some(Instant::now());
             self.opened = 0;
@@ -208,7 +211,7 @@ impl AttState {
             }
             return replies;
         }
-        if pdu == STOP {
+        if pdu == DICTATION_STOP {
             if part.deaf_to_stop {
                 return Vec::new();
             }
@@ -317,7 +320,7 @@ impl AttState {
         if coded.is_empty() {
             return None;
         }
-        let packet = encode_audio(self.packets, &coded).unwrap();
+        let packet = encode_audio(&TABLE, self.packets, &coded).unwrap();
         self.packets = self.packets.wrapping_add(1);
         Some(packet)
     }

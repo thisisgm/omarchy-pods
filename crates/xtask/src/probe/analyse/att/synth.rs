@@ -1,8 +1,7 @@
 //! A seeded generator of dictation capture logs, shared by the unit tests and the test of the built command.
 
-use pods_proto::dictation::{
-    Frame, START, STARTED, STOP, STOPPED, TOC_CELT_WIDEBAND_20MS_MONO, encode_audio,
-};
+use pods_proto::dictation::{Frame, STARTED, STOPPED, TOC_CELT_WIDEBAND_20MS_MONO, encode_audio};
+use pods_proto::doap::{self, Handles};
 use pods_proto::sdulog::{Direction, Record};
 
 use super::xorshift::next_random;
@@ -177,7 +176,7 @@ impl Stream {
                 data,
             })
             .collect();
-        let pdu = encode_audio(self.packet, &frames).unwrap();
+        let pdu = encode_audio(&Handles::OBSERVED, self.packet, &frames).unwrap();
         self.packet = self.packet.wrapping_add(1);
         self.push(at_ns, Direction::FromPods, &pdu);
         at_ns
@@ -202,7 +201,8 @@ pub(crate) fn synth(plan: Plan) -> Session {
         frames: 0,
         packet: plan.first_packet,
     };
-    stream.push(plan.start_ns, Direction::ToPods, &START);
+    let start = doap::start(&Handles::OBSERVED);
+    stream.push(plan.start_ns, Direction::ToPods, &start);
     let after = |from_ns: u64, ms: u64| from_ns.saturating_add(ms.saturating_mul(NS_PER_MS));
     let replied_ns = after(plan.start_ns, REPLY_AFTER_MS);
     stream.push(replied_ns, Direction::FromPods, &STARTED);
@@ -219,7 +219,8 @@ pub(crate) fn synth(plan: Plan) -> Session {
         last_ns = stream.steady();
     }
     let stop_ns = after(last_ns, STOP_AFTER_MS);
-    stream.push(stop_ns, Direction::ToPods, &STOP);
+    let stop = doap::stop(&Handles::OBSERVED, doap::STOP_REASON_HOST);
+    stream.push(stop_ns, Direction::ToPods, &stop);
     let (before_reply, after_reply) = plan.late;
     for _ in 0..before_reply {
         last_ns = stream.steady();

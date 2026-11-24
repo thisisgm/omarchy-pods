@@ -34,7 +34,8 @@ mod tests {
     use std::time::Duration;
 
     use pods_proto::att::{self, CHARACTERISTIC_DECLARATION};
-    use pods_proto::dictation::{self, DictationPacket, SESSION_ACTIVE, SESSION_IDLE};
+    use pods_proto::dictation::{DictationPacket, SESSION_ACTIVE, SESSION_IDLE};
+    use pods_proto::doap::Handles;
     use pods_proto::packets::{
         ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
     };
@@ -43,7 +44,9 @@ mod tests {
     use pods_trap::{Answer, Outcome};
     use rustix::io::Errno;
 
-    use super::att_pods::{BURST_PACKETS, DECLARED, MADE_UP_TYPE, declared_at};
+    use super::att_pods::{
+        BURST_PACKETS, DECLARED, DICTATION_START, DICTATION_STOP, MADE_UP_TYPE, declared_at,
+    };
     use super::capture::{
         FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, assert_att_ran, assert_control_logged,
         capture, far_end, files_of, hand_over, hand_over_after, home_with_device, kinds, logged,
@@ -148,13 +151,13 @@ mod tests {
         let run = run_path(&home, "dictation");
         let files = ["att.log", "handles.tsv", "marks.tsv", "meta.txt", "sdu.log"];
         assert_eq!(files_of(&run), files);
-        assert_att_ran(&pods, &run, &[&dictation::START, &dictation::STOP]);
+        assert_att_ran(&pods, &run, &[&DICTATION_START, &DICTATION_STOP]);
         assert_control_logged(&pods, &run);
         let att_log = read(&run, "att.log");
         let notified = logged(&att_log, Direction::FromPods);
         let audio = notified.iter().filter(|pdu| {
             matches!(
-                DictationPacket::parse(pdu),
+                DictationPacket::parse(pdu, &Handles::OBSERVED),
                 Ok(Some(DictationPacket::Audio(_)))
             )
         });
@@ -214,7 +217,7 @@ mod tests {
             (ATT_PSM, Outcome::Accepted),
         ];
         assert_eq!(ran.dials, dialled_twice);
-        assert!(pods.att_got.contains(&dictation::START.to_vec()));
+        assert!(pods.att_got.contains(&DICTATION_START.to_vec()));
         let marks = read(&run_path(&home, "redial"), "marks.tsv");
         assert!(marks.contains("\thandles\tunchecked\n"), "{marks}");
         let redialled_ns = stamp_of(&marks, "handles");
@@ -265,7 +268,7 @@ mod tests {
         let run = run_path(&home, "both");
         let files = ["att.log", "handles.tsv", "marks.tsv", "meta.txt", "sdu.log"];
         assert_eq!(files_of(&run), files);
-        assert_att_ran(&pods, &run, &[&dictation::START, &dictation::STOP]);
+        assert_att_ran(&pods, &run, &[&DICTATION_START, &DICTATION_STOP]);
         assert_control_logged(&pods, &run);
         let meta = read(&run, "meta.txt");
         assert!(
@@ -368,7 +371,7 @@ mod tests {
         ];
         assert_eq!(ran.dials, accepted);
         assert_eq!(pods.got(), [&HANDSHAKE_SENT[..], &[&SESSION_IDLE]].concat());
-        assert_eq!(pods.att_got, [dictation::STOP]);
+        assert_eq!(pods.att_got, [DICTATION_STOP]);
         // A stop keeps nothing: the session of init is still empty.
         let session = home.path().join(ROOT_NAME).join(STAMP);
         assert_eq!(fs::read_dir(session).unwrap().count(), 0);

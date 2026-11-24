@@ -373,17 +373,40 @@ fn every_request_opcode_is_classed_as_a_request() {
 
 #[test]
 fn an_opcode_with_no_reader_is_kept_whole() {
-    let read_reply = [0x0b, 0xaa, 0xbb];
+    let mtu_reply = [0x03, 0xaa, 0xbb];
     let expected = AttPdu::Other {
-        opcode: 0x0b,
+        opcode: 0x03,
         body: &[0xaa, 0xbb],
     };
-    assert_eq!(AttPdu::parse(&read_reply), Ok(expected));
+    assert_eq!(AttPdu::parse(&mtu_reply), Ok(expected));
     let confirmation = AttPdu::Other {
         opcode: 0x1e,
         body: &[],
     };
     assert_eq!(AttPdu::parse(&CONFIRMATION), Ok(confirmation));
+}
+
+#[test]
+fn a_read_response_carries_its_value_and_a_write_response_nothing() {
+    let value = [0x01, 0x01, 0x00, 0x04, 0x07, 0x02, 0x01, 0x01];
+    let mut read = vec![0x0b];
+    read.extend(value);
+    let expected = AttPdu::ReadResponse { value: &value };
+    assert_eq!(AttPdu::parse(&read), Ok(expected));
+    let empty = AttPdu::ReadResponse { value: &[] };
+    assert_eq!(AttPdu::parse(&[0x0b]), Ok(empty));
+
+    assert_eq!(AttPdu::parse(&[0x13]), Ok(AttPdu::WriteResponse));
+    let refused = ParseError::WrongLength {
+        parser: Parser::AttWriteResponse,
+        expected: 1,
+        got: 2,
+    };
+    assert_eq!(AttPdu::parse(&[0x13, 0x00]), Err(refused));
+    assert_eq!(
+        refused.to_string(),
+        "attribute protocol write response is 2 bytes, expected 1"
+    );
 }
 
 #[test]

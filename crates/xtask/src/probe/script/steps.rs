@@ -4,12 +4,14 @@ use std::fmt;
 use std::str::SplitAsciiWhitespace;
 
 use pods_proto::att;
-use pods_proto::dictation::{self, START_HANDLE, STOP_HANDLE};
+use pods_proto::dictation;
+use pods_proto::doap::Handles;
 use pods_proto::packet::{OPCODE_CONTROL, opcode_of};
 use pods_proto::sdulog::{self, LogError};
 use pods_proto::uplink;
 
 use super::{Action, Event, MAX_MINUTES, MS_PER_MINUTE, at};
+use crate::probe::dictate;
 
 /// A step file holds at most this many lines, comments and blank lines included.
 const MAX_LINES: usize = 256;
@@ -43,9 +45,13 @@ const START_PREFIX: [u8; 12] = {
 };
 /// The same for the attribute channel.
 const GUARDED_ATT: [(&[u8], Action); 2] = [
-    (&dictation::START, Action::DictationStart),
-    (&dictation::STOP, Action::DictationStop),
+    (&dictate::START, Action::DictationStart),
+    (&dictate::STOP, Action::DictationStop),
 ];
+/// Where the run's own start write goes, on the one firmware seen.
+const START_HANDLE: u16 = Handles::OBSERVED.start;
+/// Where its stop write goes.
+const STOP_HANDLE: u16 = Handles::OBSERVED.stop;
 
 /// What a step sends on the attribute channel.
 #[derive(Debug, Clone, PartialEq, Eq)]

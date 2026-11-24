@@ -4,6 +4,7 @@ use std::fmt;
 use std::io::{self, Write};
 
 use pods_proto::dictation::DictationPacket;
+use pods_proto::doap::Handles;
 use pods_proto::sdulog::{self, Direction};
 use pods_proto::uplink::UplinkPacket;
 use pods_sys::l2cap::ChannelError;
@@ -293,7 +294,7 @@ impl<'o> Recorder<'o> {
         }
         self.att_pdus_in = self.att_pdus_in.saturating_add(1);
         if matches!(
-            DictationPacket::parse(pdu),
+            DictationPacket::parse(pdu, &Handles::OBSERVED),
             Ok(Some(DictationPacket::Audio(_)))
         ) {
             self.audio_notifications = self.audio_notifications.saturating_add(1);

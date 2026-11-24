@@ -2,11 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use pods_proto::dictation::{self, DictationPacket};
+use pods_proto::dictation::DictationPacket;
+use pods_proto::doap::Handles;
 use pods_proto::packet::ACCESSORY_HEADER;
 use pods_proto::sdulog::{Direction, Record};
 
 use super::l2cap::{Channels, Counts, MAX_UNMAPPED, Seen, Unmapped, bump};
+use crate::probe::dictate;
 
 /// What content says a channel carries; the PSM it was opened on is not in the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -67,11 +69,11 @@ fn carried(half: Half, sdu: &[u8]) -> Option<Carries> {
     let attributes = match half.direction {
         Direction::FromPods => {
             matches!(
-                DictationPacket::parse(sdu),
+                DictationPacket::parse(sdu, &Handles::OBSERVED),
                 Ok(Some(DictationPacket::Audio(_)))
             )
         }
-        Direction::ToPods => sdu == dictation::START,
+        Direction::ToPods => sdu == dictate::START,
     };
     attributes.then_some(Carries::Attributes)
 }
