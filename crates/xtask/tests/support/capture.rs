@@ -20,6 +20,7 @@ use pods_proto::packets::{
 use pods_proto::sdulog::{self, Direction};
 use pods_sys::l2cap::Channel;
 use pods_trap::{Answer, Outcome, Route, Trap};
+use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process};
 use tempfile::TempDir;
 
@@ -44,6 +45,40 @@ pub(crate) const HANG_LIMIT: Duration = Duration::from_secs(30);
 /// The steady packets of a short capture, a fifth of a second of the unpaced stream.
 pub(crate) const A_FEW: u32 = 100;
 const POLL: Duration = Duration::from_millis(5);
+/// The installed daemon's unit, whose state the stub `systemctl` keeps in a file of this name.
+pub(crate) const INSTALLED: &str = "librepods.service";
+/// The hardware run's lock in the runtime directory.
+pub(crate) const RUN_LOCK: &str = "librepods-hw.lock";
+pub(crate) const EXECUTABLE: u32 = 0o755;
+/// The directory of a home that holds the stub `systemctl`, its log and the state of each unit.
+const STUBS_NAME: &str = "stubs";
+/// The runtime directory a home gives its commands, where the hardware run's lock lives.
+pub(crate) const RUNTIME_NAME: &str = "runtime";
+/// The stub's log of every call, in order.
+pub(crate) const CALLS_NAME: &str = "calls";
+/// The stub's log of what `flock -n` exited with at each call.
+pub(crate) const LOCKED_NAME: &str = "locked";
+/// What `flock -n` in a stub exits with while another process holds the lock.
+pub(crate) const LOCK_HELD: &str = "1";
+/// The call that reads the state of the installed service.
+pub(crate) const ASKED: &str = "systemctl --user is-active librepods.service";
+/// The calls that find the installed service running and stop it.
+pub(crate) const STOPPED: [&str; 3] = [ASKED, "systemctl --user stop librepods.service", ASKED];
+/// The calls that put the installed service back, and nothing of the hardware run's test unit.
+pub(crate) const STARTED: [&str; 2] = ["systemctl --user start librepods.service", ASKED];
+
+/// A `systemctl --user` that logs each call, its environment and whether another process holds the hardware run's lock, and keeps each unit's state in a file named after it, a stop leaving the state a `.stops-as` file names and a start failing while a `.start-fails` file is there; builtins and absolute paths only, as `PATH` may hold nothing else.
+pub(crate) const SYSTEMCTL: &str = r#"#!/bin/sh
+printf 'systemctl %s\n' "$*" >> "$STUB/calls"
+export -p >> "$STUB/env"
+/usr/bin/flock -n "$XDG_RUNTIME_DIR/$RUN_LOCK" true; printf '%s\n' "$?" >> "$STUB/locked"
+case "$2" in
+is-active) read -r s < "$STUB/$3"; printf '%s\n' "$s"; [ "$s" = active ] || exit 3 ;;
+stop) s=inactive; [ -e "$STUB/$3.stops-as" ] && read -r s < "$STUB/$3.stops-as"; printf '%s\n' "$s" > "$STUB/$3" ;;
+start) [ -e "$STUB/$3.start-fails" ] && exit 1; printf 'active\n' > "$STUB/$3" ;;
+*) exit 1 ;;
+esac
+"#;
 
 #[expect(
     clippy::disallowed_methods,
@@ -65,10 +100,40 @@ fn wait_within<T>(limit: Duration, what: &str, mut ready: impl FnMut() -> Option
     }
 }
 
-/// One probe command of the built binary, with `HOME` set to `home`, never the real one.
+/// Where the stub `systemctl` of `home` keeps its log and the state of each unit.
+pub(crate) fn stubs_of(home: &Path) -> PathBuf {
+    home.join(STUBS_NAME)
+}
+
+/// Puts the stub `systemctl` and the runtime directory into `home`, the installed service not running, so a command that reads its state finds nothing to stop.
+fn stub_service(home: &Path) {
+    let stubs = stubs_of(home);
+    fs::create_dir_all(stubs.join("bin")).unwrap();
+    let systemctl = stubs.join("bin/systemctl");
+    fs::write(&systemctl, SYSTEMCTL).unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(EXECUTABLE)).unwrap();
+    fs::write(stubs.join(INSTALLED), "inactive\n").unwrap();
+    fs::write(stubs.join(CALLS_NAME), "").unwrap();
+    fs::create_dir(home.join(RUNTIME_NAME)).unwrap();
+}
+
+/// The calls of every part in order, as the stub's log holds them.
+pub(crate) fn expected(parts: &[&[&str]]) -> Vec<String> {
+    let calls = parts.iter().flat_map(|part| part.iter());
+    calls.map(|call| (*call).to_owned()).collect()
+}
+
+/// One probe command of the built binary, with `HOME` set to `home`, never the real one, and the stub `systemctl` of that home ahead of every other on `PATH`.
 pub(crate) fn probe(home: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
     command.arg("probe").args(args).env("HOME", home);
+    let stubs = stubs_of(home);
+    let path = std::env::var("PATH").unwrap();
+    command
+        .env("PATH", format!("{}:{path}", stubs.join("bin").display()))
+        .env("STUB", &stubs)
+        .env("RUN_LOCK", RUN_LOCK)
+        .env("XDG_RUNTIME_DIR", home.join(RUNTIME_NAME));
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -79,6 +144,7 @@ pub(crate) fn probe(home: &Path, args: &[&str]) -> Command {
 /// A temporary home whose store, made by the built `probe init`, holds the session and the device file.
 pub(crate) fn home_with_device() -> TempDir {
     let home = tempfile::tempdir().unwrap();
+    stub_service(home.path());
     let init = probe(home.path(), &["init", "--stamp", STAMP])
         .output()
         .unwrap();
@@ -121,6 +187,14 @@ pub(crate) fn hand_over_after(after: Duration) -> (Answer, mpsc::Receiver<Channe
         serve: Arc::new(serve),
     };
     (answer, far)
+}
+
+/// An answer that refuses a dial at once with `errno`.
+pub(crate) fn refuse(errno: Errno) -> Answer {
+    Answer::Refuse {
+        after: Duration::ZERO,
+        errno,
+    }
 }
 
 pub(crate) fn route(psm: u16, answer: Answer) -> Route {
@@ -167,7 +241,12 @@ impl Running {
     pub(crate) fn interrupt_within(&self, limit: Duration, flag: &AtomicBool) {
         let raised = || flag.load(Ordering::SeqCst).then_some(());
         wait_within(limit, "raised flag", raised);
-        kill_process(Pid::from_child(&self.child), Signal::INT).unwrap();
+        self.signal(Signal::INT);
+    }
+
+    /// Sends `signal` to the command now.
+    pub(crate) fn signal(&self, signal: Signal) {
+        kill_process(Pid::from_child(&self.child), signal).unwrap();
     }
 
     /// Writes one line to the command's standard input, which the command must have been given as a pipe.

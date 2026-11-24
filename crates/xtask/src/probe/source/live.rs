@@ -17,8 +17,7 @@ use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 
 use super::{POLL, STATUS_EVERY, Served, SourceError, open_node};
-use crate::hw::run_lock;
-use crate::hw::unit::{self, Guard, INSTALLED};
+use crate::hw::unit;
 use crate::probe::{HANDSHAKE_STEP_TIMEOUT_MS, Host, store};
 
 pub(super) const HANDSHAKE_STEP: Duration = Duration::from_millis(HANDSHAKE_STEP_TIMEOUT_MS);
@@ -42,26 +41,7 @@ pub(super) fn serve(
     interrupted: &AtomicBool,
 ) -> Result<(), SourceError> {
     let peer = store::read_device(&store::root(host.home.as_ref()))?;
-    // Held from before the installed service's state is read until after its restore, so a hardware run and this probe never share the service.
-    let lock = run_lock()
-        .map_err(SourceError::Service)?
-        .ok_or(SourceError::LockHeld)?;
-    let word = unit::activity(INSTALLED).map_err(SourceError::Service)?;
-    let was_running = unit::is_running(&word);
-    // Made before the stop, as the hardware run makes it, so a stop that fails partway and every later way out, an unwind included, start it again.
-    let service = Guard::installed_only(was_running);
-    let stopped = if was_running {
-        unit::stop(INSTALLED).map_err(SourceError::Service)
-    } else {
-        Ok(())
-    };
-    let served = stopped.and_then(|()| uplink(peer, seconds, host, interrupted));
-    let restored = service.restore().map_err(SourceError::Service);
-    if let (Err(_), Err(error)) = (&served, &restored) {
-        host.say(error);
-    }
-    drop(lock);
-    served.and(restored)
+    host.with_service_stopped(|host| uplink(peer, seconds, host, interrupted))
 }
 
 /// Opens the control channel, runs the handshake and START, and serves the uplink once the pods say it runs.

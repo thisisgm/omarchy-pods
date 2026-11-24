@@ -41,7 +41,7 @@ mod tests {
     };
     use pods_proto::sdulog::Direction;
     use pods_proto::uplink::{START, STOP};
-    use pods_trap::{Answer, Outcome};
+    use pods_trap::Outcome;
     use rustix::io::Errno;
 
     use super::att_pods::{
@@ -50,7 +50,7 @@ mod tests {
     use super::capture::{
         FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, assert_att_ran, assert_control_logged,
         capture, far_end, files_of, hand_over, hand_over_after, home_with_device, kinds, logged,
-        probe, read, route, run_path, stamp_of, transcript,
+        probe, read, refuse, route, run_path, stamp_of, transcript,
     };
     use super::pods::{self, Pods};
 
@@ -66,13 +66,6 @@ mod tests {
     const FIRST_HANDLE: u16 = 0x0001;
     /// The last handle of that range, the highest an attribute can have.
     const LAST_HANDLE: u16 = 0xffff;
-
-    fn refuse(errno: Errno) -> Answer {
-        Answer::Refuse {
-            after: Duration::ZERO,
-            errno,
-        }
-    }
 
     #[test]
     fn a_signal_mid_uplink_stops_the_uplink_and_fails_the_run() {

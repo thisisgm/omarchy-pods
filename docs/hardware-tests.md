@@ -171,6 +171,22 @@ of `xtask probe init`, on the route the step files run on:
 ./xtask probe capture --stamp <stamp> --run <name> --route dictation --steps ./revive
 ```
 
+`probe capture` and `probe stop` take the hardware run's lock before they dial
+the AirPods, and refuse to start while a hardware run or another probe holds
+it. They stop `librepods.service` if it runs and start it again on every way
+out: the end of the script, a connect that fails, and SIGINT, SIGTERM, SIGHUP
+or SIGQUIT. Each of the two is said in one line on standard error, so nobody
+stops the service by hand for a sitting. A service that was not running is left
+stopped and nothing is said of it. A start that fails is said in its own line,
+with the command that starts the service, and fails the run; when the run
+failed too, that line comes before the run's own error. A capture refused for
+its arguments, its step file or its run name stops nothing. A capture refused
+for the lock, or because the service did not stop, has made its run already:
+the run keeps the reason as its only mark, and its name is used up, as after a
+connect that fails. The commands that only read files (`init`, `hci`,
+`analyse`, `decode`, `decode-opus`, `audio`, `bench` and `source --replay`)
+never touch the service.
+
 A cue is printed as `cue <text>` and the run waits there for Enter, with no
 timeout. What was typed before a cue was shown does not answer it. The Enter
 that answers a cue is stamped in `marks.tsv` as an `answer` mark, and the waits
