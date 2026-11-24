@@ -27,6 +27,8 @@ pub(crate) enum Recorder {
     Monitor,
     /// A program holding a source open without recording.
     Corked,
+    /// A program whose stream's node has this `node.name`.
+    Named(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +125,7 @@ impl Capture {
             let monitored = source.monitor_of.as_ref().map(|(_, sink)| sink.as_str());
             match recording.kind {
                 Recorder::Monitor => monitored == Some(recording.target.as_str()),
-                Recorder::Program | Recorder::PeakMeter | Recorder::Corked => {
+                Recorder::Program | Recorder::PeakMeter | Recorder::Corked | Recorder::Named(_) => {
                     source.name == recording.target
                 }
             }
@@ -175,6 +177,7 @@ impl Recording {
         let kind = match self.kind {
             Recorder::PeakMeter => Some(("stream.monitor", "true")),
             Recorder::Monitor => Some(("stream.capture.sink", "true")),
+            Recorder::Named(node) => Some(("node.name", node)),
             Recorder::Program | Recorder::Corked => None,
         };
         let mut props = Props::new();

@@ -267,7 +267,7 @@ pub(super) fn sinks(body: &[u8]) -> impl Iterator<Item = Result<Sink<'_>, Malfor
 }
 
 /// A walk over a tagstruct, copying nothing: the crate's reader allocates a property's declared length, up to 4 GiB, before checking it.
-struct Tags<'a>(&'a [u8]);
+pub(super) struct Tags<'a>(pub(super) &'a [u8]);
 
 impl<'a> Tags<'a> {
     fn take(&mut self, count: usize) -> Result<&'a [u8], Malformed> {
@@ -295,7 +295,7 @@ impl<'a> Tags<'a> {
         }
     }
 
-    fn u32(&mut self) -> Result<u32, Malformed> {
+    pub(super) fn u32(&mut self) -> Result<u32, Malformed> {
         self.expect(tag::U32)?;
         self.raw_u32()
     }
@@ -365,14 +365,26 @@ impl<'a> Tags<'a> {
         })
     }
 
-    /// Key, length and value triples to a null key; sample `t "media.class\0" L 0000000b x 0000000b "Audio/Sink\0" N`.
-    fn proplist(&mut self) -> Result<(), Malformed> {
-        while self.string()?.is_some() {
+    /// Key, length and value triples to a null key, each key and value shown to `see`; sample `t "media.class\0" L 0000000b x 0000000b "Audio/Sink\0" N`.
+    fn proplist(&mut self, mut see: impl FnMut(&'a [u8], &'a [u8])) -> Result<(), Malformed> {
+        while let Some(key) = self.string()? {
             self.u32()?;
             self.expect(tag::ARBITRARY)?;
-            self.arbitrary()?;
+            see(key, self.arbitrary()?);
         }
         Ok(())
+    }
+
+    /// A property list's value under `key`, without its closing NUL; sample `P t "node.name\0" L 00000004 x 00000004 "mpv\0" N` under `node.name`: `mpv`.
+    pub(super) fn property(&mut self, key: &[u8]) -> Result<Option<&'a [u8]>, Malformed> {
+        self.expect(tag::PROPLIST)?;
+        let mut found = None;
+        self.proplist(|name, value| {
+            if name == key {
+                found = Some(value.strip_suffix(&[0]).unwrap_or(value));
+            }
+        })?;
+        Ok(found)
     }
 
     /// One value of any tag, a property list or a format walked flat so no input nests; sample `L 00000005` or `t "name\0"`.
@@ -380,11 +392,11 @@ impl<'a> Tags<'a> {
         let length = match self.byte()? {
             tag::STRING => return self.c_string().map(|_| ()),
             tag::ARBITRARY => return self.arbitrary().map(|_| ()),
-            tag::PROPLIST => return self.proplist(),
+            tag::PROPLIST => return self.proplist(|_, _| {}),
             tag::FORMAT_INFO => {
                 self.u8()?;
                 self.expect(tag::PROPLIST)?;
-                return self.proplist();
+                return self.proplist(|_, _| {});
             }
             tag::STRING_NULL | tag::TRUE | tag::FALSE => 0,
             tag::U8 => size_of::<u8>(),
@@ -398,7 +410,7 @@ impl<'a> Tags<'a> {
         self.take(length).map(|_| ())
     }
 
-    fn skip_n(&mut self, count: usize) -> Result<(), Malformed> {
+    pub(super) fn skip_n(&mut self, count: usize) -> Result<(), Malformed> {
         for _ in 0..count {
             self.skip()?;
         }

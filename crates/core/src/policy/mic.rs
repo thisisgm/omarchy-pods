@@ -9,7 +9,8 @@ use std::time::Duration;
 use pods_proto::uplink::{self, UplinkState};
 
 use super::audio::{
-    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkState,
+    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, Recorders, RestoreId,
+    SinkState,
 };
 use super::{Effect, Fact, SleepEdge};
 use crate::link::Signal;
@@ -160,7 +161,7 @@ impl Mic {
             }
             Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
             Fact::Tick => self.tick(state, now, &mut effects),
-            Fact::Audio(fact) => self.audio(*fact),
+            Fact::Audio(fact) => self.audio(*fact, &mut effects),
             Fact::Sleep(edge) => self.sleep(*edge),
             Fact::Exit => self.exiting = true,
             Fact::Mic(MicFact::FirstAudio) => self.first_audio(now, &mut effects),
@@ -217,7 +218,7 @@ impl Mic {
         }
     }
 
-    fn audio(&mut self, fact: AudioFact) {
+    fn audio(&mut self, fact: AudioFact, effects: &mut Vec<Effect>) {
         match fact {
             AudioFact::Up => {}
             AudioFact::Down => self.quiet = false,
@@ -230,6 +231,11 @@ impl Mic {
                 {
                     self.phase = Phase::Stopped { spent };
                 }
+            }
+            AudioFact::Recorders(Recorders { dictation, other }) => {
+                effects.push(Effect::Log(format!(
+                    "mic: recorders (dictation {dictation}, other {other})"
+                )));
             }
         }
     }

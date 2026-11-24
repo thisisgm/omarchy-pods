@@ -1,26 +1,29 @@
-//! The driver's restore answers on a paused clock, against a server that holds the first restore's suspend until the policy has asked for a second.
+//! The driver's restore answers on a paused clock, against a server that holds one answer back until the test releases it.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::time::Duration;
 
 use pods_core::link::Signal;
-use pods_core::policy::audio::{AudioFact, AudioRequest, RestoreId};
+use pods_core::policy::audio::{AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RestoreId};
 use pods_core::policy::mic::{RESTORE_WAIT_MS, UplinkRequest};
 use pods_core::policy::{Effect, Fact, Policy};
 use pods_core::prefs::MicPref;
-use pods_core::state::{Microphone, State};
+use pods_core::state::{MicCode, Microphone, State};
 use pods_proto::ear::EarReport;
 use pods_proto::uplink::UplinkState;
 use pods_samples::MODEL_NUMBER;
 use pulseaudio::protocol::{
-    AuthReply, Command, DESCRIPTOR_SIZE, PulseError, ServerInfo, SetClientNameReply, SinkInfo,
-    SinkState, SuspendParams, read_descriptor, write_ack_message, write_error, write_reply_message,
+    AuthReply, Command, CommandTag, DESCRIPTOR_SIZE, PulseError, ServerInfo, SetClientNameReply,
+    SinkInfo, SinkState, SourceOutputInfo, SuspendParams, read_descriptor, write_ack_message,
+    write_error, write_reply_message,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::timeout;
 
+use super::super::streams::tests::{MICROPHONE_INDEX, source};
 use super::super::wire::PROTOCOL_VERSION;
 use super::super::wire::tests::sink as listed;
 use super::super::{Input, SOCKET, queue, run, stop};
@@ -30,6 +33,8 @@ use crate::daemon::paused::on_paused_clock;
 const SINK_INDEX: u32 = 7;
 /// Room for every fact the two restores tell.
 const FACTS: usize = 8;
+/// A source the server may list in place of the microphone's.
+const ANOTHER_SOURCE: &CStr = c"alsa_input.another";
 
 /// The real policy, stepped through two STOPs with its restore deadline between them.
 struct Pods {
@@ -129,15 +134,17 @@ fn restore_ids(requests: &[AudioRequest]) -> Vec<RestoreId> {
         .collect()
 }
 
-/// The server's half: every suspend in order, and the release of the first one's answer.
+/// The server's half: every command heard and every suspend, each in order, and the release of the held answer.
 struct Server {
+    heard: mpsc::UnboundedReceiver<CommandTag>,
     suspends: mpsc::UnboundedReceiver<bool>,
     release: oneshot::Sender<()>,
 }
 
-/// Inside a paused runtime: one connection answered as a server would, the first suspend answered only on `release`.
-fn serve(listener: UnixListener) -> Server {
-    let (heard, suspends) = mpsc::unbounded_channel();
+/// Inside a paused runtime: one connection answered as a server would, the first `held` command answered only on `release`; `lists` names the one source listed, and none refuses the list.
+fn serve(listener: UnixListener, held: CommandTag, lists: Option<CString>) -> Server {
+    let (commands, heard) = mpsc::unbounded_channel();
+    let (suspended, suspends) = mpsc::unbounded_channel();
     let (release, released) = oneshot::channel();
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -147,33 +154,36 @@ fn serve(listener: UnixListener) -> Server {
             let Some((seq, command)) = read_command(&mut stream).await else {
                 return;
             };
+            commands.send(command.tag()).unwrap();
             if let Command::SuspendSink(SuspendParams { suspend, .. }) = command {
-                heard.send(suspend).unwrap();
-                if let Some(released) = released.take() {
-                    released.await.unwrap();
-                }
+                suspended.send(suspend).unwrap();
                 state = if suspend {
                     SinkState::Suspended
                 } else {
                     SinkState::Running
                 };
-                stream.write_all(&ack(seq)).await.unwrap();
-                continue;
             }
-            stream
-                .write_all(&answer(seq, &command, state))
-                .await
-                .unwrap();
+            if command.tag() == held
+                && let Some(released) = released.take()
+            {
+                released.await.unwrap();
+            }
+            let answer = answer(seq, &command, state, lists.as_deref());
+            stream.write_all(&answer).await.unwrap();
         }
     });
-    Server { suspends, release }
+    Server {
+        heard,
+        suspends,
+        release,
+    }
 }
 
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the server answers what the driver sends before a suspend and refuses every other command alike"
+    reason = "the server answers what the driver sends and refuses every other command alike"
 )]
-fn answer(seq: u32, command: &Command, state: SinkState) -> Vec<u8> {
+fn answer(seq: u32, command: &Command, state: SinkState, lists: Option<&CStr>) -> Vec<u8> {
     match command {
         Command::Auth(params) => reply(
             seq,
@@ -183,9 +193,14 @@ fn answer(seq: u32, command: &Command, state: SinkState) -> Vec<u8> {
             },
         ),
         Command::SetClientName(_) => reply(seq, &SetClientNameReply { client_id: 0 }),
-        Command::Subscribe(_) => ack(seq),
+        Command::Subscribe(_) | Command::SuspendSink(_) => ack(seq),
         Command::GetServerInfo => reply(seq, &server_info()),
         Command::GetSinkInfoList => reply(seq, &vec![sink(state)]),
+        Command::GetSourceInfoList => match lists {
+            Some(name) => reply(seq, &vec![source(MICROPHONE_INDEX, name, None)]),
+            None => error(seq),
+        },
+        Command::GetSourceOutputInfoList => reply(seq, &Vec::<SourceOutputInfo>::new()),
         _ => error(seq),
     }
 }
@@ -249,6 +264,79 @@ async fn restored(facts: &mut mpsc::Receiver<Input>) -> RestoreId {
     }
 }
 
+/// Whether the adapter tells the server down within one call timeout of the paused clock.
+async fn told_down(facts: &mut mpsc::Receiver<Input>) -> bool {
+    let down = async {
+        loop {
+            match facts.recv().await {
+                Some(Input::Audio(AudioFact::Down)) => return true,
+                Some(_) => {}
+                None => return false,
+            }
+        }
+    };
+    let wait = Duration::from_millis(AUDIO_CALL_TIMEOUT_MS);
+    timeout(wait, down).await.unwrap_or(false)
+}
+
+/// A state whose microphone's source is up, so the adapter reads the record streams on it.
+fn source_up() -> State {
+    let mut named = State {
+        model_number: MODEL_NUMBER.to_owned(),
+        ..State::default()
+    };
+    named.microphone.show(MicCode::Ready, 0, true);
+    named
+}
+
+/// The name of the source `source_up` shows.
+fn microphone() -> CString {
+    CString::new(source_up().mic_source()).unwrap()
+}
+
+/// The commands the server hears from `held` on, a restore being asked while the answer to `held` is held back; `lists` names the one source the server lists.
+fn heard_from(held: CommandTag, lists: &CStr) -> Vec<CommandTag> {
+    let (through_the_first, _) = two_restores();
+    let [id] = restore_ids(&through_the_first)[..] else {
+        panic!("{through_the_first:?}");
+    };
+    let named = source_up();
+    on_paused_clock(async {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(SOCKET);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let mut server = serve(listener, held, Some(lists.to_owned()));
+        let (inputs, mut facts) = mpsc::channel(FACTS);
+        let (requests, asked) = queue();
+        let (_hub, state) = watch::channel(named);
+        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        let device = DEVICE.parse().unwrap();
+        requests
+            .send(AudioRequest::Follow(Some(device)))
+            .await
+            .unwrap();
+        // The server has the command and holds its answer, so the restore is asked inside that read.
+        loop {
+            match server.heard.recv().await {
+                Some(tag) if tag == held => break,
+                Some(_) => {}
+                None => panic!("the server ended before it heard {held:?}"),
+            }
+        }
+        requests.send(AudioRequest::Restore(id)).await.unwrap();
+        server.release.send(()).unwrap();
+        assert_eq!(restored(&mut facts).await, id);
+        drop(requests);
+        stop(adapter).await;
+        let mut heard = vec![held];
+        while let Ok(tag) = server.heard.try_recv() {
+            heard.push(tag);
+        }
+        heard
+    })
+}
+
 #[test]
 fn a_restore_asked_inside_an_earlier_one_is_answered_after_it_with_its_own_id() {
     let (through_the_first, after_its_deadline) = two_restores();
@@ -263,10 +351,15 @@ fn a_restore_asked_inside_an_earlier_one_is_answered_after_it_with_its_own_id() 
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join(SOCKET);
         fs::create_dir_all(socket.parent().unwrap()).unwrap();
-        let mut server = serve(UnixListener::bind(&socket).unwrap());
+        let mut server = serve(
+            UnixListener::bind(&socket).unwrap(),
+            CommandTag::SuspendSink,
+            None,
+        );
         let (inputs, mut facts) = mpsc::channel(FACTS);
         let (requests, asked) = queue();
-        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf()));
+        let state = watch::channel(State::default()).1;
+        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
         let device = DEVICE.parse().unwrap();
         requests
             .send(AudioRequest::Follow(Some(device)))
@@ -291,4 +384,73 @@ fn a_restore_asked_inside_an_earlier_one_is_answered_after_it_with_its_own_id() 
         suspends
     });
     assert_eq!(suspends, [true, false, true, false]);
+}
+
+#[test]
+fn a_refused_read_of_the_record_streams_holds_back_no_restore() {
+    let (through_the_first, _) = two_restores();
+    let [id] = restore_ids(&through_the_first)[..] else {
+        panic!("{through_the_first:?}");
+    };
+    // The source is up, so the adapter reads its record streams, which this server refuses.
+    let named = source_up();
+    let (suspends, answered, lost) = on_paused_clock(async {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(SOCKET);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let mut server = serve(
+            UnixListener::bind(&socket).unwrap(),
+            CommandTag::SuspendSink,
+            None,
+        );
+        let (inputs, mut facts) = mpsc::channel(FACTS);
+        let (requests, asked) = queue();
+        let (_hub, state) = watch::channel(named);
+        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        let device = DEVICE.parse().unwrap();
+        // Queued together, so the restore is owed at the first read of the server.
+        requests
+            .send(AudioRequest::Follow(Some(device)))
+            .await
+            .unwrap();
+        requests.send(AudioRequest::Restore(id)).await.unwrap();
+        server.release.send(()).unwrap();
+        let suspends = [server.suspends.recv().await, server.suspends.recv().await];
+        let answered = restored(&mut facts).await;
+        // Only the refused read loses this server, so the loss told is that read made, after the restore.
+        let lost = told_down(&mut facts).await;
+        drop(requests);
+        stop(adapter).await;
+        (suspends, answered, lost)
+    });
+    assert_eq!(suspends, [Some(true), Some(false)]);
+    assert_eq!(answered, id);
+    assert!(lost, "the record streams were not read");
+}
+
+#[test]
+fn a_restore_asked_while_the_sources_are_read_is_done_before_the_record_streams_are_read() {
+    let held = CommandTag::GetSourceInfoList;
+    let heard = heard_from(held, &microphone());
+    let restore = [held, CommandTag::SuspendSink, CommandTag::SuspendSink];
+    assert!(heard.starts_with(&restore), "{heard:?}");
+}
+
+#[test]
+fn a_restore_asked_while_the_record_streams_are_read_is_done_before_the_sink_is_read_again() {
+    let held = CommandTag::GetSourceOutputInfoList;
+    let heard = heard_from(held, &microphone());
+    let restore = [held, CommandTag::SuspendSink, CommandTag::SuspendSink];
+    assert!(heard.starts_with(&restore), "{heard:?}");
+}
+
+#[test]
+fn a_restore_asked_while_the_sources_are_read_is_done_when_the_source_is_not_listed() {
+    let held = CommandTag::GetSourceInfoList;
+    let heard = heard_from(held, ANOTHER_SOURCE);
+    // Nothing follows the restore: the source is not listed, so its record streams are never read.
+    assert_eq!(
+        heard,
+        [held, CommandTag::SuspendSink, CommandTag::SuspendSink]
+    );
 }
