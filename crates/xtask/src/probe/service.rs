@@ -21,23 +21,29 @@ pub(super) enum ServiceError {
     NotRestored(String),
 }
 
-/// The installed service as a run that dials the pods holds it: stopped if it ran, under the hardware run's lock. Dropping it on any way out, an unwind included, starts the service again.
-#[derive(Debug)]
-pub(super) struct Stopped {
-    was_running: bool,
-    // Declared before the lock, so a drop restores while the lock is still held.
-    guard: Guard,
-    /// `None` only for the stand-in of a unit test, which holds nothing.
-    lock: Option<OwnedFd>,
-}
+/// The hardware run's lock, or `None` for a unit test that touches no service.
+pub(super) struct RunLock(Option<OwnedFd>);
 
-impl Stopped {
-    /// Takes the hardware run's lock, then stops the installed service if it runs.
+impl RunLock {
+    /// Refuses a probe while another run holds the lock.
     pub(super) fn take() -> Result<Self, ServiceError> {
-        // Held from before the installed service's state is read until after its restore, so a hardware run and this probe never share the service.
         let lock = run_lock()
             .map_err(ServiceError::NotStopped)?
             .ok_or(ServiceError::LockHeld)?;
+        Ok(Self(Some(lock)))
+    }
+
+    #[cfg(test)]
+    pub(super) fn nothing() -> Self {
+        Self(None)
+    }
+
+    /// Stops the installed service if it runs, keeping the lock through its restore.
+    pub(super) fn stop(self) -> Result<Stopped, ServiceError> {
+        #[cfg(test)]
+        if self.0.is_none() {
+            return Ok(Stopped::nothing());
+        }
         let word = unit::activity(INSTALLED).map_err(ServiceError::NotStopped)?;
         let was_running = unit::is_running(&word);
         // Made before the stop, as the hardware run makes it, so a stop that fails partway and every later way out, an unwind included, start it again.
@@ -48,16 +54,27 @@ impl Stopped {
                 Err(start) => ServiceError::NotRestored(format!("{stop}; {start}")),
             });
         }
-        Ok(Self {
+        Ok(Stopped {
             was_running,
             guard,
-            lock: Some(lock),
+            lock: self.0,
         })
     }
+}
 
+/// The installed service as a run that dials the pods holds it: stopped if it ran, under the hardware run's lock. Dropping it on any way out, an unwind included, starts the service again.
+#[derive(Debug)]
+pub(super) struct Stopped {
+    was_running: bool,
+    // Declared before the lock, so a drop restores while the lock is still held.
+    guard: Guard,
+    lock: Option<OwnedFd>,
+}
+
+impl Stopped {
     /// What a unit test gives its host: nothing stopped, nothing held and nothing to put back.
     #[cfg(test)]
-    pub(super) fn nothing() -> Self {
+    fn nothing() -> Self {
         Self {
             was_running: false,
             guard: Guard::installed_only(false),

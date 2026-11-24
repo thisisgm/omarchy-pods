@@ -41,7 +41,8 @@ pub(super) fn serve(
     interrupted: &AtomicBool,
 ) -> Result<(), SourceError> {
     let peer = store::read_device(&store::root(host.home.as_ref()))?;
-    host.with_service_stopped(|host| uplink(peer, seconds, host, interrupted))
+    let lock = (host.lock_service)()?;
+    host.with_service_stopped(lock, |host| uplink(peer, seconds, host, interrupted))
 }
 
 /// Opens the control channel, runs the handshake and START, and serves the uplink once the pods say it runs.
