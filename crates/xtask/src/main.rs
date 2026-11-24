@@ -4,6 +4,7 @@ mod hw;
 mod probe;
 mod pw_ffi;
 mod release;
+mod samples;
 
 use std::env;
 use std::ffi::OsString;
@@ -82,6 +83,12 @@ fn main() -> ExitCode {
         Some(command) if command == "probe" => probe::run(env::args_os().skip(1)),
         Some(command) if command == "hw" => hw::run(env::args_os().skip(1)),
         Some(command) if command == "pw-ffi" && env::args_os().nth(2).is_none() => pw_ffi::run(),
+        Some(command) if command == "samples" => {
+            match env::args_os().skip(2).collect::<Vec<_>>().as_slice() {
+                [kind, dir] if kind == "opus" => samples::run(Path::new(dir)),
+                _ => usage(),
+            }
+        }
         Some(command) if command == "release-check" => {
             match env::args_os().skip(2).collect::<Vec<_>>().as_slice() {
                 [file, version] => release::run(Path::new(file), version),
@@ -94,7 +101,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     report(
-        "usage: cargo xtask ci [gate]... | cargo xtask probe <command> | cargo xtask hw link --binary <path> | cargo xtask pw-ffi | cargo xtask release-check <file> <version>",
+        "usage: cargo xtask ci [gate]... | cargo xtask probe <command> | cargo xtask hw link --binary <path> | cargo xtask pw-ffi | cargo xtask samples opus <dir> | cargo xtask release-check <file> <version>",
     );
     ExitCode::FAILURE
 }

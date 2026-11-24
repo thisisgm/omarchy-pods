@@ -20,13 +20,13 @@ mod tests {
         MAX_UNITS_PER_SDU, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, STAMP_STEP, STEADY_FRAMES,
         chain,
     };
-    use pods_samples::opus::tone;
+    use pods_samples::opus::{TONE_DBFS, TONE_HZ, tone};
     use pods_samples::uplink::tone_unit;
 
     use super::support::{
-        FADE, FIRST, HELD, LEVELS, LINES, PACKET_FRAMES, QUANTUM, Rig, TONE_DBFS, TONE_HZ,
-        TONE_SLACK_DB, TONE_SLACK_HZ, Twin, after, assert_same, assert_shaped, frame_frames,
-        frames_in, largest_step, ms, period, reads, run_start, silent, unsteered,
+        FADE, FIRST, HELD, LEVELS, LINES, PACKET_FRAMES, QUANTUM, Rig, TONE_SLACK_DB,
+        TONE_SLACK_HZ, Twin, after, assert_same, assert_shaped, frame_frames, frames_in,
+        largest_step, ms, period, reads, run_start, silent, unsteered,
     };
 
     /// A frame of the tone past any a run here lands, so its bytes are not those a counter before it carried.
@@ -204,7 +204,7 @@ mod tests {
             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
         let level = 20.0 * f64::from(peak).log10();
         assert!(
-            (level - TONE_DBFS).abs() <= TONE_SLACK_DB,
+            (level - f64::from(TONE_DBFS)).abs() <= TONE_SLACK_DB,
             "the tone peaks at {level} dBFS"
         );
     }

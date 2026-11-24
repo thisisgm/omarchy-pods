@@ -1,6 +1,7 @@
-//! Writes Opus frames as one Ogg logical stream, a page for every packet, which FFmpeg reads as Ogg Opus.
+//! Writes Opus frames as one Ogg logical stream, a page for every packet, which FFmpeg reads as Ogg Opus, and reads the packets of one back.
 
 use std::io::{self, Write};
+use std::mem;
 
 /// The four bytes every page opens with.
 const CAPTURE_PATTERN: &[u8; 4] = b"OggS";
@@ -18,6 +19,8 @@ const TOP_BIT: u32 = 0x8000_0000;
 const BITS_PER_BYTE: u8 = 8;
 /// A lacing value under this ends its packet; a page lists at most that many values.
 const FULL_SEGMENT: usize = 255;
+/// A page up to its lacing values; the last byte counts them.
+const PAGE_HEADER_LEN: usize = 27;
 /// The identification header, version 1 of it.
 const HEAD_MAGIC: &[u8; 8] = b"OpusHead";
 const HEAD_VERSION: u8 = 1;
@@ -126,4 +129,93 @@ pub(crate) fn write(out: &mut dyn Write, frames: &[&[u8]]) -> io::Result<()> {
         out.write_all(&page(flags, position, sequence, frame)?)?;
     }
     Ok(())
+}
+
+fn cut(what: &str) -> io::Error {
+    let message = format!("the file ends inside {what}");
+    io::Error::new(io::ErrorKind::UnexpectedEof, message)
+}
+
+/// The packets of a file of one Ogg logical stream, the two headers first; no checksum is checked.
+// Sample input: `4f 67 67 53 00 02`, 20 more header bytes, `01 03`, `b8 10 11`: one page of one packet of three bytes.
+pub(crate) fn packets(file: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+    let mut packets = Vec::new();
+    let mut open = Vec::new();
+    let mut rest = file;
+    while !rest.is_empty() {
+        let (header, behind) = rest
+            .split_first_chunk::<PAGE_HEADER_LEN>()
+            .ok_or_else(|| cut("a page header"))?;
+        if !header.starts_with(CAPTURE_PATTERN) {
+            let none = "a page does not open with OggS";
+            return Err(io::Error::new(io::ErrorKind::InvalidData, none));
+        }
+        let [.., segments] = header;
+        let (lacing, mut body) = behind
+            .split_at_checked(usize::from(*segments))
+            .ok_or_else(|| cut("a lacing table"))?;
+        for value in lacing.iter().copied().map(usize::from) {
+            let (segment, after) = body
+                .split_at_checked(value)
+                .ok_or_else(|| cut("a packet"))?;
+            open.extend_from_slice(segment);
+            body = after;
+            if value < FULL_SEGMENT {
+                packets.push(mem::take(&mut open));
+            }
+        }
+        rest = body;
+    }
+    if open.is_empty() {
+        Ok(packets)
+    } else {
+        Err(cut("a packet"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_packets_read_back_are_the_headers_and_the_frames_written() {
+        let frames: [&[u8]; 5] = [&[0xb8, 0x10, 0x11], &[], &[7; 254], &[8; 255], &[9; 600]];
+        let mut file = Vec::new();
+        write(&mut file, &frames).unwrap();
+        let read = packets(&file).unwrap();
+        assert!(read[0].starts_with(HEAD_MAGIC) && read[1].starts_with(TAGS_MAGIC));
+        assert_eq!(read[2..], frames);
+        assert_eq!(packets(&[]).unwrap(), Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn a_packet_goes_on_where_a_page_ends_on_a_full_segment() {
+        let first = page(FIRST_PAGE, 0, 0, &[1; 255]).unwrap();
+        // Without its closing lacing value of 0 the page leaves its packet open.
+        let mut open = first.clone();
+        open[PAGE_HEADER_LEN - 1] = 1;
+        open.remove(PAGE_HEADER_LEN + 1);
+        let rest = page(LAST_PAGE, 0, 1, &[2; 3]).unwrap();
+        let read = packets(&[open.clone(), rest].concat()).unwrap();
+        assert_eq!(read, [[vec![1; 255], vec![2; 3]].concat()]);
+        let error = packets(&open).unwrap_err();
+        assert_eq!(error.to_string(), "the file ends inside a packet");
+    }
+
+    #[test]
+    fn a_file_that_is_cut_or_is_no_ogg_is_refused() {
+        let mut file = Vec::new();
+        write(&mut file, &[&[0xb8, 0x10, 0x11]]).unwrap();
+        for (len, inside) in [
+            (file.len() - 1, "a packet"),
+            (file.len() - 4, "a lacing table"),
+            (file.len() - 10, "a page header"),
+        ] {
+            let error = packets(&file[..len]).unwrap_err();
+            assert_eq!(error.to_string(), format!("the file ends inside {inside}"));
+        }
+        file[0] = b'o';
+        let error = packets(&file).unwrap_err();
+        assert_eq!(error.to_string(), "a page does not open with OggS");
+    }
 }

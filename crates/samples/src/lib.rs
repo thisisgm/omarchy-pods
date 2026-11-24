@@ -3,6 +3,7 @@
 // Layouts from daemon/airpods_packets.h and parseMetadata in daemon/main.cpp; no real device bytes.
 
 pub mod advert;
+pub mod doap;
 pub mod host;
 pub mod opus;
 pub mod uplink;
@@ -33,6 +34,8 @@ pub const CONVERSATION_AWARENESS: u8 = 0x28;
 pub const ADAPTIVE_LEVEL: u8 = 0x2e;
 /// Whether the pods offer the Off listening mode; value 1 yes, 2 no.
 pub const ALLOW_OFF_OPTION: u8 = 0x34;
+/// Whether a host may start the dictation stream on this connection; value 1 yes.
+pub const DOAP_MODE: u8 = 0x13;
 
 /// One part's battery: percent, and whether it charges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,6 +326,14 @@ mod tests {
         ];
         assert_eq!(setting(CONVERSATION_AWARENESS, 2), written[0]);
         assert_eq!(setting(ONE_BUD_ANC, 1), written[1]);
+    }
+
+    #[test]
+    fn the_dictation_mode_is_the_setting_a_host_was_seen_to_write() {
+        let written = [
+            0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x13, 0x01, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(setting(DOAP_MODE, 1), written);
     }
 
     #[test]
