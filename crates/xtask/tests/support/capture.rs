@@ -1,5 +1,6 @@
 //! The built capture commands under the socket trap against the fake pods, in a store under a temporary `HOME`, and a dictation soak captured and analysed that way.
 
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -12,7 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_proto::dictation::DictationPacket;
-use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
+use pods_proto::packets::{
+    ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
+};
 use pods_proto::sdulog::{self, Direction};
 use pods_sys::l2cap::Channel;
 use pods_trap::{Answer, Outcome, Route, Trap};
@@ -30,8 +33,8 @@ pub(crate) const DEVICE: &str = "02:00:00:00:00:01";
 pub(crate) const ROOT_NAME: &str = "omapods-captures";
 /// The mode the store gives a run directory.
 const OWNER_DIR: u32 = 0o700;
-/// The mode the store gives every file.
-const OWNER_FILE: u32 = 0o600;
+/// The mode of a file of the caller's alone: every file the store makes, and every step file the tests write.
+pub(crate) const OWNER_FILE: u32 = 0o600;
 const PERMISSION_BITS: u32 = 0o777;
 /// The status a command exits with when the script did not run to its end.
 pub(crate) const FAILED: Option<i32> = Some(1);
@@ -399,4 +402,87 @@ impl Analysed {
         })
         .sum()
     }
+}
+
+/// The three packets of the handshake, in the order the command sends them.
+pub(crate) const HANDSHAKE_SENT: [&[u8]; 3] =
+    [&HANDSHAKE, &SET_SPECIFIC_FEATURES, &REQUEST_NOTIFICATIONS];
+
+/// Writes `contents` to a new file of `mode` in `dir` and returns its path; the mode is set after the umask has had its say.
+pub(crate) fn plan(dir: &Path, name: &str, contents: &[u8], mode: u32) -> PathBuf {
+    let path = dir.join(name);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(contents).unwrap();
+    file.set_permissions(fs::Permissions::from_mode(mode))
+        .unwrap();
+    path
+}
+
+pub(crate) fn steps_args(path: &Path) -> [&str; 4] {
+    ["--route", "dictation", "--steps", path.to_str().unwrap()]
+}
+
+/// Runs the capture with `args` into run `name` against fake pods playing `part`.
+pub(crate) fn run_steps(
+    home: &TempDir,
+    name: &str,
+    args: &[&str],
+    part: Pods,
+) -> (Ran, Transcript) {
+    let (control, control_far) = hand_over();
+    let (att, att_far) = hand_over();
+    let command = capture(home, name, args);
+    let routes = vec![route(CONTROL_PSM, control), route(ATT_PSM, att)];
+    let running = Running::start(command, routes);
+    let flag = Arc::new(AtomicBool::new(false));
+    let played = pods::spawn_dialled(Some(far_end(&control_far)), att_far, part, flag);
+    let ran = running.finish();
+    (ran, transcript(&played))
+}
+
+/// The step that sends `sdu` on the control channel, as the line `control 0400040017000000`.
+pub(crate) fn control_step(sdu: &[u8]) -> String {
+    let mut line = String::from("control ");
+    for byte in sdu {
+        write!(line, "{byte:02x}").unwrap();
+    }
+    line.push('\n');
+    line
+}
+
+pub(crate) fn after_handshake(pods: &Transcript) -> Vec<Vec<u8>> {
+    let got = pods.got();
+    let (handshake, rest) = got.split_at(HANDSHAKE_SENT.len());
+    assert_eq!(handshake, HANDSHAKE_SENT);
+    rest.iter().map(|sdu| sdu.to_vec()).collect()
+}
+
+/// The stamp and the text of every step mark, each line `1203456789\tstep\tline 2 read 0x0024`.
+pub(crate) fn step_marks(marks: &str) -> Vec<(u64, &str)> {
+    let fields = marks.lines().map(|line| {
+        let [stamp, kind, text] = line.splitn(3, '\t').collect::<Vec<_>>()[..] else {
+            panic!("{line}");
+        };
+        (stamp.parse().unwrap(), kind, text)
+    });
+    let steps = fields.filter(|(_, kind, _)| *kind == "step");
+    steps.map(|(stamp, _, text)| (stamp, text)).collect()
+}
+
+/// Runs the command with `args` under the trap, which takes any dial, and returns what it said after asserting it dialled nothing and made no run.
+pub(crate) fn refusal_of(home: &TempDir, args: &[&str]) -> String {
+    let (control, _) = hand_over();
+    let (att, _) = hand_over();
+    let routes = vec![route(CONTROL_PSM, control), route(ATT_PSM, att)];
+    let running = Running::start(capture(home, "refused", args), routes);
+    let ran = running.finish();
+    assert_eq!(ran.code, FAILED, "{}", ran.stderr);
+    assert_eq!(ran.stdout, "");
+    assert!(ran.dials.is_empty(), "{:?}", ran.dials);
+    assert!(!run_path(home, "refused").exists());
+    ran.stderr
 }

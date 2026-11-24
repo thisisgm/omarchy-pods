@@ -1,5 +1,6 @@
 //! The step file parser on its edges, its guards and arbitrary input; no user path drives these, the command tests do.
 
+use pods_proto::sdulog;
 use proptest::prelude::*;
 
 use super::*;
@@ -12,7 +13,7 @@ fn att(line: usize, step: AttStep) -> Action {
 #[test]
 fn the_documented_sample_fires_each_step_at_the_sum_of_the_waits_above_it() {
     let text = b"# arm, then start\nwrite-request 0x0010 0100010101\nwait 80\ncontrol 040004004b000300030103\nwrite-command 0x0007 0100\nwait 2000\n";
-    let events = parse_steps(text).unwrap();
+    let events = parse_steps(text, false).unwrap();
     let arm = AttStep::WriteRequest {
         handle: 0x0010,
         value: vec![0x01, 0x00, 0x01, 0x01, 0x01],
@@ -40,7 +41,7 @@ fn each_packet_a_guard_covers_goes_out_under_its_guard() {
         ("write-command 0x000a 010000", Action::DictationStop),
     ];
     for (line, action) in cases {
-        let events = parse_steps(line.as_bytes()).unwrap();
+        let events = parse_steps(line.as_bytes(), false).unwrap();
         assert_eq!(events, [at(0, action), at(0, Action::End)], "{line}");
     }
 }
@@ -80,7 +81,7 @@ fn each_step_kind_leaves_as_its_pdu_and_is_marked_by_its_kind_and_handle() {
 #[test]
 fn every_bound_is_reached_and_not_passed() {
     let longest = format!("write-request 0xffff {}", "ab".repeat(MAX_VALUE_BYTES));
-    let events = parse_steps(longest.as_bytes()).unwrap();
+    let events = parse_steps(longest.as_bytes(), false).unwrap();
     let value = vec![0xab; MAX_VALUE_BYTES];
     let step = AttStep::WriteRequest {
         handle: 0xffff,
@@ -93,26 +94,26 @@ fn every_bound_is_reached_and_not_passed() {
     let waits = usize::try_from(MAX_RUN_MS / MAX_WAIT_MS).unwrap();
     let longest_run = longest_wait.repeat(waits);
     assert_eq!(
-        parse_steps(longest_run.as_bytes()).unwrap(),
+        parse_steps(longest_run.as_bytes(), false).unwrap(),
         [at(MAX_RUN_MS, Action::End)]
     );
-    let refused = parse_steps((longest_run + "wait 1\n").as_bytes()).unwrap_err();
+    let refused = parse_steps((longest_run + "wait 1\n").as_bytes(), false).unwrap_err();
     let line = waits + 1;
     let fault = Fault::RunTooLong;
     assert_eq!(refused, StepsError { line, fault });
     let most_lines = "read 0x0001\n".repeat(MAX_LINES);
     assert_eq!(
-        parse_steps(most_lines.as_bytes()).unwrap().len(),
+        parse_steps(most_lines.as_bytes(), false).unwrap().len(),
         MAX_LINES + 1
     );
-    let refused = parse_steps((most_lines + "\n").as_bytes()).unwrap_err();
+    let refused = parse_steps((most_lines + "\n").as_bytes(), false).unwrap_err();
     let (line, fault) = (MAX_LINES + 1, Fault::TooManyLines);
     assert_eq!(refused, StepsError { line, fault });
 }
 
 #[test]
 fn a_read_of_a_stream_handle_and_a_wait_of_nothing_are_steps_like_any() {
-    let events = parse_steps(b"read 0x0007\nwait 0\nread 0x000a").unwrap();
+    let events = parse_steps(b"read 0x0007\nwait 0\nread 0x000a", false).unwrap();
     let read = |line, handle| att(line, AttStep::Read { handle });
     let expected = [
         at(0, read(1, START_HANDLE)),
@@ -128,8 +129,11 @@ fn hold(text: &str) -> Action {
 
 #[test]
 fn a_cue_holds_its_text_at_the_sum_of_the_waits_above_it() {
-    let events =
-        parse_steps(b"wait 20\n  cue \"controller: restore now\"\nwait 5\ncue \"\"\n").unwrap();
+    let events = parse_steps(
+        b"wait 20\n  cue \"controller: restore now\"\nwait 5\ncue \"\"\n",
+        false,
+    )
+    .unwrap();
     let expected = [
         at(20, hold("controller: restore now")),
         at(25, hold("")),
@@ -137,7 +141,7 @@ fn a_cue_holds_its_text_at_the_sum_of_the_waits_above_it() {
     ];
     assert_eq!(events, expected);
     let longest = "\u{e9}".repeat(MAX_CUE_CHARS);
-    let events = parse_steps(format!("cue \"{longest}\"").as_bytes()).unwrap();
+    let events = parse_steps(format!("cue \"{longest}\"").as_bytes(), false).unwrap();
     assert_eq!(events, [at(0, hold(&longest)), at(0, Action::End)]);
 }
 
@@ -165,7 +169,91 @@ fn a_cue_without_quotes_with_an_open_quote_or_past_the_bound_is_no_step() {
             line: line_number,
             fault,
         };
-        assert_eq!(parse_steps(line.as_bytes()), Err(expected), "{line}");
+        assert_eq!(parse_steps(line.as_bytes(), false), Err(expected), "{line}");
+    }
+}
+
+/// The control commands a Mac sends at connect.
+const CONNECT_COMMANDS: [&str; 5] = [
+    "0400040009000601000000",
+    "0400040009003202000000",
+    "0400040009003c02000000",
+    "0400040009001301000000",
+    "0400040009001201000000",
+];
+/// The uplink START with codec id 257 in place of 130.
+const START_257: &str = "04000400580000000900000101010000049600";
+
+/// The plan of a file whose one line sends `action`.
+fn only(action: Action) -> Vec<Event> {
+    vec![at(0, action), at(0, Action::End)]
+}
+
+#[test]
+fn a_control_command_is_a_step_with_allow_control_and_refused_without() {
+    for hex in CONNECT_COMMANDS {
+        let line = format!("control {hex}");
+        let fault = Fault::SettingCommand;
+        let refused = Err(StepsError { line: 1, fault });
+        assert_eq!(parse_steps(line.as_bytes(), false), refused, "{line}");
+        let packet = StepPacket::Control(sdulog::parse_hex(hex).unwrap());
+        let step = Action::Step { line: 1, packet };
+        assert_eq!(parse_steps(line.as_bytes(), true), Ok(only(step)), "{line}");
+    }
+}
+
+/// Codec id 130 as `uplink::START` has it, with 5 frames and a last field of 0x0097.
+const START_OWN_FIELDS: &str = "04000400580000000900000182000000059700";
+
+#[test]
+fn a_start_with_its_own_fields_goes_out_under_the_uplink_guard_and_names_its_codec() {
+    let other_codec = UplinkStart {
+        codec: 257,
+        frames: 4,
+        last: 0x0096,
+    };
+    let own_fields = UplinkStart {
+        codec: 130,
+        frames: 5,
+        last: 0x0097,
+    };
+    let cases = [
+        (START_257, other_codec, "uplink start codec 257"),
+        (START_OWN_FIELDS, own_fields, "uplink start codec 130"),
+    ];
+    for (hex, start, mark) in cases {
+        let line = format!("control {hex}");
+        for allow_control in [false, true] {
+            let events = parse_steps(line.as_bytes(), allow_control);
+            assert_eq!(events, Ok(only(Action::StartCodec(start))), "{line}");
+        }
+        assert_eq!(start.packet(), sdulog::parse_hex(hex).unwrap());
+        assert_eq!(start.to_string(), mark);
+    }
+}
+
+#[test]
+fn every_other_uplink_packet_is_refused_with_or_without_allow_control() {
+    let refused = [
+        "0400040058000000",
+        "040004005800000009000001820000000496",
+        "0400040058000000090000018200000004960000",
+        "04000400580000000900000282000000049600",
+        "04000400580000000a00000182000000049600",
+        "04000400580001000900000182000000049600",
+    ];
+    for (hex, allow_control) in refused
+        .into_iter()
+        .flat_map(|hex| [(hex, false), (hex, true)])
+    {
+        let line = format!("control {hex}");
+        let fault = Fault::GuardedPacket;
+        let expected = Err(StepsError { line: 1, fault });
+        assert_eq!(
+            parse_steps(line.as_bytes(), allow_control),
+            expected,
+            "{line}"
+        );
     }
 }
 
@@ -226,7 +314,7 @@ fn all_four_files_load_and_name_no_unknown_step() {
         ("start-twice", start_twice),
     ];
     for (name, expected) in files {
-        assert_eq!(parse_steps(&step_file(name)), Ok(expected), "{name}");
+        assert_eq!(parse_steps(&step_file(name), false), Ok(expected), "{name}");
     }
 }
 
@@ -255,8 +343,8 @@ fn near_steps() -> impl Strategy<Value = Vec<u8>> {
 
 proptest! {
     #[test]
-    fn parse_steps_never_panics_and_ends_every_plan_last(text in near_steps()) {
-        match parse_steps(&text) {
+    fn parse_steps_never_panics_and_ends_every_plan_last(text in near_steps(), allow_control in any::<bool>()) {
+        match parse_steps(&text, allow_control) {
             Ok(events) => {
                 let last = events.last().map(|event| &event.action);
                 prop_assert_eq!(last, Some(&Action::End));

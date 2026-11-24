@@ -8,7 +8,7 @@ use std::str::FromStr;
 use pods_proto::uplink::MicSide;
 
 pub(crate) use steps::{
-    MAX_FILE_BYTES as MAX_STEPS_FILE_BYTES, StepPacket, StepsError, parse_steps,
+    MAX_FILE_BYTES as MAX_STEPS_FILE_BYTES, StepPacket, StepsError, UplinkStart, parse_steps,
 };
 
 const MS_PER_MINUTE: u32 = 60_000;
@@ -314,6 +314,8 @@ pub(crate) enum Opening {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Action {
     Start,
+    /// A START of a step file with its own codec id, frames and last field, under the same guard as `Start`.
+    StartCodec(UplinkStart),
     Stop,
     /// A line shown to the owner.
     Cue(&'static str),

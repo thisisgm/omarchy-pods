@@ -170,7 +170,7 @@ fn every_script_that_starts_dictation_also_stops_it() {
                         panic!("{name} changes the microphone side")
                     }
                     Action::Cue(_) | Action::MarkActive | Action::MarkIdle => {}
-                    Action::Step { .. } | Action::Hold(_) => {
+                    Action::Step { .. } | Action::StartCodec(_) | Action::Hold(_) => {
                         panic!("{name} holds a step of a step file")
                     }
                 }
@@ -215,7 +215,7 @@ fn every_active_marker_has_an_idle_marker() {
                 | Action::Cue(_)
                 | Action::SetSide(_)
                 | Action::RestoreSide => {}
-                Action::Step { .. } | Action::Hold(_) => {
+                Action::Step { .. } | Action::StartCodec(_) | Action::Hold(_) => {
                     panic!("{name} holds a step of a step file")
                 }
             }

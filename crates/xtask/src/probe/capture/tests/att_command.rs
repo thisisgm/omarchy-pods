@@ -35,6 +35,7 @@ pub(super) fn soak_args(run: &str, no_marker: bool) -> CaptureArgs {
         route: Route::Dictation,
         script: Some(ScriptName::Soak),
         steps: None,
+        allow_control: false,
         minutes: Some(1),
         no_marker,
         unchecked: false,
@@ -95,6 +96,7 @@ fn knock_args(run: &str) -> CaptureArgs {
         route: Route::Dictation,
         script: Some(ScriptName::AttKnock),
         steps: None,
+        allow_control: false,
         minutes: None,
         no_marker: false,
         unchecked: false,
@@ -464,6 +466,7 @@ fn the_att_map_command_dials_the_attribute_psm_alone_and_writes_the_table() {
     let args = CaptureArgs {
         script: Some(ScriptName::AttMap),
         steps: None,
+        allow_control: false,
         ..knock_args("map-1")
     };
     let ran = run_dialled(home.path(), vec![(ATT_PSM, near)], move |host| {
@@ -504,6 +507,7 @@ fn a_capture_of_both_routes_dials_both_channels_and_stops_what_it_started() {
         route: Route::Both,
         script: Some(ScriptName::Both),
         steps: None,
+        allow_control: false,
         minutes: None,
         ..soak_args("both-1", false)
     };

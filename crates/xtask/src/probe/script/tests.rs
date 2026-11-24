@@ -131,7 +131,7 @@ fn every_script_that_starts_also_stops() {
                 | Action::MarkIdle
                 | Action::DictationStart
                 | Action::DictationStop => panic!("{name} touches the dictation stream"),
-                Action::Step { .. } | Action::Hold(_) => {
+                Action::Step { .. } | Action::StartCodec(_) | Action::Hold(_) => {
                     panic!("{name} holds a step of a step file")
                 }
             }
