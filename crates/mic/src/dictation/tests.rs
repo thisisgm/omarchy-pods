@@ -1,4 +1,4 @@
-//! Support tests: the frame step with decoder calls that panic or refuse to conceal, which no frame can be made to do on order.
+//! Support tests: the frame step with decoder calls that panic or refuse to conceal, which no frame can be made to do on order, and what the stage keeps of a frame, which no caller sees.
 
 use std::iter;
 use std::sync::Arc;
@@ -144,4 +144,24 @@ fn a_frame_lost_after_the_fall_is_silence() {
     // Nothing the run held before the fall comes after it: every sample from its end to the next audio is zero.
     let loud = lost.iter().position(|&sample| sample != 0.0);
     assert_eq!(loud, None, "audio from before the fall");
+}
+
+#[test]
+fn a_staged_frame_that_came_too_long_is_still_refused_when_placed() {
+    let counters = Arc::new(Counters::default());
+    let (mut chain, _reader, _resync) = chain(Arc::clone(&counters)).unwrap();
+    chain.dictation_run();
+    let long = [0; MAX_OPUS_FRAME_BYTES + 40];
+    let plain = tone().next().unwrap();
+    chain.frames(Duration::ZERO, [(0, plain), (1, &long[..])].into_iter());
+    // The stage holds no more of it than tells it came too long.
+    let staged = chain.dictation.stage.as_ref().unwrap();
+    assert_eq!(staged[1].1.len(), MAX_OPUS_FRAME_BYTES + 1);
+    chain.frames(Duration::ZERO, iter::once((2, plain)));
+    assert!(chain.dictation.stage.is_none());
+    let counted = [&counters.decode_errors, &counters.concealed];
+    assert_eq!(
+        counted.map(|counter| counter.load(Ordering::Relaxed)),
+        [1, 1]
+    );
 }

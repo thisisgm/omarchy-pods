@@ -1,6 +1,67 @@
-//! Support tests: the one word that holds the run's arrival or none, the step between time and frames, and how far a write runs past the index it shows.
+//! Support tests: the one word that holds the run's arrival or none, the step between time and frames, how far a write runs past the index it shows, and a run that starts inside a read, at either of the two places it can, which no caller can make happen on order.
 
-use super::{Arrival, NS_PER_SECOND, Ring, UNIT_FRAMES, scaled};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use pods_samples::opus::tone;
+
+use super::{
+    Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Reader, Ring, UNIT_FRAMES,
+    fade_in, scaled,
+};
+use crate::{Chain, Counters, FRAME_MS, NODE_LATENCY_MS, chain};
+
+/// One read, 20 ms at the node's rate.
+const QUANTUM: usize = 1280;
+const PERIOD: Duration = Duration::from_millis(20);
+/// The frames of the stream's burst; the steady frame after them has this counter and places them.
+const BURST: u16 = 5;
+/// A frame that landed at zero is read out the stated latency later, so a read one frame after that finds the run dry.
+const LINKED_MS: u32 = NODE_LATENCY_MS + FRAME_MS;
+
+fn silent(heard: &[f32]) -> bool {
+    heard.iter().all(|sample| sample.to_bits() == 0)
+}
+
+/// A recorder that linked to a dictation that was over and heard none of it, the chain it reads, and the time of its next read.
+fn linked_after_a_dictation() -> (Chain, Reader, Duration) {
+    let (mut chain, mut reader, resync) = chain(Arc::new(Counters::default())).unwrap();
+    // The run's one frame told its time.
+    chain.dictation_run();
+    chain.frames(Duration::ZERO, (0..).zip(tone()).take(1));
+    resync.request();
+    let linked = Duration::from_millis(u64::from(LINKED_MS));
+    let mut heard = [1.0; QUANTUM];
+    reader.read(linked, &mut heard);
+    assert!(silent(&heard));
+    (chain, reader, linked.saturating_add(PERIOD))
+}
+
+/// The stream starts again at `now`: its burst, then the steady frame that places the opening.
+fn restart(chain: &mut Chain, now: Duration) {
+    let mut frames = (0..=BURST).zip(tone());
+    chain.dictation_run();
+    chain.frames(now, frames.by_ref().take(usize::from(BURST)));
+    chain.frames(now, frames);
+}
+
+/// The read at `now` starts on the run's first frame, fading in, and asks for the opening's rate.
+fn opens(reader: &mut Reader, now: Duration) {
+    let mut heard = [0.0; QUANTUM];
+    let ratio = reader.read(now, &mut heard);
+    let run = reader.ring.run();
+    let first = i64::try_from(run).unwrap();
+    let written = (0..).zip(0..).take(QUANTUM);
+    let opened: Vec<u32> = written
+        .map(|(at, faded)| reader.ring.sample(run, first.saturating_add(at)) * fade_in(faded))
+        .map(f32::to_bits)
+        .collect();
+    assert!(!silent(&heard));
+    assert_eq!(heard.map(f32::to_bits).to_vec(), opened);
+    let clamp = 1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION;
+    assert_eq!(ratio.to_bits(), clamp.to_bits());
+}
 
 #[test]
 fn time_and_frames_convert_at_a_rate_that_does_not_divide_a_second() {
@@ -32,7 +93,7 @@ fn time_and_frames_convert_at_a_rate_that_does_not_divide_a_second() {
 
 #[test]
 fn an_arrival_is_never_read_back_as_none() {
-    let word = Arrival::none();
+    let word = Moment::none();
     assert_eq!(word.load(), None);
     for ns in [i64::MAX, 0, -1, i64::MIN + 1] {
         word.store(Some(ns));
@@ -58,4 +119,45 @@ fn a_write_longer_than_a_unit_shows_its_index_every_unit() {
     }));
     assert_eq!(furthest, unit - 1);
     assert_eq!(ring.end(), long);
+}
+
+#[test]
+fn a_dictation_placed_inside_a_read_is_not_played_by_it_and_opens_on_the_next() {
+    let (mut chain, mut reader, now) = linked_after_a_dictation();
+    let frames = i64::try_from(QUANTUM).unwrap();
+    // The read stands by the time of the run that is over, and before it hands out a frame the stream starts again and its opening is placed.
+    let over = reader.ring.run();
+    let aim = reader.aim(over, now, frames).unwrap();
+    restart(&mut chain, now);
+    // Every frame the read is about to hand out is now a sample of the run that started.
+    let started = reader.ring.run();
+    assert_ne!(started, over);
+    let mut due = reader.next..reader.next + frames;
+    assert!(
+        due.all(|at| matches!(reader.ring.frame(at), Frame::Sample { run, .. } if run == started))
+    );
+    let mut heard = [1.0; QUANTUM];
+    reader.fill(Some(aim), frames, &mut heard);
+    // The read stood by the time of the run before, so it has no place for a frame of this one.
+    assert!(silent(&heard));
+    opens(&mut reader, now + PERIOD);
+}
+
+#[test]
+fn a_dictation_placed_as_a_read_takes_its_time_is_not_stood_by_and_opens_on_the_next() {
+    let (mut chain, mut reader, now) = linked_after_a_dictation();
+    let frames = i64::try_from(QUANTUM).unwrap();
+    // The read notes the run that is over, and before it reads that run's time the stream starts again and tells its own.
+    let over = reader.ring.run();
+    restart(&mut chain, now);
+    assert!(reader.ring.target(now).is_some());
+    let aim = reader.aim(over, now, frames);
+    // The time is not of the run the read noted, so the read stands by none and counts no opening.
+    assert!(aim.is_none());
+    let counted = &reader.counters.opening_behind_ms;
+    assert_eq!(counted.load(Ordering::Relaxed), 0);
+    let mut heard = [1.0; QUANTUM];
+    reader.fill(aim, frames, &mut heard);
+    assert!(silent(&heard));
+    opens(&mut reader, now + PERIOD);
 }

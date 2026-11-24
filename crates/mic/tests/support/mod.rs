@@ -1,4 +1,4 @@
-//! The rig the chain's support tests share: a chain fed a cycle of tone units, a twin decoder fed the same, and the test's own clock; and the sine of the dictation stream's tone, which the decoder's suite takes from here too.
+//! The rig the chain's support tests share: a chain fed a cycle of tone units, a twin decoder fed the same, and the test's own clock; the twin of the dictation stream's decoder; and the sine of that stream's tone, which the decoder's suite takes from here too.
 
 use std::f32::consts::PI;
 use std::ops::Range;
@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use pods_mic::decode::{Decoded, Decoder};
+use pods_mic::opus::{self, DICTATION_DECODE_HZ};
+use pods_mic::resample::Resampler;
 use pods_mic::{
-    Chain, Counters, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, SAMPLES_PER_UNIT, STAMP_STEP,
-    UPLINK_PERIOD_MS, chain,
+    Chain, Counters, FRAME_MS, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, SAMPLES_PER_UNIT,
+    STAMP_STEP, UPLINK_PERIOD_MS, chain,
 };
 use pods_samples::uplink::{self, tone_unit};
 
@@ -25,7 +27,7 @@ pub(crate) const UNITS_PER_PACKET: u32 = 4;
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 pub(crate) const PACKET_FRAMES: usize = UNITS_PER_PACKET as usize * SAMPLES_PER_UNIT as usize;
 /// The size of the ring, which the crate keeps to itself; the read of delay.rs that is longer than the ring fails when the two part.
-const RING_SAMPLES: usize = 16_384;
+const RING_SAMPLES: usize = 131_072;
 /// The newest frames a read can be handed: the reader leaves the writer the unit it may be on.
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 pub(crate) const HELD: usize = RING_SAMPLES - SAMPLES_PER_UNIT as usize;
@@ -36,6 +38,8 @@ pub(crate) const QUANTUM_TIME: Duration = Duration::from_millis(20);
 pub(crate) const FADE: usize = 320;
 /// When the first packet of a run lands.
 pub(crate) const FIRST: Duration = Duration::from_millis(100);
+/// The steering never asks for more than 2000 parts per million either way.
+pub(crate) const MAX_STEER: f64 = 2000e-6;
 /// How far a sample under a fade may stand from the shape times the decoder's sample.
 pub(crate) const SHAPE_SLACK: f32 = 1e-6;
 
@@ -138,6 +142,31 @@ impl Rig {
     }
 }
 
+/// The test's own decoder of the dictation stream, and what it gave at the node's rate.
+pub(crate) struct Twin {
+    decoder: opus::Decoder,
+    to_node: Resampler,
+    pub(crate) decoded: Vec<f32>,
+}
+
+impl Twin {
+    pub(crate) fn new() -> Self {
+        Self {
+            decoder: opus::Decoder::new().unwrap(),
+            to_node: Resampler::new(DICTATION_DECODE_HZ, RATE_HZ).unwrap(),
+            decoded: Vec::new(),
+        }
+    }
+
+    /// What one call into the decoder gave joins what it gave before.
+    pub(crate) fn call(&mut self, call: impl FnOnce(&mut opus::Decoder) -> Decoded<'_>) {
+        let Decoded::Samples(samples) = call(&mut self.decoder) else {
+            panic!("the twin gave no samples");
+        };
+        self.to_node.push(samples, &mut self.decoded);
+    }
+}
+
 pub(crate) fn ms(count: u32) -> Duration {
     Duration::from_millis(u64::from(count))
 }
@@ -179,6 +208,11 @@ pub(crate) fn due(now: Duration) -> usize {
 pub(crate) fn frames_in(time: Duration) -> usize {
     let frames = time.as_nanos().saturating_mul(u128::from(RATE_HZ)) / 1_000_000_000;
     usize::try_from(frames).unwrap()
+}
+
+/// The frames one frame of the dictation stream is at the node's rate.
+pub(crate) fn frame_frames() -> usize {
+    frames_in(ms(FRAME_MS))
 }
 
 pub(crate) fn bits(samples: &[f32]) -> Vec<u32> {

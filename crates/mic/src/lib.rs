@@ -15,10 +15,12 @@ use std::time::Duration;
 use conceal::{Tail, UNIT_FRAMES, fade_in};
 use decode::{Decoded, Decoder};
 use dictation::Dictation;
-pub use dictation::{FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES, STEADY_FRAMES};
+pub use dictation::{
+    FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES, PREROLL_STAGE_FRAMES, STEADY_FRAMES,
+};
 use resample::Resampler;
+pub use ring::{OPENING_MAX_PPM, Reader, Resync};
 use ring::{Path, Ring};
-pub use ring::{Reader, Resync};
 
 /// The node's rate, the only one a reader or a source sees.
 pub const RATE_HZ: u32 = 64_000;
@@ -68,6 +70,14 @@ pub struct Counters {
     pub decode_errors: AtomicU32,
     /// Panics caught inside the decoder, each answered with a fresh decoder.
     pub decoder_resets: AtomicU32,
+    /// Times a fresh decoder was refused and the one held stayed.
+    pub decoder_renew_refused: AtomicU32,
+    /// Dictation frames whose counter the run had passed, of which nothing is written.
+    pub dictation_repeats: AtomicU32,
+    /// How far behind its target the reader stood when the last opening it caught up began, in ms.
+    pub opening_behind_ms: AtomicU32,
+    /// How long the last opening the reader caught up took to reach the target, in ms.
+    pub opening_ms: AtomicU32,
 }
 
 /// The writer's half, the real time half and the handle that restarts the real time half at its target; none when a decoder will not open.
@@ -87,6 +97,18 @@ pub fn chain(counters: Arc<Counters>) -> Option<(Chain, Reader, Resync)> {
         dictation: Dictation::new()?,
     };
     Some((chain, reader, resync))
+}
+
+/// A fresh decoder in place of the held one; one that will not open leaves the held one in place and is counted.
+fn renew<D>(held: &mut D, counters: &Counters, fresh: Option<D>) {
+    match fresh {
+        Some(fresh) => *held = fresh,
+        None => {
+            counters
+                .decoder_renew_refused
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The units a unit's stamp says were lost before it, against the stamp the run expected next; none when the stamp starts a new run.
@@ -180,14 +202,19 @@ impl Chain {
             .decode_errors
             .fetch_add(dropped, Ordering::Relaxed);
         if wrote {
-            let earliest = self.arrivals.push(self.ring.arrival_at(now));
-            self.ring.publish(earliest);
+            self.arrived(now);
         }
+    }
+
+    /// What landed at `now` tells the run's time: the reader holds its delay by the earliest of the window's arrivals.
+    fn arrived(&mut self, now: Duration) {
+        let earliest = self.arrivals.push(self.ring.arrival_at(now));
+        self.ring.publish(earliest);
     }
 
     /// A new run of the uplink: nothing written before it and not yet heard is played, and the next unit's stamp is its start.
     pub fn reset(&mut self) {
-        self.renew_decoder();
+        renew(&mut self.decoder, &self.counters, Decoder::new());
         self.expected = None;
         if let Some(resampler) = &mut self.resampler {
             resampler.reset();
@@ -200,13 +227,6 @@ impl Chain {
         self.ring.start_run(path);
         self.arrivals = Arrivals::default();
         self.faded = true;
-    }
-
-    /// The configuration was accepted when the chain was made; were it refused now, the old decoder would stay.
-    fn renew_decoder(&mut self) {
-        if let Some(fresh) = Decoder::new() {
-            self.decoder = fresh;
-        }
     }
 
     /// Writes what the stamp says was lost before this unit, then the unit or what stands for it.
@@ -234,7 +254,7 @@ impl Chain {
             }
             Decoded::Panic => {
                 self.counters.decoder_resets.fetch_add(1, Ordering::Relaxed);
-                self.renew_decoder();
+                renew(&mut self.decoder, &self.counters, Decoder::new());
                 self.conceal(UNIT_FRAMES);
             }
         }
