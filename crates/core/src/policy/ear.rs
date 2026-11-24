@@ -54,16 +54,39 @@ pub enum MediaRequest {
     Play(Vec<PlayerOwner>),
 }
 
+/// Whether the pods' sink is the default, by the adapter's last read of it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Sink {
+    /// From a link up or a lost audio server until the adapter reads a sink.
+    #[default]
+    Unread,
+    /// Unread, and the buds came back meanwhile, so the read decides the resume.
+    Awaited,
+    Elsewhere,
+    Ours,
+}
+
+/// The wait between a both-out report and its pause.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Settle {
+    #[default]
+    Idle,
+    /// Pauses at this time, unless a bud comes back first.
+    Until(Duration),
+    /// The channel closed inside it, so it waits for the link to be up again.
+    Cut,
+    /// The link is up again, so it starts over at the next read of a sink.
+    Reopened,
+}
+
 /// What the ear rules remember between steps.
 #[derive(Debug, Default)]
 pub(super) struct Ear {
     behavior: EarDetectionBehavior,
     /// Buds in an ear by the last report, so a new primary bud alone changes nothing.
     worn: usize,
-    /// The pods' sink is the default by the last sink fact.
-    ours: bool,
-    /// When a both-out report pauses, unless a bud comes back first.
-    settle: Option<Duration>,
+    sink: Sink,
+    settle: Settle,
     /// What the media adapter paused, and the only players a resume asks.
     pub(super) paused: Vec<PlayerOwner>,
     era: Era,
@@ -74,7 +97,7 @@ impl Ear {
     pub(super) fn changed(&mut self, state: &State, now: Duration) -> Option<MediaRequest> {
         if state.ear_detection_behavior != self.behavior {
             self.behavior = state.ear_detection_behavior;
-            self.settle = None;
+            self.settle = Settle::Idle;
         }
         let was = mem::replace(&mut self.worn, worn(state.ear));
         if self.worn == was {
@@ -87,7 +110,7 @@ impl Ear {
         match self.behavior {
             EarDetectionBehavior::PauseWhenOneRemoved if self.worn < was => self.pause(),
             EarDetectionBehavior::PauseWhenBothRemoved if self.worn == 0 => {
-                self.settle = Some(now.saturating_add(Duration::from_millis(BOTH_OUT_SETTLE_MS)));
+                self.settle = settle_from(now);
                 None
             }
             // Under these two a bud back from none also ends the absence, and a bud leaving never does.
@@ -104,22 +127,31 @@ impl Ear {
 
     /// A settle still pending at its end means both buds stayed out under the same preference.
     pub(super) fn tick(&mut self, now: Duration) -> Option<MediaRequest> {
-        if self.settle.is_none_or(|at| at > now) {
+        if self.deadline().is_none_or(|at| at > now) {
             return None;
         }
-        self.settle = None;
+        self.settle = Settle::Idle;
         self.pause()
     }
 
-    /// The sink is unknown until the adapter reads it again; a closed channel or a loss is not a bud leaving, and only a loss forgets what was paused.
+    /// The sink is unread until the adapter reads it again; a closed channel is not a bud leaving, so it cuts a settle until the link is up again and its sink read, and only a loss forgets what was paused.
     pub(super) fn link(&mut self, signal: &Signal, state: &State) {
         match signal {
-            Signal::Up { .. } => self.ours = false,
-            Signal::Down => self.settle = None,
+            Signal::Up { .. } => {
+                self.unread();
+                if self.settle == Settle::Cut {
+                    self.settle = Settle::Reopened;
+                }
+            }
+            Signal::Down => {
+                if self.settle != Settle::Idle {
+                    self.settle = Settle::Cut;
+                }
+            }
             Signal::Keys(_) | Signal::Uplink(_) => {}
             Signal::Lost { .. } => {
-                self.ours = false;
-                self.settle = None;
+                self.sink = Sink::Unread;
+                self.settle = Settle::Idle;
                 self.paused.clear();
                 self.era = Era(self.era.0.wrapping_add(1));
                 self.worn = worn(state.ear);
@@ -127,12 +159,26 @@ impl Ear {
         }
     }
 
-    pub(super) fn audio(&mut self, fact: AudioFact) {
-        self.ours = match fact {
-            AudioFact::Sink(sink) => sink.is_some_and(|sink| sink.is_default),
-            AudioFact::Down => false,
-            AudioFact::Up | AudioFact::Restored(_) => self.ours,
+    /// A sink read starts a reopened settle over, and settles a return that waited for it if the buds are still back by the preference.
+    pub(super) fn audio(&mut self, fact: AudioFact, now: Duration) -> Option<MediaRequest> {
+        let read = match fact {
+            AudioFact::Sink(Some(sink)) if sink.is_default => Sink::Ours,
+            AudioFact::Sink(Some(_)) => Sink::Elsewhere,
+            AudioFact::Sink(None) | AudioFact::Down => {
+                self.unread();
+                return None;
+            }
+            AudioFact::Up | AudioFact::Restored(_) => return None,
         };
+        if self.settle == Settle::Reopened {
+            self.settle = settle_from(now);
+        }
+        let awaited = mem::replace(&mut self.sink, read) == Sink::Awaited;
+        if awaited && self.back() {
+            self.returned()
+        } else {
+            None
+        }
     }
 
     /// Remembers what a pause of this era paused; buds already back by the preference make it a return.
@@ -145,31 +191,52 @@ impl Ear {
                 self.paused.push(player);
             }
         }
-        let back = match self.behavior {
+        if self.back() { self.returned() } else { None }
+    }
+
+    fn back(&self) -> bool {
+        match self.behavior {
             EarDetectionBehavior::PauseWhenOneRemoved => self.worn == BUDS,
             EarDetectionBehavior::PauseWhenBothRemoved | EarDetectionBehavior::Disabled => {
                 self.worn > 0
             }
-        };
-        if back { self.returned() } else { None }
+        }
+    }
+
+    /// A return that waits for the sink keeps waiting.
+    fn unread(&mut self) {
+        if self.sink != Sink::Awaited {
+            self.sink = Sink::Unread;
+        }
     }
 
     pub(super) fn deadline(&self) -> Option<Duration> {
-        self.settle
+        match self.settle {
+            Settle::Until(at) => Some(at),
+            Settle::Idle | Settle::Cut | Settle::Reopened => None,
+        }
     }
 
     fn pause(&self) -> Option<MediaRequest> {
-        self.ours.then_some(MediaRequest::PauseAll(self.era))
+        (self.sink == Sink::Ours).then_some(MediaRequest::PauseAll(self.era))
     }
 
-    /// A return ends the absence and its settle: the remembered players are played when they can be, and forgotten either way.
+    /// A return ends the absence and its settle: once the sink is read, the remembered players are played when they can be, and forgotten either way.
     fn returned(&mut self) -> Option<MediaRequest> {
-        self.settle = None;
+        self.settle = Settle::Idle;
+        let off = self.behavior == EarDetectionBehavior::Disabled;
+        if !off && matches!(self.sink, Sink::Unread | Sink::Awaited) {
+            self.sink = Sink::Awaited;
+            return None;
+        }
         let players = mem::take(&mut self.paused);
-        let plays =
-            self.ours && self.behavior != EarDetectionBehavior::Disabled && !players.is_empty();
+        let plays = self.sink == Sink::Ours && !off && !players.is_empty();
         plays.then_some(MediaRequest::Play(players))
     }
+}
+
+fn settle_from(now: Duration) -> Settle {
+    Settle::Until(now.saturating_add(Duration::from_millis(BOTH_OUT_SETTLE_MS)))
 }
 
 fn worn(report: EarReport) -> usize {

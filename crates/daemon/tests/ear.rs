@@ -613,6 +613,69 @@ mod tests {
     }
 
     #[test]
+    fn a_settle_cut_by_the_channel_closing_starts_over_when_it_reopens_with_both_buds_out() {
+        let (rig, device) = linked();
+        prefer(&rig, "both", 1);
+        let player = rig.player("one", Playback::Playing);
+        let out = Instant::now();
+        place(&rig, &device, OutOfEar, OutOfEar);
+        rig.close_channel(&device);
+        let reopened = Instant::now();
+        assert_gap(
+            "the close inside the settle",
+            out,
+            reopened,
+            &(Duration::ZERO..=SETTLE),
+        );
+        rig.accept(&device);
+        player.wait_asked(Asked::Pause, SETTLE.saturating_add(HANG_LIMIT));
+        assert_gap(
+            "the pause after the channel reopened",
+            reopened,
+            Instant::now(),
+            &(SETTLE..),
+        );
+        assert_eq!(player.asked(), [Asked::Pause]);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_settle_cut_by_the_channel_closing_starts_over_at_the_sink_read_after_it_reopens() {
+        let (rig, device, audio) = Rig::with_audio(PERCENT);
+        rig.wait_sink_told();
+        prefer(&rig, "both", 1);
+        let player = rig.player("one", Playback::Playing);
+        let out = Instant::now();
+        place(&rig, &device, OutOfEar, OutOfEar);
+        rig.close_channel(&device);
+        assert_gap(
+            "the close inside the settle",
+            out,
+            Instant::now(),
+            &(Duration::ZERO..=SETTLE),
+        );
+        // Held from before the channel reopens, so a whole settle passes with the link up and the sink not read.
+        audio.hold_replies(true);
+        rig.accept(&device);
+        rig.wait_filled();
+        quiet_until(&player, Instant::now() + SETTLE + REAL_TIME_SLACK);
+        assert_eq!(player.asked(), []);
+        let read = Instant::now();
+        audio.hold_replies(false);
+        player.wait_asked(Asked::Pause, SETTLE.saturating_add(HANG_LIMIT));
+        assert_gap(
+            "the pause after the sink was read",
+            read,
+            Instant::now(),
+            &(SETTLE..=SETTLE.saturating_add(REAL_TIME_SLACK)),
+        );
+        assert_eq!(player.asked(), [Asked::Pause]);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
     fn a_channel_closing_with_the_buds_in_keeps_them_worn_and_pauses_nothing() {
         let (rig, device) = linked();
         let player = rig.player("one", Playback::Playing);
@@ -637,6 +700,28 @@ mod tests {
         rig.wait_filled();
         rig.wait_sink_told();
         placed_until(&device, InEar, InEar, &player, Asked::Play, HANG_LIMIT);
+        assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn buds_back_before_the_sink_is_read_again_resume_what_was_paused_once_it_is_read() {
+        let (rig, device, audio) = Rig::with_audio(PERCENT);
+        rig.wait_sink_told();
+        let player = rig.player("one", Playback::Playing);
+        placed_until(&device, InEar, OutOfEar, &player, Asked::Pause, HANG_LIMIT);
+        rig.close_channel(&device);
+        // Held from before the channel reopens, so the buds are read back while the sink is not.
+        audio.hold_replies(true);
+        device.pods.set_ear(InEar, InEar);
+        rig.accept(&device);
+        rig.wait_filled();
+        wait_worn(&rig, true, true);
+        player.none_for(QUIET);
+        assert_eq!(player.asked(), [Asked::Pause]);
+        audio.hold_replies(false);
+        player.wait_asked(Asked::Play, HANG_LIMIT);
         assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
         player.leave();
         rig.finish();

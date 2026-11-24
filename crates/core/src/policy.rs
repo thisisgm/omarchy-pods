@@ -155,10 +155,7 @@ impl Policy {
                 effects.extend(self.ear.tick(now).map(Effect::Media));
                 effects
             }
-            Fact::Audio(fact) => {
-                self.ear.audio(fact);
-                Vec::new()
-            }
+            Fact::Audio(fact) => Vec::from_iter(self.ear.audio(fact, now).map(Effect::Media)),
             Fact::Paused(era, players) => {
                 Vec::from_iter(self.ear.paused(era, players).map(Effect::Media))
             }
