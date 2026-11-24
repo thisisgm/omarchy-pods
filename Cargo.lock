@@ -557,7 +557,9 @@ version = "0.0.0"
 dependencies = [
  "aes",
  "cpp-source",
+ "pods-fake",
  "pods-samples",
+ "pods-sys",
  "proptest",
  "thiserror 2.0.21",
  "zeroize",

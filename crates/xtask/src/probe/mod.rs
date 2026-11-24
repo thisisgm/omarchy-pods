@@ -12,7 +12,7 @@ mod eldfile;
 #[cfg(test)]
 mod fixture;
 mod hci;
-mod oggfile;
+pub(crate) mod oggfile;
 mod script;
 mod service;
 mod source;

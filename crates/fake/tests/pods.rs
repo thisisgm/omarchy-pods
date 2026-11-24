@@ -5,6 +5,10 @@
 mod support;
 
 #[cfg(test)]
+#[path = "support/arbitrary.rs"]
+mod arbitrary;
+
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
@@ -18,14 +22,12 @@ mod tests {
     use proptest::prelude::*;
     use rustix::io::Errno;
 
+    use super::arbitrary;
     use super::support::{
         BUFFER_LEN, BURST_LEN, QUIET, REAL_TIME_SLACK, RECV_TIMEOUT, ask, assert_quiet, open,
         opening, recv, recv_many,
     };
 
-    /// The largest random SDU and the most random SDUs the property test sends.
-    const ARBITRARY_SDU_MAX: usize = 4096;
-    const ARBITRARY_SDUS_MAX: usize = 50;
     /// Far more packets than a socket pair's queue holds, so the fake meets a full send buffer.
     const FLOOD: usize = 2000;
     /// Far past an `AF_UNIX` send buffer (208 KiB by default), so the kernel refuses the SDU with `EMSGSIZE`.
@@ -475,13 +477,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn arbitrary_bytes_from_the_host_never_stop_the_fake(
-            sdus in prop::collection::vec(
-                // An empty SDU reads as a close on a socket pair, so every SDU has a byte.
-                prop::collection::vec(any::<u8>(), 1..=ARBITRARY_SDU_MAX),
-                0..=ARBITRARY_SDUS_MAX,
-            )
-        ) {
+        fn arbitrary_bytes_from_the_host_never_stop_the_fake(sdus in arbitrary::sdus()) {
             let pods = Pods::new(Profile::default());
             let host = open(&pods);
             for sdu in &sdus {

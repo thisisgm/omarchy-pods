@@ -1,12 +1,13 @@
-//! Fake pods for tests: they answer the control channel from sample bytes alone.
+//! Fake pods for tests: they answer the control channel and the dictation service from sample bytes alone.
 #![cfg_attr(
     test,
     expect(
         dead_code_pub_in_binary,
-        reason = "the unit tests drive the uplink's machine; the tests under tests/ drive its handle over a socket pair"
+        reason = "the unit tests drive the machines of the uplink and of the dictation service; the tests under tests/ drive their handles over socket pairs"
     )
 )]
 
+pub mod doap;
 mod model;
 mod serve;
 pub mod uplink;

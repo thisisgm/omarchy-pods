@@ -11,6 +11,7 @@ use pods_samples::{Cell, Placed};
 use pods_sys::l2cap::{self, Channel, ChannelError, Received};
 use rustix::io::Errno;
 
+use crate::doap::{self, Doap};
 use crate::model::{self, Change, Model};
 use crate::uplink::{Machine, Uplink};
 use crate::{Deadline, Fault, Heard, Profile};
@@ -43,10 +44,13 @@ pub(crate) struct Shared {
 struct State {
     model: Model,
     uplink: Machine,
+    doap: doap::Machine,
     fault: Fault,
     lines: Vec<Line>,
     next_line: usize,
     heard: Vec<Heard>,
+    /// The packets heard on attribute channels, which are counted and not kept.
+    att_heard: usize,
     closed: Vec<Instant>,
     most_open: usize,
     threads: Vec<(usize, JoinHandle<()>)>,
@@ -54,11 +58,28 @@ struct State {
     finished: bool,
 }
 
+/// What a channel carries: the control channel with the fault it was opened with, or the attribute channel of the dictation service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Control(Fault),
+    Att,
+}
+
+impl Side {
+    /// The fault of a control channel; an attribute channel has none.
+    fn fault(self) -> Fault {
+        match self {
+            Self::Control(fault) => fault,
+            Self::Att => Fault::None,
+        }
+    }
+}
+
 /// An open channel as the threads that do not own it see it.
 #[derive(Debug)]
 struct Line {
     id: usize,
-    fault: Fault,
+    side: Side,
     outbox: VecDeque<Vec<u8>>,
     hang_up: bool,
     deaf: bool,
@@ -69,6 +90,7 @@ struct Line {
 enum Overflow {
     Outbox,
     Heard,
+    AttHeard,
 }
 
 impl Overflow {
@@ -80,6 +102,9 @@ impl Overflow {
             Self::Heard => {
                 format!("{THREAD_NAME}: the host sent more than HEARD_LIMIT ({HEARD_LIMIT}) SDUs")
             }
+            Self::AttHeard => format!(
+                "{THREAD_NAME}: the host sent more than HEARD_LIMIT ({HEARD_LIMIT}) packets on its attribute channels"
+            ),
         }
     }
 }
@@ -90,10 +115,12 @@ impl Pods {
         let state = State {
             model: Model::new(profile),
             uplink: Machine::new(),
+            doap: doap::Machine::new(),
             fault: Fault::None,
             lines: Vec::new(),
             next_line: 0,
             heard: Vec::new(),
+            att_heard: 0,
             closed: Vec::new(),
             most_open: 0,
             threads: Vec::new(),
@@ -113,29 +140,44 @@ impl Pods {
         self.shared.lock().fault = fault;
     }
 
-    /// Answers on `channel` from one thread until the channel closes; after `finish` it closes `channel` at once.
+    /// Answers the control channel on `channel` from one thread until the channel closes; after `finish` it closes `channel` at once.
     pub fn serve(&self, channel: Channel) {
+        let side = Side::Control(self.shared.lock().fault);
+        self.open(side, channel);
+    }
+
+    /// Answers the attribute channel of the dictation service on `channel`, as `serve` answers the control channel.
+    pub fn serve_att(&self, channel: Channel) {
+        self.open(Side::Att, channel);
+    }
+
+    fn open(&self, side: Side, channel: Channel) {
         let mut state = self.shared.lock();
         if state.finished {
             return;
         }
         let id = state.next_line;
         state.next_line = id.wrapping_add(1);
-        let fault = state.fault;
-        let outbox = state.model.on_open(fault).into();
+        let outbox = match side {
+            Side::Control(fault) => state.model.on_open(fault).into(),
+            Side::Att => {
+                state.doap.opened(id);
+                VecDeque::new()
+            }
+        };
         state.lines.push(Line {
             id,
-            fault,
+            side,
             outbox,
             hang_up: false,
             deaf: false,
         });
-        state.most_open = state.most_open.max(state.lines.len());
+        state.most_open = state.most_open.max(state.control_lines());
         let shared = Arc::clone(&self.shared);
-        state.start(id, move || shared.run(id, fault, channel));
+        state.start(id, move || shared.run(id, side, channel));
     }
 
-    /// Moves the buds and reports it on every open channel.
+    /// Moves the buds and reports it on every open control channel.
     pub fn set_ear(&self, primary: Placed, secondary: Placed) {
         self.change(Change::Ear { primary, secondary });
     }
@@ -149,7 +191,7 @@ impl Pods {
         self.change(Change::Setting { identifier, value });
     }
 
-    /// Sends raw bytes on every open channel.
+    /// Sends raw bytes on every open control channel.
     pub fn send(&self, sdu: &[u8]) {
         self.shared.lock().queue_everywhere(|_| Some(sdu.to_vec()));
     }
@@ -181,7 +223,13 @@ impl Pods {
         Uplink::new(Arc::clone(&self.shared))
     }
 
-    /// Everything the host sent, oldest first.
+    /// The test's hand on the dictation service.
+    #[must_use]
+    pub fn doap(&self) -> Doap {
+        Doap::new(Arc::clone(&self.shared))
+    }
+
+    /// Everything the host sent on a control channel, oldest first.
     #[must_use]
     pub fn heard(&self) -> Vec<Heard> {
         self.shared.lock().heard.clone()
@@ -205,7 +253,7 @@ impl Pods {
         })
     }
 
-    /// When each channel ended, once at least `count` have.
+    /// When each control channel ended, once at least `count` have.
     pub fn wait_closed(&self, count: usize, deadline: Duration) -> Result<Vec<Instant>, Deadline> {
         self.shared.wait_until(deadline, |state| {
             (state.closed.len() >= count).then(|| state.closed.clone())
@@ -223,6 +271,7 @@ impl Pods {
         })
     }
 
+    /// The most control channels that were open at the same time.
     #[must_use]
     pub fn most_open_at_once(&self) -> usize {
         self.shared.lock().most_open
@@ -299,11 +348,19 @@ impl State {
         }
     }
 
-    /// Queues on every open channel what `packet` gives for the fault it was opened with.
+    fn control_lines(&self) -> usize {
+        let control = |line: &&Line| matches!(line.side, Side::Control(_));
+        self.lines.iter().filter(control).count()
+    }
+
+    /// Queues on every open control channel what `packet` gives for the fault it was opened with.
     fn queue_everywhere(&mut self, packet: impl Fn(Fault) -> Option<Vec<u8>>) {
         let mut passed = false;
         for line in &mut self.lines {
-            if line.queue(packet(line.fault)).is_err() {
+            let Side::Control(fault) = line.side else {
+                continue;
+            };
+            if line.queue(packet(fault)).is_err() {
                 passed = true;
             }
         }
@@ -332,6 +389,11 @@ impl Shared {
     /// Runs `change` on the uplink under the lock every channel thread takes.
     pub(crate) fn uplink<T>(&self, change: impl FnOnce(&mut Machine) -> T) -> T {
         change(&mut self.lock().uplink)
+    }
+
+    /// Runs `change` on the dictation service under the same lock.
+    pub(crate) fn doap<T>(&self, change: impl FnOnce(&mut doap::Machine) -> T) -> T {
+        change(&mut self.lock().doap)
     }
 
     fn wait<'a>(&self, guard: MutexGuard<'a, State>, timeout: Duration) -> MutexGuard<'a, State> {
@@ -363,15 +425,18 @@ impl Shared {
     }
 
     /// One channel's thread: serves it, closes it, then marks it closed whatever ended it.
-    fn run(&self, id: usize, fault: Fault, channel: Channel) {
-        let ended = self.serve_line(id, fault, &channel);
+    fn run(&self, id: usize, side: Side, channel: Channel) {
+        let ended = self.serve_line(id, side, &channel);
         // Stamped before the drop, so the host never sees the close before its stamp.
         let closed = Instant::now();
         drop(channel);
         let mut state = self.lock();
         state.lines.retain(|line| line.id != id);
         state.uplink.closed(id);
-        state.closed.push(closed);
+        state.doap.closed(id);
+        if side != Side::Att {
+            state.closed.push(closed);
+        }
         if let Err(error) = ended {
             state
                 .failures
@@ -381,17 +446,17 @@ impl Shared {
     }
 
     /// Ends on `Closed`, on a hang up or where the fault closes; a receive or send error the host did not cause is returned.
-    fn serve_line(&self, id: usize, fault: Fault, channel: &Channel) -> Result<(), ChannelError> {
+    fn serve_line(&self, id: usize, side: Side, channel: &Channel) -> Result<(), ChannelError> {
         let mut buffer = vec![0; RECV_BUFFER_LEN];
         let mut sent: usize = 0;
         loop {
-            if !self.send_queued(id, fault, channel, &mut sent)? {
+            if !self.send_queued(id, side, channel, &mut sent)? {
                 return Ok(());
             }
-            if model::closes(fault, sent) {
+            if model::closes(side.fault(), sent) {
                 return Ok(());
             }
-            let pause = self.pause(id);
+            let pause = self.pause(id, side);
             if self.deaf(id) {
                 drop(self.wait(self.lock(), pause));
                 continue;
@@ -407,22 +472,25 @@ impl Shared {
                 Err(error) if host_gone(error) => return Ok(()),
                 Err(error) => return Err(error),
             };
-            self.on_host(id, fault, buffer.get(..len).unwrap_or_default());
+            self.on_host(id, side, buffer.get(..len).unwrap_or_default());
         }
     }
 
-    /// Queues what the uplink has due on channel `id`, then sends what the channel has queued until the socket is full; `false` once the channel is to end.
+    /// Queues what the uplink or the dictation service has due on channel `id`, then sends what the channel has queued until the socket is full; `false` once the channel is to end.
     fn send_queued(
         &self,
         id: usize,
-        fault: Fault,
+        side: Side,
         channel: &Channel,
         sent: &mut usize,
     ) -> Result<bool, ChannelError> {
         let mut guard = self.lock();
         let state = &mut *guard;
         let worn = state.model.either_bud_in_an_ear();
-        let due = state.uplink.due(id, worn, Instant::now());
+        let due = match side {
+            Side::Control(_) => state.uplink.due(id, worn, Instant::now()),
+            Side::Att => state.doap.due(id, Instant::now()),
+        };
         let Some(line) = state.lines.iter_mut().find(|line| line.id == id) else {
             return Ok(false);
         };
@@ -434,7 +502,7 @@ impl Shared {
             return Ok(false);
         }
         while let Some(sdu) = line.outbox.front() {
-            if model::closes(fault, *sent) {
+            if model::closes(side.fault(), *sent) {
                 return Ok(false);
             }
             match channel.try_send(sdu) {
@@ -450,9 +518,13 @@ impl Shared {
         Ok(true)
     }
 
-    /// How long channel `id` may wait: one poll, or less when the uplink has a packet due on it sooner.
-    fn pause(&self, id: usize) -> Duration {
-        let due = self.lock().uplink.wait(id, Instant::now());
+    /// How long channel `id` may wait: one poll, or less when the uplink or the dictation service has a packet due on it sooner.
+    fn pause(&self, id: usize, side: Side) -> Duration {
+        let state = self.lock();
+        let due = match side {
+            Side::Control(_) => state.uplink.wait(id, Instant::now()),
+            Side::Att => state.doap.wait(id, Instant::now()),
+        };
         due.map_or(POLL, |wait| wait.min(POLL))
     }
 
@@ -463,22 +535,35 @@ impl Shared {
             .any(|line| line.id == id && line.deaf)
     }
 
-    fn on_host(&self, id: usize, fault: Fault, sdu: &[u8]) {
+    fn on_host(&self, id: usize, side: Side, sdu: &[u8]) {
         let mut guard = self.lock();
         let state = &mut *guard;
-        if state.heard.len() >= HEARD_LIMIT {
-            state.overflow(Overflow::Heard);
-            return;
-        }
         let at = Instant::now();
-        state.heard.push(Heard {
-            at,
-            sdu: sdu.to_vec(),
-        });
-        let replies = state.model.on_host(fault, sdu);
-        if model::answers(fault) {
-            state.uplink.on_host(id, sdu, at);
-        }
+        let replies = match side {
+            Side::Control(fault) => {
+                if state.heard.len() >= HEARD_LIMIT {
+                    state.overflow(Overflow::Heard);
+                    return;
+                }
+                state.heard.push(Heard {
+                    at,
+                    sdu: sdu.to_vec(),
+                });
+                if model::answers(fault) {
+                    state.uplink.on_host(id, sdu, at);
+                    state.doap.on_control(id, sdu, at);
+                }
+                state.model.on_host(fault, sdu)
+            }
+            Side::Att => {
+                if state.att_heard >= HEARD_LIMIT {
+                    state.overflow(Overflow::AttHeard);
+                    return;
+                }
+                state.att_heard = state.att_heard.saturating_add(1);
+                state.doap.on_att(id, sdu, at)
+            }
+        };
         let queued = match state.lines.iter_mut().find(|line| line.id == id) {
             Some(line) => line.queue(replies),
             None => Ok(()),
@@ -512,7 +597,11 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use pods_samples::doap::{CODECS, Handles, REASON_HOST, host};
+
     use super::*;
+
+    const CONTROL: Side = Side::Control(Fault::None);
 
     #[test]
     fn a_thread_that_panicked_fails_the_finish() {
@@ -547,12 +636,38 @@ mod tests {
         drop(host);
     }
 
+    #[test]
+    fn a_host_that_sends_past_the_heard_limit_on_an_attribute_channel_fails_the_finish() {
+        const DEADLINE: Duration = Duration::from_secs(5);
+        let table = Handles::OBSERVED;
+        let stop = host::stop(&table, REASON_HOST);
+        let pods = Pods::new(Profile::default());
+        let (host, end) = crate::pair();
+        host.set_recv_timeout(DEADLINE).unwrap();
+        pods.serve_att(end);
+        // One packet short of the limit in stops, then a read whose answer shows the pods heard them all.
+        for _ in 1..HEARD_LIMIT {
+            host.send(&stop).unwrap();
+        }
+        host.send(&host::read(table.supported_codecs)).unwrap();
+        let mut answer = [0; CODECS.len()];
+        assert_eq!(host.recv(&mut answer), Ok(Received::Sdu(CODECS.len())));
+        assert_eq!(answer, CODECS);
+        assert_eq!(pods.shared.lock().failures, Vec::<String>::new());
+        host.send(&stop).unwrap();
+        let hung_up = |state: &State| state.lines.is_empty().then_some(());
+        pods.shared.wait_until(DEADLINE, hung_up).unwrap();
+        assert_eq!(pods.doap().stops().len(), HEARD_LIMIT - 1);
+        assert_eq!(pods.finish().unwrap_err(), Overflow::AttHeard.message());
+        drop(host);
+    }
+
     /// Pods with one channel no thread drains, its outbox at `OUTBOX_LIMIT` and nothing failed yet.
     fn pods_with_a_full_outbox() -> Pods {
         let pods = Pods::new(Profile::default());
         let unread = Line {
             id: 0,
-            fault: Fault::None,
+            side: CONTROL,
             outbox: VecDeque::new(),
             hang_up: false,
             deaf: false,
@@ -636,7 +751,7 @@ mod tests {
     fn a_reply_past_the_outbox_limit_fails_the_finish() {
         let pods = pods_with_a_full_outbox();
         pods.shared
-            .on_host(0, Fault::None, &pods_samples::host::handshake());
+            .on_host(0, CONTROL, &pods_samples::host::handshake());
         assert_hung_up_on_the_outbox_limit(pods);
     }
 
@@ -651,7 +766,7 @@ mod tests {
             drop(host);
             let mut sent = 0;
             assert_eq!(
-                pods.shared.send_queued(0, Fault::None, &end, &mut sent),
+                pods.shared.send_queued(0, CONTROL, &end, &mut sent),
                 Ok(false),
                 "unread: {unread}"
             );
@@ -671,6 +786,30 @@ mod tests {
             "{waited:?}"
         );
         drop(host);
+        pods.finish().unwrap();
+    }
+
+    #[test]
+    fn an_attribute_channel_is_no_control_channel_to_what_a_test_counts() {
+        const DEADLINE: Duration = Duration::from_secs(5);
+        let pods = Pods::new(Profile::default());
+        let (host, end) = crate::pair();
+        host.set_recv_timeout(DEADLINE).unwrap();
+        pods.serve_att(end);
+        // A change is reported on control channels only, so the first packet here is the answer to the read.
+        pods.set_setting(pods_samples::NOISE, 2);
+        let codecs = Handles::OBSERVED.supported_codecs;
+        host.send(&host::read(codecs)).unwrap();
+        let mut buffer = vec![0; RECV_BUFFER_LEN];
+        let answer = CODECS;
+        assert_eq!(host.recv(&mut buffer), Ok(Received::Sdu(answer.len())));
+        assert_eq!(buffer[..answer.len()], answer);
+        assert_eq!(pods.heard().len(), 0);
+        assert_eq!(pods.most_open_at_once(), 0);
+        drop(host);
+        let ended = |state: &State| state.lines.is_empty().then_some(());
+        pods.shared.wait_until(DEADLINE, ended).unwrap();
+        assert_eq!(pods.shared.lock().closed.len(), 0);
         pods.finish().unwrap();
     }
 }
