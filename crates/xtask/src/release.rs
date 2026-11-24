@@ -1,11 +1,13 @@
 //! `cargo xtask release-check <file> <version>`: the four checks a daemon binary passes before it is published.
 
 use std::ffi::OsStr;
-use std::fs;
-use std::io::ErrorKind;
+use std::fs::File;
+use std::io::{self, ErrorKind, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitCode};
+
+use rustix::fs::{Mode, OFlags};
 
 use crate::{print_line, report};
 
@@ -42,17 +44,13 @@ const ELF_MAGIC: &[u8] = b"\x7fELF";
 const READELF: &str = "readelf";
 
 pub(crate) fn run(file: &Path, version: &OsStr) -> ExitCode {
-    let bytes = match fs::read(file) {
-        Ok(bytes) => bytes,
+    let size = match elf_size(file) {
+        Ok(size) => size,
         Err(error) => {
-            report(&format!("xtask: cannot read {}: {error}", file.display()));
+            report(&error);
             return ExitCode::FAILURE;
         }
     };
-    if !bytes.starts_with(ELF_MAGIC) {
-        report(&format!("xtask: {} is not an ELF file", file.display()));
-        return ExitCode::FAILURE;
-    }
     let Some(dynamic) = readelf("-d", file) else {
         return ExitCode::FAILURE;
     };
@@ -78,11 +76,36 @@ pub(crate) fn run(file: &Path, version: &OsStr) -> ExitCode {
             Err(line) => print_line(&format!("FAIL {line}")),
         }
     }
-    print_line(&format!("size: {} bytes", bytes.len()));
+    print_line(&format!("size: {size} bytes"));
     if checks.iter().all(Result::is_ok) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+// Sample input: b"\x7fELF" at the start of the file.
+fn elf_size(path: &Path) -> Result<u64, String> {
+    let unread = |error: io::Error| format!("xtask: cannot read {}: {error}", path.display());
+    // A FIFO without a writer must not block before the file type check.
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let fd = rustix::fs::open(path, flags, Mode::empty()).map_err(|error| unread(error.into()))?;
+    let mut file = File::from(fd);
+    let metadata = file.metadata().map_err(unread)?;
+    if !metadata.is_file() {
+        return Err(format!("xtask: {} is not a regular file", path.display()));
+    }
+
+    let mut header = [0; ELF_MAGIC.len()];
+    let is_elf = match file.read_exact(&mut header) {
+        Ok(()) => header.as_slice() == ELF_MAGIC,
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => false,
+        Err(error) => return Err(unread(error)),
+    };
+    if is_elf {
+        Ok(metadata.len())
+    } else {
+        Err(format!("xtask: {} is not an ELF file", path.display()))
     }
 }
 

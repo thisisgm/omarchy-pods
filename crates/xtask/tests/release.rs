@@ -27,6 +27,14 @@ mod tests {
     /// Longer than the check's own 10s deadline and 2s grace; `timeout` exits 124 when it passes.
     const TEST_DEADLINE: &str = "60s";
 
+    const INPUT_DEADLINE: &str = "30s";
+
+    /// Enough for the release check and too little to buffer the large input fixtures, in KiB.
+    const INPUT_MEMORY_LIMIT: &str = "65536";
+
+    /// A sparse file larger than the input memory limit.
+    const SPARSE_BYTES: u64 = 1 << 30;
+
     /// What the check says when the file's own crate carries no line table.
     const NO_LINE_TABLES: &str = "FAIL line tables: the librepods crate has no line table, so a backtrace has no file and line";
 
@@ -66,6 +74,26 @@ mod tests {
             .arg(version)
             .output()
             .unwrap()
+    }
+
+    fn check_input_under_limits(file: &Path) -> Output {
+        Command::new("timeout")
+            .args([INPUT_DEADLINE, "sh", "-c"])
+            .arg("ulimit -c 0 && ulimit -v \"$1\" && shift && exec \"$@\"")
+            .arg("sh")
+            .arg(INPUT_MEMORY_LIMIT)
+            .args([env!("CARGO_BIN_EXE_xtask"), "release-check"])
+            .arg(file)
+            .arg(VERSION)
+            .output()
+            .unwrap()
+    }
+
+    fn assert_input_refused(output: &Output, file: &Path, reason: &str) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert_eq!(stderr, format!("xtask: {} {reason}\n", file.display()));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     }
 
     fn lines(output: &Output) -> Vec<String> {
@@ -306,12 +334,48 @@ mod tests {
         fs::write(&file, "#!/bin/sh\necho librepods 9.8.7\n").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
         let output = release_check(&file, VERSION);
-        assert_eq!(output.status.code(), Some(1));
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr),
-            format!("xtask: {} is not an ELF file\n", file.display())
-        );
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+        assert_input_refused(&output, &file, "is not an ELF file");
+
+        fs::write(&file, b"\x7fEL").unwrap();
+        let output = release_check(&file, VERSION);
+        assert_input_refused(&output, &file, "is not an ELF file");
+    }
+
+    #[test]
+    fn a_character_device_is_refused_before_readelf() {
+        let file = Path::new("/dev/zero");
+        let output = check_input_under_limits(file);
+        assert_input_refused(&output, file, "is not a regular file");
+    }
+
+    #[test]
+    fn a_directory_is_refused_before_readelf() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = release_check(dir.path(), VERSION);
+        assert_input_refused(&output, dir.path(), "is not a regular file");
+    }
+
+    #[test]
+    fn a_fifo_is_refused_without_a_writer() {
+        use rustix::fs::{CWD, FileType, Mode, mknodat};
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("librepods");
+        mknodat(CWD, &file, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0).unwrap();
+        let output = check_input_under_limits(&file);
+        assert_input_refused(&output, &file, "is not a regular file");
+    }
+
+    #[test]
+    fn a_large_sparse_file_is_checked_under_a_small_memory_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("librepods");
+        fs::File::create(&file)
+            .unwrap()
+            .set_len(SPARSE_BYTES)
+            .unwrap();
+        let output = check_input_under_limits(&file);
+        assert_input_refused(&output, &file, "is not an ELF file");
     }
 
     #[test]
