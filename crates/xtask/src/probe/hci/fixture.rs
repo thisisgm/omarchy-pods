@@ -3,12 +3,16 @@
 use pods_proto::dictation::{
     self, Frame, SESSION_ACTIVE, SESSION_IDLE, TOC_CELT_WIDEBAND_20MS_MONO,
 };
+use pods_proto::doap::{self, Handles};
 use pods_proto::packets::{
     ATT_PSM, CONTROL_PSM, FEATURES_ACK_PREFIX, HANDSHAKE, HANDSHAKE_ACK_PREFIX,
 };
 use pods_proto::sdulog::Direction;
 use pods_proto::uplink::{AccessUnit, OPAQUE_LEN, START, STOP, encode_audio};
 
+/// The stream's start write at the handles of the one firmware seen.
+pub(crate) const DICTATION_START: [u8; 5] = doap::start(&Handles::OBSERVED);
+pub(crate) const DICTATION_STOP: [u8; 6] = doap::stop(&Handles::OBSERVED, doap::STOP_REASON_HOST);
 /// A made up, locally administered address for the pods, in the order people read it.
 pub(crate) const PODS_ADDRESS: [u8; 6] = [0x02, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5];
 /// A made up, locally administered address for the host's adapter.
@@ -624,7 +628,7 @@ pub(crate) fn audio_notification(counter: u8) -> Vec<u8> {
         counter: u16::from(counter),
         data: &[TOC_CELT_WIDEBAND_20MS_MONO],
     };
-    dictation::encode_audio(counter, &[frame]).unwrap()
+    dictation::encode_audio(&Handles::OBSERVED, counter, &[frame]).unwrap()
 }
 
 /// The attribute packets of the macOS trace: one dictation session, after a packet each way that is not part of it.
@@ -632,11 +636,11 @@ pub(crate) fn mac_att_packets() -> Vec<(Direction, Vec<u8>)> {
     vec![
         (Direction::FromPods, OTHER_NOTIFICATION.to_vec()),
         (Direction::ToPods, OTHER_WRITE.to_vec()),
-        (Direction::ToPods, dictation::START.to_vec()),
+        (Direction::ToPods, DICTATION_START.to_vec()),
         (Direction::FromPods, dictation::STARTED.to_vec()),
         (Direction::FromPods, audio_notification(0)),
         (Direction::FromPods, audio_notification(1)),
-        (Direction::ToPods, dictation::STOP.to_vec()),
+        (Direction::ToPods, DICTATION_STOP.to_vec()),
         (Direction::FromPods, dictation::STOPPED.to_vec()),
     ]
 }

@@ -1,10 +1,9 @@
 //! A walk the pods did not end, and the tail of a stream that did not stop: what the loop does with a channel it can no longer ask on.
 
-use pods_proto::dictation::{START, STOP};
 use pods_proto::sdulog::Direction;
 use proptest::prelude::*;
 
-use super::super::super::dictate::{HandleCheck, HandleWalk};
+use super::super::super::dictate::{HandleCheck, HandleWalk, START, STOP};
 use super::super::guard::TAIL_MAX_PACKETS;
 use super::super::*;
 use super::att_pods::{FIND_INFORMATION, TABLE_END};

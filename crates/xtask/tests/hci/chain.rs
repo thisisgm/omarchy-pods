@@ -11,8 +11,8 @@ use tempfile::TempDir;
 
 use super::super::dictation::{DICTATION, FRAME, SAMPLE_BYTES, near_zero_percent};
 use super::super::fixture::{
-    ATT_CIDS, CONTROL_CIDS, DEVICE_NAME, PODS_ADDRESS, PODS_HANDLE, START_UNIX_MICROS, Trace,
-    mac_naming, mac_opening,
+    ATT_CIDS, CONTROL_CIDS, DEVICE_NAME, DICTATION_START, DICTATION_STOP, PODS_ADDRESS,
+    PODS_HANDLE, START_UNIX_MICROS, Trace, mac_naming, mac_opening,
 };
 use super::super::oracles::opus_oracles_installed;
 use super::super::run::{probe, row, rows};
@@ -426,17 +426,13 @@ fn a_trace_with_no_dictation_stream_is_refused_by_name_further_down_the_chain() 
 
     // The host starts and stops a session the pods answer and send no frame in.
     let asked = [
-        (START_NS, Direction::ToPods, &dictation::START[..]),
+        (START_NS, Direction::ToPods, &DICTATION_START[..]),
         (
             START_NS + NS_PER_SECOND / 10,
             Direction::FromPods,
             &dictation::STARTED,
         ),
-        (
-            START_NS + NS_PER_SECOND,
-            Direction::ToPods,
-            &dictation::STOP,
-        ),
+        (START_NS + NS_PER_SECOND, Direction::ToPods, &DICTATION_STOP),
     ];
     let (home, run, table) = analysed(&trace_of(&asked));
     assert_eq!(row(&table, "audio_frames").0, "0", "{table}");

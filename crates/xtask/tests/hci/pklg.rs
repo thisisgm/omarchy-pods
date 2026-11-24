@@ -8,7 +8,7 @@ use pods_proto::packets::CONTROL_PSM;
 use pods_proto::sdulog::Direction;
 
 use super::super::fixture::{
-    ATT_CIDS, CONTROL_CIDS, KEYBOARD_HANDLE, PKLG_ACL_RECEIVED, PKLG_COUNTED_LEN,
+    ATT_CIDS, CONTROL_CIDS, DICTATION_START, KEYBOARD_HANDLE, PKLG_ACL_RECEIVED, PKLG_COUNTED_LEN,
     PKLG_SCO_RECEIVED, PKLG_SCO_SENT, PODS_ADDRESS, PODS_HANDLE, SIGNALLING_CIDS, Trace,
     VOICE_BYTES, audio_notification, mac_accessory_packets, mac_att_packets, mac_session, session,
 };
@@ -201,7 +201,7 @@ fn a_trace_without_connection_requests_is_mapped_by_content() {
     // What mapped a half stands: audio on the accessory half moves it to no other log.
     trace.send(pods, CONTROL_CIDS, &audio_notification(1));
     trace.send(host, ATT_CIDS, &OTHER_PACKET);
-    trace.send(host, ATT_CIDS, &dictation::START);
+    trace.send(host, ATT_CIDS, &DICTATION_START);
     trace.send(pods, ATT_CIDS, &OTHER_PACKET);
     trace.send(pods, ATT_CIDS, &audio_notification(0));
     let (lines, names) = mapping(&trace);
@@ -224,7 +224,7 @@ fn a_channel_that_matches_nothing_is_unmapped_not_guessed() {
     // An accessory packet that is not the first on its identifier, the start write from the pods and audio from the host map nothing.
     trace.send(host, CONTROL_CIDS, &OTHER_PACKET);
     trace.send(host, CONTROL_CIDS, &ACCESSORY_PACKET);
-    trace.send(pods, ATT_CIDS, &dictation::START);
+    trace.send(pods, ATT_CIDS, &DICTATION_START);
     trace.send(host, ATT_CIDS, &audio_notification(0));
     trace.send(pods, SIGNALLING_CIDS, &dictation::STARTED);
     let (lines, names) = mapping(&trace);

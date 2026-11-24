@@ -7,13 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pods_proto::dictation::{SESSION_ACTIVE, START, STOP, STOPPED};
+use pods_proto::dictation::{SESSION_ACTIVE, STOPPED};
+use pods_proto::doap::ARM_MAX_REQUESTS;
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::sdulog::{self, Direction, Record};
 use pods_sys::l2cap::{Channel, ChannelError, Received};
 use rustix::io::Errno;
 
-use super::super::super::dictate::{HANDLE_WALK_MAX_REQUESTS, HandleWalk};
+use super::super::super::dictate::{HandleWalk, START, STOP};
 use super::super::super::{CaptureArgs, capture};
 use super::att_command::{interrupting_pods, soak_args};
 use super::att_pods::FIND_INFORMATION;
@@ -310,9 +311,9 @@ fn single_file_pods(attributes: u32) -> Pods {
 
 #[test]
 fn a_table_that_takes_every_request_the_walk_may_send_is_walked_and_one_longer_is_cut() {
-    let most = usize::try_from(HANDLE_WALK_MAX_REQUESTS).unwrap();
+    let most = usize::try_from(ARM_MAX_REQUESTS).unwrap();
     let ((near, far), (near_att, far_att)) = (pods::pair(), pods::pair());
-    let part = single_file_pods(HANDLE_WALK_MAX_REQUESTS - 1);
+    let part = single_file_pods(ARM_MAX_REQUESTS - 1);
     let args = soak_args("under", false);
     let aired = air(
         args,
@@ -337,7 +338,7 @@ fn a_table_that_takes_every_request_the_walk_may_send_is_walked_and_one_longer_i
     assert_eq!(aired.marks("att-close"), []);
 
     let ((near, far), (near_att, far_att)) = (pods::pair(), pods::pair());
-    let part = single_file_pods(HANDLE_WALK_MAX_REQUESTS);
+    let part = single_file_pods(ARM_MAX_REQUESTS);
     let args = soak_args("over", false);
     let aired = air(
         args,

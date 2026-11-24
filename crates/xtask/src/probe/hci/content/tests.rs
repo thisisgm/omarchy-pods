@@ -1,5 +1,6 @@
 //! The mapping by content, driven with `PacketLogger` traces the fixture builds.
 
+use pods_proto::dictation;
 use pods_proto::packets::ATT_PSM;
 
 use super::super::fixture::{
@@ -96,11 +97,11 @@ fn a_channel_that_matches_nothing_is_unmapped_not_guessed() {
     trace.send(HOST, CONTROL_CIDS, &OTHER_PACKET);
     trace.send(HOST, CONTROL_CIDS, &ACCESSORY_PACKET);
     trace.send(PODS, CONTROL_CIDS, &ACCESSORY_PACKET[..3]);
-    trace.send(PODS, ATT_CIDS, &dictation::START);
+    trace.send(PODS, ATT_CIDS, &dictate::START);
     trace.send(PODS, ATT_CIDS, &dictation::STARTED);
     trace.send(PODS, ATT_CIDS, &CUT_AUDIO);
     trace.send(HOST, ATT_CIDS, &audio_notification(0));
-    trace.send(HOST, ATT_CIDS, &dictation::STOP);
+    trace.send(HOST, ATT_CIDS, &dictate::STOP);
     let found = read(&trace);
     assert_eq!(found.by_content, []);
     assert_eq!(
@@ -142,7 +143,7 @@ fn an_identifier_a_request_opens_again_stops_feeding_its_content_half() {
     trace.send(HOST, CONTROL_CIDS, &ACCESSORY_PACKET);
     trace.send(PODS, CONTROL_CIDS, &ACCESSORY_PACKET);
     trace.open(HOST, ATT_PSM, CONTROL_CIDS);
-    trace.send(HOST, CONTROL_CIDS, &dictation::START);
+    trace.send(HOST, CONTROL_CIDS, &dictate::START);
     trace.send(PODS, CONTROL_CIDS, &audio_notification(0));
     let found = read(&trace);
     let [accessory] = found.by_content.as_slice() else {
@@ -164,7 +165,7 @@ fn an_identifier_a_request_opens_again_stops_feeding_its_content_half() {
     assert_eq!(
         sent.collect::<Vec<_>>(),
         [
-            (HOST, dictation::START.to_vec()),
+            (HOST, dictate::START.to_vec()),
             (PODS, audio_notification(0))
         ]
     );

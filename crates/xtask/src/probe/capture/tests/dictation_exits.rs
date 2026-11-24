@@ -2,10 +2,11 @@
 
 use std::io;
 
-use pods_proto::dictation::{SESSION_ACTIVE, SESSION_IDLE, START, STOP};
+use pods_proto::dictation::{SESSION_ACTIVE, SESSION_IDLE};
 use pods_proto::uplink;
 use rustix::io::Errno;
 
+use super::super::super::dictate::{START, STOP};
 use super::super::super::script::Route;
 use super::super::super::summary;
 use super::super::wires::wake_of;

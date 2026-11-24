@@ -4,11 +4,10 @@ use std::fmt;
 use std::mem;
 
 use pods_proto::att::{self, AttPdu};
-use pods_proto::dictation::{self, DictationPacket, Status};
+use pods_proto::dictation::{self, DictationPacket, Event};
+use pods_proto::doap::{ARM_MAX_REQUESTS, Handles};
 
-use super::super::dictate::{
-    self, HANDLE_WALK_MAX_REQUESTS, HandleCheck, HandleWalk, TypeText, WalkState,
-};
+use super::super::dictate::{self, HandleCheck, HandleWalk, TypeText, WalkState};
 use super::super::script::Opening;
 use super::guard::{Dictation, Session};
 use super::record::{Bearer, IoFailure, Mark, Recorder};
@@ -76,6 +75,8 @@ impl Engine<'_, '_> {
                 | AttPdu::Information(_)
                 | AttPdu::ByType(_)
                 | AttPdu::Error { .. }
+                | AttPdu::ReadResponse { .. }
+                | AttPdu::WriteResponse
                 | AttPdu::Notification { .. }
                 | AttPdu::Other { .. },
             )
@@ -110,9 +111,7 @@ impl Engine<'_, '_> {
             (Some(request), _) => self.ask_walk(walk, request),
             (None, WalkState::Ended) => self.walk_over(&walk.result()),
             (None, WalkState::Cut) => {
-                let why = format_args!(
-                    "the table had not ended after {HANDLE_WALK_MAX_REQUESTS} requests"
-                );
+                let why = format_args!("the table had not ended after {ARM_MAX_REQUESTS} requests");
                 self.walk_cut(&walk.result(), &why)
             }
             (None, WalkState::Lost) => {
@@ -214,6 +213,8 @@ impl Engine<'_, '_> {
                 AttPdu::Notification { .. }
                 | AttPdu::Indication { .. }
                 | AttPdu::Request { .. }
+                | AttPdu::ReadResponse { .. }
+                | AttPdu::WriteResponse
                 | AttPdu::Other { .. },
             ) => return Ok(()),
         };
@@ -309,13 +310,13 @@ impl Engine<'_, '_> {
             link,
             dropped: self.dropped,
         });
-        let sent = link.send(&dictation::START);
+        let sent = link.send(&dictate::START);
         if sent.result.is_ok() {
             let starts = self.recorder.dictation_starts;
             self.recorder.dictation_starts = starts.saturating_add(1);
             self.start_sent_ns = Some(sent.at_ns);
         }
-        let start = dictation::START;
+        let start = dictate::START;
         let recorded = self
             .recorder
             .sent(sent, &start, Mark::DictationStart, &"dictation start");
@@ -342,15 +343,23 @@ pub(super) fn mark_status(
     start_sent_ns: Option<u64>,
     stop_sent_ns: Option<u64>,
 ) -> Result<(), IoFailure> {
-    let (kind, written_ns, write) = match DictationPacket::parse(pdu) {
-        Ok(Some(DictationPacket::Status(Status::Started))) => {
-            (Mark::Started, start_sent_ns, "start")
+    let (kind, written_ns, write) = match DictationPacket::parse(pdu, &Handles::OBSERVED) {
+        Ok(Some(DictationPacket::Event(Event::STARTED))) => (Mark::Started, start_sent_ns, "start"),
+        Ok(Some(DictationPacket::Event(Event::StreamingEnd))) => {
+            (Mark::Stopped, stop_sent_ns, "stop")
         }
-        Ok(Some(DictationPacket::Status(Status::Stopped))) => (Mark::Stopped, stop_sent_ns, "stop"),
         Ok(
             Some(
-                DictationPacket::Status(Status::Other(_))
+                DictationPacket::Event(
+                    Event::Score { .. }
+                    | Event::SiriActivation(_)
+                    | Event::SiriState(_)
+                    | Event::SiriCancel
+                    | Event::Button(_)
+                    | Event::Other { .. },
+                )
                 | DictationPacket::Audio(_)
+                | DictationPacket::Stopped { .. }
                 | DictationPacket::Unknown { .. },
             )
             | None,

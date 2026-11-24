@@ -23,6 +23,8 @@ impl ControlId {
     /// Value 0 to 100.
     pub const ADAPTIVE_NOISE_LEVEL: Self = Self(0x2E);
     pub const ALLOW_OFF_OPTION: Self = Self(0x34);
+    /// Set once a connection, it lets a host start the dictation stream.
+    pub const DOAP_MODE: Self = Self(0x13);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,13 +67,17 @@ impl ControlCommand {
         })
     }
 
+    /// Sample output for `switch(DOAP_MODE, true)`: `04 00 04 00 09 00 13 01 00 00 00`.
+    #[must_use]
+    pub fn frame(&self) -> [u8; FRAME_LEN] {
+        let [h0, h1, h2, h3, h4, h5] = HEADER;
+        let [v0, v1, v2, v3] = self.value;
+        [h0, h1, h2, h3, h4, h5, self.id.0, v0, v1, v2, v3]
+    }
+
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut frame = Vec::with_capacity(FRAME_LEN);
-        frame.extend_from_slice(&HEADER);
-        frame.push(self.id.0);
-        frame.extend_from_slice(&self.value);
-        frame
+        self.frame().to_vec()
     }
 
     #[must_use]

@@ -3,18 +3,22 @@
 use std::fmt;
 
 use pods_proto::att::{self, AttPdu, Uuid};
-use pods_proto::dictation::{AUDIO_HANDLE, START_HANDLE, STATUS_HANDLE, STOP_HANDLE};
+use pods_proto::doap::{self, ARM_MAX_REQUESTS, Handles};
 
 /// How long the walk waits for each answer; chosen here to match one step of the handshake.
 pub(crate) const HANDLE_WALK_TIMEOUT_MS: u32 = 2000;
-/// How many requests one walk may send: the stream's highest handle is 0x0010 and a reply lists at least one attribute, so this reads eight times that far.
-pub(crate) const HANDLE_WALK_MAX_REQUESTS: u32 = 128;
 /// The lowest attribute handle (Bluetooth Core Specification 6.1, Vol 3, Part F, 3.2.2).
 const FIRST_HANDLE: u16 = 0x0001;
 /// The highest attribute handle, where every request of the walk ends (Vol 3, Part F, 3.2.2).
 const LAST_HANDLE: u16 = 0xffff;
+/// The table of the one firmware seen, which the walk checks before the run writes to it.
+const TABLE: Handles = Handles::OBSERVED;
 /// The handles the dictation stream is written to and notified on, in rising order.
-const NEEDED: [u16; 4] = [START_HANDLE, STOP_HANDLE, AUDIO_HANDLE, STATUS_HANDLE];
+const NEEDED: [u16; 4] = [TABLE.start, TABLE.stop, TABLE.send_data, TABLE.event];
+/// The write that asks the pods to start the stream.
+pub(crate) const START: [u8; 5] = doap::start(&TABLE);
+/// The write that asks the pods to stop it.
+pub(crate) const STOP: [u8; 6] = doap::stop(&TABLE, doap::STOP_REASON_HOST);
 
 /// The one request of `att-map`: `08 01 00 ff ff 03 28`, every characteristic declaration of the table (Vol 3, Part G, 4.6.1).
 pub(crate) fn declarations_request() -> [u8; 7] {
@@ -71,7 +75,7 @@ pub(crate) enum WalkState {
     Asking,
     /// The pods ended their table: an error response, or a listing that reached the highest handle.
     Ended,
-    /// `HANDLE_WALK_MAX_REQUESTS` were answered and the table had not ended.
+    /// `ARM_MAX_REQUESTS` were answered and the table had not ended.
     Cut,
     /// The pods sent a reply the walk cannot follow, so what is out on the channel is not known.
     Lost,
@@ -121,6 +125,8 @@ impl HandleWalk {
                 AttPdu::Notification { .. }
                 | AttPdu::Indication { .. }
                 | AttPdu::Request { .. }
+                | AttPdu::ReadResponse { .. }
+                | AttPdu::WriteResponse
                 | AttPdu::Other { .. },
             ) => return None,
             // An error response answers the request and is how a table ends.
@@ -152,7 +158,7 @@ impl HandleWalk {
             self.state = WalkState::Ended;
             return None;
         };
-        if self.requests >= HANDLE_WALK_MAX_REQUESTS {
+        if self.requests >= ARM_MAX_REQUESTS {
             self.state = WalkState::Cut;
             return None;
         }
@@ -374,9 +380,9 @@ mod tests {
 
     #[test]
     fn a_table_that_takes_every_request_the_walk_may_send_is_read_to_its_end() {
-        let attributes = u16::try_from(HANDLE_WALK_MAX_REQUESTS - 1).unwrap();
+        let attributes = u16::try_from(ARM_MAX_REQUESTS - 1).unwrap();
         let (mut walk, requests) = walk_of_single_replies(attributes);
-        assert_eq!(requests, HANDLE_WALK_MAX_REQUESTS);
+        assert_eq!(requests, ARM_MAX_REQUESTS);
         assert_eq!(walk.state(), WalkState::Asking);
         assert_eq!(walk.on_pdu(&not_found(attributes + 1)), None);
         assert_eq!(walk.state(), WalkState::Ended);
@@ -385,9 +391,9 @@ mod tests {
 
     #[test]
     fn a_table_one_request_longer_cuts_the_walk_and_no_request_follows() {
-        let attributes = u16::try_from(HANDLE_WALK_MAX_REQUESTS).unwrap();
+        let attributes = u16::try_from(ARM_MAX_REQUESTS).unwrap();
         let (mut walk, requests) = walk_of_single_replies(attributes);
-        assert_eq!(requests, HANDLE_WALK_MAX_REQUESTS);
+        assert_eq!(requests, ARM_MAX_REQUESTS);
         assert_eq!(walk.state(), WalkState::Cut);
         assert_eq!(walk.result(), HandleCheck::Present);
         // A walk that was cut asks nothing more, whatever arrives.

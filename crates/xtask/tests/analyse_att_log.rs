@@ -39,6 +39,7 @@ mod tests {
 
     use pods_proto::att;
     use pods_proto::dictation::{Frame, encode_audio};
+    use pods_proto::doap::Handles;
     use pods_proto::sdulog::{Direction, format_line};
 
     use super::att_run::{CONTROL_LOG, FRAMES_HEADER, START_NS, analyse, marks_of};
@@ -136,7 +137,7 @@ mod tests {
             counter: 0,
             data: &[],
         };
-        let whole = encode_audio(7, &[frame]).unwrap();
+        let whole = encode_audio(&Handles::OBSERVED, 7, &[frame]).unwrap();
         let mut short_length = whole.clone();
         short_length[6] -= 1;
         let stray = [&whole[..], &[0xee, 0xee, 0xee]].concat();

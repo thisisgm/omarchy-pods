@@ -42,7 +42,7 @@ mod tests {
     use std::time::Duration;
 
     use pods_proto::att;
-    use pods_proto::dictation::{self, SESSION_ACTIVE, SESSION_IDLE};
+    use pods_proto::dictation::{SESSION_ACTIVE, SESSION_IDLE};
     use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
     use pods_proto::sdulog::Direction;
     use pods_samples::uplink::{START, STOP};
@@ -51,7 +51,8 @@ mod tests {
 
     use super::answer::READ_LEN;
     use super::att_pods::{
-        READ_NOT_PERMITTED, READ_RESPONSE, READ_VALUE, WRITE_NOT_PERMITTED, WRITE_RESPONSE,
+        DICTATION_START, DICTATION_STOP, READ_NOT_PERMITTED, READ_RESPONSE, READ_VALUE,
+        WRITE_NOT_PERMITTED, WRITE_RESPONSE,
     };
     use super::capture::{
         FAILED, HANDSHAKE_SENT, OWNER_FILE, Ran, Running, after_handshake, assert_att_ran,
@@ -431,7 +432,7 @@ mod tests {
             "steps.txt",
         ];
         assert_eq!(files_of(&run), files);
-        assert_att_ran(&pods, &run, &[&dictation::START, &dictation::STOP]);
+        assert_att_ran(&pods, &run, &[&DICTATION_START, &DICTATION_STOP]);
         let marks = read(&run, "marks.tsv");
         let order = ["handles", "gate", "active", "dictation-start", "started"];
         let seen: Vec<&str> = kinds(&marks)

@@ -4,7 +4,8 @@ use pods_proto::addr::BdAddr;
 use pods_proto::att::{self, AttPdu, HandleInfo, Uuid};
 use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
-use pods_proto::dictation::{self, DictationPacket, Frame, STARTED, STOPPED, Status};
+use pods_proto::dictation::{self, DictationPacket, Event, Frame, STARTED, STOPPED};
+use pods_proto::doap::{Handles, STREAM_ID};
 use pods_proto::ear::EarReport;
 use pods_proto::error::{ParseError, Parser};
 use pods_proto::sdulog::{Direction, format_line, parse_line};
@@ -67,12 +68,20 @@ const CHANGED_SDU_MAX: usize = 16;
 const CHANGED_TO: &[char] = &[
     '0', '9', ' ', '<', '>', '+', '-', 'a', 'f', 'A', 'F', 'g', '\n', '\u{e9}',
 ];
-/// Notification opcode and audio handle 0x000d, little endian: a dictation audio gate.
-const DICTATION_AUDIO_GATE: [u8; 3] = [0x1b, 0x0d, 0x00];
+/// Notification opcode and the audio handle of the one firmware seen, little endian: `1b 0d 00`.
+const DICTATION_AUDIO_GATE: [u8; 3] = dictation_gate(Handles::OBSERVED.send_data);
 /// The two bytes every dictation audio value starts with.
 const DICTATION_AUDIO_MARKER: [u8; 2] = [0x01, 0x00];
-/// Notification opcode and the status handle 0x0010, little endian.
-const DICTATION_STATUS_GATE: [u8; 3] = [0x1b, 0x10, 0x00];
+/// The same for its event handle: `1b 10 00`.
+const DICTATION_EVENT_GATE: [u8; 3] = dictation_gate(Handles::OBSERVED.event);
+/// The stream identifier every event value opens with, little endian.
+const DICTATION_STREAM: [u8; 2] = STREAM_ID.to_le_bytes();
+/// One more than the highest code a shaped event takes: the six known ones and two nobody knows.
+const EVENT_CODE_BOUND: u8 = 9;
+/// One more than the most data bytes a shaped event carries, past the four of a score.
+const EVENT_DATA_BOUND: usize = 6;
+/// One more than the longest data length a shaped event declares, so a length past the data is reached.
+const EVENT_LEN_BOUND: u8 = 7;
 /// Opcodes the ATT reader refuses when malformed: error response, list replies, indication.
 const ATT_REFUSED_WHEN_MALFORMED: [u8; 4] = [
     ATT_ERROR.0,
@@ -184,6 +193,12 @@ fn octets_of(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+// Sample output for 0x000d: `1b 0d 00`.
+const fn dictation_gate(handle: u16) -> [u8; 3] {
+    let [low, high] = handle.to_le_bytes();
+    [ATT_NOTIFICATION, low, high]
+}
+
 // Sample output: `(0x80, 0xd5, 0x0104, [b8, 10, 11])`; counters and lengths lean on their edges.
 fn dictation_frame() -> impl Strategy<Value = (u8, u8, u16, Vec<u8>)> {
     let longest = usize::from(u8::MAX);
@@ -196,10 +211,26 @@ fn dictation_frame() -> impl Strategy<Value = (u8, u8, u16, Vec<u8>)> {
     (any::<u8>(), any::<u8>(), counter, data)
 }
 
+// Sample input: code 0x06 with data `01` is a button press; a code that needs a byte it lacks is no event.
+fn event_of(code: u8, data: &[u8]) -> Option<Event> {
+    match (code, data) {
+        (0x01, [how, ..]) => Some(Event::SiriActivation(*how)),
+        (0x02, [b0, b1, b2, b3, ..]) => Some(Event::Score {
+            bits: u32::from_le_bytes([*b0, *b1, *b2, *b3]),
+        }),
+        (0x03, _) => Some(Event::StreamingEnd),
+        (0x04, [state, ..]) => Some(Event::SiriState(*state)),
+        (0x05, _) => Some(Event::SiriCancel),
+        (0x06, [edge, ..]) => Some(Event::Button(*edge)),
+        (0x01 | 0x02 | 0x04 | 0x06, _) => None,
+        (code, _) => Some(Event::Other { code }),
+    }
+}
+
 // Sample output: `01 00 03 00`: a known reply, one bit flipped, a byte longer or shorter, or noise.
-fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
+fn dictation_event_value() -> impl Strategy<Value = Vec<u8>> {
     let value_of = |reply: &[u8]| -> Vec<u8> {
-        let after_the_gate = reply.iter().skip(DICTATION_STATUS_GATE.len());
+        let after_the_gate = reply.iter().skip(DICTATION_EVENT_GATE.len());
         after_the_gate.copied().collect()
     };
     let known = move || prop_oneof![Just(value_of(&STARTED)), Just(value_of(&STOPPED))];
@@ -221,7 +252,10 @@ fn dictation_status_value() -> impl Strategy<Value = Vec<u8>> {
         value
     });
     let noise = proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND);
-    prop_oneof![known(), flipped, longer, shorter, noise]
+    let data = proptest::collection::vec(any::<u8>(), 0..EVENT_DATA_BOUND);
+    let shaped = (0..EVENT_CODE_BOUND, 0..EVENT_LEN_BOUND, data)
+        .prop_map(|(code, len, data)| [&DICTATION_STREAM[..], &[code, len], &data].concat());
+    prop_oneof![known(), flipped, longer, shorter, noise, shaped]
 }
 
 // Sample output: `1b 0d 00 01 00 2a`, cut anywhere up to one frame prefix past the audio prefix.
@@ -595,7 +629,7 @@ proptest! {
         proptest::collection::vec(any::<u8>(), 0..MAX_SDU),
         dictation_cut_audio_notification(),
     ]) {
-        let _outcome = DictationPacket::parse(&b);
+        let _outcome = DictationPacket::parse(&b, &Handles::OBSERVED);
     }
 
     // Yielded frames encode back to the body's front; trailing counts a tail of no whole frame.
@@ -611,7 +645,7 @@ proptest! {
         pdu.push(packet_counter);
         pdu.extend(declared_len.to_le_bytes());
         pdu.extend(&body);
-        let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&pdu) else {
+        let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&pdu, &Handles::OBSERVED) else {
             return Err(TestCaseError::fail("a notification with the whole audio prefix did not parse as audio"));
         };
         prop_assert_eq!(audio.packet_counter, packet_counter);
@@ -621,7 +655,7 @@ proptest! {
         let whole: Vec<_> = frames.by_ref().collect();
         let used: usize = whole.iter().map(|f| f.data.len().saturating_add(dictation::FRAME_PREFIX_LEN)).sum();
         prop_assert_eq!(used.checked_add(frames.trailing()), Some(body.len()));
-        let rebuilt = dictation::encode_audio(packet_counter, &whole).unwrap();
+        let rebuilt = dictation::encode_audio(&Handles::OBSERVED, packet_counter, &whole).unwrap();
         let rebuilt_frames = &rebuilt[dictation::AUDIO_PREFIX_LEN..];
         prop_assert!(body.starts_with(rebuilt_frames));
         let tail = &body[rebuilt_frames.len()..];
@@ -642,14 +676,14 @@ proptest! {
         value.truncate(kept.index(value.len().saturating_add(1)));
         let mut pdu = DICTATION_AUDIO_GATE.to_vec();
         pdu.extend(&value);
-        let outcome = DictationPacket::parse(&pdu);
+        let outcome = DictationPacket::parse(&pdu, &Handles::OBSERVED);
         if pdu.len() < dictation::AUDIO_PREFIX_LEN {
             let too_short = ParseError::TooShort { parser: Parser::DictationAudio, need: dictation::AUDIO_PREFIX_LEN, got: pdu.len() };
             prop_assert_eq!(outcome, Err(too_short));
         } else if value.starts_with(&DICTATION_AUDIO_MARKER) {
             prop_assert!(matches!(outcome, Ok(Some(DictationPacket::Audio(_)))), "{:?}", outcome);
         } else {
-            let unknown = DictationPacket::Unknown { value: &value };
+            let unknown = DictationPacket::Unknown { handle: Handles::OBSERVED.send_data, value: &value };
             prop_assert_eq!(outcome, Ok(Some(unknown)));
         }
     }
@@ -659,7 +693,7 @@ proptest! {
     fn dictation_reads_nothing_but_a_notification(
         opcode in prop_oneof![proptest::sample::select(&ATT_REFUSED_WHEN_MALFORMED), any::<u8>()]
             .prop_filter("the opcode is a notification", |opcode| *opcode != ATT_NOTIFICATION),
-        gate in prop_oneof![Just(DICTATION_AUDIO_GATE), Just(DICTATION_STATUS_GATE), any::<[u8; 3]>()],
+        gate in prop_oneof![Just(DICTATION_AUDIO_GATE), Just(DICTATION_EVENT_GATE), any::<[u8; 3]>()],
         rest in proptest::collection::vec(any::<u8>(), 0..VALUE_NOISE_BOUND),
         kept in any::<proptest::sample::Index>(),
     ) {
@@ -667,21 +701,21 @@ proptest! {
         pdu.extend(gate.iter().skip(1));
         pdu.extend(&rest);
         pdu.truncate(kept.index(pdu.len()).saturating_add(1));
-        prop_assert_eq!(DictationPacket::parse(&pdu), Ok(None));
+        prop_assert_eq!(DictationPacket::parse(&pdu, &Handles::OBSERVED), Ok(None));
     }
 
+    // Stream 1, a code, a data length and that much data is an event; anything else is kept whole.
     #[test]
-    fn dictation_status_is_a_known_reply_only_when_every_byte_agrees(value in dictation_status_value()) {
-        let mut pdu = DICTATION_STATUS_GATE.to_vec();
+    fn dictation_event_is_read_by_its_layout_or_kept_whole(value in dictation_event_value()) {
+        let mut pdu = DICTATION_EVENT_GATE.to_vec();
         pdu.extend(&value);
-        let expected = if pdu == STARTED {
-            Status::Started
-        } else if pdu == STOPPED {
-            Status::Stopped
-        } else {
-            Status::Other(&value)
+        let event = match value.as_slice() {
+            [s0, s1, code, len, data @ ..] if [*s0, *s1] == DICTATION_STREAM => data.get(..usize::from(*len)).and_then(|data| event_of(*code, data)),
+            _ => None,
         };
-        prop_assert_eq!(DictationPacket::parse(&pdu), Ok(Some(DictationPacket::Status(expected))));
+        let unknown = DictationPacket::Unknown { handle: Handles::OBSERVED.event, value: &value };
+        let expected = event.map_or(unknown, DictationPacket::Event);
+        prop_assert_eq!(DictationPacket::parse(&pdu, &Handles::OBSERVED), Ok(Some(expected)));
     }
 
     // Whole frames round trip; a cut notification yields each frame that fits and counts the rest.
@@ -690,10 +724,14 @@ proptest! {
         packet_counter in prop_oneof![Just(0_u8), Just(u8::MAX), any::<u8>()],
         parts in proptest::collection::vec(dictation_frame(), 0..FRAME_COUNT_BOUND),
         cut in any::<proptest::sample::Index>(),
+        send_data in prop_oneof![Just(Handles::OBSERVED.send_data), any::<u16>()]
+            .prop_filter("the audio handle is another handle of the table", |handle| ![Handles::OBSERVED.event, Handles::OBSERVED.stop].contains(handle)),
     ) {
+        let handles = Handles { send_data, ..Handles::OBSERVED };
         let frames: Vec<Frame<'_>> = parts.iter().map(|(flag, level, counter, data)| Frame { flag: *flag, level: *level, counter: *counter, data }).collect();
-        let pdu = dictation::encode_audio(packet_counter, &frames).unwrap();
-        let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&pdu) else {
+        let pdu = dictation::encode_audio(&handles, packet_counter, &frames).unwrap();
+        prop_assert_eq!(pdu.get(1..=ATT_HANDLE_LEN), Some(&send_data.to_le_bytes()[..]));
+        let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(&pdu, &handles) else {
             return Err(TestCaseError::fail("an encoded notification did not parse as audio"));
         };
         prop_assert_eq!(audio.packet_counter, packet_counter);
@@ -704,7 +742,7 @@ proptest! {
         prop_assert_eq!(seen.trailing(), 0);
 
         let kept = cut.index(pdu.len()).max(dictation::AUDIO_PREFIX_LEN);
-        let Ok(Some(DictationPacket::Audio(cut_audio))) = DictationPacket::parse(&pdu[..kept]) else {
+        let Ok(Some(DictationPacket::Audio(cut_audio))) = DictationPacket::parse(&pdu[..kept], &handles) else {
             return Err(TestCaseError::fail("a cut notification with a whole prefix did not parse as audio"));
         };
         prop_assert_eq!(cut_audio.declared_len, audio.declared_len);
@@ -712,10 +750,10 @@ proptest! {
         let mut cut_frames = cut_audio.frames();
         let whole: Vec<_> = cut_frames.by_ref().collect();
         prop_assert_eq!(whole.as_slice(), &frames[..whole.len()]);
-        let rebuilt = dictation::encode_audio(packet_counter, &whole).unwrap();
+        let rebuilt = dictation::encode_audio(&handles, packet_counter, &whole).unwrap();
         prop_assert_eq!(kept.checked_sub(rebuilt.len()), Some(cut_frames.trailing()));
         if let Some(one_more) = frames.get(..=whole.len()) {
-            prop_assert!(dictation::encode_audio(packet_counter, one_more).unwrap().len() > kept, "a frame that fits was not yielded");
+            prop_assert!(dictation::encode_audio(&handles, packet_counter, one_more).unwrap().len() > kept, "a frame that fits was not yielded");
         }
     }
 }

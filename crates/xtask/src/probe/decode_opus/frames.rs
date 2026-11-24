@@ -1,6 +1,7 @@
 //! The frames of the dictation stream as the attribute log holds them, each under the session the frames table puts it in.
 
 use pods_proto::dictation::{DictationPacket, Frame};
+use pods_proto::doap::Handles;
 use pods_proto::sdulog::{Direction, Record};
 
 use crate::probe::analyse::att::FRAMES_FILE;
@@ -67,10 +68,12 @@ pub(crate) fn load<'log>(
         .iter()
         .filter(|record| record.direction == Direction::FromPods);
     let held: Vec<Frame<'log>> = from_pods
-        .filter_map(|record| match DictationPacket::parse(&record.sdu) {
-            Ok(Some(DictationPacket::Audio(audio))) => Some(audio.frames()),
-            _ => None,
-        })
+        .filter_map(
+            |record| match DictationPacket::parse(&record.sdu, &Handles::OBSERVED) {
+                Ok(Some(DictationPacket::Audio(audio))) => Some(audio.frames()),
+                _ => None,
+            },
+        )
         .flatten()
         .collect();
     if held.len() != sessions.len() {

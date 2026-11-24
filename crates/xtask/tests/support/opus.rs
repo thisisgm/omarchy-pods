@@ -6,9 +6,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use pods_proto::dictation::{
-    Frame, START, STARTED, STOP, STOPPED, TOC_CELT_WIDEBAND_20MS_MONO, encode_audio,
-};
+use pods_proto::dictation::{Frame, STARTED, STOPPED, TOC_CELT_WIDEBAND_20MS_MONO, encode_audio};
+use pods_proto::doap::{self, Handles};
 use pods_proto::sdulog::{Direction, Record};
 use tempfile::TempDir;
 
@@ -93,7 +92,11 @@ fn session(start_ns: u64, frames: &[Sent]) -> Session {
     };
     let mut at_ns = start_ns.saturating_add(FRAME_NS);
     let mut records = vec![
-        record(start_ns, Direction::ToPods, &START),
+        record(
+            start_ns,
+            Direction::ToPods,
+            &doap::start(&Handles::OBSERVED),
+        ),
         record(at_ns, Direction::FromPods, &STARTED),
     ];
     for (counter, frame) in (0_u16..).zip(frames) {
@@ -105,11 +108,12 @@ fn session(start_ns: u64, frames: &[Sent]) -> Session {
             data: &frame.data,
         };
         let packet = counter.to_le_bytes()[0];
-        let notification = encode_audio(packet, &[coded]).unwrap();
+        let notification = encode_audio(&Handles::OBSERVED, packet, &[coded]).unwrap();
         records.push(record(at_ns, Direction::FromPods, &notification));
     }
     let stop_ns = at_ns.saturating_add(HALF_FRAME_NS);
-    records.push(record(stop_ns, Direction::ToPods, &STOP));
+    let stop = doap::stop(&Handles::OBSERVED, doap::STOP_REASON_HOST);
+    records.push(record(stop_ns, Direction::ToPods, &stop));
     let stopped_ns = stop_ns.saturating_add(FRAME_NS);
     records.push(record(stopped_ns, Direction::FromPods, &STOPPED));
     Session {

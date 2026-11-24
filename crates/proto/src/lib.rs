@@ -6,6 +6,7 @@ pub mod att;
 pub mod battery;
 pub mod control;
 pub mod dictation;
+pub mod doap;
 pub mod ear;
 pub mod error;
 #[cfg(test)]

@@ -3,14 +3,13 @@
 use std::cell::Cell;
 
 use pods_proto::att;
-use pods_proto::dictation::{
-    DictationPacket, SESSION_ACTIVE, SESSION_IDLE, START, STARTED, STOP, STOPPED,
-};
+use pods_proto::dictation::{DictationPacket, SESSION_ACTIVE, SESSION_IDLE, STARTED, STOPPED};
+use pods_proto::doap::Handles;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES};
 use pods_proto::sdulog::Direction;
 use pods_proto::uplink;
 
-use super::super::super::dictate::{HandleCheck, HandleWalk};
+use super::super::super::dictate::{HandleCheck, HandleWalk, START, STOP};
 use super::super::super::script::{Event, Route, rescue};
 use super::super::*;
 use super::att_pods::{BURST_PACKETS, TABLE_END};
@@ -177,7 +176,7 @@ fn pdus_go_to_att_log_and_sdus_to_sdu_log_on_one_clock() {
     assert_eq!(outcome.att_pdus_in, u64::try_from(from_att.len()).unwrap());
     assert_eq!(outcome.sdus_in, u64::try_from(from_control.len()).unwrap());
     let audio = from_att.iter().filter(|pdu| {
-        let packet = DictationPacket::parse(pdu);
+        let packet = DictationPacket::parse(pdu, &Handles::OBSERVED);
         matches!(packet, Ok(Some(DictationPacket::Audio(_))))
     });
     assert_eq!(

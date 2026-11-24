@@ -38,6 +38,7 @@ mod tests {
     use pods_proto::dictation::{
         DictationPacket, Frame, TOC_CELT_WIDEBAND_20MS_MONO, encode_audio,
     };
+    use pods_proto::doap::Handles;
     use pods_proto::sdulog::{Direction, Record};
 
     use super::att_run::{Analysed, START_NS, analyse, marks_of};
@@ -62,7 +63,7 @@ mod tests {
     /// The places in `records` of the audio notifications stamped after the stop write of the session.
     fn late_audio(session: &Session) -> Vec<usize> {
         let is_late_audio = |record: &Record| {
-            let parsed = DictationPacket::parse(&record.sdu);
+            let parsed = DictationPacket::parse(&record.sdu, &Handles::OBSERVED);
             record.at_ns > session.stop_ns && matches!(parsed, Ok(Some(DictationPacket::Audio(_))))
         };
         let places = session.records.iter().enumerate();
@@ -80,7 +81,7 @@ mod tests {
             counter,
             data: &[TOC_CELT_WIDEBAND_20MS_MONO],
         };
-        encode_audio(0, &[frame]).unwrap()
+        encode_audio(&Handles::OBSERVED, 0, &[frame]).unwrap()
     }
 
     fn analysed(name: &str, session: &Session) -> Analysed {
@@ -149,7 +150,7 @@ mod tests {
         // A notification with no frame counts nothing on, so the frame after it stays outside too.
         let mut hollow = with_late(2);
         let late = late_audio(&hollow);
-        hollow.records[late[0]].sdu = encode_audio(0, &[]).unwrap();
+        hollow.records[late[0]].sdu = encode_audio(&Handles::OBSERVED, 0, &[]).unwrap();
         hollow.records[late[1]].sdu = one_frame(repeated);
         let found = analysed("hollow", &hollow);
         assert_eq!(found.value("session_frames"), "200");
@@ -161,7 +162,7 @@ mod tests {
         let stop_ns = empty.stop_ns;
         empty.records.retain(|record| {
             !matches!(
-                DictationPacket::parse(&record.sdu),
+                DictationPacket::parse(&record.sdu, &Handles::OBSERVED),
                 Ok(Some(DictationPacket::Audio(_)))
             )
         });

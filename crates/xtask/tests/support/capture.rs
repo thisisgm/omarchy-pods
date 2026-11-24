@@ -13,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_proto::dictation::DictationPacket;
+use pods_proto::doap::Handles;
 use pods_proto::packets::{
     ATT_PSM, CONTROL_PSM, HANDSHAKE, REQUEST_NOTIFICATIONS, SET_SPECIFIC_FEATURES,
 };
@@ -396,10 +397,12 @@ impl Analysed {
     /// How many frames the fake pods sent, in every audio notification.
     pub(crate) fn frames_sent(&self) -> usize {
         let sent = self.pods.att_sent.iter();
-        sent.map(|pdu| match DictationPacket::parse(pdu) {
-            Ok(Some(DictationPacket::Audio(audio))) => audio.frames().count(),
-            _ => 0,
-        })
+        sent.map(
+            |pdu| match DictationPacket::parse(pdu, &Handles::OBSERVED) {
+                Ok(Some(DictationPacket::Audio(audio))) => audio.frames().count(),
+                _ => 0,
+            },
+        )
         .sum()
     }
 }
