@@ -48,6 +48,20 @@ const CI_STEPS: [Gate; 5] = [
     },
 ];
 
+/// The gate that runs only when it is named: the audio bench downloads its tools and its music, and scores for minutes.
+const BENCH: Gate = Gate {
+    name: "bench",
+    args: &[
+        "--profile",
+        "dev",
+        "--package",
+        "xtask",
+        "--bench",
+        "codec",
+        "--locked",
+    ],
+};
+
 /// Set on every gate, as the hosted clippy job sets it, so a Cargo warning such as an unused dependency fails here too.
 const BUILD_WARNINGS: (&str, &str) = ("CARGO_BUILD_WARNINGS", "deny");
 
@@ -57,9 +71,10 @@ fn main() -> ExitCode {
             Ok(gates) => run_ci(&gates),
             Err(unknown) => {
                 report(&format!(
-                    "xtask: no gate named {}; the gates are {}",
+                    "xtask: no gate named {}; the gates are {}, and {} when it is named",
                     unknown.display(),
-                    CI_STEPS.map(|gate| gate.name).join(", ")
+                    CI_STEPS.map(|gate| gate.name).join(", "),
+                    BENCH.name
                 ));
                 ExitCode::FAILURE
             }
@@ -84,16 +99,24 @@ fn usage() -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The gates named, each once and in their usual order, or every gate when none is; the error is the first name that is no gate.
+/// Every gate a name can pick: the gates of `cargo xtask ci` alone, then the one that runs only when named.
+fn every_gate() -> impl Iterator<Item = &'static Gate> {
+    CI_STEPS.iter().chain([&BENCH])
+}
+
+/// The gates named, each once and in their usual order, or every gate but `BENCH` when none is; the error is the first name that is no gate.
 // Sample input: `fmt clippy`.
 fn chosen(names: impl Iterator<Item = OsString>) -> Result<Vec<Gate>, OsString> {
     let names: Vec<OsString> = names.collect();
-    let is_gate = |name: &&OsString| CI_STEPS.iter().any(|gate| **name == *gate.name);
+    if names.is_empty() {
+        return Ok(CI_STEPS.to_vec());
+    }
+    let is_gate = |name: &&OsString| every_gate().any(|gate| **name == *gate.name);
     if let Some(unknown) = names.iter().find(|name| !is_gate(name)) {
         return Err(unknown.clone());
     }
-    let picked = |gate: &&Gate| names.is_empty() || names.iter().any(|name| *name == *gate.name);
-    Ok(CI_STEPS.iter().filter(picked).copied().collect())
+    let picked = |gate: &&Gate| names.iter().any(|name| *name == *gate.name);
+    Ok(every_gate().filter(picked).copied().collect())
 }
 
 /// Runs `gates` in order and stops at the first one that fails.
@@ -126,7 +149,7 @@ fn run_ci(gates: &[Gate]) -> ExitCode {
         report(&format!(
             "xtask: {} of {} gates ran and passed",
             gates.len(),
-            CI_STEPS.len()
+            every_gate().count()
         ));
     }
     ExitCode::SUCCESS
@@ -155,7 +178,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{BUILD_WARNINGS, CI_STEPS};
+    use super::{BENCH, BUILD_WARNINGS, CI_STEPS};
 
     const FORBID_UNSAFE: &str = r#"unsafe_code = "forbid""#;
     const DENY_UNSAFE: &str = r#"unsafe_code = "deny""#;
@@ -177,6 +200,14 @@ mod tests {
             }
         }
         lines
+    }
+
+    #[test]
+    fn the_bench_runs_only_when_it_is_named() {
+        let gates = |names: &[&str]| super::chosen(names.iter().map(Into::into)).unwrap();
+        assert!(gates(&[]) == CI_STEPS);
+        assert!(gates(&["bench"]) == [BENCH]);
+        assert!(gates(&["bench", "fmt"]) == [CI_STEPS[0], BENCH]);
     }
 
     #[test]

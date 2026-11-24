@@ -3,6 +3,7 @@
 mod a2dp;
 mod analyse;
 mod audio;
+mod bench;
 mod capture;
 mod decode;
 mod decode_opus;
@@ -110,6 +111,11 @@ enum ProbeCommand {
     Audio(audio::AudioArgs),
     /// Serves the audio of a capture as a microphone: its packets go through the decode chain into the node `omapods_input.probe`, each at the time the log holds for it, until the capture ends or a signal comes; one status line a second on stdout.
     Source(source::SourceArgs),
+    /// The objective audio bench: makes its cache of pinned tools, or scores with them.
+    Bench {
+        #[command(subcommand)]
+        command: bench::BenchCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -230,6 +236,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         ProbeCommand::Source(args) => watched(&mut host, |host, interrupted| {
             source::serve(&args, host, interrupted)
         }),
+        ProbeCommand::Bench { command } => bench::run(&command),
     }
 }
 

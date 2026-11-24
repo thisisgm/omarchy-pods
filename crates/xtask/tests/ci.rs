@@ -22,7 +22,7 @@ mod tests {
         assert_eq!(said.matches("xtask: cargo ").count(), 1, "{said}");
         assert!(said.contains("xtask: cargo fmt --all --check"), "{said}");
         assert!(
-            said.contains("xtask: 1 of 5 gates ran and passed"),
+            said.contains("xtask: 1 of 6 gates ran and passed"),
             "{said}"
         );
     }
@@ -34,7 +34,7 @@ mod tests {
         assert_eq!(output.status.code(), Some(1), "{said}");
         assert_eq!(
             said,
-            "xtask: no gate named lint; the gates are fmt, clippy, nextest, test, deny\n"
+            "xtask: no gate named lint; the gates are fmt, clippy, nextest, test, deny, and bench when it is named\n"
         );
     }
 }
