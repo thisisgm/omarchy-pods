@@ -857,6 +857,9 @@ private slots:
             LOG_DEBUG("AIRPODS_DISCONNECTED packet written: " << AirPodsPackets::Connection::AIRPODS_DISCONNECTED.toHex());
         }
 
+        // A headset reports no in-ear state we track here, so it always counts as worn.
+        const bool worn = m_wornThisLink || isModelHeadset(m_deviceInfo->model());
+
         // Clear the device name and model
         m_deviceInfo->reset();
         m_bleManager->startScan();
@@ -866,11 +869,14 @@ private slots:
         // fires PropertiesChanged Connected=false on suspend and the user
         // doesn't want to see "AirPods Disconnected" every time they close
         // the lid. Tray icon still resets so visual state is accurate.
-        if (ControlReconnect::shouldAnnounceDisconnect(m_isSuspending, bluezStillConnected)) {
+        if (ControlReconnect::shouldAnnounceDisconnect(m_isSuspending, bluezStillConnected, worn)) {
             m_notifier->notify(
                 tr("AirPods Disconnected"),
                 tr("Your AirPods have been disconnected"));
+        } else if (!worn) {
+            LOG_INFO("No disconnect toast: no pod was in an ear on this link");
         }
+        m_wornThisLink = false;
         if (trayManager) {
             trayManager->resetTrayIcon();
         }
@@ -1318,6 +1324,9 @@ private slots:
         {
             m_deviceInfo->getEarDetection()->parseData(data);
             mediaController->handleEarDetection(m_deviceInfo->getEarDetection());
+            if (m_deviceInfo->getEarDetection()->oneOrMorePodsInEar()) {
+                m_wornThisLink = true;
+            }
         }
         // Battery Status
         else if ((data.size() == 22 || data.size() == 12) && data.startsWith(AirPodsPackets::Parse::BATTERY_STATUS))
@@ -1646,6 +1655,8 @@ private:
     ControlReconnect::Session m_controlRecovery;
     bool m_isSuspending = false;
     bool m_disconnectFinalized = false;
+    // Set when ear detection reports a pod in an ear; cleared when a drop is finalized.
+    bool m_wornThisLink = false;
     QString m_lastAirPodsAddress;
     QString m_lastAirPodsName;
 

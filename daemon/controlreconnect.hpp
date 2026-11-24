@@ -46,9 +46,12 @@ inline bool shouldRescanFromWatchdog(bool controlSocketConnected, bool recoveryA
 }
 
 // Audio keeps playing while BlueZ holds the link, so a refused control socket alone is not a disconnect to announce.
-inline bool shouldAnnounceDisconnect(bool suspending, bool bluezStillConnected)
+// wornThisLink: a pod was in an ear at some point since the last announced drop.
+// Pods in the case can accept a page, keep the link for ~30s and then end it.
+// The user does not need a toast for each of these cycles.
+inline bool shouldAnnounceDisconnect(bool suspending, bool bluezStillConnected, bool wornThisLink = true)
 {
-    return !suspending && !bluezStillConnected;
+    return !suspending && !bluezStillConnected && wornThisLink;
 }
 
 inline int delayMs(int attempt, int jitterMs)

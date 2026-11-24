@@ -52,6 +52,10 @@ private slots:
 
         // Suspend and resume drop the link on purpose.
         QVERIFY(!ControlReconnect::shouldAnnounceDisconnect(true, false));
+
+        // Pods left in the case accept a page, never go in an ear and hang up: no toast each cycle.
+        QVERIFY(!ControlReconnect::shouldAnnounceDisconnect(false, false, false));
+        QVERIFY(ControlReconnect::shouldAnnounceDisconnect(false, false, true));
     }
 
     void watchdogSweepsBlueZWhenTheDaemonStartedBeforeTheAdapter()
