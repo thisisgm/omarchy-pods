@@ -1,4 +1,4 @@
-//! The rig the chain's support tests share: a chain fed a cycle of tone units, a twin decoder fed the same, and the test's own clock.
+//! The rig the chain's support tests share: a chain fed a cycle of tone units, a twin decoder fed the same, and the test's own clock; and the sine of the dictation stream's tone, which the decoder's suite takes from here too.
 
 use std::f32::consts::PI;
 use std::ops::Range;
@@ -38,6 +38,13 @@ pub(crate) const FADE: usize = 320;
 pub(crate) const FIRST: Duration = Duration::from_millis(100);
 /// How far a sample under a fade may stand from the shape times the decoder's sample.
 pub(crate) const SHAPE_SLACK: f32 = 1e-6;
+
+/// The sine the frames of the dictation stream's tone were coded from: its frequency, and its peak against full scale.
+pub(crate) const TONE_HZ: u32 = 1000;
+pub(crate) const TONE_DBFS: f64 = -30.0;
+/// How far a decode of that tone may stand from the sine: the bound the suites that measure it hold a lossy codec to.
+pub(crate) const TONE_SLACK_HZ: u32 = 5;
+pub(crate) const TONE_SLACK_DB: f64 = 1.0;
 
 pub(crate) struct Rig {
     pub(crate) chain: Chain,

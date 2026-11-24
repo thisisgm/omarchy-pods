@@ -2,6 +2,10 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the suites of this crate share one rig, and this one leaves some of its helpers unused"
+)]
 mod support;
 
 #[cfg(test)]

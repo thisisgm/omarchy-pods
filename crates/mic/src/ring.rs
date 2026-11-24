@@ -64,6 +64,13 @@ impl Arrival {
     }
 }
 
+/// The stream of the pods a run is of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Path {
+    Uplink,
+    Dictation,
+}
+
 /// What the ring holds at one frame, with the floor of the run the frame was judged against.
 pub(crate) enum Frame {
     Sample {
@@ -86,6 +93,8 @@ pub(crate) struct Ring {
     written: AtomicU64,
     /// Where the run began: of what stands before it the reader hands out only the fall of audio it was playing.
     floor: AtomicU64,
+    /// Whether the run is of the dictation stream.
+    dictation: AtomicBool,
     /// The earliest `now` less the time `written` stood for, over the last packets of the run, in ns; none while no packet of the run has landed.
     arrival: Arrival,
 }
@@ -96,6 +105,7 @@ impl Ring {
             samples: (0..RING_SAMPLES).map(|_| AtomicU32::new(0)).collect(),
             written: AtomicU64::new(0),
             floor: AtomicU64::new(0),
+            dictation: AtomicBool::new(false),
             arrival: Arrival::none(),
         }
     }
@@ -110,15 +120,18 @@ impl Ring {
         i64::try_from(self.written.load(Ordering::Relaxed)).unwrap_or(i64::MAX)
     }
 
-    /// Never waits, and overwrites the oldest; the reader's lap check holds for one unit a call at most.
-    pub(crate) fn write(&self, unit: impl Iterator<Item = f32>) {
+    /// Never waits, and overwrites the oldest; the index is shown at least every unit, which is as far past it as the reader's lap check lets the writer be.
+    pub(crate) fn write(&self, samples: impl Iterator<Item = f32>) {
         let mut end = self.written.load(Ordering::Relaxed);
-        for sample in unit {
+        for (sample, of_the_unit) in samples.zip((1..=UNIT_FRAMES).cycle()) {
             if let Some(slot) = self.slot(end) {
                 // Release, so a reader that sees this sample sees the write index it was stored under.
                 slot.store(sample.to_bits(), Ordering::Release);
             }
             end = end.saturating_add(1);
+            if of_the_unit == UNIT_FRAMES {
+                self.written.store(end, Ordering::Release);
+            }
         }
         self.written.store(end, Ordering::Release);
     }
@@ -128,7 +141,18 @@ impl Ring {
         self.floor.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn start_run(&self) {
+    /// The stream the run is of.
+    pub(crate) fn path(&self) -> Path {
+        if self.dictation.load(Ordering::Relaxed) {
+            Path::Dictation
+        } else {
+            Path::Uplink
+        }
+    }
+
+    pub(crate) fn start_run(&self, path: Path) {
+        self.dictation
+            .store(path == Path::Dictation, Ordering::Release);
         self.floor
             .store(self.written.load(Ordering::Relaxed), Ordering::Release);
         self.arrival.store(None);

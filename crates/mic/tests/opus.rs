@@ -2,15 +2,21 @@
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the suites of this crate share one rig, and this one takes only the tone's sine from it"
+)]
+mod support;
+
+#[cfg(test)]
 mod tests {
     use pods_mic::decode::Decoded;
     use pods_mic::opus::{DICTATION_DECODE_HZ, Decoder, FRAME_SAMPLES, MAX_OPUS_FRAME_BYTES};
     use pods_samples::opus::tone;
     use proptest::prelude::*;
 
-    /// The sine the fixture was coded from: its frequency, and its peak against full scale.
-    const TONE_HZ: u32 = 1000;
-    const TONE_DBFS: f64 = -30.0;
+    use super::support::{TONE_DBFS, TONE_HZ, TONE_SLACK_DB, TONE_SLACK_HZ};
+
     /// The table of contents byte of the stream's frames, and that of a 10 ms frame of the same mode.
     const TOC_20MS: u8 = 0xb8;
     const TOC_10MS: u8 = 0xb0;
@@ -65,13 +71,13 @@ mod tests {
             .max_by(|&a, &b| power_at(&heard, a).total_cmp(&power_at(&heard, b)))
             .unwrap();
         assert!(
-            loudest.abs_diff(TONE_HZ) <= 5,
+            loudest.abs_diff(TONE_HZ) <= TONE_SLACK_HZ,
             "the tone is at {loudest} Hz"
         );
         let peak = 2.0 * power_at(&heard, loudest).sqrt() / f64::from(second);
         let level = 20.0 * peak.log10();
         assert!(
-            (level - TONE_DBFS).abs() <= 1.0,
+            (level - TONE_DBFS).abs() <= TONE_SLACK_DB,
             "the tone is at {level} dBFS"
         );
     }
