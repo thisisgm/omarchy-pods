@@ -18,12 +18,15 @@ mod tests {
     use rustix::io::Errno;
     use tokio::runtime::Builder as RuntimeBuilder;
     use tokio::time::timeout;
+    use zbus::OwnedVariant;
     use zbus::connection::Builder;
 
     use super::support::bluez::{Call, DeviceMethod};
     use super::support::bus::{BUS_NAME, INTERFACE, OBJECT_PATH};
+    use super::support::held::held;
     use super::support::rig::{
-        CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Device, Rig, assert_gap, connected, total,
+        CALLS_IN_FLIGHT_MAX, DIAL_WAIT, Device, FIRST_RETRY, Rig, assert_gap, connected,
+        not_before, total,
     };
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for};
 
@@ -146,6 +149,45 @@ mod tests {
         );
         assert_eq!(rig.bluez().calls(), []);
         rig.wait_filled();
+        rig.finish();
+    }
+
+    #[test]
+    fn do_connect_before_bluez_says_the_disconnected_pods_left_keeps_the_dial_after_a_close() {
+        let (mut rig, device) = up();
+        // BlueZ answers a disconnect only once the device left, so the test moves the pods and BlueZ itself.
+        rig.bluez().hold_replies(true);
+        let mut client = Proto1::connect(rig.session());
+        assert_eq!(outcome(&client.ask(&do_request(1, "disconnect"))), "sent");
+        wait_for("the disconnect at the fake BlueZ", || {
+            (rig.bluez().calls() == [device.call(DeviceMethod::Disconnect)]).then_some(())
+        });
+        rig.bluez().hold_replies(false);
+        rig.close_channel(&device);
+        let (answer, release) = held(&device.pods);
+        rig.answer(&device, answer);
+        assert_eq!(outcome(&client.ask(&do_request(2, "connect"))), "sent");
+        rig.wait_dials(2, HANG_LIMIT);
+        rig.bluez()
+            .set(&device.path, "Connected", OwnedVariant::from(false));
+        rig.link_up(&device);
+        rig.bluez().wait_signals_taken();
+        rig.wait_queued_inputs_applied();
+        rig.accept(&device);
+        drop(release);
+        rig.wait_filled();
+        device.pods.hang_up();
+        let closed = device.pods.wait_closed(2, HANG_LIMIT).unwrap()[1];
+        let dials = rig.wait_dials(3, HANG_LIMIT);
+        assert_gap(
+            "the dial after the close",
+            closed,
+            dials[2].at,
+            &not_before(FIRST_RETRY),
+        );
+        rig.wait_filled();
+        assert_eq!(rig.entered("idle"), 0, "the pods were reset on the way");
+        assert_eq!(rig.bluez().calls().len(), 1);
         rig.finish();
     }
 

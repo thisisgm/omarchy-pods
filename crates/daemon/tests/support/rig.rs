@@ -40,6 +40,8 @@ pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
 pub(crate) const CALLS_IN_FLIGHT_MAX: usize = 4;
 /// A dial that should come at once.
 pub(crate) const DIAL_WAIT: Duration = Duration::from_secs(1);
+/// The C++ `firstDelayMs`: the wait before dialling again a link that was up.
+pub(crate) const FIRST_RETRY: Duration = Duration::from_millis(750);
 /// The wait after each failed dial to pods BlueZ holds connected, the C++ `delayMs(1..=10)` without its jitter.
 pub(crate) const HELD_LADDER: [Duration; 10] = [
     Duration::from_secs(1),

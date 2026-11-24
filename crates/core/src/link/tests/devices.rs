@@ -3,7 +3,7 @@
 use super::ladders::PARKED_AT_MS;
 use super::sim::{Answer, Input, NO_ACTIONS, Sim, millis, ms};
 use crate::command::{Command, CommandError, Outcome};
-use crate::link::ladder::Attempt;
+use crate::link::ladder::{Attempt, HELD_DELAYS_MS};
 use crate::link::{DeviceAction, Phase};
 use crate::state::Counters;
 
@@ -264,4 +264,97 @@ fn a_disconnect_that_fails_after_holding_the_dial_lets_the_ladder_dial_again() {
     sim.feed(Input::Wait(ms(FIRST_RETRY_MS)));
     assert_eq!(sim.times_of("Open(0)")[1..], [failed_at + FIRST_RETRY_MS]);
     sim.check();
+}
+
+#[test]
+fn a_disconnect_that_reset_the_pods_does_not_stop_the_dial_after_their_next_close() {
+    let mut sim = up_named();
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::Down(0));
+    assert_eq!(sim.machine.phase(), Phase::Idle);
+    sim.bring_up(0);
+    let closed_at = millis(sim.now);
+    sim.feed(Input::PeerCloses);
+    sim.feed(Input::Wait(ms(FIRST_RETRY_MS)));
+    assert_eq!(sim.times_of("Open(0)")[2..], [closed_at + FIRST_RETRY_MS]);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_disconnect_the_pods_left_and_came_back_from_does_not_stop_the_next_dial() {
+    let mut sim = Sim::new();
+    sim.feed(Input::NextOpen(Answer::Hold));
+    sim.feed(Input::Up(0));
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::Down(0));
+    sim.feed(Input::Up(0));
+    sim.feed(Input::Release(false));
+    sim.feed(Input::Wait(ms(HELD_DELAYS_MS[0])));
+    assert_eq!(sim.times_of("Open(0)"), [0, HELD_DELAYS_MS[0]]);
+    sim.check_all_tickets_resolved_once();
+}
+
+/// A link up again through a connect taken after the disconnect ended the channel and before BlueZ said the pods left.
+fn up_again_after_a_connect_ahead_of_the_disconnects_device_down() -> Sim {
+    let mut sim = up_named();
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::PeerCloses);
+    sim.feed(Input::NextOpen(Answer::Hold));
+    sim.feed(Input::Command(Command::Connect));
+    assert_eq!(sim.last(), ["Open(0)", "Resolve(1)"]);
+    sim.feed(Input::Down(0));
+    sim.feed(Input::Up(0));
+    sim.feed(Input::Release(true));
+    sim.feed(Input::Packet(pods_samples::handshake_ack()));
+    sim.feed(Input::Packet(pods_samples::features_ack()));
+    assert!(matches!(sim.machine.phase(), Phase::Up { .. }));
+    sim
+}
+
+#[test]
+fn a_connect_taken_before_bluez_says_the_disconnected_pods_left_keeps_the_dial_after_a_close() {
+    let mut sim = up_again_after_a_connect_ahead_of_the_disconnects_device_down();
+    let closed_at = millis(sim.now);
+    sim.feed(Input::PeerCloses);
+    sim.feed(Input::Wait(ms(FIRST_RETRY_MS)));
+    assert_eq!(sim.times_of("Open(0)")[2..], [closed_at + FIRST_RETRY_MS]);
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_connect_taken_before_bluez_says_the_disconnected_pods_left_keeps_the_grace_of_a_dropout() {
+    let mut sim = up_again_after_a_connect_ahead_of_the_disconnects_device_down();
+    sim.feed(Input::Down(0));
+    assert!(matches!(sim.machine.phase(), Phase::Grace { .. }));
+    assert_ne!(sim.state.device_name, "");
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_disconnect_that_fails_after_the_pods_left_and_came_back_leaves_a_newer_one_holding() {
+    let mut sim = up_again_after_a_connect_ahead_of_the_disconnects_device_down();
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::FirstCallFailed(DeviceAction::Disconnect));
+    assert_eq!(sim.state.counters.disconnect_failures, 1);
+    sim.feed(Input::PeerCloses);
+    sim.feed(Input::Wait(ms(GRACE_MS)));
+    assert_eq!(sim.times_of("Open(0)").len(), 2);
+    sim.feed(Input::Down(0));
+    assert_eq!(sim.machine.phase(), Phase::Idle);
+    assert_eq!(sim.state.device_name, "");
+    sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_disconnect_still_holds_the_dial_when_bluez_repeats_that_the_pods_are_connected() {
+    let mut sim = up_named();
+    sim.feed(Input::Command(Command::Disconnect));
+    sim.feed(Input::Up(0));
+    sim.feed(Input::PeerCloses);
+    sim.feed(Input::Wait(ms(GRACE_MS)));
+    assert_eq!(sim.times_of("Open(0)").len(), 1);
+    sim.feed(Input::Down(0));
+    assert_eq!(sim.machine.phase(), Phase::Idle);
+    assert_eq!(sim.state.device_name, "");
+    sim.check_all_tickets_resolved_once();
 }

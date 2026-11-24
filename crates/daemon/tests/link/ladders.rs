@@ -7,10 +7,7 @@ use pods_trap::Answer;
 use rustix::io::Errno;
 
 use crate::support::HANG_LIMIT;
-use crate::support::rig::{DIAL_WAIT, HELD_LADDER, Rig, assert_gap, connected};
-
-/// The C++ `firstDelayMs`: the wait before dialling again a link that was up.
-const FIRST_RETRY: Duration = Duration::from_millis(750);
+use crate::support::rig::{DIAL_WAIT, FIRST_RETRY, HELD_LADDER, Rig, assert_gap, connected};
 
 /// How long the daemon waits for each acknowledgement of the opening before it closes the channel.
 const HANDSHAKE_STEP: Duration = Duration::from_millis(2000);

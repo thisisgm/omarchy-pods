@@ -51,7 +51,7 @@ pub struct Call {
     pub session: Session,
 }
 
-/// The stretch between two device resets.
+/// The stretch in which user disconnects count together, ended by a device reset or by BlueZ holding the device again after it stopped holding it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Session(u32);
 
@@ -315,7 +315,7 @@ impl Machine {
                 E::DeviceUp(device),
             ) => {
                 if self.is_active(device) {
-                    self.held = true;
+                    self.held_again();
                 } else {
                     self.remember(device);
                 }
@@ -728,8 +728,7 @@ impl Machine {
         self.active = None;
         self.held = false;
         self.populated = false;
-        self.session = Session(self.session.0.wrapping_add(1));
-        self.user_disconnects = 0;
+        self.spend_disconnects();
         lost
     }
 

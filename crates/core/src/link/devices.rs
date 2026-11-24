@@ -3,7 +3,7 @@
 use pods_proto::addr::BdAddr;
 
 use super::ladder::Attempt;
-use super::{Action, Call, DeviceAction, Machine, Phase, Ticket, raise, resolve};
+use super::{Action, Call, DeviceAction, Machine, Phase, Session, Ticket, raise, resolve};
 use crate::command::{CommandError, Outcome};
 use crate::state::{Counters, State};
 
@@ -72,6 +72,20 @@ impl Machine {
             self.user_disconnects = self.user_disconnects.saturating_sub(1);
         }
         Vec::new()
+    }
+
+    /// BlueZ says the active device is connected; if it had stopped holding it (the device left, or BlueZ did), the disconnects called before are spent.
+    pub(super) fn held_again(&mut self) {
+        if !self.held {
+            self.spend_disconnects();
+        }
+        self.held = true;
+    }
+
+    /// No user disconnect counts any more, and a late failure of one releases nothing.
+    pub(super) fn spend_disconnects(&mut self) {
+        self.session = Session(self.session.0.wrapping_add(1));
+        self.user_disconnects = 0;
     }
 
     fn call(
