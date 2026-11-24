@@ -281,12 +281,13 @@ fn set_racing_a_hang_up_always_resolves() {
             scope.spawn(|| {
                 if !hang_up_first {
                     spin(offset);
+                    pods.hang_up();
                 }
-                pods.hang_up();
             });
             if hang_up_first {
-                // With the pods' end closed, the failed write or the end of the link refuses the set.
-                pods.wait_closed(round + 1, HANG_LIMIT).unwrap();
+                pods.hang_up();
+                // Every channel open at the hang-up has ended, so the failed write or the end of the link refuses the set.
+                pods.wait_hung_up(HANG_LIMIT).unwrap();
                 spin(offset);
             }
             let started = Instant::now();

@@ -57,7 +57,7 @@ log() { printf '%s\n' "$*" >> "$STUB/calls"; }
 hold_seconds=2
 # Seconds slow-disconnect holds `do disconnect` open, so the test's signal lands inside it.
 slow_disconnect_seconds=1
-# Seconds after the watch's first lines that daemon-busy wakes the daemon, inside the 1 s idle window.
+# Seconds between the wakes daemon-busy gives the daemon from the watch's first lines until the watch ends, several to a 1 s window.
 busy_wake_seconds=0.3
 # Seconds a watch stand-in lives, past every idle window and the run's 5 s wait for its first line.
 watch_seconds=30
@@ -223,7 +223,13 @@ watch) echo $$ > "$STUB/watch-pid"
     [ -e "$STUB/watch-wakes-daemon" ] && { kill -STOP "$(read_file main-pid)"; kill -CONT "$(read_file main-pid)"; }
     line; line
     [ -e "$STUB/watch-ends" ] && exit 0
-    if [ -e "$STUB/daemon-busy" ]; then sleep "$busy_wake_seconds"; kill -STOP "$(read_file main-pid)"; kill -CONT "$(read_file main-pid)"; fi
+    # The idle window opens after the first lines and closes before the watch ends, so it lies inside these wakes.
+    if [ -e "$STUB/daemon-busy" ]; then
+        main=$(read_file main-pid); end=$(( $(date +%s) + watch_seconds ))
+        # A subshell, so a watch killed between the two signals still continues the daemon.
+        while [ "$(date +%s)" -lt "$end" ]; do sleep "$busy_wake_seconds"; ( kill -STOP "$main"; kill -CONT "$main" ); done
+        exit 0
+    fi
     exec sleep "$watch_seconds" ;;
 do)
     case "$2" in
