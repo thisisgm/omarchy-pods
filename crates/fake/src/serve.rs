@@ -161,6 +161,13 @@ impl Pods {
         }
     }
 
+    /// Returns once every channel `hang_up` marked has ended; one opened since is not waited for.
+    pub fn wait_hung_up(&self, deadline: Duration) -> Result<(), Deadline> {
+        self.shared.wait_until(deadline, |state| {
+            state.lines.iter().all(|line| !line.hang_up).then_some(())
+        })
+    }
+
     /// Stops reading on every open channel, so the host's writes fill the socket until one fails.
     pub fn stop_reading(&self) {
         for line in &mut self.shared.lock().lines {

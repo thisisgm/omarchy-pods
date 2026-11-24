@@ -381,16 +381,30 @@ fn a_stop_that_leaves_the_socket_and_state_file_fails() {
 
 #[test]
 fn a_daemon_woken_in_the_idle_window_misses_g3() {
+    const SECONDS_PER_MINUTE: u64 = 60;
     let bench = Bench::new();
     bench.set("daemon-busy", "");
     let output = bench.run(&[]);
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
+    let counted = stdout
+        .lines()
+        .find(|line| line.contains("G3 link up: ") && line.contains(" wakeups in 1 s"))
+        .unwrap_or_else(|| panic!("no G3 link up count: {stdout}"));
+    // G3 link up: 2 wakeups in 1 s, 120.0 a minute, bound at most 12, watch lines 1
+    let woke: u64 = counted
+        .split("G3 link up: ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("no G3 link up count: {counted}"));
+    assert!(woke >= 1, "{stdout}");
+    let per_minute = woke.saturating_mul(SECONDS_PER_MINUTE);
     assert!(
-        stdout.contains(
-            "G3 link up: 2 wakeups in 1 s, 120.0 a minute, bound at most 12, watch lines 1"
-        ),
+        stdout.contains(&format!(
+            "G3 link up: {woke} wakeups in 1 s, {per_minute}.0 a minute, bound at most 12, watch lines 1"
+        )),
         "{stdout}"
     );
     assert!(

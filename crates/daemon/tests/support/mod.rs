@@ -202,6 +202,10 @@ impl Session {
             root.is_absolute() && root.is_dir(),
             "{KEEP_STATE} names {root:?}, {KEEP_STATE_REFUSED}"
         );
+        // The daemon writes the file from its own task, so the file can trail the status a caller just read.
+        wait_for("the state file to show the status", || {
+            (fs::read_to_string(self.state_file()).ok()? == self.status()).then_some(())
+        });
         let labelled = root.join(label);
         match fs::create_dir(&labelled) {
             Ok(()) => {}

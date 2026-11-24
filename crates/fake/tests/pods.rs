@@ -428,6 +428,20 @@ mod tests {
     }
 
     #[test]
+    fn wait_hung_up_waits_for_the_hung_up_channel_and_not_for_one_opened_since() {
+        let pods = Pods::new(Profile::default());
+        let hung_up = open(&pods);
+        pods.hang_up();
+        let opened_since = open(&pods);
+        pods.wait_hung_up(RECV_TIMEOUT).unwrap();
+        assert_eq!(pods.wait_closed(0, Duration::ZERO).unwrap().len(), 1);
+        assert_closed(&hung_up);
+        ask(&opened_since, &host::handshake());
+        assert_eq!(recv(&opened_since), handshake_ack());
+        finish(pods, opened_since);
+    }
+
+    #[test]
     fn a_clone_that_serves_after_the_finish_starts_no_thread() {
         let pods = Pods::new(Profile::default());
         let late = pods.clone();
