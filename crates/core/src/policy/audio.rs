@@ -58,6 +58,15 @@ pub enum AudioFact {
     Sink(Option<SinkFact>),
     /// The restore asked for under this id is done, or kept owed while the server is down.
     Restored(RestoreId),
+    /// Told when it changes; `Down` reads as none.
+    Recorders(Recorders),
+}
+
+/// The record streams on the microphone's source: Superwhisper's, and every other program's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Recorders {
+    pub dictation: u8,
+    pub other: u8,
 }
 
 /// Which restore an answer is for, so a late answer to an earlier one finishes nothing.

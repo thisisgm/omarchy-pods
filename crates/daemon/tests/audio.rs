@@ -38,7 +38,10 @@ mod tests {
             },
             Asked::ClientName,
             Asked::Subscribe {
-                mask: SubscriptionMask::SINK | SubscriptionMask::SERVER,
+                mask: SubscriptionMask::SINK
+                    | SubscriptionMask::SERVER
+                    | SubscriptionMask::SOURCE
+                    | SubscriptionMask::SOURCE_OUTPUT,
             },
             Asked::ServerInfo,
             Asked::SinkList,

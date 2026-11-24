@@ -113,14 +113,14 @@ async fn serve(
     let (media_requests, media_queue) = media::queue();
     let (mic_requests, mic_watch) = watch::channel(MicRequest::Close);
     let tap = mic::Tap::new();
-    let runtime_dir = paths.runtime_dir.clone();
-    let source = tokio::spawn(mic::run(
-        mic_watch,
+    let dir = paths.runtime_dir.clone();
+    let source = tokio::spawn(mic::run(mic_watch, link.clone(), dir, Arc::clone(&tap)));
+    let adapter = tokio::spawn(audio::run(
         link.clone(),
-        runtime_dir,
-        Arc::clone(&tap),
+        audio_queue,
+        paths.runtime_dir,
+        hub.subscribe(),
     ));
-    let adapter = tokio::spawn(audio::run(link.clone(), audio_queue, paths.runtime_dir));
     let (keys, pairs) = keys::queue();
     let (monitor, monitor_wanted) = watch::channel(false);
     let driver = tokio::spawn(link::drive(

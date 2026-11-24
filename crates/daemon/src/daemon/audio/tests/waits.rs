@@ -4,9 +4,10 @@ use std::fs;
 use std::time::Duration;
 
 use pods_core::policy::audio::AudioRequest;
+use pods_core::state::State;
 use tempfile::TempDir;
 use tokio::net::UnixListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -49,7 +50,8 @@ async fn follow_a_silent_server() -> Following {
     });
     let (inputs, facts) = mpsc::channel(FACTS);
     let (requests, asked) = queue();
-    let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf()));
+    let state = watch::channel(State::default()).1;
+    let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
     let device = DEVICE.parse().unwrap();
     requests
         .send(AudioRequest::Follow(Some(device)))

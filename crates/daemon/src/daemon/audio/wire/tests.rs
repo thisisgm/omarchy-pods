@@ -53,13 +53,13 @@ fn stripped(bytes: &[u8]) -> Frame {
     Frame(bytes[DESCRIPTOR_SIZE..].to_vec())
 }
 
-fn reply(reply: &impl CommandReply) -> Frame {
+pub(in crate::daemon::audio) fn reply(reply: &impl CommandReply) -> Frame {
     let mut bytes = Vec::new();
     write_reply_message(&mut bytes, SEQ, reply, PROTOCOL_VERSION).unwrap();
     stripped(&bytes)
 }
 
-fn body(frame: &Frame) -> &[u8] {
+pub(in crate::daemon::audio) fn body(frame: &Frame) -> &[u8] {
     match message(frame).unwrap() {
         Message::Reply { body, .. } => body,
         other @ (Message::Refused { .. } | Message::Event | Message::Other) => {

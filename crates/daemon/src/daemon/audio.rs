@@ -1,11 +1,12 @@
 //! Follows the desktop's audio server while a device's link is up: reads the default sink and the device's own, and writes only the suspend and resume of a restore.
 
+mod streams;
 mod wire;
 
 use std::convert::Infallible;
 use std::ffi::CStr;
 use std::fmt;
-use std::future::poll_fn;
+use std::future::{self, poll_fn};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
@@ -13,15 +14,17 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pods_core::policy::audio::{
-    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkFact,
-    SinkState, sink_prefix,
+    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, Recorders, RestoreId,
+    SinkFact, SinkState, sink_prefix,
 };
+use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{
     AuthParams, Command, CommandTag, Prop, Props, SubscriptionMask, SuspendParams,
 };
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 
@@ -44,8 +47,11 @@ const CLIENT_NAME: &CStr = c"librepods";
 /// The cookie's length in the auth request; `PipeWire`'s pulse server does not check its bytes.
 const COOKIE_LENGTH: usize = 256;
 
-/// Sinks added, removed or changed in volume, and the server's default sink.
-const EVENTS: SubscriptionMask = SubscriptionMask::SINK.union(SubscriptionMask::SERVER);
+/// Sinks added, removed or changed in volume, the server's default sink, and the sources and record streams that come, go or link.
+const EVENTS: SubscriptionMask = SubscriptionMask::SINK
+    .union(SubscriptionMask::SERVER)
+    .union(SubscriptionMask::SOURCE)
+    .union(SubscriptionMask::SOURCE_OUTPUT);
 
 const QUEUE_FULL: &str = "audio: request queue full";
 
@@ -70,18 +76,19 @@ pub(super) fn offer(requests: &mpsc::Sender<AudioRequest>, request: AudioRequest
     }
 }
 
-/// Follows each device a request names until the driver drops the queue, which closes the socket.
+/// Follows each device a request names until the driver drops the queue, which closes the socket; `state` names the microphone's source.
 pub(super) async fn run(
     inputs: mpsc::Sender<Input>,
     mut requests: mpsc::Receiver<AudioRequest>,
     runtime_dir: PathBuf,
+    state: watch::Receiver<State>,
 ) {
     let socket = runtime_dir.join(SOCKET);
     let mut followed = None;
     loop {
         let request = match followed {
             None => requests.recv().await,
-            Some(device) => match Follower::new(&inputs, &mut requests, device)
+            Some(device) => match Follower::new(&inputs, &mut requests, device, state.clone())
                 .follow(&socket)
                 .await
             {
@@ -271,6 +278,9 @@ struct Follower<'a> {
     misses: usize,
     /// A suspend sent and not yet undone, which the next connection resumes.
     suspended: bool,
+    state: watch::Receiver<State>,
+    /// The record streams last told, none once the server is told down.
+    recorders: Recorders,
 }
 
 impl<'a> Follower<'a> {
@@ -278,6 +288,7 @@ impl<'a> Follower<'a> {
         inputs: &'a mpsc::Sender<Input>,
         queue: &'a mut mpsc::Receiver<AudioRequest>,
         device: BdAddr,
+        state: watch::Receiver<State>,
     ) -> Self {
         Self {
             inputs,
@@ -289,6 +300,8 @@ impl<'a> Follower<'a> {
             told: Told::Nothing,
             misses: 0,
             suspended: false,
+            state,
+            recorders: Recorders::default(),
         }
     }
 
@@ -310,6 +323,7 @@ impl<'a> Follower<'a> {
             log(&format!("audio: the audio server is down: {lost}"));
             // The next connection reads the sink afresh, so it is told again even when unchanged.
             self.told = Told::Nothing;
+            self.recorders = Recorders::default();
             self.tell(AudioFact::Down).await?;
         }
         let [.., longest] = AUDIO_RETRY_MS;
@@ -333,14 +347,16 @@ impl<'a> Follower<'a> {
         Ok(())
     }
 
-    /// One connection from its connect to its loss; an event during a refresh costs one more refresh, never more.
+    /// One connection from its connect to its loss; an event during a refresh costs one more refresh, never more, and the record streams are read last, a restore asked during either read of them done as that read ends.
     async fn serve(&mut self, socket: &Path) -> Result<Infallible, Ended> {
         let mut connection = self.requests.watched(Connection::open(socket)).await?;
         let mut stale = true;
         let mut read = false;
+        let mut source = String::new();
         loop {
             if !stale {
-                let event = self.requests.waited(connection.next_event()).await?;
+                let changed = connection.changed(&mut self.state, &source);
+                let event = self.requests.waited(changed).await?;
                 event.transpose()?;
                 stale = true;
                 continue;
@@ -358,19 +374,53 @@ impl<'a> Follower<'a> {
                 self.told = Told::Sink(fact);
                 self.tell(AudioFact::Sink(fact)).await?;
             }
-            if self.requests.restore != Restore::Clear || self.suspended {
-                self.restore(&mut connection, sink, &mut stale).await?;
+            self.restore(&mut connection, sink, &mut stale).await?;
+            source = self.state.borrow().mic_source();
+            let recorders = self
+                .record_streams(&mut connection, sink, source.as_bytes(), &mut stale)
+                .await?;
+            if recorders != self.recorders {
+                self.recorders = recorders;
+                self.tell(AudioFact::Recorders(recorders)).await?;
             }
         }
     }
 
-    /// Suspends then resumes the sink with no request taken between, so none leaves it suspended; a running sink is held suspended first.
+    /// The record streams on the source named `name`, none without the name or the source; a restore asked during either read is done as that read ends, on the sink as last read.
+    async fn record_streams(
+        &mut self,
+        connection: &mut Connection,
+        sink: Option<Followed>,
+        name: &[u8],
+        stale: &mut bool,
+    ) -> Result<Recorders, Ended> {
+        if name.is_empty() {
+            return Ok(Recorders::default());
+        }
+        let listed = |body: &[u8]| streams::source_index(body, name);
+        let source = connection.call(&Command::GetSourceInfoList, stale, listed);
+        let source = self.requests.watched(source).await?;
+        self.restore(connection, sink, stale).await?;
+        let Some(source) = source else {
+            return Ok(Recorders::default());
+        };
+        let counted = |body: &[u8]| streams::recorders(body, source);
+        let recorders = connection.call(&Command::GetSourceOutputInfoList, stale, counted);
+        let recorders = self.requests.watched(recorders).await?;
+        self.restore(connection, sink, stale).await?;
+        Ok(recorders)
+    }
+
+    /// Suspends then resumes the sink with no request taken between, so none leaves it suspended; a running sink is held suspended first, and nothing is done when no restore is asked and no suspend is left to undo.
     async fn restore(
         &mut self,
         connection: &mut Connection,
         sink: Option<Followed>,
         stale: &mut bool,
     ) -> Result<(), Ended> {
+        if self.requests.restore == Restore::Clear && !self.suspended {
+            return Ok(());
+        }
         let owed = self.requests.restore != Restore::Clear;
         let is_suspended = |state| state == SinkState::Suspended;
         match sink {
@@ -478,6 +528,30 @@ impl Connection {
             suspend,
         });
         self.call(&command, stale, |_| Ok(())).await
+    }
+
+    /// As `next_event`, ended also by the source's name moving from the `read` one, which no event of the server tells.
+    async fn changed(
+        &mut self,
+        state: &mut watch::Receiver<State>,
+        read: &str,
+    ) -> Result<(), Lost> {
+        let mut renamed = pin!(async {
+            let moved = state.wait_for(|state| state.mic_source() != read);
+            let hub_gone = moved.await.is_err();
+            // corner: the daemon is stopping, so the name moves no more
+            if hub_gone {
+                future::pending::<()>().await;
+            }
+        });
+        let mut event = pin!(self.next_event());
+        poll_fn(|context| {
+            if renamed.as_mut().poll(context).is_ready() {
+                return Poll::Ready(Ok(()));
+            }
+            event.as_mut().poll(context)
+        })
+        .await
     }
 
     /// As long as it takes: only an event or the loss ends the wait.
