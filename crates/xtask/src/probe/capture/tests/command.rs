@@ -21,7 +21,7 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use super::super::super::analyse::input::parse_meta;
 use super::super::super::dictate::HandleCheck;
 use super::super::super::script::{Route, ScriptName};
-use super::super::super::service::Stopped;
+use super::super::super::service::RunLock;
 use super::super::super::{CaptureArgs, Host, capture, exit_code, stop, summary, watch_signals};
 use super::super::{Bearer, EndReason, IoFailure, Outcome};
 use super::pods::{self, DEADLINE, EAR_PACKET, Pods};
@@ -86,7 +86,7 @@ pub(super) fn run_answered(
         let code = command(&mut Host {
             home: &home,
             connect: &connect,
-            stop_service: &|| Ok(Stopped::nothing()),
+            lock_service: &|| Ok(RunLock::nothing()),
             stdout: &mut stdout,
             stderr: &mut stderr,
         });
@@ -480,7 +480,7 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
-        stop_service: &|| Ok(Stopped::nothing()),
+        lock_service: &|| Ok(RunLock::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
@@ -522,7 +522,7 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
-        stop_service: &|| Ok(Stopped::nothing()),
+        lock_service: &|| Ok(RunLock::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,
     };

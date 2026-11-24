@@ -337,13 +337,14 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_during_a_hardware_run_stops_nothing_and_dials_nothing() {
+    fn a_capture_during_a_hardware_run_leaves_its_name_free() {
         let home = home_with_service();
         let lock = home.path().join(RUNTIME_NAME).join(RUN_LOCK);
         let held = fs::File::create(lock).unwrap();
         rustix::fs::flock(&held, FlockOperation::NonBlockingLockExclusive).unwrap();
         let (att, _) = logged_dial(home.path());
-        let command = capture(&home, "map", &MAP);
+        let name = "map";
+        let command = capture(&home, name, &MAP);
         let ran = Running::start(command, vec![route(ATT_PSM, att)]).finish();
 
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
@@ -351,14 +352,13 @@ mod tests {
         assert_eq!(calls(&home), Vec::<String>::new());
         assert_eq!(state(&home), "active\n");
         assert_eq!(ran.dials, []);
-        // The run the refusal used up says why it holds nothing, as a refused connect's does.
-        let marks = read(&run_path(&home, "map"), "marks.tsv");
-        assert_eq!(kinds(&marks), ["end"]);
-        assert!(
-            marks.ends_with(&format!("\t{LOCK_HELD_REASON}\n")),
-            "{marks}"
-        );
+        let run = run_path(&home, name);
+        assert!(!run.exists(), "the refused capture created {run:?}");
         drop(held);
+
+        let retried = map(&home, name);
+        assert_eq!(retried.code, Some(0), "{}", retried.stderr);
+        assert!(run.is_dir(), "the retried capture did not create {run:?}");
     }
 
     #[test]

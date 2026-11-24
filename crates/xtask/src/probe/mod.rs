@@ -46,7 +46,7 @@ use capture::{
     Outputs, STOP_TAIL_MS,
 };
 use script::{Opening, Route, Script, ScriptError, ScriptName, StepsError};
-use service::{ServiceError, Stopped};
+use service::{RunLock, ServiceError};
 use store::{Run, Session, StoreError};
 
 /// Bounds the connect: the connect timeout of aacp.rs in librepods-org/librepods pull request 655.
@@ -164,8 +164,8 @@ struct Host<'a> {
     home: &'a str,
     /// Opens the channel the PSM names on the device.
     connect: &'a dyn Fn(BdAddr, u16) -> Result<Channel, ChannelError>,
-    /// Stops the installed service for a run that dials the pods.
-    stop_service: &'a dyn Fn() -> Result<Stopped, ServiceError>,
+    /// Takes the hardware run's lock before a probe can dial the pods.
+    lock_service: &'a dyn Fn() -> Result<RunLock, ServiceError>,
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,
 }
@@ -180,9 +180,10 @@ impl Host<'_> {
     /// Runs `work`, which dials the pods, with the installed service stopped, and says when the service stops and when it starts again. The service is put back on every way out of `work`; a restore that failed is the error given, or is said here when `work` failed too.
     fn with_service_stopped<T, E: From<ServiceError>>(
         &mut self,
+        lock: RunLock,
         work: impl FnOnce(&mut Self) -> Result<T, E>,
     ) -> Result<T, E> {
-        let service = (self.stop_service)()?;
+        let service = lock.stop()?;
         let was_running = service.was_running();
         if was_running {
             self.say(&format_args!("stopped {INSTALLED} for this run"));
@@ -246,7 +247,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let mut host = Host {
         home: &home,
         connect: &connect,
-        stop_service: &Stopped::take,
+        lock_service: &RunLock::take,
         stdout: &mut io::stdout(),
         stderr: &mut io::stderr(),
     };
@@ -347,6 +348,8 @@ fn record(
     let session = Session::open(&root, &args.stamp)?;
     // The device is read before the run is created, so a missing device file does not use up a run name.
     let peer = store::read_device(&root)?;
+    // The lock is taken before the run is created, so a capture refused for a held lock does not use up a run name.
+    let lock = (host.lock_service)()?;
     let run = Run::create(&session, &args.run)?;
     let mut log = run.create_file(LOG_NAME)?;
     let mut att_log = match args.route {
@@ -399,7 +402,7 @@ fn record(
     let connect = host.connect;
     let mut reached_dial = false;
     // The files above are made first, so a capture refused for its arguments or its store never stops the service.
-    let recorded = host.with_service_stopped(|host| {
+    let recorded = host.with_service_stopped(lock, |host| {
         reached_dial = true;
         let accessory = match dial_control(connect, peer, script.opening) {
             Ok(accessory) => accessory,
@@ -524,7 +527,8 @@ fn rescue(
     let root = store::root(host.home.as_ref());
     let peer = store::read_device(&root)?;
     let connect = host.connect;
-    host.with_service_stopped(|host| {
+    let lock = (host.lock_service)()?;
+    host.with_service_stopped(lock, |host| {
         let accessory = dial_control(connect, peer, script.opening).map_err(ProbeError::Connect)?;
         let open_att = || connect(peer, ATT_PSM);
         // Nothing of a rescue is kept: a signal that ends it early has only cost a STOP that can be sent again.

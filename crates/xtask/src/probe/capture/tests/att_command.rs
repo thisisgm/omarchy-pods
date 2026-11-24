@@ -17,7 +17,7 @@ use rustix::io::Errno;
 
 use super::super::super::dictate::{HandleCheck, START, STOP};
 use super::super::super::script::{Route, ScriptName};
-use super::super::super::service::Stopped;
+use super::super::super::service::RunLock;
 use super::super::super::{CaptureArgs, Host, capture, stop, summary};
 use super::super::{EndReason, Outcome};
 use super::att::NOTIFICATION;
@@ -182,7 +182,7 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
-        stop_service: &|| Ok(Stopped::nothing()),
+        lock_service: &|| Ok(RunLock::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
