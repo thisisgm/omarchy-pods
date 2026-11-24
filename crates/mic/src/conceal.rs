@@ -2,12 +2,21 @@
 
 use std::f32::consts::PI;
 
-use super::FRAMES_PER_MS;
 use super::ring::Ring;
+use super::{FRAMES_PER_MS, RATE_HZ, SAMPLES_PER_UNIT, UPLINK_DECODE_HZ};
 
 /// Long enough to hide an edge, short enough to keep a syllable.
 const FADE_MS: u16 = 5;
 pub(crate) const FADE_FRAMES: u16 = FADE_MS * FRAMES_PER_MS;
+/// One unit at the node's rate: what a concealed unit fills, and what the fall of audio that ended plays back over.
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "a const context has no `TryFrom`, and the assertion under it holds the count whole"
+)]
+pub(crate) const UNIT_FRAMES: u16 = (SAMPLES_PER_UNIT as u32 * RATE_HZ / UPLINK_DECODE_HZ) as u16;
+#[expect(clippy::as_conversions, reason = "a const context has no `From`")]
+const _: () = assert!(UNIT_FRAMES as u32 * UPLINK_DECODE_HZ == SAMPLES_PER_UNIT as u32 * RATE_HZ);
 
 /// One at `at` 0, falling to zero at `over`; the caller keeps `at` under `over`.
 fn fall(at: u16, over: u16) -> f32 {

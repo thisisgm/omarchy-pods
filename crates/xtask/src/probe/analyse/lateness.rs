@@ -1,7 +1,8 @@
 //! How late each audio SDU of a start landed, against the window of arrivals the reader of `pods-mic` keeps. The unit tests are support for the tests of the built `probe analyse`.
 
 use pods_mic::{
-    ARRIVAL_WINDOW, Arrivals, MAX_UNITS_PER_SDU, RATE_HZ, SAMPLES_PER_UNIT, STAMP_STEP, unit_writes,
+    ARRIVAL_WINDOW, Arrivals, MAX_UNITS_PER_SDU, SAMPLES_PER_UNIT, STAMP_STEP, UPLINK_DECODE_HZ,
+    unit_writes,
 };
 
 use super::load::AudioPacket;
@@ -9,8 +10,8 @@ use super::report::{MS, NONE, PACKETS, Row, labelled};
 use super::stats::millis;
 
 const NS_PER_SECOND: u32 = 1_000_000_000;
-const NS_PER_SAMPLE: u32 = NS_PER_SECOND / RATE_HZ;
-const _: () = assert!(NS_PER_SECOND.is_multiple_of(RATE_HZ));
+const NS_PER_SAMPLE: u32 = NS_PER_SECOND / UPLINK_DECODE_HZ;
+const _: () = assert!(NS_PER_SECOND.is_multiple_of(UPLINK_DECODE_HZ));
 const NS_PER_MS: u64 = 1_000_000;
 /// The width of a bin of the histogram, and the step from one cover to the next.
 const STEP_MS: u64 = 5;
@@ -24,7 +25,7 @@ const PERCENTILES: [(&str, usize, usize); 3] = [
     ("lateness_p99_99_ms", 9999, 10_000),
 ];
 
-/// The lateness of each SDU that holds a whole unit, in ns, as the chain of `pods-mic` judges it: its arrival less the time of the samples written up to its end at `RATE_HZ`, less the smallest such offset of the `ARRIVAL_WINDOW` SDUs up to it; a stamp that starts a new run empties the window.
+/// The lateness of each SDU that holds a whole unit, in ns, as the chain of `pods-mic` judges it: its arrival less the time of the samples decoded up to its end at `UPLINK_DECODE_HZ`, less the smallest such offset of the `ARRIVAL_WINDOW` SDUs up to it; a stamp that starts a new run empties the window.
 fn lateness(audio: &[AudioPacket]) -> Vec<u64> {
     let mut expected = None;
     let mut written = 0_u64;
@@ -62,7 +63,7 @@ pub(crate) fn rows(label: &str, audio: &[AudioPacket]) -> Vec<Row> {
     let ms =
         |ns: Option<u64>| ns.map_or_else(|| NONE.to_owned(), |ns| format!("{:.3}", millis(ns)));
     let rule = format!(
-        "SDUs with a whole unit; arrival less the time of the samples the decode chain writes up to its end at {RATE_HZ} Hz, less the smallest of the {ARRIVAL_WINDOW} SDUs up to it since the stamps last started a new run"
+        "SDUs with a whole unit; arrival less the time of the samples decoded up to its end at {UPLINK_DECODE_HZ} Hz, less the smallest of the {ARRIVAL_WINDOW} SDUs up to it since the stamps last started a new run"
     );
     let mut rows = vec![Row::new(
         "lateness_sdus",

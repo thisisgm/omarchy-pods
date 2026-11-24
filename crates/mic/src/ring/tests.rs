@@ -1,6 +1,34 @@
-//! Support tests: the one word that holds the run's arrival or none.
+//! Support tests: the one word that holds the run's arrival or none, and the step between time and frames.
 
-use super::Arrival;
+use super::{Arrival, NS_PER_SECOND, scaled};
+
+#[test]
+fn time_and_frames_convert_at_a_rate_that_does_not_divide_a_second() {
+    // A unit is 7.5 ms at either rate, and a frame at 48 kHz is 20 833 ns and a third.
+    for (rate, frames, ns) in [
+        (64_000, 480, 7_500_000),
+        (48_000, 360, 7_500_000),
+        (48_000, 1, 20_833),
+    ] {
+        assert_eq!(
+            scaled(frames, NS_PER_SECOND, rate),
+            ns,
+            "{frames} at {rate}"
+        );
+    }
+    for (rate, ns, frames) in [
+        (64_000, 7_500_000, 480),
+        (48_000, 7_500_000, 360),
+        (48_000, 7_499_999, 359),
+        // A time before the run's arrival rounds down, not toward zero.
+        (48_000, -1, -1),
+    ] {
+        assert_eq!(scaled(ns, rate, NS_PER_SECOND), frames, "{ns} ns at {rate}");
+    }
+    // What no word holds stays at the end it left by.
+    assert_eq!(scaled(i64::MAX, NS_PER_SECOND, 48_000), i64::MAX);
+    assert_eq!(scaled(i64::MIN, NS_PER_SECOND, 48_000), i64::MIN);
+}
 
 #[test]
 fn an_arrival_is_never_read_back_as_none() {

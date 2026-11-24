@@ -14,7 +14,7 @@ mod tests {
     };
     use pods_fake::{Fault, Pods, Profile};
     use pods_mic::decode::{Decoded, Decoder};
-    use pods_mic::{RATE_HZ, UPLINK_PERIOD_MS};
+    use pods_mic::{UPLINK_DECODE_HZ, UPLINK_PERIOD_MS};
     use pods_samples::Placed;
     use pods_samples::uplink::{
         STAMP_STEP, START, STOP, audio_sdu, session_marker, state_marker, tone_unit,
@@ -30,7 +30,7 @@ mod tests {
     const _: () = assert!(
         PERIOD.as_millis() == UPLINK_PERIOD_MS as u128
             && (UNITS_PER_PACKET * STAMP_STEP) as u128 * 1000
-                == RATE_HZ as u128 * PERIOD.as_millis()
+                == UPLINK_DECODE_HZ as u128 * PERIOD.as_millis()
     );
 
     /// The accessory header and the opcode, which the state marker shares with no other packet of the burst.

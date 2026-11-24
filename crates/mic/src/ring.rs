@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use super::conceal::{FADE_FRAMES, Tail, fade_in};
-use super::{Counters, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ, SAMPLES_PER_UNIT};
+use super::conceal::{FADE_FRAMES, Tail, UNIT_FRAMES, fade_in};
+use super::{Counters, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ};
 
-/// 256 ms, a power of two: more than twice the furthest the reader stands behind the writer, about 110 ms.
+/// A power of two, 256 ms at 64 kHz and more at 48: more than twice the furthest the reader stands behind the writer, about 110 ms.
 const RING_SAMPLES: u64 = 16_384;
 const _: () = assert!(RING_SAMPLES.is_power_of_two());
 /// Half a period: more than steering leaves standing, less than one missed cycle of a 20 ms recorder.
@@ -21,8 +21,16 @@ const STEER_SMOOTH_MS: u16 = 2000;
 const PARTS_PER_MILLION: f64 = 1e6;
 const NS_PER_SECOND: u32 = 1_000_000_000;
 const NS_PER_MS: i64 = 1_000_000;
-const NS_PER_FRAME: u32 = NS_PER_SECOND / RATE_HZ;
-const _: () = assert!(NS_PER_SECOND.is_multiple_of(RATE_HZ));
+
+/// `count` times `by` over `over`, rounded down: frames from ns and back at a rate that need not divide a second.
+fn scaled(count: i64, by: u32, over: u32) -> i64 {
+    let wide = i128::from(count).saturating_mul(i128::from(by));
+    let end = if count < 0 { i64::MIN } else { i64::MAX };
+    let whole = wide.checked_div_euclid(i128::from(over));
+    whole
+        .and_then(|whole| i64::try_from(whole).ok())
+        .unwrap_or(end)
+}
 
 fn ns_of(now: Duration) -> i64 {
     i64::try_from(now.as_nanos()).unwrap_or(i64::MAX)
@@ -128,7 +136,7 @@ impl Ring {
 
     /// `now` less the time the write index stands for, in ns.
     pub(crate) fn arrival_at(&self, now: Duration) -> i64 {
-        ns_of(now).saturating_sub(self.end().saturating_mul(i64::from(NS_PER_FRAME)))
+        ns_of(now).saturating_sub(scaled(self.end(), NS_PER_SECOND, RATE_HZ))
     }
 
     pub(crate) fn publish(&self, earliest: i64) {
@@ -140,7 +148,7 @@ impl Ring {
         let arrival = self.arrival.load()?;
         let latency = i64::from(NODE_LATENCY_MS).saturating_mul(NS_PER_MS);
         let played = ns_of(now).saturating_sub(arrival).saturating_sub(latency);
-        Some(played.div_euclid(i64::from(NS_PER_FRAME)))
+        Some(scaled(played, RATE_HZ, NS_PER_SECOND))
     }
 
     pub(crate) fn frame(&self, frame: i64) -> Frame {
@@ -161,7 +169,7 @@ impl Ring {
         let bits = self.slot(index).map(|slot| slot.load(Ordering::Acquire));
         // Read again after the sample: the writer stores up to one unit past this index, and a ring's length on that is this slot.
         let ahead = self.written.load(Ordering::Acquire).saturating_sub(index);
-        let kept = ahead.saturating_add(u64::from(SAMPLES_PER_UNIT)) <= RING_SAMPLES;
+        let kept = ahead.saturating_add(u64::from(UNIT_FRAMES)) <= RING_SAMPLES;
         match bits {
             Some(bits) if kept => Frame::Sample {
                 sample: f32::from_bits(bits),
@@ -300,7 +308,7 @@ impl Reader {
             let last = at.saturating_sub(1);
             // The end before the last has fallen by now: with no realign between, a third end comes more than a unit after the first.
             self.earlier = self.ended;
-            self.ended = Tail::of(last, SAMPLES_PER_UNIT, fade_in(self.fade), run);
+            self.ended = Tail::of(last, UNIT_FRAMES, fade_in(self.fade), run);
         }
     }
 

@@ -3,6 +3,7 @@
 mod conceal;
 pub mod decode;
 pub mod opus;
+pub mod resample;
 mod ring;
 
 use std::collections::VecDeque;
@@ -10,13 +11,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
-use conceal::{Tail, fade_in};
+use conceal::{Tail, UNIT_FRAMES, fade_in};
 use decode::{Decoded, Decoder};
+use resample::Resampler;
 use ring::Ring;
 pub use ring::{Reader, Resync};
 
-/// The decoder's rate, which the configuration declares as 48 kHz.
+/// The node's rate, the only one a reader or a source sees.
 pub const RATE_HZ: u32 = 64_000;
+/// The AAC decoder's rate, which the configuration declares as 48 kHz.
+pub const UPLINK_DECODE_HZ: u32 = 64_000;
 /// The samples one unit decodes to under `EXPECTED_CONFIG`.
 pub const SAMPLES_PER_UNIT: u16 = 480;
 /// The configuration the host supplies for the stream: AAC-ELD, mono, 480 sample frames, declared at 48 kHz.
@@ -41,12 +45,13 @@ const UNITS_PER_PACKET: u32 = 4;
 const MAX_GAP_UNITS: u32 = 2 * UNITS_PER_PACKET;
 /// About one second of packets: the earliest arrival in it is the pods' own cadence without the radio's delay.
 pub const ARRIVAL_WINDOW: usize = 32;
-const FRAMES_PER_MS: u16 = 64;
+const FRAMES_PER_MS: u16 = if RATE_HZ == 48_000 { 48 } else { 64 };
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const _: () = assert!(
-    FRAMES_PER_MS as u32 * 1000 == RATE_HZ
+    (RATE_HZ == 48_000 || RATE_HZ == 64_000)
+        && FRAMES_PER_MS as u32 * 1000 == RATE_HZ
         && SAMPLES_PER_UNIT as u32 == STAMP_STEP
-        && UPLINK_PERIOD_MS * RATE_HZ == UNITS_PER_PACKET * STAMP_STEP * 1000
+        && UPLINK_PERIOD_MS * UPLINK_DECODE_HZ == UNITS_PER_PACKET * STAMP_STEP * 1000
         && MAX_UNITS_PER_SDU == 2 * UNITS_PER_PACKET as usize
 );
 
@@ -74,6 +79,8 @@ pub fn chain(counters: Arc<Counters>) -> Option<(Chain, Reader, Resync)> {
         expected: None,
         faded: true,
         arrivals: Arrivals::default(),
+        resampler: Resampler::new(UPLINK_DECODE_HZ, RATE_HZ),
+        resampled: Vec::new(),
     };
     Some((chain, reader, resync))
 }
@@ -144,6 +151,10 @@ pub struct Chain {
     faded: bool,
     /// What `Ring::arrival_at` gave for the last packets of the run.
     arrivals: Arrivals,
+    /// What brings a unit to the node's rate; none while the decoder runs at it.
+    resampler: Option<Resampler>,
+    /// The unit the resampler made last.
+    resampled: Vec<f32>,
 }
 
 impl Chain {
@@ -172,6 +183,9 @@ impl Chain {
         self.arrivals = Arrivals::default();
         self.expected = None;
         self.faded = true;
+        if let Some(resampler) = &mut self.resampler {
+            resampler.reset();
+        }
     }
 
     /// The configuration was accepted when the chain was made; were it refused now, the old decoder would stay.
@@ -190,6 +204,14 @@ impl Chain {
         self.expected = Some(stamp.wrapping_add(STAMP_STEP));
         match decode(&mut self.decoder) {
             Decoded::Samples(samples) => {
+                let samples = match &mut self.resampler {
+                    Some(resampler) => {
+                        self.resampled.clear();
+                        resampler.push(samples, &mut self.resampled);
+                        &self.resampled
+                    }
+                    None => samples,
+                };
                 let fading = self.faded;
                 let unit = samples.iter().zip(0_u16..);
                 let gain = |at| if fading { fade_in(at) } else { 1.0 };
@@ -214,10 +236,10 @@ impl Chain {
         let mut tail = if self.faded {
             Tail::NONE
         } else {
-            Tail::of(last, SAMPLES_PER_UNIT, 1.0, self.ring.run())
+            Tail::of(last, UNIT_FRAMES, 1.0, self.ring.run())
         };
         let ring = &self.ring;
-        ring.write((0..SAMPLES_PER_UNIT).map(|_| tail.next(ring).unwrap_or(0.0)));
+        ring.write((0..UNIT_FRAMES).map(|_| tail.next(ring).unwrap_or(0.0)));
         self.faded = true;
         self.counters.concealed.fetch_add(1, Ordering::Relaxed);
     }
