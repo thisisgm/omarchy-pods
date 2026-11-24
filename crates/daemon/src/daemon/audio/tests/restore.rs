@@ -18,6 +18,7 @@ use pulseaudio::protocol::{
     SinkInfo, SinkState, SourceOutputInfo, SuspendParams, read_descriptor, write_ack_message,
     write_error, write_reply_message,
 };
+use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -35,6 +36,8 @@ const SINK_INDEX: u32 = 7;
 const FACTS: usize = 8;
 /// A source the server may list in place of the microphone's.
 const ANOTHER_SOURCE: &CStr = c"alsa_input.another";
+/// A device whose sink the server never lists.
+const ANOTHER_DEVICE: &str = "02:00:00:00:00:01";
 
 /// The real policy, stepped through two STOPs with its restore deadline between them.
 struct Pods {
@@ -141,35 +144,37 @@ struct Server {
     release: oneshot::Sender<()>,
 }
 
-/// Inside a paused runtime: one connection answered as a server would, the first `held` command answered only on `release`; `lists` names the one source listed, and none refuses the list.
+/// Inside a paused runtime: each connection in turn answered as a server would, the sink's state kept between them and the first `held` command answered only on `release`; `lists` names the one source listed, and none refuses the list.
 fn serve(listener: UnixListener, held: CommandTag, lists: Option<CString>) -> Server {
     let (commands, heard) = mpsc::unbounded_channel();
     let (suspended, suspends) = mpsc::unbounded_channel();
     let (release, released) = oneshot::channel();
     tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
         let mut released = Some(released);
         let mut state = SinkState::Running;
         loop {
-            let Some((seq, command)) = read_command(&mut stream).await else {
-                return;
-            };
-            commands.send(command.tag()).unwrap();
-            if let Command::SuspendSink(SuspendParams { suspend, .. }) = command {
-                suspended.send(suspend).unwrap();
-                state = if suspend {
-                    SinkState::Suspended
-                } else {
-                    SinkState::Running
-                };
+            let (mut stream, _) = listener.accept().await.unwrap();
+            while let Some((seq, command)) = read_command(&mut stream).await {
+                commands.send(command.tag()).unwrap();
+                if let Command::SuspendSink(SuspendParams { suspend, .. }) = command {
+                    suspended.send(suspend).unwrap();
+                    state = if suspend {
+                        SinkState::Suspended
+                    } else {
+                        SinkState::Running
+                    };
+                }
+                if command.tag() == held
+                    && let Some(released) = released.take()
+                {
+                    released.await.unwrap();
+                }
+                let answer = answer(seq, &command, state, lists.as_deref());
+                // The driver may have left this connection while its answer was held.
+                if stream.write_all(&answer).await.is_err() {
+                    break;
+                }
             }
-            if command.tag() == held
-                && let Some(released) = released.take()
-            {
-                released.await.unwrap();
-            }
-            let answer = answer(seq, &command, state, lists.as_deref());
-            stream.write_all(&answer).await.unwrap();
         }
     });
     Server {
@@ -279,6 +284,94 @@ async fn told_down(facts: &mut mpsc::Receiver<Input>) -> bool {
     timeout(wait, down).await.unwrap_or(false)
 }
 
+/// Waits until the server has `held`, whose answer it holds back.
+async fn hears(heard: &mut mpsc::UnboundedReceiver<CommandTag>, held: CommandTag) {
+    loop {
+        match heard.recv().await {
+            Some(tag) if tag == held => return,
+            Some(_) => {}
+            None => panic!("the server ended before it heard {held:?}"),
+        }
+    }
+}
+
+/// What the adapter tells up to the first fact that is `last`, or in the policy's whole wait for a restore when none is.
+async fn told_through(
+    facts: &mut mpsc::Receiver<Input>,
+    last: impl Fn(AudioFact) -> bool,
+) -> Vec<AudioFact> {
+    let mut told = Vec::new();
+    let through = async {
+        while let Some(Input::Audio(fact)) = facts.recv().await {
+            told.push(fact);
+            if last(fact) {
+                return;
+            }
+        }
+    };
+    // A wait that runs out leaves what was told, which the test's assertion then shows.
+    drop(timeout(Duration::from_millis(RESTORE_WAIT_MS), through).await);
+    told
+}
+
+fn is_restored(fact: AudioFact) -> bool {
+    matches!(fact, AudioFact::Restored(_))
+}
+
+/// Every suspend and resume the server has taken and the test has not read yet, in order.
+fn taken(suspends: &mut mpsc::UnboundedReceiver<bool>) -> Vec<bool> {
+    let mut taken = Vec::new();
+    while let Ok(suspend) = suspends.try_recv() {
+        taken.push(suspend);
+    }
+    taken
+}
+
+/// The adapter following the device, with the test's ends of it and of the server; all of it ends with the paused runtime.
+struct Following {
+    requests: mpsc::Sender<AudioRequest>,
+    facts: mpsc::Receiver<Input>,
+    server: Server,
+    _dir: TempDir,
+}
+
+/// Inside a paused runtime: the adapter told to follow the device, against a server that holds back its first `held` answer; `named` is the state the microphone's source is read from.
+async fn follow(held: CommandTag, named: State) -> Following {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join(SOCKET);
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = serve(listener, held, Some(microphone()));
+    let (inputs, facts) = mpsc::channel(FACTS);
+    let (requests, asked) = queue();
+    let state = watch::channel(named).1;
+    tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+    let following = Following {
+        requests,
+        facts,
+        server,
+        _dir: dir,
+    };
+    tell_to_follow(&following, DEVICE).await;
+    following
+}
+
+/// Asks the adapter to follow `device`, as the driver does at every link up.
+async fn tell_to_follow(following: &Following, device: &str) {
+    let device = device.parse().unwrap();
+    let request = AudioRequest::Follow(Some(device));
+    following.requests.send(request).await.unwrap();
+}
+
+/// The one restore the policy asks for through its first STOP.
+fn first_restore() -> RestoreId {
+    let (through_the_first, _) = two_restores();
+    let [id] = restore_ids(&through_the_first)[..] else {
+        panic!("{through_the_first:?}");
+    };
+    id
+}
+
 /// A state whose microphone's source is up, so the adapter reads the record streams on it.
 fn source_up() -> State {
     let mut named = State {
@@ -317,13 +410,7 @@ fn heard_from(held: CommandTag, lists: &CStr) -> Vec<CommandTag> {
             .await
             .unwrap();
         // The server has the command and holds its answer, so the restore is asked inside that read.
-        loop {
-            match server.heard.recv().await {
-                Some(tag) if tag == held => break,
-                Some(_) => {}
-                None => panic!("the server ended before it heard {held:?}"),
-            }
-        }
+        hears(&mut server.heard, held).await;
         requests.send(AudioRequest::Restore(id)).await.unwrap();
         server.release.send(()).unwrap();
         assert_eq!(restored(&mut facts).await, id);
@@ -453,4 +540,78 @@ fn a_restore_asked_while_the_sources_are_read_is_done_when_the_source_is_not_lis
         heard,
         [held, CommandTag::SuspendSink, CommandTag::SuspendSink]
     );
+}
+
+#[test]
+fn a_follow_of_the_device_already_followed_keeps_its_restore() {
+    let id = first_restore();
+    let (told, suspends) = on_paused_clock(async {
+        let held = CommandTag::GetSourceInfoList;
+        let mut following = follow(held, source_up()).await;
+        hears(&mut following.server.heard, held).await;
+        // Both wait in the queue behind the held read, so the restore is asked and not yet done when the follow is taken.
+        let restore = AudioRequest::Restore(id);
+        following.requests.send(restore).await.unwrap();
+        tell_to_follow(&following, DEVICE).await;
+        following.server.release.send(()).unwrap();
+        let told = told_through(&mut following.facts, is_restored).await;
+        (told, taken(&mut following.server.suspends))
+    });
+    // The driver forgets the server and the sink at every link up, so both are told again ahead of the answer.
+    let [
+        AudioFact::Up,
+        AudioFact::Sink(Some(first)),
+        AudioFact::Up,
+        AudioFact::Sink(Some(second)),
+        AudioFact::Restored(answered),
+    ] = told[..]
+    else {
+        panic!("{told:?}");
+    };
+    assert_eq!((second, answered), (first, id));
+    assert_eq!(suspends, [true, false]);
+}
+
+#[test]
+fn a_follow_of_the_device_already_followed_undoes_the_suspend_left_on_its_sink() {
+    let id = first_restore();
+    let (told, suspends) = on_paused_clock(async {
+        let mut following = follow(CommandTag::SuspendSink, State::default()).await;
+        let restore = AudioRequest::Restore(id);
+        following.requests.send(restore).await.unwrap();
+        // The suspend's answer is held past the call timeout, so the server is lost with the sink left suspended.
+        let lost = told_through(&mut following.facts, |fact| fact == AudioFact::Down).await;
+        assert_eq!(lost.last(), Some(&AudioFact::Down), "{lost:?}");
+        assert_eq!(taken(&mut following.server.suspends), [true]);
+        tell_to_follow(&following, DEVICE).await;
+        following.server.release.send(()).unwrap();
+        let told = told_through(&mut following.facts, is_restored).await;
+        (told, taken(&mut following.server.suspends))
+    });
+    assert_eq!(told.last(), Some(&AudioFact::Restored(id)), "{told:?}");
+    // The suspend is not sent again, only undone.
+    assert_eq!(suspends, [false]);
+}
+
+#[test]
+fn a_follow_of_another_device_ends_the_follow_of_the_one_before() {
+    let told = on_paused_clock(async {
+        let held = CommandTag::GetSourceInfoList;
+        let mut following = follow(held, source_up()).await;
+        // The first device's sink is told by now, so the next facts are the other device's.
+        hears(&mut following.server.heard, held).await;
+        tell_to_follow(&following, ANOTHER_DEVICE).await;
+        following.server.release.send(()).unwrap();
+        told_through(&mut following.facts, |fact| fact == AudioFact::Sink(None)).await
+    });
+    // The other device has no sink here, so a sink told for it would be the first device's, still followed.
+    let [
+        AudioFact::Up,
+        AudioFact::Sink(Some(_)),
+        AudioFact::Up,
+        AudioFact::Sink(None),
+    ] = told[..]
+    else {
+        panic!("{told:?}");
+    };
 }

@@ -173,10 +173,10 @@ impl From<Malformed> for Lost {
     }
 }
 
-/// What ends a follow for good.
+/// What ends a connection, or the wait for the next one, other than the server's loss.
 enum Left {
     DriverGone,
-    /// Another device to follow, or `None` when the driver dropped the queue.
+    /// A device to follow or none, or `None` when the driver dropped the queue.
     Request(Option<AudioRequest>),
 }
 
@@ -218,7 +218,7 @@ enum Restore {
     Owed,
 }
 
-/// The driver's queue as a follower takes it: a restore is kept here, any other request ends the follow.
+/// The driver's queue as a follower takes it: a restore is kept here, any other request ends the connection or the wait for the next one.
 struct Requests<'a> {
     queue: &'a mut mpsc::Receiver<AudioRequest>,
     restore: Restore,
@@ -271,6 +271,7 @@ impl Requests<'_> {
 struct Follower<'a> {
     inputs: &'a mpsc::Sender<Input>,
     requests: Requests<'a>,
+    device: BdAddr,
     /// Never logged: it holds the device's address.
     prefix: Vec<u8>,
     told: Told,
@@ -296,6 +297,7 @@ impl<'a> Follower<'a> {
                 queue,
                 restore: Restore::Clear,
             },
+            device,
             prefix: sink_prefix(device).into_bytes(),
             told: Told::Nothing,
             misses: 0,
@@ -305,14 +307,21 @@ impl<'a> Follower<'a> {
         }
     }
 
+    /// Ends at a request for another device or for none; one for this device again, which every link up sends, keeps the restore and the suspend and only dials again.
     async fn follow(mut self, socket: &Path) -> Left {
+        let again = Some(AudioRequest::Follow(Some(self.device)));
         loop {
-            let lost = match self.serve(socket).await {
-                Err(Ended::Left(left)) => return left,
-                Err(Ended::Lost(lost)) => lost,
+            let left = match self.serve(socket).await {
+                Err(Ended::Left(left)) => left,
+                Err(Ended::Lost(lost)) => match self.retry(lost).await {
+                    Ok(()) => continue,
+                    Err(left) => left,
+                },
             };
-            if let Err(left) = self.retry(lost).await {
-                return left;
+            match left {
+                // The driver forgot the sink at the link's up, so it is told again even when unchanged.
+                Left::Request(request) if request == again => self.told = Told::Nothing,
+                Left::DriverGone | Left::Request(_) => return left,
             }
         }
     }
