@@ -21,6 +21,7 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 use super::super::super::analyse::input::parse_meta;
 use super::super::super::dictate::HandleCheck;
 use super::super::super::script::{Route, ScriptName};
+use super::super::super::service::Stopped;
 use super::super::super::{CaptureArgs, Host, capture, exit_code, stop, summary, watch_signals};
 use super::super::{Bearer, EndReason, IoFailure, Outcome};
 use super::pods::{self, DEADLINE, EAR_PACKET, Pods};
@@ -85,6 +86,7 @@ pub(super) fn run_answered(
         let code = command(&mut Host {
             home: &home,
             connect: &connect,
+            stop_service: &|| Ok(Stopped::nothing()),
             stdout: &mut stdout,
             stderr: &mut stderr,
         });
@@ -400,7 +402,9 @@ fn the_stop_command_sends_stop_and_keeps_nothing() {
     let home = home_with_device();
     let (near, far) = pods::pair();
     let transcript = pods::spawn(far, Pods::default(), Arc::new(AtomicBool::new(false)));
-    let ran = run_command(home.path(), near, |host| stop(host, Route::Uplink));
+    let ran = run_command(home.path(), near, |host| {
+        stop(host, Route::Uplink, &AtomicBool::new(false))
+    });
 
     let pods = transcript.recv_timeout(DEADLINE);
     let pods = pods.expect("the fake pods did not finish before the deadline");
@@ -437,7 +441,9 @@ fn the_stop_command_says_when_stop_was_not_sent() {
         ..Pods::default()
     };
     let transcript = pods::spawn(far, part, Arc::new(AtomicBool::new(false)));
-    let ran = run_command(home.path(), near, |host| stop(host, Route::Uplink));
+    let ran = run_command(home.path(), near, |host| {
+        stop(host, Route::Uplink, &AtomicBool::new(false))
+    });
 
     let pods = transcript.recv_timeout(DEADLINE);
     let pods = pods.expect("the fake pods did not finish before the deadline");
@@ -474,6 +480,7 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
+        stop_service: &|| Ok(Stopped::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
@@ -515,10 +522,11 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
+        stop_service: &|| Ok(Stopped::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
-    let code = stop(&mut host, Route::Uplink);
+    let code = stop(&mut host, Route::Uplink, &AtomicBool::new(false));
     assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::FAILURE));
     let stderr = String::from_utf8(stderr).unwrap();
     assert!(

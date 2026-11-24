@@ -45,19 +45,14 @@ mod tests {
     use tempfile::TempDir;
 
     use super::capture::{
-        DEVICE, FAILED, HANG_LIMIT, Ran, Running, far_end, hand_over, home_with_device, route,
-        transcript,
+        CALLS_NAME, DEVICE, EXECUTABLE, FAILED, HANG_LIMIT, INSTALLED, LOCK_HELD, LOCKED_NAME,
+        RUN_LOCK, Ran, Running, STARTED, STOPPED, SYSTEMCTL, expected, far_end, hand_over,
+        home_with_device, route, transcript,
     };
     use super::pods::{self, Hook, Pods, SILENT_UNIT, Transcript, audio_sdu};
 
     const NODE: &str = "omapods_input.probe";
-    const INSTALLED: &str = "librepods.service";
     const UNDER_TEST: &str = "librepods-hw.service";
-    const EXECUTABLE: u32 = 0o755;
-    /// The hardware run's lock in the runtime directory, which the private server's directory is.
-    const RUN_LOCK: &str = "librepods-hw.lock";
-    /// What `flock -n` in a stub exits with while another process holds the lock.
-    const LOCK_HELD: &str = "1";
     const NS_PER_MS: u64 = 1_000_000;
     /// What the two stub calls around the hold add to it, a fork, a `date` and a `flock` each, with room for a loaded host.
     const HOLD_SLACK: Duration = Duration::from_secs(2);
@@ -67,36 +62,13 @@ mod tests {
     const SIGNAL_AFTER: u32 = 50;
     /// What the stub log holds once the fake pods have heard STOP.
     const HEARD_STOP: &str = "pods heard STOP";
-    /// The calls that find the installed service running and stop it.
-    const STOPPED: [&str; 3] = [
-        "systemctl --user is-active librepods.service",
-        "systemctl --user stop librepods.service",
-        "systemctl --user is-active librepods.service",
-    ];
     /// The calls of the restore, the sink found among the others listed.
     const RESTORE: [&str; 3] = [
         "pactl list short sinks",
         "pactl suspend-sink 57 1",
         "pactl suspend-sink 57 0",
     ];
-    /// The calls that put the installed service back, and nothing of the hardware run's test unit.
-    const STARTED: [&str; 2] = [
-        "systemctl --user start librepods.service",
-        "systemctl --user is-active librepods.service",
-    ];
 
-    /// A `systemctl --user` that logs each call, its environment and whether another process holds the hardware run's lock, and keeps each unit's state in a file named after it, a stop leaving the state a `.stops-as` file names; builtins and absolute paths only, as `PATH` holds nothing else.
-    const SYSTEMCTL: &str = r#"#!/bin/sh
-printf 'systemctl %s\n' "$*" >> "$STUB/calls"
-export -p >> "$STUB/env"
-/usr/bin/flock -n "$XDG_RUNTIME_DIR/$RUN_LOCK" true; printf '%s\n' "$?" >> "$STUB/locked"
-case "$2" in
-is-active) read -r s < "$STUB/$3"; printf '%s\n' "$s"; [ "$s" = active ] || exit 3 ;;
-stop) s=inactive; [ -e "$STUB/$3.stops-as" ] && read -r s < "$STUB/$3.stops-as"; printf '%s\n' "$s" > "$STUB/$3" ;;
-start) printf 'active\n' > "$STUB/$3" ;;
-*) exit 1 ;;
-esac
-"#;
     /// A `pactl` that logs each call with the time it ran in nanoseconds, its environment and whether another process holds the hardware run's lock, and lists a speaker sink, then the device's; a resume fails while a `resume-fails` file is there.
     const PACTL: &str = r#"#!/bin/sh
 printf 'pactl %s %s\n' "$*" "$(/usr/bin/date +%s%N)" >> "$STUB/calls"
@@ -125,13 +97,13 @@ esac
             }
             fs::write(dir.path().join(INSTALLED), "active\n").unwrap();
             fs::write(dir.path().join(UNDER_TEST), "inactive\n").unwrap();
-            fs::write(dir.path().join("calls"), "").unwrap();
+            fs::write(dir.path().join(CALLS_NAME), "").unwrap();
             Self { dir }
         }
 
         /// A hook that logs the fake pods hearing STOP among the stubs' calls.
         fn heard_stop(&self) -> Hook {
-            let calls = self.dir.path().join("calls");
+            let calls = self.dir.path().join(CALLS_NAME);
             Arc::new(move || {
                 let mut log = OpenOptions::new().append(true).open(&calls).unwrap();
                 log.write_all(format!("{HEARD_STOP}\n").as_bytes()).unwrap();
@@ -141,7 +113,7 @@ esac
         /// Every call in order, a `pactl` call with its time.
         // Sample input: `pactl suspend-sink bluez_output.02_00_00_00_00_01.1 1 1795412345123456789`.
         fn stamped(&self) -> Vec<(String, Option<u64>)> {
-            let log = fs::read_to_string(self.dir.path().join("calls")).unwrap();
+            let log = fs::read_to_string(self.dir.path().join(CALLS_NAME)).unwrap();
             let call = |line: &str| match line.strip_prefix("pactl ") {
                 Some(_) => {
                     let (call, stamp) = line.rsplit_once(' ').unwrap();
@@ -272,11 +244,6 @@ esac
         assert!(said >= Duration::from_nanos(NS_PER_MS), "{}", ran.stderr);
         assert!(!ran.stderr.contains("bluez_output"), "{}", ran.stderr);
         assert!(!ran.stdout.contains("bluez_output"), "{}", ran.stdout);
-    }
-
-    fn expected(parts: &[&[&str]]) -> Vec<String> {
-        let calls = parts.iter().flat_map(|part| part.iter());
-        calls.map(|call| (*call).to_owned()).collect()
     }
 
     #[test]
@@ -571,7 +538,7 @@ esac
         assert_eq!(*at_start.lock().unwrap(), Some(true));
         assert_eq!(*at_stop.lock().unwrap(), Some(true));
         assert_eq!(stubs.calls(), expected(&[&STOPPED, &RESTORE, &STARTED]));
-        let locked = fs::read_to_string(stubs.dir.path().join("locked")).unwrap();
+        let locked = fs::read_to_string(stubs.dir.path().join(LOCKED_NAME)).unwrap();
         let held = locked.lines().filter(|line| *line == LOCK_HELD);
         assert_eq!(held.count(), stubs.calls().len(), "{locked}");
         let after = fs::File::open(dir.path().join(RUN_LOCK)).unwrap();

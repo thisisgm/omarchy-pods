@@ -17,6 +17,7 @@ use rustix::io::Errno;
 
 use super::super::super::dictate::{HandleCheck, START, STOP};
 use super::super::super::script::{Route, ScriptName};
+use super::super::super::service::Stopped;
 use super::super::super::{CaptureArgs, Host, capture, stop, summary};
 use super::super::{EndReason, Outcome};
 use super::att::NOTIFICATION;
@@ -181,6 +182,7 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
+        stop_service: &|| Ok(Stopped::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,
     };
@@ -359,7 +361,7 @@ fn no_marker_keeps_both_markers_off_the_control_channel_and_changes_nothing_else
 fn the_stop_command_of_the_dictation_route_sends_the_stop_and_the_idle_marker() {
     let home = home_with_device();
     let (ran, pods) = run_against_pods(home.path(), Pods::default(), |host, _interrupted| {
-        stop(host, Route::Dictation)
+        stop(host, Route::Dictation, &AtomicBool::new(false))
     });
 
     assert_eq!(ran.dialled, [CONTROL_PSM, ATT_PSM]);
@@ -395,7 +397,9 @@ fn the_stop_command_says_what_kept_it_from_stopping_and_takes_one_route() {
     let transcript = pods::spawn(far, Pods::default(), Arc::default());
     // The attribute channel is refused once the handshake is done, so the stop ends there with no marker sent.
     let lines = vec![(CONTROL_PSM, near)];
-    let ran = run_dialled(home.path(), lines, |host| stop(host, Route::Dictation));
+    let ran = run_dialled(home.path(), lines, |host| {
+        stop(host, Route::Dictation, &AtomicBool::new(false))
+    });
     assert_eq!(ran.dialled, [CONTROL_PSM, ATT_PSM]);
     assert_eq!(ran.code, format!("{:?}", ExitCode::FAILURE));
     assert_eq!(
@@ -410,7 +414,9 @@ fn the_stop_command_says_what_kept_it_from_stopping_and_takes_one_route() {
     ];
     assert_eq!(transcript.got(), handshake);
 
-    let ran = run_dialled(home.path(), Vec::new(), |host| stop(host, Route::Both));
+    let ran = run_dialled(home.path(), Vec::new(), |host| {
+        stop(host, Route::Both, &AtomicBool::new(false))
+    });
     assert_eq!(ran.dialled, Vec::<u16>::new());
     assert_eq!(ran.code, format!("{:?}", ExitCode::FAILURE));
     assert_eq!(

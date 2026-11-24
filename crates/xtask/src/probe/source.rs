@@ -21,6 +21,7 @@ use pods_sys::l2cap::ChannelError;
 use super::Host;
 use super::analyse::MAX_LOG_BYTES;
 use super::analyse::input::{InputError, LOG_FILE, parse_log, text_of, whole_lines};
+use super::service::ServiceError;
 use super::store::{self, StoreError};
 
 const NODE_NAME: &str = "omapods_input.probe";
@@ -71,10 +72,8 @@ enum SourceError {
     TailUnread,
     #[error("could not print the status line: {0}")]
     Print(io::Error),
-    #[error("{0}")]
-    Service(String),
-    #[error("a hardware run or another live probe is in progress, so nothing was stopped")]
-    LockHeld,
+    #[error(transparent)]
+    Service(#[from] ServiceError),
     #[error("{0}")]
     Connect(ChannelError),
     #[error("the control channel failed: {0}")]

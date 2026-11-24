@@ -14,6 +14,7 @@ mod fixture;
 mod hci;
 mod oggfile;
 mod script;
+mod service;
 mod source;
 mod store;
 mod wav;
@@ -36,6 +37,7 @@ use pods_sys::l2cap::{self, Channel, ChannelError};
 use rustix::time::{ClockId, clock_gettime};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
+use crate::hw::unit::INSTALLED;
 use crate::{print_line, report};
 use analyse::input::meta_text;
 pub(crate) use capture::HANDSHAKE_STEP_TIMEOUT_MS;
@@ -44,6 +46,7 @@ use capture::{
     Outputs, STOP_TAIL_MS,
 };
 use script::{Opening, Route, Script, ScriptError, ScriptName, StepsError};
+use service::{ServiceError, Stopped};
 use store::{Run, Session, StoreError};
 
 /// Bounds the connect: the connect timeout of aacp.rs in librepods-org/librepods pull request 655.
@@ -161,6 +164,8 @@ struct Host<'a> {
     home: &'a str,
     /// Opens the channel the PSM names on the device.
     connect: &'a dyn Fn(BdAddr, u16) -> Result<Channel, ChannelError>,
+    /// Stops the installed service for a run that dials the pods.
+    stop_service: &'a dyn Fn() -> Result<Stopped, ServiceError>,
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,
 }
@@ -170,6 +175,26 @@ impl Host<'_> {
     fn say(&mut self, message: &dyn fmt::Display) {
         // A standard error that cannot be written leaves nowhere to say so.
         let _unreported = writeln!(self.stderr, "xtask probe: {message}");
+    }
+
+    /// Runs `work`, which dials the pods, with the installed service stopped, and says when the service stops and when it starts again. The service is put back on every way out of `work`; a restore that failed is the error given, or is said here when `work` failed too.
+    fn with_service_stopped<T, E: From<ServiceError>>(
+        &mut self,
+        work: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let service = (self.stop_service)()?;
+        let was_running = service.was_running();
+        if was_running {
+            self.say(&format_args!("stopped {INSTALLED} for this run"));
+        }
+        let worked = work(self);
+        let restored = service.restore();
+        match (&worked, &restored) {
+            (Err(_), Err(error)) => self.say(error),
+            (_, Ok(())) if was_running => self.say(&format_args!("started {INSTALLED} again")),
+            _ => {}
+        }
+        worked.and_then(|value| restored.map(|()| value).map_err(E::from))
     }
 }
 
@@ -188,6 +213,8 @@ enum ProbeError {
     NoScript,
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Service(#[from] ServiceError),
     #[error("could not watch for the signals that end a capture: {0}")]
     Signals(io::Error),
     #[error("could not write {file}: {source}")]
@@ -219,6 +246,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let mut host = Host {
         home: &home,
         connect: &connect,
+        stop_service: &Stopped::take,
         stdout: &mut io::stdout(),
         stderr: &mut io::stderr(),
     };
@@ -227,7 +255,9 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         ProbeCommand::Capture(args) => watched(&mut host, |host, interrupted| {
             capture(&args, host, interrupted)
         }),
-        ProbeCommand::Stop(args) => stop(&mut host, args.route),
+        ProbeCommand::Stop(args) => watched(&mut host, |host, interrupted| {
+            stop(host, args.route, interrupted)
+        }),
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
         ProbeCommand::Analyse { run_dir } => print_table(analyse::analyse_run(&run_dir)),
         ProbeCommand::Decode { run_dir } => print_table(decode::decode_run(&run_dir)),
@@ -293,10 +323,7 @@ fn print_table(written: Result<String, impl fmt::Display>) -> ExitCode {
 /// Records one run and says how it ended; only a script that ran to its end succeeds, and a raised `interrupted` ends it early.
 fn capture(args: &CaptureArgs, host: &mut Host<'_>, interrupted: &AtomicBool) -> ExitCode {
     match record(args, host, interrupted) {
-        Ok(outcome) => {
-            host.say(&summary(&outcome, args.route));
-            exit_code(&outcome)
-        }
+        Ok(outcome) => exit_code(&outcome),
         Err(error) => {
             host.say(&error);
             ExitCode::FAILURE
@@ -304,6 +331,7 @@ fn capture(args: &CaptureArgs, host: &mut Host<'_>, interrupted: &AtomicBool) ->
     }
 }
 
+/// Makes the run and its files, then, with the installed service stopped, dials the pods, follows the script and says the summary; a service that could not be stopped ends the run's marks with the reason.
 fn record(
     args: &CaptureArgs,
     host: &mut Host<'_>,
@@ -369,41 +397,47 @@ fn record(
         source,
     })?;
     let connect = host.connect;
-    let accessory = match dial_control(connect, peer, script.opening) {
-        Ok(accessory) => accessory,
-        Err(error) => {
-            // The connect error is what the owner is told; the mark only keeps it with the run.
-            let _unmarked = capture::write_mark(&mut marks, now_ns(), Mark::End, &error);
-            return Err(ProbeError::Connect(error));
-        }
-    };
-    let open_att = || connect(peer, ATT_PSM);
-    let links = Links {
-        accessory: accessory.as_ref(),
-        att: att_of(args.route, &open_att),
-    };
-    let att_log: Option<&mut dyn Write> = match &mut att_log {
-        Some(file) => Some(file),
-        None => None,
-    };
-    let handles: Option<&mut dyn Write> = match &mut handles {
-        Some(file) => Some(file),
-        None => None,
-    };
-    let mut out = Outputs {
-        log: &mut log,
-        att_log,
-        handles,
-        marks: &mut marks,
-        cues: &mut *host.stdout,
-    };
-    Ok(capture::run(
-        &links,
-        &script,
-        &mut out,
-        interrupted,
-        &now_ns,
-    ))
+    let mut reached_dial = false;
+    // The files above are made first, so a capture refused for its arguments or its store never stops the service.
+    let recorded = host.with_service_stopped(|host| {
+        reached_dial = true;
+        let accessory = match dial_control(connect, peer, script.opening) {
+            Ok(accessory) => accessory,
+            Err(error) => {
+                // The connect error is what the owner is told; the mark only keeps it with the run.
+                let _unmarked = capture::write_mark(&mut marks, now_ns(), Mark::End, &error);
+                return Err(ProbeError::Connect(error));
+            }
+        };
+        let open_att = || connect(peer, ATT_PSM);
+        let links = Links {
+            accessory: accessory.as_ref(),
+            att: att_of(args.route, &open_att),
+        };
+        let att_log: Option<&mut dyn Write> = match &mut att_log {
+            Some(file) => Some(file),
+            None => None,
+        };
+        let handles: Option<&mut dyn Write> = match &mut handles {
+            Some(file) => Some(file),
+            None => None,
+        };
+        let mut out = Outputs {
+            log: &mut log,
+            att_log,
+            handles,
+            marks: &mut marks,
+            cues: &mut *host.stdout,
+        };
+        let outcome = capture::run(&links, &script, &mut out, interrupted, &now_ns);
+        host.say(&summary(&outcome, args.route));
+        Ok(outcome)
+    });
+    if !reached_dial && let Err(error) = &recorded {
+        // The run is made already, so what kept it from its dial ends its marks, as a refused connect does.
+        let _unmarked = capture::write_mark(&mut marks, now_ns(), Mark::End, error);
+    }
+    recorded
 }
 
 /// The named script, or the one a step file plans with the file's text, read whole before anything is opened.
@@ -450,13 +484,10 @@ fn att_of(route: Route, open: OpenAtt<'_>) -> Option<OpenAtt<'_>> {
     }
 }
 
-/// Connects, runs the handshake and sends the stop of `route`, without a run directory and without a start.
-fn stop(host: &mut Host<'_>, route: Route) -> ExitCode {
-    match rescue(host, route) {
-        Ok(outcome) => {
-            host.say(&rescue_summary(&outcome, route));
-            exit_code(&outcome)
-        }
+/// Connects, runs the handshake and sends the stop of `route`, without a run directory and without a start; a raised `interrupted` ends it early.
+fn stop(host: &mut Host<'_>, route: Route, interrupted: &AtomicBool) -> ExitCode {
+    match rescue(host, route, interrupted) {
+        Ok(outcome) => exit_code(&outcome),
         Err(error) => {
             host.say(&error);
             ExitCode::FAILURE
@@ -483,30 +514,38 @@ fn rescue_summary(outcome: &Outcome, route: Route) -> String {
     }
 }
 
-fn rescue(host: &mut Host<'_>, route: Route) -> Result<Outcome, ProbeError> {
+/// With the installed service stopped, dials the pods, sends the stop and says the summary.
+fn rescue(
+    host: &mut Host<'_>,
+    route: Route,
+    interrupted: &AtomicBool,
+) -> Result<Outcome, ProbeError> {
     let script = script::rescue(route)?;
     let root = store::root(host.home.as_ref());
     let peer = store::read_device(&root)?;
     let connect = host.connect;
-    let accessory = dial_control(connect, peer, script.opening).map_err(ProbeError::Connect)?;
-    let open_att = || connect(peer, ATT_PSM);
-    // Nothing of a rescue is kept, and no signal is watched: one that kills it has only cost a STOP that can be sent again.
-    let (mut log, mut att_log, mut marks, mut cues) =
-        (io::sink(), io::sink(), io::sink(), io::sink());
-    let mut out = Outputs {
-        log: &mut log,
-        att_log: Some(&mut att_log),
-        handles: None,
-        marks: &mut marks,
-        cues: &mut cues,
-    };
-    let never = AtomicBool::new(false);
-    let now_ns = || clock_ns(ClockId::Monotonic);
-    let links = Links {
-        accessory: accessory.as_ref(),
-        att: att_of(route, &open_att),
-    };
-    Ok(capture::run(&links, &script, &mut out, &never, &now_ns))
+    host.with_service_stopped(|host| {
+        let accessory = dial_control(connect, peer, script.opening).map_err(ProbeError::Connect)?;
+        let open_att = || connect(peer, ATT_PSM);
+        // Nothing of a rescue is kept: a signal that ends it early has only cost a STOP that can be sent again.
+        let (mut log, mut att_log, mut marks, mut cues) =
+            (io::sink(), io::sink(), io::sink(), io::sink());
+        let mut out = Outputs {
+            log: &mut log,
+            att_log: Some(&mut att_log),
+            handles: None,
+            marks: &mut marks,
+            cues: &mut cues,
+        };
+        let now_ns = || clock_ns(ClockId::Monotonic);
+        let links = Links {
+            accessory: accessory.as_ref(),
+            att: att_of(route, &open_att),
+        };
+        let outcome = capture::run(&links, &script, &mut out, interrupted, &now_ns);
+        host.say(&rescue_summary(&outcome, route));
+        Ok(outcome)
+    })
 }
 
 fn exit_code(outcome: &Outcome) -> ExitCode {
