@@ -8,11 +8,13 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+opuscule.workspace = true
 rusty_aac.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
 pods-samples = { path = "../samples" }
+proptest.workspace = true
 
 [lints]
 workspace = true

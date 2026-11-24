@@ -15,7 +15,7 @@ pub struct Decoder {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Decoded<'a> {
     Samples(&'a [f32]),
-    /// The decoder refused the unit, or gave other than one frame of samples.
+    /// The decoder refused what it was given, or gave other than one frame of samples.
     Error,
     Panic,
 }

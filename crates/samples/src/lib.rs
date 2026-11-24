@@ -4,6 +4,7 @@
 
 pub mod advert;
 pub mod host;
+pub mod opus;
 pub mod uplink;
 
 /// Starts every packet the pods send after the handshake; the opcode follows.

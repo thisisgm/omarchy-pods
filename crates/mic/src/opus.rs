@@ -1,0 +1,68 @@
+//! The Opus decoder behind its fence: a frame in, 20 ms of samples or a refusal out, and a panic caught.
+
+use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use opuscule::{Channels, SampleRate};
+
+use super::decode::Decoded;
+
+/// The rate Opus decodes at with no converter of its own in the way.
+pub const DICTATION_DECODE_HZ: u32 = 48_000;
+/// The samples a 20 ms frame decodes to at `DICTATION_DECODE_HZ`.
+pub const FRAME_SAMPLES: usize = 960;
+/// The longest frame the receiver the stream was made for takes.
+pub const MAX_OPUS_FRAME_BYTES: usize = 94;
+
+pub struct Decoder {
+    opus: opuscule::Decoder,
+    frame: [f32; FRAME_SAMPLES],
+}
+
+impl Decoder {
+    /// None when the decoder will not open mono at `DICTATION_DECODE_HZ`.
+    #[must_use]
+    pub fn new() -> Option<Self> {
+        let rate = SampleRate::from_hz(i32::try_from(DICTATION_DECODE_HZ).ok()?)?;
+        let opus = catch_unwind(|| opuscule::Decoder::new(rate, Channels::Mono));
+        Some(Self {
+            opus: opus.ok()?,
+            frame: [0.0; FRAME_SAMPLES],
+        })
+    }
+
+    /// A frame of no bytes or of more than `MAX_OPUS_FRAME_BYTES` is refused here and never reaches the decoder.
+    pub fn frame(&mut self, data: &[u8]) -> Decoded<'_> {
+        if data.is_empty() || data.len() > MAX_OPUS_FRAME_BYTES {
+            return Decoded::Error;
+        }
+        self.fenced(|opus, pcm| opus.decode(Some(data), pcm, false).ok())
+    }
+
+    /// The decoder's own concealment for one frame that never came.
+    pub fn conceal(&mut self) -> Decoded<'_> {
+        self.fenced(|opus, pcm| opus.decode(None, pcm, false).ok())
+    }
+
+    /// One call into the decoder, which gives the samples it wrote; a call that panicked leaves the decoder as the panic left it.
+    pub(crate) fn fenced(
+        &mut self,
+        call: impl FnOnce(&mut opuscule::Decoder, &mut [f32]) -> Option<usize>,
+    ) -> Decoded<'_> {
+        let Self { opus, frame } = self;
+        match catch_unwind(AssertUnwindSafe(|| call(opus, frame))) {
+            Ok(Some(FRAME_SAMPLES)) => Decoded::Samples(frame),
+            Ok(_) => Decoded::Error,
+            Err(_) => Decoded::Panic,
+        }
+    }
+}
+
+impl fmt::Debug for Decoder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Decoder").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests;
