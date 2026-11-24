@@ -123,6 +123,7 @@ pub fn server_after(was: AudioServer, fact: &Fact) -> AudioServer {
         | Fact::Sleep(_)
         | Fact::Tick
         | Fact::Paused(..)
+        | Fact::PauseCut(_)
         | Fact::Mic(_)
         | Fact::Exit => was,
     }

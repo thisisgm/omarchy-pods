@@ -141,6 +141,10 @@ async fn serve(
             if !paused.is_empty() && inputs.send(Input::Media(era, paused)).await.is_err() {
                 return ControlFlow::Break(());
             }
+            // Read after the last call, so a count that stopped any of them is seen; the policy asks again only if the device stayed.
+            if since.lost() && inputs.send(Input::PauseCut(era)).await.is_err() {
+                return ControlFlow::Break(());
+            }
             // After the report is queued, so any input that follows this line reaches the policy behind it.
             log(&format!(
                 "media: the pause ended with {count} players paused"
