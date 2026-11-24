@@ -39,6 +39,8 @@ pub enum Fact {
     Audio(AudioFact),
     /// The players a pause of that era paused.
     Paused(Era, Vec<PlayerOwner>),
+    /// The link's loss count moved before a pause of that era ended, so it may have left a player playing.
+    PauseCut(Era),
     Advert(Sighting),
     Monitor(MonitorFact),
     Mic(MicFact),
@@ -119,6 +121,7 @@ impl Policy {
             | Fact::Tick
             | Fact::Audio(_)
             | Fact::Paused(..)
+            | Fact::PauseCut(_)
             | Fact::Mic(_)
             | Fact::Exit => {}
         }
@@ -158,6 +161,10 @@ impl Policy {
             Fact::Audio(fact) => Vec::from_iter(self.ear.audio(fact, now).map(Effect::Media)),
             Fact::Paused(era, players) => {
                 Vec::from_iter(self.ear.paused(era, players).map(Effect::Media))
+            }
+            Fact::PauseCut(era) => {
+                self.ear.cut(era, state, now);
+                Vec::new()
             }
             Fact::Advert(_) | Fact::Monitor(_) | Fact::Mic(_) | Fact::Exit => Vec::new(),
         };

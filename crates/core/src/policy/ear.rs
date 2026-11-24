@@ -66,14 +66,14 @@ enum Sink {
     Ours,
 }
 
-/// The wait between a both-out report and its pause.
+/// The wait before a pause: from a both-out report, or over again after the channel closed on it or on its pause.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Settle {
     #[default]
     Idle,
     /// Pauses at this time, unless a bud comes back first.
     Until(Duration),
-    /// The channel closed inside it, so it waits for the link to be up again.
+    /// The channel closed on it or on its pause, so it waits for the link to be up again.
     Cut,
     /// The link is up again, so it starts over at the next read of a sink.
     Reopened,
@@ -125,7 +125,7 @@ impl Ear {
         }
     }
 
-    /// A settle still pending at its end means both buds stayed out under the same preference.
+    /// A settle still pending at its end means the buds stayed out under the same preference.
     pub(super) fn tick(&mut self, now: Duration) -> Option<MediaRequest> {
         if self.deadline().is_none_or(|at| at > now) {
             return None;
@@ -194,6 +194,25 @@ impl Ear {
         if self.back() { self.returned() } else { None }
     }
 
+    /// A pause the closed channel cut waits as a cut settle does while the buds stay out, so the pods report their ears again before it is asked.
+    pub(super) fn cut(&mut self, era: Era, state: &State, now: Duration) {
+        if era != self.era || !self.absent() {
+            return;
+        }
+        if !state.connected {
+            self.settle = Settle::Cut;
+            return;
+        }
+        self.settle = match self.sink {
+            Sink::Unread | Sink::Awaited => Settle::Reopened,
+            Sink::Elsewhere | Sink::Ours => settle_from(now),
+        };
+    }
+
+    fn absent(&self) -> bool {
+        self.behavior != EarDetectionBehavior::Disabled && !self.back()
+    }
+
     fn back(&self) -> bool {
         match self.behavior {
             EarDetectionBehavior::PauseWhenOneRemoved => self.worn == BUDS,
@@ -217,8 +236,13 @@ impl Ear {
         }
     }
 
-    fn pause(&self) -> Option<MediaRequest> {
-        (self.sink == Sink::Ours).then_some(MediaRequest::PauseAll(self.era))
+    /// A pause asked leaves no settle to ask it again.
+    fn pause(&mut self) -> Option<MediaRequest> {
+        if self.sink != Sink::Ours {
+            return None;
+        }
+        self.settle = Settle::Idle;
+        Some(MediaRequest::PauseAll(self.era))
     }
 
     /// A return ends the absence and its settle: once the sink is read, the remembered players are played when they can be, and forgotten either way.

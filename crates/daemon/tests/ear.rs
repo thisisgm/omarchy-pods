@@ -592,6 +592,40 @@ mod tests {
     }
 
     #[test]
+    fn a_bud_out_before_a_channel_retry_still_pauses() {
+        let (mut rig, device, audio) = Rig::with_audio(PERCENT);
+        rig.wait_sink_told();
+        let player = rig.player("slow", Playback::Playing);
+        player.hold_replies(true);
+        device.pods.set_ear(InEar, OutOfEar);
+        player.wait_reads(1, HANG_LIMIT);
+        let read = Instant::now();
+        rig.close_channel(&device);
+        let closed = Instant::now();
+        assert_gap("the close in the read", read, closed, &(..=CALL_TIMEOUT));
+        player.hold_replies(false);
+        // The cut pause has ended and the driver is past its report, so a pause with the channel closed would come inside this window.
+        rig.wait_logged(&pause_ended(0));
+        rig.wait_queued_inputs_applied();
+        quiet_until(&player, Instant::now() + SETTLE + REAL_TIME_SLACK);
+        assert_eq!(player.asked(), []);
+        // Held from before the channel reopens, so the wait starts at a sink read this test dates.
+        audio.hold_replies(true);
+        rig.accept(&device);
+        rig.wait_filled();
+        let sink_read = Instant::now();
+        audio.hold_replies(false);
+        player.wait_asked(Asked::Pause, SETTLE.saturating_add(HANG_LIMIT));
+        let paused = Instant::now();
+        let wait = SETTLE..=SETTLE.saturating_add(REAL_TIME_SLACK);
+        assert_gap("the pause once reopened", sink_read, paused, &wait);
+        assert_eq!(player.asked(), [Asked::Pause]);
+        assert_eq!(player.playback(), Playback::Paused);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
     fn a_settle_pending_when_the_channel_closes_pauses_nothing() {
         let (rig, device) = linked();
         prefer(&rig, "both", 1);

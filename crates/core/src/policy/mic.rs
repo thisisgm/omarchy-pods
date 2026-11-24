@@ -169,6 +169,7 @@ impl Mic {
             Fact::Link(Signal::Up { .. } | Signal::Keys(_))
             | Fact::Changed
             | Fact::Paused(..)
+            | Fact::PauseCut(_)
             | Fact::Advert(_)
             | Fact::Monitor(_)
             | Fact::Mic(_) => {}

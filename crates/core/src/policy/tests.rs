@@ -368,6 +368,8 @@ enum Step {
     Prefer(EarDetectionBehavior),
     /// The adapter reports `PLAYER` paused by a pause decided before any loss.
     Paused,
+    /// The adapter reports that a pause decided before any loss ended after a link loss was counted.
+    Cut,
     Up,
     /// The channel ends with the device kept.
     Down,
@@ -547,6 +549,7 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
                 Fact::Changed
             }
             Step::Paused => Fact::Paused(Era::default(), vec![player()]),
+            Step::Cut => Fact::PauseCut(Era::default()),
             Step::Sink(Some(ours)) => sink_in(ours, SinkState::Running),
             Step::Sink(None) => Fact::Audio(AudioFact::Sink(None)),
             Step::ServerDown => Fact::Audio(AudioFact::Down),
@@ -559,11 +562,13 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
                 Fact::Tick
             }
             Step::Up => {
+                state.connected = true;
                 let up = Signal::Up { device: device() };
                 at_once.extend(asks(policy.step(&state, Fact::Link(up), now)));
                 Fact::Changed
             }
             Step::Down => {
+                state.connected = false;
                 let down = Fact::Link(Signal::Down);
                 at_once.extend(asks(policy.step(&state, down, now)));
                 Fact::Changed
@@ -592,9 +597,8 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
     (at_once, at_settle, policy.ear.paused.len())
 }
 
-#[test]
-fn every_ear_row_asks_what_it_names() {
-    for row in EAR_ROWS {
+fn assert_ear_rows(rows: &[EarRow]) {
+    for &row in rows {
         let (.., at_once, at_settle, remembered) = row;
         let ran = run_ear_row(row);
         assert_eq!(
@@ -603,6 +607,11 @@ fn every_ear_row_asks_what_it_names() {
             "{row:?}"
         );
     }
+}
+
+#[test]
+fn every_ear_row_asks_what_it_names() {
+    assert_ear_rows(&EAR_ROWS);
 }
 
 #[test]
@@ -679,118 +688,6 @@ fn the_mic_answer_window_is_the_policy_deadline() {
 }
 
 #[test]
-fn players_past_the_bound_and_repeated_ones_are_not_remembered() {
-    let mut policy = Policy::default();
-    let state = State {
-        connected: true,
-        ..State::default()
-    };
-    let named = |index: usize| PlayerOwner::new(&format!("{PLAYER}{index}")).unwrap();
-    let twice = vec![named(0), named(0)];
-    assert_eq!(
-        policy.step(&state, Fact::Paused(Era::default(), twice), Duration::ZERO),
-        []
-    );
-    assert_eq!(policy.ear.paused, [named(0)]);
-    let first: Vec<PlayerOwner> = (0..PAUSED_MAX).map(named).collect();
-    assert_eq!(
-        policy.step(
-            &state,
-            Fact::Paused(Era::default(), first.clone()),
-            Duration::ZERO
-        ),
-        []
-    );
-    assert_eq!(policy.ear.paused, first);
-    let past = vec![named(PAUSED_MAX)];
-    assert_eq!(
-        policy.step(&state, Fact::Paused(Era::default(), past), Duration::ZERO),
-        []
-    );
-    assert_eq!(policy.ear.paused, first);
-}
-
-/// The era of the pause among `effects`.
-fn decided(effects: &[Effect]) -> Era {
-    let era = effects.iter().find_map(|effect| {
-        if let Effect::Media(MediaRequest::PauseAll(era)) = effect {
-            Some(*era)
-        } else {
-            None
-        }
-    });
-    era.expect("a pause decided")
-}
-
-#[test]
-fn a_pause_report_from_before_a_loss_is_dropped_after_the_relink() {
-    let mut policy = Policy::default();
-    let mut state = State {
-        connected: true,
-        ..State::default()
-    };
-    let now = Duration::ZERO;
-    let one_out = |policy: &mut Policy, state: &mut State| {
-        drop(policy.step(state, sink_in(OURS, SinkState::Running), now));
-        state.ear = EarReport::from_in_ear(true, true);
-        drop(policy.step(state, Fact::Changed, now));
-        state.ear = EarReport::from_in_ear(true, false);
-        decided(&policy.step(state, Fact::Changed, now))
-    };
-    let before_loss = one_out(&mut policy, &mut state);
-    state.reset_device();
-    state.connected = false;
-    let lost = Signal::Lost {
-        device: device(),
-        down_at: Some(now),
-    };
-    drop(policy.step(&state, Fact::Link(lost), now));
-    state.connected = true;
-    let up = Signal::Up { device: device() };
-    drop(policy.step(&state, Fact::Link(up), now));
-    let after_relink = one_out(&mut policy, &mut state);
-    assert_ne!(before_loss, after_relink);
-    let late = Fact::Paused(before_loss, vec![player()]);
-    assert_eq!(policy.step(&state, late, now), []);
-    assert_eq!(policy.ear.paused, []);
-    let own = Fact::Paused(after_relink, vec![player()]);
-    assert_eq!(policy.step(&state, own, now), []);
-    assert_eq!(policy.ear.paused, [player()]);
-}
-
-#[test]
-fn a_late_pause_with_the_buds_back_plays_only_its_own_players() {
-    let mut policy = Policy::default();
-    let mut state = State {
-        connected: true,
-        ear_detection_behavior: ONE,
-        ..State::default()
-    };
-    state.ear = EarReport::from_in_ear(true, true);
-    let now = Duration::ZERO;
-    let other = PlayerOwner::new(&format!("{PLAYER}2")).unwrap();
-    assert_eq!(policy.step(&state, Fact::Changed, now), []);
-    assert_eq!(
-        policy.step(&state, sink_in(ELSEWHERE, SinkState::Running), now),
-        []
-    );
-    // The buds are back with the sink elsewhere, so this pause is dropped rather than kept for later.
-    assert_eq!(
-        policy.step(&state, Fact::Paused(Era::default(), vec![player()]), now),
-        []
-    );
-    assert_eq!(
-        policy.step(&state, sink_in(OURS, SinkState::Running), now),
-        []
-    );
-    let play = Effect::Media(MediaRequest::Play(vec![other.clone()]));
-    assert_eq!(
-        policy.step(&state, Fact::Paused(Era::default(), vec![other]), now),
-        [play]
-    );
-}
-
-#[test]
 fn a_player_owner_is_a_unique_bus_name() {
     let longest = format!("{PLAYER}{}", "2".repeat(BUS_NAME_MAX - PLAYER.len()));
     assert_eq!(PlayerOwner::new(&longest).unwrap().as_str(), longest);
@@ -799,3 +696,5 @@ fn a_player_owner_is_a_unique_bus_name() {
         assert_eq!(PlayerOwner::new(refused), None, "{refused:?}");
     }
 }
+
+mod reports;

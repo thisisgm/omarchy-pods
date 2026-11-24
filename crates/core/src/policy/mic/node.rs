@@ -112,6 +112,7 @@ impl Node {
             | Fact::Tick
             | Fact::Audio(_)
             | Fact::Paused(..)
+            | Fact::PauseCut(_)
             | Fact::Advert(_)
             | Fact::Monitor(_) => {}
         }

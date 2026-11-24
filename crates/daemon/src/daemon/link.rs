@@ -85,6 +85,8 @@ pub(super) enum Input {
     Audio(AudioFact),
     /// The players a pause of that era paused.
     Media(Era, Vec<PlayerOwner>),
+    /// A pause of that era ended after the count of link losses moved.
+    PauseCut(Era),
     Advert(Sighting),
     Monitor(MonitorFact),
     Mic(MicFact),
@@ -288,6 +290,7 @@ impl Driver {
             }
             Input::Audio(fact) => self.observe(Fact::Audio(fact)),
             Input::Media(era, paused) => self.observe(Fact::Paused(era, paused)),
+            Input::PauseCut(era) => self.observe(Fact::PauseCut(era)),
             Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
             Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
             Input::Mic(fact) => self.observe(Fact::Mic(fact)),
