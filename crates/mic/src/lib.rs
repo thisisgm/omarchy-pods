@@ -1,7 +1,8 @@
-//! The microphone uplink as samples: units are decoded on the thread that reads the socket into a ring, and a real time reader takes them at a delay held by the time packets arrive.
+//! The microphone of the pods as samples: uplink units and dictation frames are decoded on the thread that reads the socket into a ring, and a real time reader takes them at a delay held by the time packets arrive.
 
 mod conceal;
 pub mod decode;
+mod dictation;
 pub mod opus;
 pub mod resample;
 mod ring;
@@ -13,8 +14,10 @@ use std::time::Duration;
 
 use conceal::{Tail, UNIT_FRAMES, fade_in};
 use decode::{Decoded, Decoder};
+use dictation::Dictation;
+pub use dictation::{FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES, STEADY_FRAMES};
 use resample::Resampler;
-use ring::Ring;
+use ring::{Path, Ring};
 pub use ring::{Reader, Resync};
 
 /// The node's rate, the only one a reader or a source sees.
@@ -59,15 +62,15 @@ const _: () = assert!(
 pub struct Counters {
     /// Times the ring ran dry under a recorder that was being handed audio.
     pub underruns: AtomicU32,
-    /// Units written in place of audio that was lost or refused.
+    /// Units and frames written in place of audio that was lost or refused.
     pub concealed: AtomicU32,
-    /// Units the decoder refused, and units past `MAX_UNITS_PER_SDU` in one SDU.
+    /// Units and frames a decoder refused, and those past the cap of one SDU or one notification.
     pub decode_errors: AtomicU32,
     /// Panics caught inside the decoder, each answered with a fresh decoder.
     pub decoder_resets: AtomicU32,
 }
 
-/// The writer's half, the real time half and the handle that restarts the real time half at its target; none when the decoder refuses `EXPECTED_CONFIG`.
+/// The writer's half, the real time half and the handle that restarts the real time half at its target; none when a decoder will not open.
 #[must_use]
 pub fn chain(counters: Arc<Counters>) -> Option<(Chain, Reader, Resync)> {
     let ring = Arc::new(Ring::new());
@@ -81,6 +84,7 @@ pub fn chain(counters: Arc<Counters>) -> Option<(Chain, Reader, Resync)> {
         arrivals: Arrivals::default(),
         resampler: Resampler::new(UPLINK_DECODE_HZ, RATE_HZ),
         resampled: Vec::new(),
+        dictation: Dictation::new()?,
     };
     Some((chain, reader, resync))
 }
@@ -155,11 +159,16 @@ pub struct Chain {
     resampler: Option<Resampler>,
     /// The unit the resampler made last.
     resampled: Vec<f32>,
+    /// What the dictation stream's frames pass on their way to the ring.
+    dictation: Dictation,
 }
 
 impl Chain {
-    /// The units of one SDU as (stamp, body), and the time the SDU arrived.
+    /// The units of one SDU as (stamp, body), and the time the SDU arrived; on a run of the dictation stream it is a stale packet, neither written nor counted, until `reset` opens a run of the uplink.
     pub fn sdu<'a>(&mut self, now: Duration, units: impl Iterator<Item = (u32, &'a [u8])>) {
+        if self.ring.path() != Path::Uplink {
+            return;
+        }
         let mut units = units;
         let mut wrote = false;
         for (stamp, body) in units.by_ref().take(MAX_UNITS_PER_SDU) {
@@ -179,13 +188,18 @@ impl Chain {
     /// A new run of the uplink: nothing written before it and not yet heard is played, and the next unit's stamp is its start.
     pub fn reset(&mut self) {
         self.renew_decoder();
-        self.ring.start_run();
-        self.arrivals = Arrivals::default();
         self.expected = None;
-        self.faded = true;
         if let Some(resampler) = &mut self.resampler {
             resampler.reset();
         }
+        self.start_run(Path::Uplink);
+    }
+
+    /// Nothing written before the run and not yet heard is played, and the run's first audio follows none.
+    fn start_run(&mut self, path: Path) {
+        self.ring.start_run(path);
+        self.arrivals = Arrivals::default();
+        self.faded = true;
     }
 
     /// The configuration was accepted when the chain was made; were it refused now, the old decoder would stay.
@@ -198,7 +212,7 @@ impl Chain {
     /// Writes what the stamp says was lost before this unit, then the unit or what stands for it.
     fn unit(&mut self, stamp: u32, decode: impl FnOnce(&mut Decoder) -> Decoded<'_>) {
         match lost_before(self.expected, stamp) {
-            Some(lost) => (0..lost).for_each(|_| self.conceal()),
+            Some(lost) => (0..lost).for_each(|_| self.conceal(UNIT_FRAMES)),
             None => self.reset(),
         }
         self.expected = Some(stamp.wrapping_add(STAMP_STEP));
@@ -212,26 +226,31 @@ impl Chain {
                     }
                     None => samples,
                 };
-                let fading = self.faded;
-                let unit = samples.iter().zip(0_u16..);
-                let gain = |at| if fading { fade_in(at) } else { 1.0 };
-                self.ring.write(unit.map(|(&sample, at)| sample * gain(at)));
-                self.faded = false;
+                Self::write_audio(&self.ring, &mut self.faded, samples);
             }
             Decoded::Error => {
                 self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
-                self.conceal();
+                self.conceal(UNIT_FRAMES);
             }
             Decoded::Panic => {
                 self.counters.decoder_resets.fetch_add(1, Ordering::Relaxed);
                 self.renew_decoder();
-                self.conceal();
+                self.conceal(UNIT_FRAMES);
             }
         }
     }
 
-    /// One unit in place of audio that never came: the unit before it played backwards under the fall, then silence for as long as none comes.
-    fn conceal(&mut self) {
+    /// Audio into the ring, under the rise where it follows none.
+    fn write_audio(ring: &Ring, faded: &mut bool, samples: &[f32]) {
+        let fading = *faded;
+        let gain = |at| if fading { fade_in(at) } else { 1.0 };
+        let audio = samples.iter().zip(0_u16..);
+        ring.write(audio.map(|(&sample, at)| sample * gain(at)));
+        *faded = false;
+    }
+
+    /// `frames` frames in place of audio that never came: the unit before them played backwards under the fall, then silence for as long as none comes.
+    fn conceal(&mut self, frames: u16) {
         let last = self.ring.end().saturating_sub(1);
         let mut tail = if self.faded {
             Tail::NONE
@@ -239,7 +258,7 @@ impl Chain {
             Tail::of(last, UNIT_FRAMES, 1.0, self.ring.run())
         };
         let ring = &self.ring;
-        ring.write((0..UNIT_FRAMES).map(|_| tail.next(ring).unwrap_or(0.0)));
+        ring.write((0..frames).map(|_| tail.next(ring).unwrap_or(0.0)));
         self.faded = true;
         self.counters.concealed.fetch_add(1, Ordering::Relaxed);
     }

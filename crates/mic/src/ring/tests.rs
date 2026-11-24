@@ -1,6 +1,6 @@
-//! Support tests: the one word that holds the run's arrival or none, and the step between time and frames.
+//! Support tests: the one word that holds the run's arrival or none, the step between time and frames, and how far a write runs past the index it shows.
 
-use super::{Arrival, NS_PER_SECOND, scaled};
+use super::{Arrival, NS_PER_SECOND, Ring, UNIT_FRAMES, scaled};
 
 #[test]
 fn time_and_frames_convert_at_a_rate_that_does_not_divide_a_second() {
@@ -43,4 +43,19 @@ fn an_arrival_is_never_read_back_as_none() {
     assert_eq!(word.load(), Some(i64::MIN + 1));
     word.store(None);
     assert_eq!(word.load(), None);
+}
+
+#[test]
+fn a_write_longer_than_a_unit_shows_its_index_every_unit() {
+    let ring = Ring::new();
+    let unit = i64::from(UNIT_FRAMES);
+    let long = 3 * unit + 7;
+    // The reader's lap check allows the writer one unit past the index it shows, so no sample may be stored further on than that.
+    let mut furthest = 0;
+    ring.write((0..long).map(|stored| {
+        furthest = furthest.max(stored - ring.end());
+        0.0
+    }));
+    assert_eq!(furthest, unit - 1);
+    assert_eq!(ring.end(), long);
 }
