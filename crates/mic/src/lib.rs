@@ -2,6 +2,7 @@
 
 mod conceal;
 pub mod decode;
+pub mod opus;
 mod ring;
 
 use std::collections::VecDeque;
