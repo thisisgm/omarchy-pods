@@ -5,17 +5,26 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::conceal::{FADE_FRAMES, Tail, UNIT_FRAMES, fade_in};
+use super::dictation::{FRAME_MS, PREROLL_STAGE_FRAMES};
 use super::{Counters, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ};
 
-/// A power of two, 256 ms at 64 kHz and more at 48: more than twice the furthest the reader stands behind the writer, about 110 ms.
-const RING_SAMPLES: u64 = 16_384;
-const _: () = assert!(RING_SAMPLES.is_power_of_two());
+/// A power of two, 2 s at 64 kHz and more at 48: the frames an opening may keep, and twice the latency a steady reader stands behind the writer.
+const RING_SAMPLES: u64 = 131_072;
+#[expect(clippy::as_conversions, reason = "a const context has no `From`")]
+const _: () = assert!(
+    RING_SAMPLES.is_power_of_two()
+        && (PREROLL_STAGE_FRAMES as u64 * FRAME_MS as u64 + 2 * NODE_LATENCY_MS as u64)
+            * FRAMES_PER_MS as u64
+            <= RING_SAMPLES
+);
 /// Half a period: more than steering leaves standing, less than one missed cycle of a 20 ms recorder.
 const REALIGN_MS: u16 = 15;
 /// A standing distance of about 0.9 ms holds the drift measured, 172 parts per million.
 const STEER_PPM_PER_MS: f64 = 200.0;
 /// Inaudible as pitch, and more than ten times the drift measured.
 const STEER_MAX_PPM: f64 = 2000.0;
+/// 5 percent, inside the speeds a speech recogniser is trained on: how much faster than real time the consumer of a dictation runs while the reader catches up.
+pub const OPENING_MAX_PPM: f64 = 50_000.0;
 /// One late packet does not move the pitch.
 const STEER_SMOOTH_MS: u16 = 2000;
 const PARTS_PER_MILLION: f64 = 1e6;
@@ -42,19 +51,19 @@ fn float_of(frames: i64) -> f64 {
     i32::try_from(held).map_or(0.0, f64::from)
 }
 
-/// The run's arrival in ns or none, in one atomic word: `i64::MIN` is kept for none, and an arrival of that value is stored one ns later.
+/// A time in ns or none, in one atomic word: `i64::MIN` is kept for none, and a time of that value is stored one ns later.
 #[derive(Debug)]
-struct Arrival(AtomicI64);
+struct Moment(AtomicI64);
 
-impl Arrival {
+impl Moment {
     const NONE: i64 = i64::MIN;
 
     const fn none() -> Self {
         Self(AtomicI64::new(Self::NONE))
     }
 
-    fn store(&self, arrival: Option<i64>) {
-        let word = arrival.map_or(Self::NONE, |ns| ns.max(Self::NONE.saturating_add(1)));
+    fn store(&self, moment: Option<i64>) {
+        let word = moment.map_or(Self::NONE, |ns| ns.max(Self::NONE.saturating_add(1)));
         self.0.store(word, Ordering::Release);
     }
 
@@ -96,7 +105,11 @@ pub(crate) struct Ring {
     /// Whether the run is of the dictation stream.
     dictation: AtomicBool,
     /// The earliest `now` less the time `written` stood for, over the last packets of the run, in ns; none while no packet of the run has landed.
-    arrival: Arrival,
+    arrival: Moment,
+    /// The reader's clock at its first read after a recorder linked; only the reader writes it.
+    edge: Moment,
+    /// The edge the run's opening was placed against, none when no recorder waited; only the chain writes it.
+    opened: Moment,
 }
 
 impl Ring {
@@ -106,7 +119,9 @@ impl Ring {
             written: AtomicU64::new(0),
             floor: AtomicU64::new(0),
             dictation: AtomicBool::new(false),
-            arrival: Arrival::none(),
+            arrival: Moment::none(),
+            edge: Moment::none(),
+            opened: Moment::none(),
         }
     }
 
@@ -138,7 +153,7 @@ impl Ring {
 
     /// Where the run began.
     pub(crate) fn run(&self) -> u64 {
-        self.floor.load(Ordering::Relaxed)
+        self.floor.load(Ordering::Acquire)
     }
 
     /// The stream the run is of.
@@ -151,11 +166,34 @@ impl Ring {
     }
 
     pub(crate) fn start_run(&self, path: Path) {
+        // The time and the edge go before the floor moves, so a reader that sees this run never sees those of the one before.
+        self.arrival.store(None);
+        self.opened.store(None);
         self.dictation
             .store(path == Path::Dictation, Ordering::Release);
         self.floor
             .store(self.written.load(Ordering::Relaxed), Ordering::Release);
-        self.arrival.store(None);
+    }
+
+    /// Notes the recorder's open edge, and gives it in ns.
+    fn link(&self, now: Duration) -> i64 {
+        let edge = ns_of(now);
+        self.edge.store(Some(edge));
+        edge
+    }
+
+    /// How far back from `now` the run's opening reaches: the stated latency before the edge of a recorder that linked, which is noted as the edge the run opened against, or before `now` when none linked earlier.
+    pub(crate) fn open(&self, now: Duration) -> Duration {
+        let edge = self.edge.load();
+        self.opened.store(edge);
+        let since = edge.map_or(0, |edge| ns_of(now).saturating_sub(edge));
+        let since = Duration::from_nanos(u64::try_from(since).unwrap_or(0));
+        since.saturating_add(Duration::from_millis(u64::from(NODE_LATENCY_MS)))
+    }
+
+    /// Whether the run's opening was placed against this edge.
+    fn opened_against(&self, edge: Option<i64>) -> bool {
+        edge.is_some() && self.opened.load() == edge
     }
 
     /// `now` less the time the write index stands for, in ns.
@@ -224,6 +262,22 @@ impl Resync {
     }
 }
 
+/// What a read stands by: the frame it should end on, and the run whose time said so.
+#[derive(Debug, Clone, Copy)]
+struct Aim {
+    target: i64,
+    run: u64,
+}
+
+/// A run the reader started on behind its target, at the run's first frame.
+#[derive(Debug, Clone, Copy)]
+struct Opening {
+    run: u64,
+    /// When it began, in ns, and how far behind the reader then stood, in frames.
+    began: i64,
+    behind: i64,
+}
+
 /// What the reader's last frame was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Was {
@@ -253,6 +307,10 @@ pub struct Reader {
     ahead_ms: f64,
     /// A recorder linked and the reader has not been moved to a target since.
     linking: bool,
+    /// The clock at the first read after a recorder linked, in ns.
+    edge: Option<i64>,
+    /// The run the reader is catching up on.
+    opening: Option<Opening>,
 }
 
 impl Reader {
@@ -274,6 +332,8 @@ impl Reader {
             left: Tail::NONE,
             ahead_ms: 0.0,
             linking: false,
+            edge: None,
+            opening: None,
         };
         (reader, resync)
     }
@@ -285,21 +345,80 @@ impl Reader {
             // A recorder that links hears nothing from before it, whether or not a packet of the run has landed.
             (self.ended, self.earlier, self.left) = (Tail::NONE, Tail::NONE, Tail::NONE);
             (self.heard, self.was) = (None, Was::Gone);
-            self.linking = true;
+            (self.linking, self.opening) = (true, None);
+            self.edge = Some(self.ring.link(now));
         }
-        let target = self.ring.target(now);
-        if let Some(target) = target {
-            let off = self.next.saturating_add(frames).saturating_sub(target);
-            let bound = u64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
-            // A realign waits out the fall of the one before it, which a second would cut short.
-            if self.linking || (off.unsigned_abs() > bound && !self.left.falling()) {
-                self.jump(target.saturating_sub(frames));
-            }
+        // The run is noted before its time is read, so the time is of that run or of one after it.
+        let run = self.ring.run();
+        let aim = self.aim(run, now, frames);
+        self.fill(aim, frames, out)
+    }
+
+    /// Stands the reader for a read of `frames` at `now` by the time of `run`, the run noted before, and gives what it stood by; none while the run has not told its time, or when another started since.
+    fn aim(&mut self, run: u64, now: Duration, frames: i64) -> Option<Aim> {
+        let target = self.ring.target(now)?;
+        // A run that started since `run` was noted may have told the time just read, so the read stands by neither.
+        if self.ring.run() != run {
+            return None;
         }
+        self.stand(target.saturating_sub(frames), now);
+        Some(Aim { target, run })
+    }
+
+    /// Hands out the frames from where the reader stands, those of the run it stood by and none of a run that started since, and gives the ratio.
+    fn fill(&mut self, aim: Option<Aim>, frames: i64, out: &mut [f32]) -> f64 {
+        let told = aim.map(|aim| aim.run);
         for sample in &mut *out {
-            *sample = self.frame();
+            *sample = self.frame(told);
         }
-        target.map_or(1.0, |target| self.steer(target, frames))
+        match (aim, self.opening) {
+            (None, _) => 1.0,
+            (Some(_), Some(_)) => 1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION,
+            (Some(aim), None) => self.steer(aim.target, frames),
+        }
+    }
+
+    /// Puts the reader where a read at `now` should open, which is at `place` when it is on its target: a recorder the run opened against starts on the run's first frame when that is behind `place`, and until it is near its target it is not moved.
+    fn stand(&mut self, place: i64, now: Duration) {
+        let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
+        let run = self.ring.run();
+        let first = i64::try_from(run).unwrap_or(i64::MAX);
+        // Only a recorder that has heard nothing since it linked still waits for what came before its edge.
+        if self.heard.is_none() && first < place && self.ring.opened_against(self.edge) {
+            self.jump(first);
+            self.opening = Some(Opening {
+                run,
+                began: ns_of(now),
+                behind: place.saturating_sub(first),
+            });
+        }
+        if let Some(opening) = self.opening {
+            let same_run = run == opening.run;
+            if same_run && place.saturating_sub(self.next) > bound {
+                return;
+            }
+            if same_run {
+                self.caught_up(opening, now);
+            }
+            self.opening = None;
+        }
+        let off = self.next.saturating_sub(place);
+        // A realign waits out the fall of the one before it, which a second would cut short.
+        if self.linking || (off.unsigned_abs() > bound.unsigned_abs() && !self.left.falling()) {
+            self.jump(place);
+        }
+    }
+
+    /// The opening reached the target: how far behind it began and how long it took are kept.
+    fn caught_up(&self, opening: Opening, now: Duration) {
+        let behind_ms = scaled(opening.behind, 1, u32::from(FRAMES_PER_MS));
+        let took_ms = ns_of(now).saturating_sub(opening.began) / NS_PER_MS;
+        for (counter, ms) in [
+            (&self.counters.opening_behind_ms, behind_ms),
+            (&self.counters.opening_ms, took_ms),
+        ] {
+            counter.store(u32::try_from(ms).unwrap_or(u32::MAX), Ordering::Relaxed);
+        }
     }
 
     /// How far the last read stood from its target, smoothed, in ms; above zero the reader is ahead.
@@ -336,11 +455,12 @@ impl Reader {
         }
     }
 
-    fn frame(&mut self) -> f32 {
+    /// The next frame; only a sample of `told`, the run whose time the read stood by, has a place and is handed out.
+    fn frame(&mut self, told: Option<u64>) -> f32 {
         let at = self.next;
         self.next = at.saturating_add(1);
         let mut out = match self.ring.frame(at) {
-            Frame::Sample { sample, run } => {
+            Frame::Sample { sample, run } if told == Some(run) => {
                 if self.was != Was::Sample {
                     self.fade = 0;
                 }
@@ -357,7 +477,7 @@ impl Reader {
                 self.was = Was::Dry;
                 0.0
             }
-            Frame::Gone => {
+            Frame::Sample { .. } | Frame::Gone => {
                 self.end_audio(at);
                 self.was = Was::Gone;
                 0.0

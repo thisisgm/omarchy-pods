@@ -19,8 +19,6 @@ mod tests {
 
     /// The longest gap measured between two packets.
     const WORST_GAP: Duration = Duration::from_millis(72);
-    /// The steering never asks for more than 2000 parts per million either way.
-    const MAX_STEER: f64 = 2000e-6;
 
     /// Runs pods that are `slow_ppm` slow against a consumer that follows the rate it is asked for, and gives the range, in ms, of the reader's distance from its target once `SETTLE` has passed.
     fn steered(slow_ppm: i32, span: Duration, gaps: bool) -> (Rig, [f64; 2]) {

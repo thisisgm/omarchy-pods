@@ -4,10 +4,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use super::decode::Decoded;
-use super::opus::{DICTATION_DECODE_HZ, Decoder, FRAME_SAMPLES};
+use super::opus::{DICTATION_DECODE_HZ, Decoder, FRAME_SAMPLES, MAX_OPUS_FRAME_BYTES};
 use super::resample::Resampler;
 use super::ring::Path;
-use super::{Chain, FRAMES_PER_MS, RATE_HZ};
+use super::{Chain, Counters, FRAMES_PER_MS, RATE_HZ, renew};
 
 /// One step of the counter.
 pub const FRAME_MS: u32 = 20;
@@ -17,6 +17,8 @@ pub const MAX_FRAMES_PER_NOTIFICATION: usize = 8;
 pub const MAX_GAP_FRAMES: u16 = 4;
 /// A notification of one frame is the steady cadence.
 pub const STEADY_FRAMES: usize = 1;
+/// 1.6 s of the burst that opens a stream, which was measured at 63 frames; a longer one is placed when the stage is full.
+pub const PREROLL_STAGE_FRAMES: usize = 80;
 /// A counter this far past the expected one, the range wrapped, is one the run has passed.
 const BEHIND: u16 = 1 << 15;
 /// One frame at the node's rate.
@@ -26,6 +28,8 @@ const BEHIND: u16 = 1 << 15;
     reason = "a const context has no `TryFrom`, and the assertion under it holds the count whole"
 )]
 const FRAME_FRAMES: u16 = (FRAME_MS * FRAMES_PER_MS as u32) as u16;
+#[expect(clippy::as_conversions, reason = "a const context has no `From`")]
+const FRAME_TIME: Duration = Duration::from_millis(FRAME_MS as u64);
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const _: () = assert!(
     FRAME_FRAMES as u32 == FRAME_MS * FRAMES_PER_MS as u32
@@ -61,6 +65,8 @@ pub(crate) struct Dictation {
     resampler: Option<Resampler>,
     /// The frame the resampler made last.
     resampled: Vec<f32>,
+    /// The frames of the burst that opens a stream, by counter, held until a steady notification places them; none once they are placed.
+    stage: Option<Vec<(u16, Vec<u8>)>>,
 }
 
 impl Dictation {
@@ -71,14 +77,13 @@ impl Dictation {
             expected: None,
             resampler: Resampler::new(DICTATION_DECODE_HZ, RATE_HZ),
             resampled: Vec::new(),
+            stage: None,
         })
     }
 
     /// A fresh decoder, and a filter that holds nothing the old one gave; the decoder opened when the chain was made, and were it refused now the old one would stay.
-    fn renew_decoder(&mut self) {
-        if let Some(fresh) = Decoder::new() {
-            self.decoder = fresh;
-        }
+    fn renew_decoder(&mut self, counters: &Counters) {
+        renew(&mut self.decoder, counters, Decoder::new());
         if let Some(resampler) = &mut self.resampler {
             resampler.reset();
         }
@@ -98,9 +103,14 @@ impl Dictation {
 }
 
 impl Chain {
-    /// A new run of the dictation stream, as `reset` is one of the uplink; the caller opens every start of the stream with it, for a counter that starts again behind the last one reads as a repeat and writes nothing.
+    /// A new run of the dictation stream, as `reset` is one of the uplink, with its opening staged; the caller opens every start of the stream with it, for a counter that starts again behind the last one reads as a repeat and writes nothing.
     pub fn dictation_run(&mut self) {
-        self.dictation.renew_decoder();
+        self.new_run();
+        self.dictation.stage = Some(Vec::with_capacity(PREROLL_STAGE_FRAMES));
+    }
+
+    fn new_run(&mut self) {
+        self.dictation.renew_decoder(&self.counters);
         self.dictation.expected = None;
         self.start_run(Path::Dictation);
     }
@@ -111,11 +121,12 @@ impl Chain {
             return;
         }
         let mut frames = frames;
-        let (mut met, mut wrote) = (0_usize, 0_usize);
+        let staging = self.dictation.stage.is_some();
+        let (mut met, mut took) = (0_usize, 0_usize);
         for (counter, data) in frames.by_ref().take(MAX_FRAMES_PER_NOTIFICATION) {
             met = met.saturating_add(1);
-            if self.frame(counter, |decoder| decoder.frame(data)) {
-                wrote = wrote.saturating_add(1);
+            if self.take(now, counter, data) {
+                took = took.saturating_add(1);
             }
         }
         let dropped = frames.count();
@@ -123,19 +134,73 @@ impl Chain {
             u32::try_from(dropped).unwrap_or(u32::MAX),
             Ordering::Relaxed,
         );
-        // A burst stands ahead of the cadence and a repeat behind it; only a steady notification that moved the ring tells the time of the run.
-        if (met, wrote) == (STEADY_FRAMES, STEADY_FRAMES) {
-            let earliest = self.arrivals.push(self.ring.arrival_at(now));
-            self.ring.publish(earliest);
+        // A burst stands ahead of the cadence and a repeat behind it; only a steady notification whose frame the run took tells its time, and the first one places the opening.
+        if (met, took) == (STEADY_FRAMES, STEADY_FRAMES) {
+            if staging {
+                self.place(now);
+            } else {
+                self.arrived(now);
+            }
         }
+    }
+
+    /// One frame of a notification: staged while the run's opening is, else written; false when the run has passed its counter.
+    fn take(&mut self, now: Duration, counter: u16, data: &[u8]) -> bool {
+        let Some(stage) = &mut self.dictation.stage else {
+            return self.frame(counter, |decoder| decoder.frame(data));
+        };
+        match place(self.dictation.expected, counter) {
+            Place::After(_) => {}
+            Place::Behind => {
+                self.counters
+                    .dictation_repeats
+                    .fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            Place::NewRun => stage.clear(),
+        }
+        self.dictation.expected = Some(counter.wrapping_add(1));
+        // One byte past the cap is kept, so the decoder still refuses a frame that came too long.
+        let held = data.get(..=MAX_OPUS_FRAME_BYTES).unwrap_or(data);
+        stage.push((counter, held.to_vec()));
+        if stage.len() == PREROLL_STAGE_FRAMES {
+            self.place(now);
+        }
+        true
+    }
+
+    /// Ends the staging: the last staged frame landed at `now`, a frame `n` counters before it stands `n` frames earlier, and those that end inside the opening's reach and the stage's own length are written in order; the rest are dropped and never meet the decoder.
+    fn place(&mut self, now: Duration) {
+        let Some(staged) = self.dictation.stage.take() else {
+            return;
+        };
+        let Some(&(last, _)) = staged.last() else {
+            return;
+        };
+        let reach = self.ring.open(now);
+        self.dictation.expected = None;
+        for (counter, data) in &staged {
+            let back = last.wrapping_sub(*counter);
+            // Losses spread the staged frames over more counters than the stage's length, which is all the ring is sized to keep.
+            let in_stage = usize::from(back) < PREROLL_STAGE_FRAMES;
+            if in_stage && FRAME_TIME.saturating_mul(u32::from(back)) < reach {
+                self.frame(*counter, |decoder| decoder.frame(data));
+            }
+        }
+        self.arrived(now);
     }
 
     /// Writes what the counter says was lost before this frame, then the frame or what stands for it; false when the run has passed the counter and nothing is written.
     fn frame(&mut self, counter: u16, decode: impl FnOnce(&mut Decoder) -> Decoded<'_>) -> bool {
         match place(self.dictation.expected, counter) {
             Place::After(lost) => (0..lost).for_each(|_| self.lost(Decoder::conceal)),
-            Place::Behind => return false,
-            Place::NewRun => self.dictation_run(),
+            Place::Behind => {
+                self.counters
+                    .dictation_repeats
+                    .fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            Place::NewRun => self.new_run(),
         }
         self.dictation.expected = Some(counter.wrapping_add(1));
         match self.dictation.at_node_rate(decode) {
@@ -168,7 +233,7 @@ impl Chain {
 
     /// The uplink's concealment in place of the frame, and a fresh decoder: one that gave nothing may hold anything, and a fresh one conceals to silence until its first audio rises.
     fn fall(&mut self) {
-        self.dictation.renew_decoder();
+        self.dictation.renew_decoder(&self.counters);
         self.conceal(FRAME_FRAMES);
     }
 }

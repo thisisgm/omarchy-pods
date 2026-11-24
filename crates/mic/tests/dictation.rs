@@ -14,9 +14,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use pods_mic::decode::Decoded;
-    use pods_mic::opus::{DICTATION_DECODE_HZ, Decoder, MAX_OPUS_FRAME_BYTES};
-    use pods_mic::resample::Resampler;
+    use pods_mic::opus::{Decoder, MAX_OPUS_FRAME_BYTES};
     use pods_mic::{
         ARRIVAL_WINDOW, Chain, Counters, FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES,
         MAX_UNITS_PER_SDU, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, STAMP_STEP, STEADY_FRAMES,
@@ -27,17 +25,12 @@ mod tests {
 
     use super::support::{
         FADE, FIRST, HELD, LEVELS, LINES, PACKET_FRAMES, QUANTUM, Rig, TONE_DBFS, TONE_HZ,
-        TONE_SLACK_DB, TONE_SLACK_HZ, after, assert_same, assert_shaped, frames_in, largest_step,
-        ms, period, reads, run_start, silent, unsteered,
+        TONE_SLACK_DB, TONE_SLACK_HZ, Twin, after, assert_same, assert_shaped, frame_frames,
+        frames_in, largest_step, ms, period, reads, run_start, silent, unsteered,
     };
 
     /// A frame of the tone past any a run here lands, so its bytes are not those a counter before it carried.
     const OTHER_FRAME: usize = 20;
-
-    /// The frames one frame of the stream is at the node's rate.
-    fn frame_frames() -> usize {
-        frames_in(ms(FRAME_MS))
-    }
 
     /// When the frame `step` frames after a run's first lands if it is on time.
     fn at(step: u32) -> Duration {
@@ -68,10 +61,7 @@ mod tests {
         reader: Reader,
         resync: Resync,
         counters: Arc<Counters>,
-        twin: Decoder,
-        to_node: Resampler,
-        /// What the twin gave, at the node's rate.
-        decoded: Vec<f32>,
+        twin: Twin,
         /// The counter of the next frame, the frames of the tone that went by, and the frame times that did.
         counter: u16,
         sent: usize,
@@ -92,34 +82,18 @@ mod tests {
                 reader,
                 resync,
                 counters,
-                twin: Decoder::new().unwrap(),
-                to_node: Resampler::new(DICTATION_DECODE_HZ, RATE_HZ).unwrap(),
-                decoded: Vec::new(),
+                twin: Twin::new(),
                 counter,
                 sent: 0,
                 step: 0,
             }
         }
 
-        /// What one call into the twin gave joins what it gave before, at the node's rate.
-        fn twin(&mut self, call: impl FnOnce(&mut Decoder) -> Decoded<'_>) {
-            let Decoded::Samples(samples) = call(&mut self.twin) else {
-                panic!("the twin gave no samples");
-            };
-            self.to_node.push(samples, &mut self.decoded);
-        }
-
-        /// A new run opens on a fresh decoder, so the twin and what it gave start again with it.
-        fn renew_twin(&mut self) {
-            (self.twin, self.decoded) = (Decoder::new().unwrap(), Vec::new());
-            self.to_node = Resampler::new(DICTATION_DECODE_HZ, RATE_HZ).unwrap();
-        }
-
         /// One notification at `now` of the next `count` frames of the tone; the twin decodes those under the cap.
         fn notify(&mut self, now: Duration, count: usize) {
             let frames: Vec<&[u8]> = tone().cycle().skip(self.sent).take(count).collect();
             for frame in frames.iter().take(MAX_FRAMES_PER_NOTIFICATION) {
-                self.twin(|twin| twin.frame(frame));
+                self.twin.call(|twin| twin.frame(frame));
             }
             let first = self.counter;
             let counters = (0..).map(|frame: u16| first.wrapping_add(frame));
@@ -139,7 +113,7 @@ mod tests {
         /// `frames` frames never come: their counters and their times go by, and the twin conceals each.
         fn lose(&mut self, frames: u16) {
             for _ in 0..frames {
-                self.twin(Decoder::conceal);
+                self.twin.call(Decoder::conceal);
             }
             self.counter = self.counter.wrapping_add(frames);
             self.sent = self.sent.saturating_add(usize::from(frames));
@@ -176,10 +150,10 @@ mod tests {
 
         /// Asserts a recorder that links after the last landing hears the run as the twin gave it, under both fades at its start and then bit for bit; returns what it heard.
         fn assert_heard_as_decoded(&mut self) -> Vec<f32> {
-            let heard = self.heard(self.decoded.len().checked_div(frame_frames()).unwrap());
-            assert_eq!(heard.len(), self.decoded.len());
-            assert_shaped(&heard[..FADE], run_start(&self.decoded));
-            assert_same(&heard[FADE..], &self.decoded[FADE..]);
+            let heard = self.heard(self.twin.decoded.len().checked_div(frame_frames()).unwrap());
+            assert_eq!(heard.len(), self.twin.decoded.len());
+            assert_shaped(&heard[..FADE], run_start(&self.twin.decoded));
+            assert_same(&heard[FADE..], &self.twin.decoded[FADE..]);
             heard
         }
     }
@@ -210,7 +184,7 @@ mod tests {
         let base = base_of(from);
         assert_same(
             &tape[FADE..],
-            &stream.decoded[base + FADE..base + tape.len()],
+            &stream.twin.decoded[base + FADE..base + tape.len()],
         );
         assert_eq!(counted(&stream.counters), [0; 4]);
 
@@ -273,15 +247,15 @@ mod tests {
             let mut stream = Stream::new();
             stream.land(4);
             stream.counter = stream.counter.wrapping_add(hole);
-            stream.renew_twin();
+            stream.twin = Twin::new();
             stream.land(2);
             assert_eq!(counted(&stream.counters), [0; 4], "a hole of {hole}");
             // Nothing was written for the hole, so the six frames before the ring's end are four of the run before, which a recorder of this run is handed as silence, and its own two.
             let heard = stream.heard(6);
             let (before, run) = heard.split_at(4 * frame_frames());
             assert!(silent(before), "a hole of {hole}");
-            assert_shaped(&run[..FADE], run_start(&stream.decoded));
-            assert_same(&run[FADE..], &stream.decoded[FADE..]);
+            assert_shaped(&run[..FADE], run_start(&stream.twin.decoded));
+            assert_same(&run[FADE..], &stream.twin.decoded[FADE..]);
         }
     }
 
@@ -299,8 +273,37 @@ mod tests {
         }
         stream.land(3);
         assert_eq!(counted(&stream.counters), [0; 4]);
+        assert_eq!(Rig::count(&stream.counters.dictation_repeats), 3);
         // The decoder met none of them: the frames after are what a twin that saw none decoded.
         stream.assert_heard_as_decoded();
+    }
+
+    #[test]
+    fn a_run_that_has_not_told_its_time_is_not_played() {
+        const BURST: usize = 5;
+        let mut stream = Stream::new();
+        stream.resync.request();
+        assert!(!silent(&stream.play(&reads(at(5), 6))));
+        // Five frames in one notification under counters past the gap: a new run, and no steady notification to say when it plays.
+        stream.counter = stream.counter.wrapping_add(MAX_GAP_FRAMES + 1);
+        stream.twin = Twin::new();
+        stream.notify(at(11), BURST);
+        // The first read holds the fall of the run that ended; the reader then passes the place of the new run's frames and hands out none of them.
+        stream.read(at(11), QUANTUM);
+        for step in 12..21 {
+            let (heard, ratio) = stream.read(at(step), QUANTUM);
+            assert!(
+                silent(&heard) && unsteered(ratio),
+                "the read at step {step}"
+            );
+        }
+        // Its next steady notification tells the time, and the read after it is handed the run.
+        stream.step = 21;
+        stream.land(1);
+        assert!(!silent(&stream.read(at(21), QUANTUM).0));
+        // The burst waited whole: a recorder that links now hears its five frames and the steady one as a fresh decoder gave them.
+        stream.assert_heard_as_decoded();
+        assert_eq!(counted(&stream.counters), [0; 4]);
     }
 
     #[test]
@@ -322,7 +325,7 @@ mod tests {
         let base = base_of(from);
         assert_same(
             &tape[FADE..],
-            &stream.decoded[base + FADE..base + tape.len()],
+            &stream.twin.decoded[base + FADE..base + tape.len()],
         );
         assert_eq!(counted(&stream.counters), [0; 4]);
     }
@@ -356,11 +359,13 @@ mod tests {
     #[test]
     fn nine_frames_in_one_notification_write_eight_and_count_one() {
         let mut stream = Stream::new();
-        stream.notify(at(0), MAX_FRAMES_PER_NOTIFICATION + 1);
+        // One steady frame first, so the nine are of a run under way and not of its opening, which is staged.
+        stream.land(1);
+        stream.notify(at(1), MAX_FRAMES_PER_NOTIFICATION + 1);
         assert_eq!(counted(&stream.counters), [0, 1, 0, 0]);
         // The ninth never reached the decoder, so the frame after it finds one lost.
-        stream.twin(Decoder::conceal);
-        stream.step = u32::try_from(MAX_FRAMES_PER_NOTIFICATION + 1).unwrap();
+        stream.twin.call(Decoder::conceal);
+        stream.step = u32::try_from(MAX_FRAMES_PER_NOTIFICATION + 2).unwrap();
         stream.land(1);
         assert_eq!(counted(&stream.counters), [1, 1, 0, 0]);
         stream.assert_heard_as_decoded();
@@ -383,7 +388,7 @@ mod tests {
         let base = base_of(from);
         assert_same(
             &tape[FADE..],
-            &stream.decoded[base + FADE..base + tape.len()],
+            &stream.twin.decoded[base + FADE..base + tape.len()],
         );
         assert_eq!(counted(&stream.counters), [0; 4]);
     }

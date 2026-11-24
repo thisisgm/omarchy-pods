@@ -22,8 +22,8 @@ mod tests {
     };
 
     const PACKETS: u32 = 1000;
-    /// More than a read on time takes, so each read opens on frames the writer is about to write over.
-    const LONG: usize = 12_000;
+    /// A thirty-second less than the ring hands out: with the stated latency before it, each read opens on frames the writer is about to write over.
+    const LONG: usize = HELD - HELD / 32;
     /// The packets the writer may land past the one a read is timed by: it writes over the start of that read and never reaches its end.
     const AHEAD: u32 = 3;
 

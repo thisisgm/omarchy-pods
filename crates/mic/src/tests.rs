@@ -56,6 +56,18 @@ fn a_panic_in_decode_is_caught_counted_and_resets_the_decoder() {
 }
 
 #[test]
+fn a_decoder_that_will_not_open_is_counted_and_the_held_one_stays() {
+    let counters = Counters::default();
+    let refused = || counters.decoder_renew_refused.load(Ordering::Relaxed);
+    // No decoder can be made to refuse on order, so a number stands in for one.
+    let mut held = 1_u8;
+    renew(&mut held, &counters, Some(2));
+    assert_eq!((held, refused()), (2, 0));
+    renew(&mut held, &counters, None);
+    assert_eq!((held, refused()), (2, 1));
+}
+
+#[test]
 fn a_frame_of_another_length_is_refused() {
     let mut decoder = Decoder::new().unwrap();
     for length in [UNIT - 1, UNIT + 1] {

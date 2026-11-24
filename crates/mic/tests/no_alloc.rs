@@ -18,7 +18,7 @@ mod tests {
     /// A quarter of a millisecond a read.
     const FRAMES: usize = 16;
     const READ_EVERY: Duration = Duration::from_micros(250);
-    /// Eight packets: all the ring holds without overwriting, 240 ms of audio.
+    /// Eight packets, 240 ms of audio: what the reads before the link take, and some for those after it.
     const PACKETS: u32 = 8;
     /// The reads before the consumer comes late, the reads from there until a recorder links, and the reads after: 2.5 s in all.
     const STRETCHES: [u32; 3] = [200, 200, 9600];

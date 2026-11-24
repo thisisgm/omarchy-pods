@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn resync_gives_live_audio_on_the_first_read() {
-        const LONG: usize = 20_000;
+        const LONG: usize = HELD + 4096;
         let mut rig = Rig::new();
         // The last of eleven reads runs 200 frames past the audio of ten packets, so what ended still sounds when the recorder leaves.
         let first = landing(3) + ms(65) + Duration::from_micros(3125);
@@ -166,11 +166,11 @@ mod tests {
         assert_live(&mut rig, back + ms(97));
 
         // A read longer than the ring holds: what the writer has overwritten, or may be writing over, is silence and never newer audio.
-        for at in on_time(17..20) {
+        for at in on_time(17..72) {
             rig.land(at);
         }
         rig.resync.request();
-        let (long, _) = rig.read(landing(19) + ms(NODE_LATENCY_MS), LONG);
+        let (long, _) = rig.read(landing(71) + ms(NODE_LATENCY_MS), LONG);
         let (lost, kept) = long.split_at(LONG - HELD);
         assert!(silent(lost));
         assert_same(
