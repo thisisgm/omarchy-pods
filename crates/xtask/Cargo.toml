@@ -33,3 +33,8 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+# Does its work only under `cargo bench`, which of the gates only `cargo xtask ci bench` runs: it downloads its tools and its music.
+[[bench]]
+name = "codec"
+harness = false

@@ -333,3 +333,59 @@ The largest lateness of every such run decides `JITTER_COVER_MS` in
 record plus a margin of 5 ms, rounded up to a multiple of 5 ms. A run whose
 lateness gives a larger cover by that rule raises it, in a change of its own,
 and the latency the node states follows it.
+
+## The audio bench
+
+No audio quality figure here rests on a listener. `cargo xtask probe bench`
+scores audio with tools that live in a cache outside the repository; none is
+linked into the daemon. `cargo xtask probe bench setup --cache <dir>` makes the
+cache in a directory that does not exist yet, without root, on Arch and on
+Debian: it needs `curl`, `sha256sum`, `tar`, a C and a C++ compiler and
+`python3` with its `venv` module. A download with another SHA-256 than the one
+in `crates/xtask/src/probe/bench/pins.rs` stops the setup and nothing is built
+from it. The cache is marked ready last, with its pins and the compiler call of
+each library, and `probe bench codec` reads no cache marked otherwise. A setup
+that fails leaves its directory behind: remove it, or name another.
+
+| Tool | Pin | How it is installed |
+|---|---|---|
+| ViSQOL v3, audio and speech mode | `visqol-python` 3.8.0, a pure Python port; it printed the reference implementation's conformance figures to six decimals on the three pairs tried | `pip --require-hashes` from the two requirement files beside the pins, into the cache's own environment |
+| libsbc | `sbc-2.2.tar.xz` from kernel.org | one compiler call over the checksummed sources; nothing in the archive is run |
+| libfdk-aac | `fdk-aac-2.0.3.tar.gz` | the same |
+| Reference music | four lossless stereo recordings from Wikimedia Commons, public domain or CC BY-SA 4.0: jazz funk, piano, harpsichord repertoire, pop rock | fetched whole; the bench cuts 20 s of each and resamples it to 48 kHz |
+
+The scorers of the speech benches are chosen and not installed by any command
+yet: `ai-edge-litert` 2.4.0 for ViSQOL's speech mode, `nisqa` 2.0.post2,
+`speechmos` 0.0.1.1 for DNSMOS, and `faster-whisper` 1.2.1 with the model
+`Systran/faster-whisper-medium.en` at revision
+`a29b04bd15381511a9af671baec01072039215e3`, scored with `jiwer` 4.0.0. `nisqa`
+pins `torch` 2.2.1, so those run under CPython 3.12.
+
+`cargo xtask probe bench codec --cache <dir> --out <file>` decides the playback
+codec. Each excerpt goes through libsbc with the settings PipeWire 1.6.9 gives
+SBC-XQ (48 kHz, dual channel, 16 blocks, 8 subbands, loudness, bitpool 39 a
+channel, about 504 kbit/s) and through libfdk-aac with its AAC settings (MPEG-2
+AAC LC, variable rate mode 5, afterburner, LATM, a peak rate of 376 875 bit/s
+from a packet of 1017 bytes), is decoded by the same library, and is scored
+against the excerpt with ViSQOL in audio mode.
+
+Those settings are assumed, not read from the pods. PipeWire takes them from
+what the sink offers: the bench assumes a sink that offers 48 kHz and a bitpool
+of 39 or more for SBC, and for AAC one that allows a variable rate, states
+320 000 bit/s or no rate, and takes packets of 1017 bytes, the most that fills
+one 3-DH5 packet. A sink that offers less gets a lower bitpool or a lower peak
+rate than the bench scores, and the 453 and 256 kbit/s the daemon names for
+these profiles are nominal rates, not rates read from a link. The capabilities
+the pods state for their media channel settle it, and the table says in its
+`settings_` rows which sink it assumed.
+
+The table holds a `visqol_mos_<codec>_<track>` and a
+`visqol_vnsim_<codec>_<track>` row for `sbc_xq`, `aac` and `reference`, each the
+least and the greatest of `--runs` runs (3 unless given), then the settings and
+the version of every tool. A `reference` row is the excerpt against itself,
+the most a codec row can reach: the score saturates there, so read the
+similarity beside it.
+
+`cargo xtask ci bench` makes a cache, runs the bench in it and fails unless
+every codec row lies between 4.5 and its reference row. It downloads and scores
+for minutes, so it runs only when named: `cargo xtask ci` alone leaves it out.
