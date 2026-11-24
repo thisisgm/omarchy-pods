@@ -178,6 +178,23 @@ mod tests {
     }
 
     #[test]
+    fn a_restore_owed_when_the_channel_closes_is_done_after_it_reopens() {
+        let (mut rig, device, audio) = live(SinkState::Running);
+        audio.stop();
+        rig.wait_audio_server("down");
+        set(rig.session(), "microphone", "off");
+        wait_stop(&device);
+        rig.wait_logged("mic: restore owed, no audio server");
+        wait_mic(&rig, "off");
+        rig.close_channel(&device);
+        rig.accept(&device);
+        rig.wait_filled();
+        audio.restart(Volumes::Kept);
+        wait_restore(&audio, &device);
+        rig.finish();
+    }
+
+    #[test]
     fn a_restore_owed_while_the_server_was_down_is_dropped_by_a_newer_start() {
         let (mut rig, device, audio) = live(SinkState::Running);
         audio.stop();
