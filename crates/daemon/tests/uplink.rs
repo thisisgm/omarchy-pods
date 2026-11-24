@@ -10,7 +10,6 @@ mod support;
 
 #[cfg(test)]
 mod tests {
-    use std::ops::RangeInclusive;
     use std::time::{Duration, Instant};
 
     use pods_core::policy::mic::{
@@ -22,7 +21,7 @@ mod tests {
     use pods_samples::{MODEL_NUMBER, Placed};
     use serde_json::json;
 
-    use super::support::rig::{REAL_TIME_SLACK, assert_gap, not_before};
+    use super::support::rig::assert_gap;
     use super::support::settings::{
         UNREADABLE, plant_settings, set, status, stop, unreadable_lines,
     };
@@ -41,11 +40,6 @@ mod tests {
             secondary: Placed::InCase,
             ..Profile::default()
         }
-    }
-
-    /// From an act to the packet it sends, which the pods hear on a loaded host.
-    fn at_once() -> RangeInclusive<Duration> {
-        Duration::ZERO..=REAL_TIME_SLACK
     }
 
     #[test]
@@ -134,7 +128,13 @@ mod tests {
         set(rig.session(), "microphone", "off");
         assert_eq!(mic(&rig), "off");
         let stop = wait_stop(&device);
-        assert_gap("the STOP after the write", written, stop.at, &at_once());
+        // The core table's `Running Changed Off` cell owns "at once": the STOP leaves in the write's own step.
+        assert_gap(
+            "the STOP after the write",
+            written,
+            stop.at,
+            &(Duration::ZERO..),
+        );
         wait_for("the uplink to stop", || {
             (!device.pods.uplink().running()).then_some(())
         });
@@ -157,7 +157,13 @@ mod tests {
         let released = Instant::now();
         device.pods.uplink().release_start();
         let stop = wait_stop(&device);
-        assert_gap("the STOP after the answer", released, stop.at, &at_once());
+        // The core table's `Owed RunningMarker Off` cell owns "at once": the STOP leaves in the answer's own step.
+        assert_gap(
+            "the STOP after the answer",
+            released,
+            stop.at,
+            &(Duration::ZERO..),
+        );
         let log = rig.daemon().log();
         assert!(!log.lines().any(|line| line == unanswered_line(1)), "{log}");
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
@@ -191,22 +197,23 @@ mod tests {
         wait_starts(&device, 1);
         set(rig.session(), "microphone", "off");
         rig.wait_logged(&unanswered_line(1));
-        let window = not_before(START_ANSWER);
+        // The upper bound is core's `each_answer_window_ends_at_its_deadline_and_not_before`, on its pure clock.
         assert_gap(
             "the unanswered line after a bud went in",
             worn,
             Instant::now(),
-            &window,
+            &(START_ANSWER..),
         );
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
         let released = Instant::now();
         device.pods.uplink().release_start();
         let stop = wait_stop(&device);
+        // The core table's `Stopped RunningMarker Off` cell owns "at once": the STOP leaves in the answer's own step.
         assert_gap(
             "the STOP after the late answer",
             released,
             stop.at,
-            &at_once(),
+            &(Duration::ZERO..),
         );
         assert_eq!(mic(&rig), "off");
         rig.finish();
@@ -222,12 +229,12 @@ mod tests {
         set(rig.session(), "microphone", "off");
         wait_stop(&device);
         rig.wait_logged(STOP_UNCONFIRMED_LINE);
-        let window = not_before(STOP_ANSWER);
+        // The upper bound is core's `each_answer_window_ends_at_its_deadline_and_not_before`, on its pure clock.
         assert_gap(
             "the unconfirmed line after the write",
             written,
             Instant::now(),
-            &window,
+            &(STOP_ANSWER..),
         );
         assert_eq!(mic(&rig), "off");
         set(rig.session(), "microphone", "always");
@@ -279,12 +286,12 @@ mod tests {
         device.pods.set_ear(Placed::InEar, Placed::InCase);
         wait_starts(&device, 1);
         wait_mic(&rig, "unsupported");
-        let window = not_before(START_ANSWER.saturating_mul(START_TRIES));
+        // The upper bound is core's `an_unanswered_start_is_sent_three_times_and_each_try_is_counted`, on its pure clock.
         assert_gap(
             "unsupported after a bud went in",
             worn,
             Instant::now(),
-            &window,
+            &(START_ANSWER.saturating_mul(START_TRIES)..),
         );
         rig.wait_logged(NO_UPLINK_LINE);
         read_up_to_now(&rig, &device);

@@ -7,16 +7,20 @@ use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
 use pods_proto::ear::EarReport;
 use pods_proto::keys::{Key, ProximityKeys};
-use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
+use pods_samples::{IDENTITY_KEY, MODEL_NUMBER, PAYLOAD_KEY};
 
 use super::audio::{AudioFact, AudioRequest, Percent, SinkFact, SinkState};
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
 use super::ear::{BOTH_OUT_SETTLE_MS, BUS_NAME_MAX};
+use super::mic::START_ANSWER_MS;
 use super::notices::{Notice, Part, disconnected};
 use super::sleep::{RESUME_SETTLE_MS, Suspend};
-use super::{Effect, Era, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge};
+use super::{
+    Effect, Era, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge, UplinkRequest,
+};
 use crate::link::Signal;
-use crate::state::{EarDetectionBehavior, LidState, State};
+use crate::prefs::MicPref;
+use crate::state::{EarDetectionBehavior, LidState, Microphone, State};
 
 /// What every lost link asks of the audio adapter, whatever the notices do.
 const UNFOLLOW: Effect = Effect::Audio(AudioRequest::Follow(None));
@@ -608,6 +612,29 @@ fn the_settle_and_a_suspend_window_each_end_at_their_own_deadline() {
     assert_eq!(policy.deadline(), Some(closes));
     assert_eq!(policy.step(&state, Fact::Tick, closes), [Effect::Wake]);
     assert_eq!(policy.deadline(), None);
+}
+
+#[test]
+fn the_mic_answer_window_is_the_policy_deadline() {
+    let mut policy = Policy::default();
+    let state = State {
+        connected: true,
+        model_number: MODEL_NUMBER.to_owned(),
+        ear: EarReport::from_in_ear(true, true),
+        microphone: Microphone::new(MicPref::Always),
+        ..State::default()
+    };
+    let start = Effect::Uplink(UplinkRequest::Start);
+    let starts = |effects: Vec<Effect>| effects.iter().filter(|effect| **effect == start).count();
+    assert_eq!(
+        starts(policy.step(&state, Fact::Changed, Duration::ZERO)),
+        1
+    );
+    let answer = Duration::from_millis(START_ANSWER_MS);
+    assert_eq!(policy.deadline(), Some(answer));
+    let early = answer.saturating_sub(Duration::from_millis(1));
+    assert_eq!(starts(policy.step(&state, Fact::Tick, early)), 0);
+    assert_eq!(starts(policy.step(&state, Fact::Tick, answer)), 1);
 }
 
 #[test]

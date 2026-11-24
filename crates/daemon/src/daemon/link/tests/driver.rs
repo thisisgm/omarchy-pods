@@ -1,8 +1,10 @@
 //! Support tests: the driver in process; each behaviour's proof is a test against the binary.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::io::ErrorKind;
+use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread;
@@ -48,6 +50,11 @@ const SENTINEL: Cell = Cell {
 
 /// The fake pods serve each open channel on one thread of the test's own process.
 const FAKE_PODS_THREADS: usize = 1;
+/// Set in the copy of this binary that counts threads, so `/proc/self/task` holds no other test's.
+const OWN_PROCESS: &str = "LIBREPODS_THREAD_COUNT_ALONE";
+/// The test that copy runs, by its full name.
+const THREAD_COUNT_TEST: &str =
+    "daemon::link::tests::driver::stop_with_the_link_up_leaves_no_thread";
 
 /// Attempts the one thread check watches, a climb past the first held rungs.
 const LADDER_ATTEMPTS: usize = 4;
@@ -380,6 +387,22 @@ fn noise_from_the_peer_never_stops_the_link() {
 
 #[test]
 fn stop_with_the_link_up_leaves_no_thread() {
+    if env::var_os(OWN_PROCESS).is_none() {
+        let alone = process::Command::new(env::current_exe().unwrap())
+            .args(["--exact", THREAD_COUNT_TEST, "--nocapture"])
+            .env(OWN_PROCESS, "1")
+            .output()
+            .unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&alone.stdout),
+            String::from_utf8_lossy(&alone.stderr)
+        );
+        assert!(alone.status.success(), "{said}");
+        // A name that matches no test passes with none run.
+        assert!(said.contains("test result: ok. 1 passed"), "{said}");
+        return;
+    }
     let pods = Pods::new(Profile::default());
     let (connector, _connects) = fake_connector(&pods);
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
