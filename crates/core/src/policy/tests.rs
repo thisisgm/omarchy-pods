@@ -369,11 +369,17 @@ enum Step {
     /// The adapter reports `PLAYER` paused by a pause decided before any loss.
     Paused,
     Up,
+    /// The channel ends with the device kept.
+    Down,
     /// The clock moves to the end of the pending settle.
     Settle,
+    /// The clock moves on by a settle's length.
+    Later,
     Lost,
-    /// The pods' sink becomes the default.
-    Ours,
+    /// The adapter reads the pods' sink as the default or not, or finds the device has none.
+    Sink(Option<bool>),
+    /// The audio server is gone.
+    ServerDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,9 +398,14 @@ const OTHER_OUT: Step = Step::Report(false, true);
 const OUT: Step = Step::Report(false, false);
 const PAUSED: Step = Step::Paused;
 const UP: Step = Step::Up;
+const DOWN: Step = Step::Down;
 const SETTLED: Step = Step::Settle;
+const LATER: Step = Step::Later;
 const LOST: Step = Step::Lost;
-const SINK_OURS: Step = Step::Ours;
+const SINK_OURS: Step = Step::Sink(Some(OURS));
+const SINK_ELSEWHERE: Step = Step::Sink(Some(ELSEWHERE));
+const NO_SINK: Step = Step::Sink(None);
+const SERVER_DOWN: Step = Step::ServerDown;
 const PAUSE: Asks = Asks::PauseAll;
 const PLAY: Asks = Asks::PlayPlayer;
 const OURS: bool = true;
@@ -412,7 +423,7 @@ type EarRow = (
 );
 
 #[rustfmt::skip]
-const EAR_ROWS: [EarRow; 38] = [
+const EAR_ROWS: [EarRow; 57] = [
     (OFF, OURS, &[IN, ONE_OUT, OUT], &[], &[], 0),
     (OFF, OURS, &[IN, OUT, PAUSED, IN], &[], &[], 0),
     (OFF, OURS, &[IN, PAUSED], &[], &[], 0),
@@ -451,6 +462,25 @@ const EAR_ROWS: [EarRow; 38] = [
     (ONE, OURS, &[IN, OUT, Step::Prefer(OFF), ONE_OUT, Step::Prefer(ONE), PAUSED, OUT, IN], &[PAUSE, PAUSE, PLAY], &[], 0),
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, Step::Prefer(BOTH), IN, OUT, SETTLED, IN], &[PAUSE, PLAY, PAUSE], &[], 0),
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, Step::Prefer(OFF), IN, Step::Prefer(ONE), ONE_OUT, IN], &[PAUSE, PAUSE], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, SINK_OURS], &[PAUSE, PLAY], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, NO_SINK, SINK_OURS], &[PAUSE, PLAY], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, SERVER_DOWN, IN, SINK_OURS], &[PAUSE, PLAY], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, SINK_ELSEWHERE, SINK_OURS], &[PAUSE], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, ONE_OUT, SINK_OURS], &[PAUSE], &[], 1),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, Step::Prefer(BOTH), SINK_OURS], &[PAUSE], &[], 1),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, Step::Prefer(OFF), IN, Step::Prefer(ONE), SINK_OURS], &[PAUSE], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SETTLED, PAUSED, UP, ONE_OUT, SINK_OURS], &[PAUSE, PLAY], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, SINK_OURS, OUT], &[], &[PAUSE], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, SINK_OURS, ONE_OUT], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SETTLED, DOWN, UP, SINK_OURS], &[PAUSE], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, Step::Prefer(ONE), Step::Prefer(BOTH), UP, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, LATER, SINK_OURS], &[], &[PAUSE], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, NO_SINK, LATER, SINK_OURS], &[], &[PAUSE], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, SINK_OURS, LATER, UP], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, IN, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, DOWN, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, DOWN, UP, LOST, SINK_OURS], &[], &[], 0),
 ];
 
 fn player() -> PlayerOwner {
@@ -517,14 +547,25 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
                 Fact::Changed
             }
             Step::Paused => Fact::Paused(Era::default(), vec![player()]),
-            Step::Ours => sink_in(OURS, SinkState::Running),
+            Step::Sink(Some(ours)) => sink_in(ours, SinkState::Running),
+            Step::Sink(None) => Fact::Audio(AudioFact::Sink(None)),
+            Step::ServerDown => Fact::Audio(AudioFact::Down),
             Step::Settle => {
                 now = policy.deadline().expect("a settle pending");
+                Fact::Tick
+            }
+            Step::Later => {
+                now = now.saturating_add(Duration::from_millis(BOTH_OUT_SETTLE_MS));
                 Fact::Tick
             }
             Step::Up => {
                 let up = Signal::Up { device: device() };
                 at_once.extend(asks(policy.step(&state, Fact::Link(up), now)));
+                Fact::Changed
+            }
+            Step::Down => {
+                let down = Fact::Link(Signal::Down);
+                at_once.extend(asks(policy.step(&state, down, now)));
                 Fact::Changed
             }
             Step::Lost => {
