@@ -225,18 +225,37 @@ pub(crate) fn mark_next(uplink: &Uplink) -> u64 {
     before
 }
 
-/// Fails with the rig's name, not the daemon's, when the fake's own cadence had a gap past `limit`; prints the record either way.
+/// The fake's largest gap between two packets, printed for the run's record, and what a failed check of the daemon ends with, since the failure may then be the rig's: the rig's name when that gap is past `limit`, else nothing.
 #[expect(
     clippy::print_stderr,
     reason = "the run's record of the fake's own gap"
 )]
-pub(crate) fn assert_rig_gap(uplink: &Uplink, limit: Duration) -> Duration {
+pub(crate) fn rig_gap(uplink: &Uplink, limit: Duration) -> (Duration, String) {
     let gap = uplink.largest_gap();
     eprintln!("the fake pods' largest gap between two packets: {gap:?}");
+    let late = if gap <= limit {
+        String::new()
+    } else {
+        format!(
+            "; the rig missed its timing: the fake pods' largest gap was {gap:?}, past {limit:?}"
+        )
+    };
+    (gap, late)
+}
+
+/// Fails on a silent recording with `late` in the message, before a helper that needs a sound panics without it.
+pub(crate) fn assert_sounds(samples: &[i16], late: &str) {
     assert!(
-        gap <= limit,
-        "the rig missed its timing: the fake pods' largest gap was {gap:?}, past {limit:?}, so this run cannot judge the daemon"
+        samples.iter().any(|&sample| sample != 0),
+        "the recording of {} samples is silent{late}",
+        samples.len()
     );
+}
+
+/// Fails with the rig's name before the daemon is judged when the fake's own cadence had a gap past `limit`: for a test a longer gap makes easier, or whose check cannot carry the rig's name.
+pub(crate) fn assert_rig_gap(uplink: &Uplink, limit: Duration) -> Duration {
+    let (gap, late) = rig_gap(uplink, limit);
+    assert!(late.is_empty(), "this run cannot judge the daemon{late}");
     gap
 }
 
