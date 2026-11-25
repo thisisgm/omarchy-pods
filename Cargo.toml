@@ -121,3 +121,7 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# "*" skips workspace members; the steer tests spend their time in pods-mic.
+[profile.dev.package.pods-mic]
+opt-level = 1
