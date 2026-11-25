@@ -80,6 +80,50 @@ impl Doap {
         self.shared.doap(|doap| doap.release_start(Instant::now()));
     }
 
+    /// Withhold the streaming end after STOP until the test releases it.
+    pub fn hold_stop(&self) {
+        self.shared.doap(|doap| doap.hold_stop = true);
+    }
+
+    /// Releases the held streaming end.
+    pub fn release_stop(&self) {
+        self.shared.doap(|doap| {
+            doap.hold_stop = false;
+            doap.end_unasked();
+        });
+    }
+
+    /// Queues a synthetic frame from a source the host did not put in dictation mode.
+    pub fn unsolicited_audio(&self) {
+        self.shared.doap(|doap| {
+            if let Some(handles) = doap.table.handles()
+                && let Some(tone) = doap.tone.first()
+            {
+                let [_, _, audio_descriptor, _] = handles.cccds;
+                let pdu = sample::audio(&handles, 0, &[(0, tone)]);
+                for (line, descriptors) in &doap.lines {
+                    if descriptors.contains(&audio_descriptor) {
+                        doap.owed.push_back((*line, pdu.clone()));
+                    }
+                }
+            }
+        });
+    }
+
+    /// Sends the streaming end after STOP for audio sent without a START.
+    pub fn end_unsolicited_audio(&self) {
+        self.shared.doap(|doap| {
+            if let Some(handles) = doap.table.handles() {
+                let [.., event_descriptor] = handles.cccds;
+                for (line, descriptors) in &doap.lines {
+                    if descriptors.contains(&event_descriptor) {
+                        doap.owed.push_back((*line, sample::end(&handles)));
+                    }
+                }
+            }
+        });
+    }
+
     /// How many frames a start sends at once, and how many go in a notification.
     pub fn burst(&self, frames: u32, per_notification: u32) {
         self.shared
@@ -199,6 +243,7 @@ pub(crate) struct Machine {
     table: Table,
     refusals: u32,
     hold_start: bool,
+    hold_stop: bool,
     /// The channel of a START heard and not answered.
     held: Option<usize>,
     burst: (u32, u32),
@@ -263,6 +308,7 @@ impl Machine {
             table: Table::Observed,
             refusals: 0,
             hold_start: false,
+            hold_stop: false,
             held: None,
             burst: (BURST_FRAMES, BURST_PER_NOTIFICATION),
             repeat: None,
@@ -355,6 +401,9 @@ impl Machine {
         }
         if let Some(reason) = pdu.last().filter(|last| pdu == host::stop(&served, **last)) {
             self.stops.push(*reason);
+            if self.hold_stop {
+                return Vec::new();
+            }
             // corner: assumed until measured on hardware, a STOP with no stream running is answered with nothing
             let ended = self.run.take_if(|run| run.line == line);
             let end = ended.map(|_| sample::end(&served));

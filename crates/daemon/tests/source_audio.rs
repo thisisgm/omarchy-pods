@@ -85,9 +85,12 @@ mod tests {
         wait_mic(&rig, "recording");
         recorder.wait_frames(frames(SOME), HANG_LIMIT);
         assert_eq!(counts(&rig.status()).concealed, 0);
+        wait_packets(&uplink, 1);
         uplink.lose(1);
         wait_packets(&uplink, uplink.sent_packets() + 2);
         read_up_to_now(&rig, &device);
+        let after_audio = usize::try_from(recorder.frames_on_disk()).unwrap();
+        recorder.wait_frames(after_audio.saturating_add(frames(AGAIN)), HANG_LIMIT);
         let samples = recorder.finish();
         first_sound(&samples);
         let counted = counts_after_leaving(&rig);
@@ -135,6 +138,7 @@ mod tests {
         let recorder = record(&rig, &pipewire, "capture.wav");
         wait_mic(&rig, "recording");
         recorder.wait_frames(frames(SOME), HANG_LIMIT);
+        wait_packets(&uplink, 1);
         uplink.lose(1);
         wait_packets(&uplink, uplink.sent_packets() + 2);
         read_up_to_now(&rig, &device);

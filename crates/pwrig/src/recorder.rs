@@ -43,6 +43,11 @@ impl<'server> Recorder<'server> {
         Self::start(server, target, file, HISTORY)
     }
 
+    /// A regular desktop recorder at the same format as the history recorder.
+    pub fn program(server: &'server Server, target: &str, file: &Path) -> Self {
+        Self::start(server, target, file, ("test-recorder", HISTORY.1))
+    }
+
     fn start(
         server: &'server Server,
         target: &str,

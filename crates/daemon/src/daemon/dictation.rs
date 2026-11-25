@@ -9,6 +9,7 @@ use std::task::Poll;
 use std::thread;
 use std::time::Duration;
 
+use pods_core::policy::dictation::DOAP_STOP_ANSWER_MS;
 use pods_core::policy::{DictationFact, DictationRequest};
 use pods_proto::addr::BdAddr;
 use pods_proto::att::{AttPdu, CONFIRMATION, REQUEST_NOT_SUPPORTED, error_response};
@@ -101,9 +102,10 @@ impl Outlet {
         };
         let arm = match request {
             DictationRequest::Arm | DictationRequest::Close => self.arm.next(),
-            DictationRequest::Mode | DictationRequest::Start | DictationRequest::Stop { .. } => {
-                self.arm
-            }
+            DictationRequest::Mode
+            | DictationRequest::ModeOff
+            | DictationRequest::Start
+            | DictationRequest::Stop { .. } => self.arm,
         };
         match requests.try_send((arm, request)) {
             Ok(()) => self.arm = arm,
@@ -125,6 +127,7 @@ pub(super) async fn run(
         connect,
         tap,
         bearer: Bearer::Closed,
+        last_stray_report: None,
     };
     let mut arm = ArmId::default();
     loop {
@@ -234,6 +237,7 @@ struct Adapter {
     connect: Connector,
     tap: Arc<Tap>,
     bearer: Bearer,
+    last_stray_report: Option<Instant>,
 }
 
 impl Adapter {
@@ -241,8 +245,9 @@ impl Adapter {
     fn serve(&mut self, request: DictationRequest) -> Option<DictationFact> {
         match request {
             // The driver writes the mode on the control channel and queues it nowhere.
-            DictationRequest::Mode => None,
+            DictationRequest::Mode | DictationRequest::ModeOff => None,
             DictationRequest::Arm => {
+                self.last_stray_report = None;
                 self.bearer = Bearer::Dialing(self.dial());
                 None
             }
@@ -250,6 +255,7 @@ impl Adapter {
                 let handles = self.armed()?;
                 let lost = self.write(&start(&handles));
                 if lost.is_none() {
+                    self.last_stray_report = None;
                     self.tap.arm_dictation();
                 }
                 lost
@@ -350,7 +356,7 @@ impl Adapter {
             Bearer::Open {
                 service: Service::Armed(handles),
                 ..
-            } => heard(&self.tap, pdu, handles),
+            } => heard(&self.tap, pdu, handles, &mut self.last_stray_report),
             Bearer::Closed | Bearer::Dialing(_) => None,
         }
     }
@@ -395,13 +401,33 @@ impl Adapter {
     }
 }
 
-/// A packet of the armed service: audio goes to the tap, on this thread, and the driver hears only of the first after a start.
-fn heard(tap: &Tap, pdu: &[u8], handles: &Handles) -> Option<DictationFact> {
+/// Sends audio to the tap and tells the driver about the first notification of each run.
+fn heard(
+    tap: &Tap,
+    pdu: &[u8],
+    handles: &Handles,
+    last_stray_report: &mut Option<Instant>,
+) -> Option<DictationFact> {
     match DictationPacket::parse(pdu, handles) {
-        Ok(Some(DictationPacket::Audio(audio))) => {
-            tap.dictation(&audio).then_some(DictationFact::FirstAudio)
+        Ok(Some(DictationPacket::Audio(audio))) => match tap.dictation(&audio) {
+            Some(true) => Some(DictationFact::FirstAudio),
+            Some(false) => None,
+            None => {
+                let now = Instant::now();
+                let window = Duration::from_millis(DOAP_STOP_ANSWER_MS);
+                if last_stray_report.is_some_and(|last| now.duration_since(last) <= window) {
+                    return None;
+                }
+                *last_stray_report = Some(now);
+                Some(DictationFact::UnsolicitedAudio)
+            }
+        },
+        Ok(Some(DictationPacket::Event(event))) => {
+            if event == Event::StreamingEnd {
+                *last_stray_report = None;
+            }
+            Some(told(event))
         }
-        Ok(Some(DictationPacket::Event(event))) => Some(told(event)),
         Ok(Some(DictationPacket::Stopped { reason })) => Some(DictationFact::Refused { reason }),
         // A value of no known layout, a packet of another handle or a cut one changes nothing.
         Ok(Some(DictationPacket::Unknown { .. }) | None) | Err(_) => None,

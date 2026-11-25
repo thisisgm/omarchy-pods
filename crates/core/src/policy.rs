@@ -7,6 +7,7 @@ pub mod dictation;
 mod ear;
 pub mod mic;
 pub mod notices;
+pub mod route;
 mod sleep;
 
 use std::time::Duration;
@@ -15,10 +16,10 @@ use pods_proto::keys::ProximityKeys;
 use pods_proto::uplink::UplinkState;
 
 use crate::link::Signal;
-use crate::state::{AdvertIntake, MicDictation, State};
+use crate::state::{AdvertIntake, State};
 use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
-use audio::{AudioFact, AudioRequest};
+use audio::{AudioFact, AudioRequest, Recorders};
 use battery::Latches;
 use dictation::Dictation;
 pub use dictation::{DictationFact, DictationRequest};
@@ -27,6 +28,7 @@ pub use ear::{BOTH_OUT_SETTLE_MS, Era, MediaRequest, PAUSED_MAX, PlayerOwner};
 use mic::Mic;
 pub use mic::{MicFact, MicRequest, OpenId, UplinkRequest};
 use notices::Notice;
+use route::{Edge, ROUTE_WAIT_MS, Route};
 pub use sleep::SleepEdge;
 use sleep::Suspend;
 
@@ -69,7 +71,7 @@ pub enum Effect {
     Dictation(DictationRequest),
     /// A line for the daemon's log.
     Log(String),
-    /// The uplink is stopped and its sink restored, so the daemon may stop.
+    /// Both microphone paths are done, so the daemon may stop.
     Exited,
 }
 
@@ -82,6 +84,9 @@ pub struct Policy {
     adverts: Adverts,
     mic: Mic,
     dictation: Dictation,
+    recorders: Recorders,
+    recorders_fresh: bool,
+    edge: Edge,
 }
 
 impl Policy {
@@ -144,9 +149,7 @@ impl Policy {
     /// `state` is the state after the step the fact comes from; `now` is on the link machine's clock.
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
-        let dictation = self.dictation.step(state, &fact, now);
-        let arming = self.dictation.code(state) == MicDictation::Arming;
-        let mic = self.mic.step_with_probe(state, &fact, now, arming);
+        let mic = self.step_mic(state, &fact, now);
         let monitor = if let Fact::Link(signal) = &fact {
             self.adverts.follow(signal)
         } else {
@@ -188,10 +191,76 @@ impl Policy {
         };
         effects.extend(monitor);
         effects.extend(mic);
-        effects.extend(dictation);
         // After the fact, so a window that closes with the link up is forgotten in the same step.
         if state.connected {
             self.suspend.relinked();
+        }
+        effects
+    }
+
+    fn step_mic(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
+        let arm = self.dictation.step(state, fact, now);
+        let mut effects = Vec::new();
+        let was_recording = self.mic.recording();
+        self.mic.step_node(state, fact, now, &mut effects);
+        let recording = self.mic.recording();
+        if matches!(
+            fact,
+            Fact::Audio(AudioFact::Down) | Fact::Link(Signal::Down | Signal::Lost { .. })
+        ) {
+            self.recorders = Recorders::default();
+            self.recorders_fresh = false;
+        } else if was_recording && !recording {
+            // The audio adapter only reports a change, so keep the counts for the next deadline.
+            self.recorders_fresh = false;
+        } else if let Fact::Audio(AudioFact::Recorders(recorders)) = fact {
+            self.recorders = *recorders;
+            // An attached recorder is a stream, so an empty list is behind it and never fresh.
+            self.recorders_fresh = *recorders != Recorders::default();
+        }
+        let before = self.edge.route();
+        let waited_until = self.edge.deadline();
+        let route = self.edge.step(
+            recording,
+            self.recorders,
+            self.recorders_fresh,
+            self.dictation.armed(),
+            now,
+        );
+        if let Some(route) = route.filter(|route| Some(*route) != before) {
+            let count =
+                u16::from(self.recorders.dictation).saturating_add(u16::from(self.recorders.other));
+            let line = match route {
+                Route::Dictation if count == 0 && !self.recorders_fresh => {
+                    let waited = waited_until.map_or(u128::from(ROUTE_WAIT_MS), |at| {
+                        now.saturating_sub(at)
+                            .as_millis()
+                            .saturating_add(u128::from(ROUTE_WAIT_MS))
+                    });
+                    format!("mic: route unknown after {waited} ms, dictation")
+                }
+                Route::Dictation => format!("mic: route dictation ({count} recorders)"),
+                Route::Uplink => format!("mic: route uplink ({count} recorders)"),
+            };
+            effects.push(Effect::Log(line));
+        }
+        if self
+            .dictation
+            .session(state, fact, now, route, &mut effects)
+        {
+            self.edge.fallback();
+        }
+        effects.extend(arm);
+        self.mic.step_uplink(
+            state,
+            fact,
+            now,
+            &self.dictation,
+            self.edge.route(),
+            &mut effects,
+        );
+        if self.dictation.active() {
+            effects.retain(|effect| *effect != Effect::Exited);
         }
         effects
     }
@@ -214,6 +283,7 @@ impl Policy {
             .chain(self.ear.deadline())
             .chain(self.mic.deadline())
             .chain(self.dictation.deadline())
+            .chain(self.edge.deadline())
             .min()
     }
 
@@ -221,6 +291,12 @@ impl Policy {
     #[must_use]
     pub fn mic_recording(&self) -> bool {
         self.mic.recording()
+    }
+
+    /// A recording latched to dictation keeps that path while its bearer recovers.
+    #[must_use]
+    pub fn mic_accepts_uplink(&self) -> bool {
+        self.edge.route() != Some(Route::Dictation)
     }
 
     /// Whether a due STOP of the uplink still waits for a quiet sink or the last bud out.

@@ -238,10 +238,13 @@ fn a_fast_capture_hint_starts_the_uplink_while_dictation_arms() {
     let block = Fact::Audio(AudioFact::Headset(true));
     let hint = Fact::Audio(AudioFact::Hint(true));
     let unblock = Fact::Audio(AudioFact::Headset(false));
+    let mut dictation = Dictation::default();
+    drop(dictation.step(&state, &Fact::Link(Signal::Up { device: device() }), SENT));
+    assert_eq!(dictation.code(&state), MicDictation::Arming);
 
-    let blocked = mic.step_with_probe(&state, &block, SENT, true);
-    let hinted = mic.step_with_probe(&state, &hint, SENT, true);
-    let unblocked = mic.step_with_probe(&state, &unblock, SENT, true);
+    let blocked = mic.step_with_dictation(&state, &block, SENT, &dictation);
+    let hinted = mic.step_with_dictation(&state, &hint, SENT, &dictation);
+    let unblocked = mic.step_with_dictation(&state, &unblock, SENT, &dictation);
 
     assert_eq!(requests(&blocked), NOTHING);
     assert_eq!(requests(&hinted), NOTHING);

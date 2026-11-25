@@ -25,7 +25,7 @@ use pods_core::policy::{
 use pods_core::prefs::Prefs;
 use pods_core::state::{MicCounts, State};
 use pods_proto::addr::BdAddr;
-use pods_proto::doap::doap_mode_on;
+use pods_proto::doap::{doap_mode_off, doap_mode_on};
 use pods_proto::keys::ProximityKeys;
 use pods_proto::model::Model;
 use pods_proto::uplink::UplinkPacket;
@@ -327,7 +327,9 @@ impl Driver {
             self.step(Event::Packet(sdu));
             return;
         };
-        if self.outlets.tap.audio(&audio) {
+        if !self.policy.mic_accepts_uplink() {
+            self.outlets.tap.count_uplink();
+        } else if self.outlets.tap.audio(&audio) {
             self.observe(Fact::Mic(MicFact::FirstAudio));
         }
     }
@@ -489,6 +491,10 @@ impl Driver {
             }
             Effect::Mic(request) => mic::offer(&self.outlets.mic, request),
             Effect::Dictation(DictationRequest::Mode) => self.send(&doap_mode_on()),
+            Effect::Dictation(DictationRequest::ModeOff) => {
+                self.outlets.tap.end_dictation();
+                self.send(&doap_mode_off());
+            }
             Effect::Dictation(request) => self.outlets.dictation.offer(request),
             Effect::Log(line) => log(&line),
             Effect::Exited => {

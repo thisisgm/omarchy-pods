@@ -84,7 +84,7 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
-| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. Under the same conditions, `auto` starts it for a recorder or a client asking for fast capture, and probes models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. While a headset profile is active, the daemon waits for the profile to change before sending START or STOP and skips restores. |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. Under the same conditions, `auto` starts it for a recorder routed to the uplink or when a client requests fast capture and DoAP is unarmed. It also probes models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. While a headset profile is active, the source is withdrawn, uplink START and STOP wait, and uplink restores are dropped. |
 
 `ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
@@ -186,38 +186,61 @@ A reply carries the request's `id` and `ok`.
   done, and a later START still goes out. An uplink the AirPods stop on their
   own gets the restore at once, and starts again only once the want has gone
   and come back. While a headset profile is active, the source is withdrawn
-  even with a recorder linked. The daemon waits for the profile to change
-  before sending START or STOP and skips restores while blocked, including one
-  owed before the block, and drops them rather than running them after the
-  profile changes. It only reads the profile.
+  even with a recorder linked, so no DoAP START goes out. The daemon waits for
+  the profile to change before sending uplink START or STOP. It drops any
+  uplink restore due during the block, including one owed before it. It only
+  reads the profile and holds uplink START while waiting for the first profile
+  read from a connected audio server.
   At the edge into sleep a running uplink is stopped with no restore when no
   bud is worn or the sink is suspended or gone, and is left
   running otherwise, as the sleep ends the link; a START waiting for its answer
   is dropped; after the wake a stopped uplink starts again while it is wanted.
   Its `mic_start_failures` counts every START left unanswered, each try once,
   since the daemon started.
-  `mic_dictation` reads `off` when the link is down or the microphone setting
-  is `off`, `arming` while the daemon prepares the service or retries its
-  channel, `armed` when subscriptions and codec selection are ready, or
-  `unavailable` for the rest of a connection after a terminal failure. The
-  daemon prepares the service without setting dictation mode or starting a
-  stream. `mic_source` is the name of the daemon's microphone source,
+  `mic_dictation` describes DoAP, the AirPods' dictation service on the
+  Bluetooth attribute channel. It reads `off` when the link is down or the
+  microphone setting is `off`, `arming` while the daemon prepares the service
+  or retries its channel, `armed` when subscriptions and codec selection are
+  ready, or `unavailable` for the rest of a connection after a terminal failure.
+  It reads `starting` during mode settle and the START exchange, `streaming` after the
+  START confirmation (a score event with value -1) or first audio, and
+  `stopping` while STOP or an owed STOP is pending.
+  `mic_source` is the name of the daemon's microphone source,
   `omarchypods_input.` and the model number in lower case, while the source is
   on the audio server, and empty otherwise. The source is wanted while the
   link is up, the model has answered an uplink START or armed for dictation,
   the setting is enabled, no headset profile is active, and a bud is worn or
   was taken out less than a few seconds ago. It stays while a program records
   from it, even if the bud is taken out, unless a headset profile is active. It
-  carries the AirPods' microphone,
-  held a fixed delay behind the audio as it arrives, and silence while none
-  comes. A program that records from it wants the uplink as `always` does,
-  while a bud is worn. A client with `session.fast-capture-start=true` also
-  wants it before any recorder links. When that client leaves, the uplink
-  follows the same linger and playback gate if no other client or recorder
-  wants it. Loss of the audio server clears the hint and the headset block,
-  and the source retries while still wanted. A wanted running uplink that
-  sends no audio for about a second while a bud is worn is sent START again,
-  unless the system is going to sleep or the daemon is stopping.
+  carries the AirPods' microphone, held a fixed delay behind the audio as it
+  arrives, and silence while none comes.
+  When the first recorder attaches to the source, the daemon uses fresh record
+  stream counts immediately.
+  An empty list is never fresh, because an attached recorder is a stream the
+  list has not caught up with. The counts become stale when a recording ends.
+  With stale, empty or unknown counts, the daemon waits up to 100 ms for a fresh
+  list, then uses the last counts it received, or zero if none are known.
+  Losing the audio server or link clears the counts. The recording uses DoAP if
+  the service is armed and the counts show only Superwhisper recorders or no
+  recorders. Otherwise it uses the uplink. Additional recorders share the chosen
+  path until all leave.
+  DoAP sets the mode and settles for 150 ms before START. After one refusal it
+  repeats the mode and START, and after two it hands this recording to the
+  uplink. When the last recorder leaves after START is confirmed, the daemon
+  sends STOP immediately. If START is still pending, the daemon waits for its
+  answer before sending STOP, up to 500 ms from START. If that wait expires,
+  it clears the mode. Once STOP is sent, the daemon clears the mode at the
+  stream end or 500 ms after STOP, whichever comes first. Source withdrawal,
+  sleep and exit also stop DoAP. DoAP makes no call to the audio sink.
+  An uplink recording wants the uplink as `always` does, while a bud is worn.
+  If DoAP is unarmed, a client with `session.fast-capture-start=true` also
+  wants it before any recorder links. While DoAP is armed, the hint is ignored.
+  When the hint stops applying and the uplink is no longer wanted, the usual
+  linger and playback gate apply. Loss of the audio server clears the hint
+  and the headset block, and the source retries while still wanted.
+  A wanted running uplink that sends no audio for about a second while a bud
+  is worn is sent START again, unless the system is going to sleep or the
+  daemon is stopping.
   Each such stall counts as an unanswered try in `mic_start_failures`. Once
   the tries are spent the uplink is stopped and `mic` reads `failed`.
   Its `mic_underruns` counts the times the source ran out of audio under a

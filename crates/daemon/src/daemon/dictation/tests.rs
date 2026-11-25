@@ -282,7 +282,7 @@ fn tap_waits_for_audio(tap: &Tap) -> bool {
     else {
         panic!("not a dictation audio notification");
     };
-    tap.dictation(&audio)
+    tap.dictation(&audio) == Some(true)
 }
 
 const TABLE: sample::Handles = sample::Handles::OBSERVED;
