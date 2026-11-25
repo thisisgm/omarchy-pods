@@ -57,8 +57,10 @@ pub enum MediaRequest {
 /// Whether the pods' sink is the default, by the adapter's last read of it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Sink {
-    /// From a link up or a lost audio server until the adapter reads a sink.
+    /// No device is linked, from the start and from a loss until a link up, so no read decides anything.
     #[default]
+    Unlinked,
+    /// From a link up or a lost audio server until the adapter reads a sink.
     Unread,
     /// Unread, and the buds came back meanwhile, so the read decides the resume.
     Awaited,
@@ -66,7 +68,7 @@ enum Sink {
     Ours,
 }
 
-/// The wait before a pause: from a both-out report, or over again after the channel closed on it or on its pause.
+/// The wait before a pause: from a both-out report, or over again after the channel closed on it or on its pause, or after a pause came due with the sink unread.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Settle {
     #[default]
@@ -75,7 +77,7 @@ enum Settle {
     Until(Duration),
     /// The channel closed on it or on its pause, so it waits for the link to be up again.
     Cut,
-    /// The link is up again, so it starts over at the next read of a sink.
+    /// The link is up again, or a pause came due with the sink unread, so it starts over at the next read of a sink.
     Reopened,
 }
 
@@ -110,7 +112,10 @@ impl Ear {
         match self.behavior {
             EarDetectionBehavior::PauseWhenOneRemoved if self.worn < was => self.pause(),
             EarDetectionBehavior::PauseWhenBothRemoved if self.worn == 0 => {
-                self.settle = settle_from(now);
+                // With no device linked nothing plays on the pods, so no wait starts that a link up could find.
+                if self.sink != Sink::Unlinked {
+                    self.settle = settle_from(now);
+                }
                 None
             }
             // Under these two a bud back from none also ends the absence, and a bud leaving never does.
@@ -138,7 +143,9 @@ impl Ear {
     pub(super) fn link(&mut self, signal: &Signal, state: &State) {
         match signal {
             Signal::Up { .. } => {
-                self.unread();
+                if self.sink != Sink::Awaited {
+                    self.sink = Sink::Unread;
+                }
                 if self.settle == Settle::Cut {
                     self.settle = Settle::Reopened;
                 }
@@ -150,7 +157,7 @@ impl Ear {
             }
             Signal::Keys(_) | Signal::Uplink(_) => {}
             Signal::Lost { .. } => {
-                self.sink = Sink::Unread;
+                self.sink = Sink::Unlinked;
                 self.settle = Settle::Idle;
                 self.paused.clear();
                 self.era = Era(self.era.0.wrapping_add(1));
@@ -161,6 +168,10 @@ impl Ear {
 
     /// A sink read starts a reopened settle over, and settles a return that waited for it if the buds are still back by the preference.
     pub(super) fn audio(&mut self, fact: AudioFact, now: Duration) -> Option<MediaRequest> {
+        // A sink read for the lost device can still be queued when the driver stops following it.
+        if self.sink == Sink::Unlinked {
+            return None;
+        }
         let read = match fact {
             AudioFact::Sink(Some(sink)) if sink.is_default => Sink::Ours,
             AudioFact::Sink(Some(_)) => Sink::Elsewhere,
@@ -205,7 +216,7 @@ impl Ear {
         }
         self.settle = match self.sink {
             Sink::Unread | Sink::Awaited => Settle::Reopened,
-            Sink::Elsewhere | Sink::Ours => settle_from(now),
+            Sink::Unlinked | Sink::Elsewhere | Sink::Ours => settle_from(now),
         };
     }
 
@@ -222,9 +233,9 @@ impl Ear {
         }
     }
 
-    /// A return that waits for the sink keeps waiting.
+    /// A return that waits for the sink keeps waiting, and a late fact with no device linked starts no wait.
     fn unread(&mut self) {
-        if self.sink != Sink::Awaited {
+        if matches!(self.sink, Sink::Elsewhere | Sink::Ours) {
             self.sink = Sink::Unread;
         }
     }
@@ -236,13 +247,19 @@ impl Ear {
         }
     }
 
-    /// A pause asked leaves no settle to ask it again.
+    /// A pause asked leaves no settle to ask it again; one due at an unread sink waits for the read as a reopened settle does.
     fn pause(&mut self) -> Option<MediaRequest> {
-        if self.sink != Sink::Ours {
-            return None;
+        match self.sink {
+            Sink::Unread | Sink::Awaited => {
+                self.settle = Settle::Reopened;
+                None
+            }
+            Sink::Unlinked | Sink::Elsewhere => None,
+            Sink::Ours => {
+                self.settle = Settle::Idle;
+                Some(MediaRequest::PauseAll(self.era))
+            }
         }
-        self.settle = Settle::Idle;
-        Some(MediaRequest::PauseAll(self.era))
     }
 
     /// A return ends the absence and its settle: once the sink is read, the remembered players are played when they can be, and forgotten either way.

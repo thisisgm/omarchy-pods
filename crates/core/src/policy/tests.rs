@@ -425,7 +425,7 @@ type EarRow = (
 );
 
 #[rustfmt::skip]
-const EAR_ROWS: [EarRow; 57] = [
+const EAR_ROWS: [EarRow; 76] = [
     (OFF, OURS, &[IN, ONE_OUT, OUT], &[], &[], 0),
     (OFF, OURS, &[IN, OUT, PAUSED, IN], &[], &[], 0),
     (OFF, OURS, &[IN, PAUSED], &[], &[], 0),
@@ -468,7 +468,7 @@ const EAR_ROWS: [EarRow; 57] = [
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, NO_SINK, SINK_OURS], &[PAUSE, PLAY], &[], 0),
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, SERVER_DOWN, IN, SINK_OURS], &[PAUSE, PLAY], &[], 0),
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, SINK_ELSEWHERE, SINK_OURS], &[PAUSE], &[], 0),
-    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, ONE_OUT, SINK_OURS], &[PAUSE], &[], 1),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, ONE_OUT, SINK_OURS], &[PAUSE], &[PAUSE], 1),
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, Step::Prefer(BOTH), SINK_OURS], &[PAUSE], &[], 1),
     (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, Step::Prefer(OFF), IN, Step::Prefer(ONE), SINK_OURS], &[PAUSE], &[], 0),
     (BOTH, OURS, &[IN, OUT, SETTLED, PAUSED, UP, ONE_OUT, SINK_OURS], &[PAUSE, PLAY], &[], 0),
@@ -483,6 +483,25 @@ const EAR_ROWS: [EarRow; 57] = [
     (BOTH, OURS, &[IN, OUT, DOWN, UP, IN, SINK_OURS], &[], &[], 0),
     (BOTH, OURS, &[IN, OUT, DOWN, UP, DOWN, SINK_OURS], &[], &[], 0),
     (BOTH, OURS, &[IN, OUT, DOWN, UP, LOST, SINK_OURS], &[], &[], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, SINK_OURS], &[], &[PAUSE], 0),
+    (BOTH, OURS, &[IN, UP, OUT, LATER, SINK_OURS], &[], &[PAUSE], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, NO_SINK, SINK_OURS], &[], &[PAUSE], 0),
+    (ONE, OURS, &[IN, SERVER_DOWN, ONE_OUT, SINK_OURS], &[], &[PAUSE], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, IN, SINK_OURS], &[], &[], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, LOST, SINK_OURS], &[], &[], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, Step::Prefer(BOTH), SINK_OURS], &[], &[], 0),
+    (ONE, ELSEWHERE, &[IN, ONE_OUT, SINK_OURS], &[], &[], 0),
+    (ONE, OURS, &[IN, LOST, IN, ONE_OUT, UP, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, LOST, IN, OUT, LATER, UP, SINK_OURS], &[], &[], 0),
+    (ONE, OURS, &[IN, LOST, NO_SINK, SERVER_DOWN, IN, ONE_OUT, UP, SINK_OURS], &[], &[], 0),
+    (ONE, OURS, &[IN, ONE_OUT, PAUSED, UP, IN, DOWN, UP, SINK_OURS], &[PAUSE, PLAY], &[], 0),
+    (BOTH, OURS, &[IN, LOST, IN, OUT, UP, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, LOST, IN, OUT, UP, LATER, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, LOST, SINK_OURS, IN, OUT, UP, SINK_OURS], &[], &[], 0),
+    (BOTH, OURS, &[IN, OUT, SERVER_DOWN, LATER, SINK_OURS], &[], &[PAUSE], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, SINK_ELSEWHERE], &[], &[], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, SINK_ELSEWHERE, SINK_OURS], &[], &[PAUSE], 0),
+    (ONE, OURS, &[IN, UP, ONE_OUT, SINK_ELSEWHERE, LATER, SINK_OURS], &[], &[], 0),
 ];
 
 fn player() -> PlayerOwner {
@@ -530,6 +549,7 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
         ear_detection_behavior: behavior,
         ..State::default()
     };
+    policy.ear.link(&Signal::Up { device: device() }, &state);
     let mut now = Duration::ZERO;
     let mut at_once = asks(policy.step(&state, Fact::Changed, now));
     at_once.extend(asks(policy.step(
@@ -615,6 +635,25 @@ fn every_ear_row_asks_what_it_names() {
 }
 
 #[test]
+fn a_bud_out_before_any_link_asks_nothing_once_linked() {
+    let mut policy = Policy::default();
+    let mut state = State {
+        ear_detection_behavior: ONE,
+        ..State::default()
+    };
+    for secondary in [true, false] {
+        state.ear = EarReport::from_in_ear(true, secondary);
+        assert_eq!(policy.step(&state, Fact::Changed, Duration::ZERO), []);
+    }
+    state.connected = true;
+    let up = Fact::Link(Signal::Up { device: device() });
+    assert_eq!(asks(policy.step(&state, up, Duration::ZERO)), []);
+    let read = sink_in(OURS, SinkState::Running);
+    assert_eq!(asks(policy.step(&state, read, Duration::ZERO)), []);
+    assert_eq!(policy.deadline(), None);
+}
+
+#[test]
 fn the_settle_ends_at_its_first_both_out_report_and_is_the_cpp_daemons() {
     let source = MEDIA_CONTROLLER_SOURCE.find(None, "bothPodsOutSettleMs = ", ';');
     assert_eq!(source, BOTH_OUT_SETTLE_MS.to_string());
@@ -624,7 +663,12 @@ fn the_settle_ends_at_its_first_both_out_report_and_is_the_cpp_daemons() {
         ear_detection_behavior: BOTH,
         ..State::default()
     };
+    policy.ear.link(&Signal::Up { device: device() }, &state);
     let at = Duration::from_millis;
+    assert_eq!(
+        policy.step(&state, sink_in(OURS, SinkState::Running), at(0)),
+        []
+    );
     state.ear = EarReport::from_in_ear(true, true);
     assert_eq!(policy.step(&state, Fact::Changed, at(0)), []);
     state.ear = EarReport::from_in_ear(false, false);
@@ -643,6 +687,7 @@ fn the_settle_and_a_suspend_window_each_end_at_their_own_deadline() {
         ear_detection_behavior: BOTH,
         ..State::default()
     };
+    policy.ear.link(&Signal::Up { device: device() }, &state);
     let at = Duration::from_millis;
     assert_eq!(
         policy.step(&state, sink_in(OURS, SinkState::Running), at(0)),
