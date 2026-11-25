@@ -94,7 +94,7 @@ fn a_call_for_pods_removed_after_the_machine_chose_them_fails_without_a_call() {
             action: DeviceAction::Connect,
             session: Session::default(),
         };
-        assert!(watcher.call(device, call).await.is_continue());
+        assert!(watcher.call(device, call, false).await.is_continue());
         let event = events.try_recv();
         assert!(
             matches!(event, Ok(Input::Device(DeviceEvent::CallFailed(failed))) if failed == call),
@@ -140,7 +140,7 @@ fn a_call_bluez_never_answers_fails_after_the_call_timeout() {
     let (waited, made) = on_paused_clock(async {
         let (connection, _peer) = peers().await;
         let started = Instant::now();
-        let made = calls::run(connection, PODS.to_owned(), DeviceAction::Connect).await;
+        let made = calls::run(connection, PODS.to_owned(), DeviceAction::Connect, false).await;
         (started.elapsed(), made)
     });
     assert_eq!(waited, CALL_TIMEOUT);

@@ -27,6 +27,16 @@ impl DeviceAction {
 }
 
 impl Machine {
+    /// A wear edge asks BlueZ to connect the tracked device without a client ticket.
+    #[must_use]
+    pub fn connect_when_worn(&self, state: &mut State) -> Option<(BdAddr, Call)> {
+        if self.held || matches!(self.phase, Phase::Up { .. } | Phase::Stopped) {
+            return None;
+        }
+        let device = self.target()?;
+        Some((device, self.device_call(state, DeviceAction::Connect)))
+    }
+
     pub(super) fn connect(&mut self, state: &mut State, ticket: Ticket) -> Vec<Action> {
         let Some(device) = self.target() else {
             return no_device(ticket);
@@ -95,15 +105,19 @@ impl Machine {
         device: BdAddr,
         action: DeviceAction,
     ) -> Vec<Action> {
-        raise(action.calls(&mut state.counters));
-        let call = Call {
-            action,
-            session: self.session,
-        };
+        let call = self.device_call(state, action);
         vec![
             Action::Call { device, call },
             resolve(ticket, Outcome::Sent),
         ]
+    }
+
+    fn device_call(&self, state: &mut State, action: DeviceAction) -> Call {
+        raise(action.calls(&mut state.counters));
+        Call {
+            action,
+            session: self.session,
+        }
     }
 
     /// The active device, else the last one linked, else the only one known.

@@ -26,11 +26,19 @@ pub(super) struct Calls {
 impl Calls {
     /// False, with nothing started, while `CALLS_IN_FLIGHT_MAX` are under way.
     #[must_use]
-    pub(super) fn start(&mut self, connection: &Connection, path: String, call: Call) -> bool {
+    pub(super) fn start(
+        &mut self,
+        connection: &Connection,
+        path: String,
+        call: Call,
+        when_worn: bool,
+    ) -> bool {
         if self.tasks.len() >= CALLS_IN_FLIGHT_MAX {
             return false;
         }
-        let task = self.tasks.spawn(run(connection.clone(), path, call.action));
+        let task = self
+            .tasks
+            .spawn(run(connection.clone(), path, call.action, when_worn));
         self.made.insert(task.id(), call);
         true
     }
@@ -70,8 +78,13 @@ pub(super) async fn run(
     connection: Connection,
     path: String,
     action: DeviceAction,
+    when_worn: bool,
 ) -> Result<(), zbus::Error> {
     let call = async {
+        if when_worn {
+            require_paired(&connection, &path).await?;
+            crate::daemon::log("link: connect when worn");
+        }
         match action {
             DeviceAction::Connect | DeviceAction::Disconnect => {
                 let device_method = connection.call_method(
@@ -93,6 +106,28 @@ pub(super) async fn run(
                 "no answer within {CALL_TIMEOUT_MS} ms"
             )))
         })
+}
+
+// Sample input: `variant boolean true`, the reply to `Get` of `Paired`.
+async fn require_paired(connection: &Connection, path: &str) -> zbus::Result<()> {
+    let paired = connection
+        .call_method(
+            Some(BLUEZ),
+            path,
+            Some(PROPERTIES),
+            "Get",
+            &(DEVICE_INTERFACE, "Paired"),
+        )
+        .await
+        .ok()
+        .and_then(|reply| reply.body().deserialize::<OwnedVariant>().ok())
+        .and_then(|value| bool::try_from(value).ok());
+    if paired != Some(true) {
+        return Err(zbus::Error::Failure(
+            "BlueZ did not confirm pairing".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// `RemoveDevice` on the adapter the device's `Adapter` property names.
