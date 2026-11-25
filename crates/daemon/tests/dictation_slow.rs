@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn a_grant_after_settling_releases_start_at_once() {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
         let doap = fixture.device.pods.doap();
         let grant = fixture.rig.logind().hold_inhibit();
         fixture.list(CAPTURE);
@@ -188,6 +188,11 @@ mod tests {
         wait_for_inhibitor(&fixture);
         drop(recorder.finish());
         fixture.stopped(1);
+        assert_eq!(
+            logged(&mut fixture.rig, INHIBIT_TIMEOUT),
+            0,
+            "START came from the timeout, not the grant"
+        );
         inhibitor_closed(&fixture.rig, 0);
         fixture.no_uplink();
         fixture.finish();
