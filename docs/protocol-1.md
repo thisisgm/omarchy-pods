@@ -224,9 +224,13 @@ A reply carries the request's `id` and `ok`.
   the service is armed and the counts show only Superwhisper recorders or no
   recorders. Otherwise it uses the uplink. Additional recorders share the chosen
   path until all leave.
-  DoAP sets the mode and settles for 150 ms before START. After one refusal it
-  repeats the mode and START, and after two it hands this recording to the
-  uplink. When the last recorder leaves after START is confirmed, the daemon
+  The daemon requests a logind sleep delay lock when it sets DoAP mode.
+  START follows the 150 ms settle even if logind has yet to reply or refuses.
+  A granted lock stays open until the session ends, including retries. Sleep
+  during mode settle cancels START and clears the mode. After one refusal from
+  the AirPods, DoAP repeats the mode and START, and after two it hands this
+  recording to the uplink.
+  When the last recorder leaves after START is confirmed, the daemon
   sends STOP immediately. If START is still pending, the daemon waits for its
   answer before sending STOP, up to 500 ms from START. If that wait expires,
   it clears the mode. Once STOP is sent, the daemon clears the mode at the

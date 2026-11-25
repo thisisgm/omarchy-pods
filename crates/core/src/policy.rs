@@ -299,10 +299,10 @@ impl Policy {
         self.edge.route() != Some(Route::Dictation)
     }
 
-    /// Whether a `DoAP` START is out and the session has yet to end.
+    /// Whether the `DoAP` session is open, from setting the mode through stopping.
     #[must_use]
     pub fn dictation_session_open(&self) -> bool {
-        self.dictation.session_open()
+        self.dictation.active()
     }
 
     /// Whether a due STOP of the uplink still waits for a quiet sink or the last bud out.

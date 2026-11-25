@@ -8,19 +8,21 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pods_core::policy::dictation::DOAP_STOP_ANSWER_MS;
+    use pods_core::policy::dictation::{DOAP_STOP_ANSWER_MS, MODE_SETTLE_MS};
+    use pods_proto::doap::doap_mode_off;
 
     use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, ready_to_read, status};
     use super::support::logind::INHIBIT;
     use super::support::pipewire::{record, wait_no_node};
     use super::support::recording::{assert_sounds, first_sound, frames, longest_zero_run};
-    use super::support::sleep::{inhibitor_closed, logged, sleep, wake};
+    use super::support::sleep::{WATCHING, inhibitor_closed, logged, sleep, wake};
     use super::support::uplink::{assert_no_sink_call, lose};
-    use super::support::wait_for;
+    use super::support::{wait_for, wait_within};
 
     const STOP_TIMEOUT: &str = "dictation: stop not confirmed";
     const INHIBIT_FAILED: &str = "dictation: cannot inhibit sleep via logind";
     const STOP_WAIT: Duration = Duration::from_millis(DOAP_STOP_ANSWER_MS);
+    const MODE_SETTLE: Duration = Duration::from_millis(MODE_SETTLE_MS);
     const AUDIO: Duration = Duration::from_millis(400);
 
     fn wait_for_inhibitor(fixture: &Fixture) {
@@ -83,6 +85,75 @@ mod tests {
         assert_eq!(fixture.device.pods.doap().stops(), [0_u8; 0]);
         fixture.no_uplink();
         assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
+        fixture.finish();
+    }
+
+    #[test]
+    fn sleep_during_mode_set_with_a_pending_inhibitor_clears_the_mode() {
+        let mut fixture = Fixture::new();
+        fixture.rig.wait_logged(WATCHING);
+        let doap = fixture.device.pods.doap();
+        let grant = fixture.rig.logind().hold_inhibit();
+        fixture.list(CAPTURE);
+        let recorder = record(&fixture.rig, &fixture.server, "dictation.wav");
+        wait_for("DoAP mode on", || doap.mode_seen().then_some(()));
+
+        let asleep = sleep(&mut fixture.rig);
+        fixture.stopped(0);
+        let mode_off = fixture
+            .device
+            .pods
+            .heard()
+            .into_iter()
+            .find(|heard| heard.sdu == doap_mode_off())
+            .expect("the pods heard mode off")
+            .at;
+        assert!(mode_off >= asleep, "mode cleared before the sleep edge");
+        assert_eq!(
+            fixture.rig.logind().method_calls(),
+            [INHIBIT],
+            "mode settle sent no Inhibit before being interrupted by sleep"
+        );
+        assert_eq!(fixture.rig.logind().inhibitors(), [None; 0]);
+        grant.send(()).unwrap();
+        assert!(inhibitor_closed(&fixture.rig, 0) >= mode_off);
+        fixture
+            .rig
+            .holds_for(MODE_SETTLE, "DoAP stays armed after sleep", |status| {
+                status["mic_dictation"] == "armed"
+            });
+        assert_eq!(doap.starts(), 0, "START across sleep during mode settle");
+        drop(recorder.finish());
+        fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
+    fn mode_requests_the_inhibitor_before_start_and_the_retry_keeps_it() {
+        let fixture = Fixture::new();
+        let doap = fixture.device.pods.doap();
+        doap.refuse_starts(1);
+        let grant = fixture.rig.logind().hold_inhibit();
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        wait_for("DoAP mode on", || doap.mode_seen().then_some(()));
+        wait_within("Inhibit at mode set before START", MODE_SETTLE / 2, || {
+            let calls = fixture.rig.logind().method_calls();
+            assert_eq!(doap.starts(), 0, "START reached the pods before Inhibit");
+            (calls == [INHIBIT]).then_some(())
+        });
+
+        fixture.streaming(2);
+        assert_eq!(fixture.mode_writes(), 2);
+        assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
+        assert_eq!(fixture.rig.logind().inhibitors(), [None; 0]);
+        grant.send(()).unwrap();
+        wait_for_inhibitor(&fixture);
+        drop(recorder.finish());
+        fixture.stopped(1);
+        let closed = inhibitor_closed(&fixture.rig, 0);
+        assert_eq!(fixture.rig.logind().inhibitors(), [Some(closed)]);
+        fixture.no_uplink();
         fixture.finish();
     }
 

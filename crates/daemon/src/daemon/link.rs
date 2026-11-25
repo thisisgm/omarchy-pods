@@ -498,14 +498,15 @@ impl Driver {
                 self.send(request.sdu());
             }
             Effect::Mic(request) => mic::offer(&self.outlets.mic, request),
-            Effect::Dictation(DictationRequest::Mode) => self.send(&doap_mode_on()),
+            Effect::Dictation(DictationRequest::Mode) => {
+                self.send(&doap_mode_on());
+                if self.dictation_inhibitor.is_none() {
+                    self.dictation_inhibitor = sleep::inhibit(&self.outlets.sleep_bus);
+                }
+            }
             Effect::Dictation(DictationRequest::ModeOff) => {
                 self.outlets.tap.end_dictation();
                 self.send(&doap_mode_off());
-            }
-            Effect::Dictation(DictationRequest::Start) => {
-                self.dictation_inhibitor = sleep::inhibit(&self.outlets.sleep_bus);
-                self.outlets.dictation.offer(DictationRequest::Start);
             }
             Effect::Dictation(request) => self.outlets.dictation.offer(request),
             Effect::Log(line) => log(&line),
