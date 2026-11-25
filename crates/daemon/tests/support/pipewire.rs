@@ -9,9 +9,9 @@ use pods_samples::MODEL_NUMBER;
 use rustix::process::Pid;
 use serde_json::Value;
 
-use super::HANG_LIMIT;
 use super::rig::{Device, Rig};
 use super::uplink::{link, rig_with, wait_mic};
+use super::{HANG_LIMIT, POLL, pause};
 
 const LINK_TYPE: &str = "PipeWire:Interface:Link";
 
@@ -59,6 +59,7 @@ pub(crate) fn holds_no_node(server: &Server, span: Duration) {
             "the node showed after {:?}: {names:?}",
             started.elapsed()
         );
+        pause(POLL);
     }
 }
 

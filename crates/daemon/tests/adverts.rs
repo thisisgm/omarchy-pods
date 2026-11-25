@@ -52,7 +52,7 @@ mod tests {
     /// The case charging at the unknown 15 tenths, so the case comes from the decrypted payload instead.
     const CASE_UNKNOWN: u8 = 0x4f;
     const OTHER_IDENTITY: [u8; 16] = [0x11; 16];
-    /// The most an advert may take to reach `librepods status`, polling included.
+    /// The most an advert may take to reach the status document, polling included.
     const SEEN_WITHIN: Duration = Duration::from_secs(1);
     /// Long enough for a monitor call the daemon wrongly makes to reach the fake BlueZ.
     const QUIET: Duration = Duration::from_millis(500);
@@ -155,7 +155,7 @@ mod tests {
 
     /// The four surfaces in turn: `librepods status`, the state file, the D-Bus interface and `librepods ctl status`.
     fn surfaces(rig: &Rig) -> [Value; 4] {
-        let status = picked(&rig.status());
+        let status = picked(&rig.cli_status());
         let state_file = wait_for("the state file showing the status", || {
             let text = fs::read_to_string(rig.session().state_file()).ok()?;
             let state = picked(&serde_json::from_str::<Value>(&text).ok()?);
