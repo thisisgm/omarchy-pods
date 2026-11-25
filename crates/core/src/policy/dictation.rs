@@ -20,8 +20,10 @@ use session::{Session, Stop};
 
 /// The delays between attempts to open the attribute channel.
 pub const BEARER_RETRY_MS: [u64; 3] = [750, 1500, 3000];
-/// Provisional time from setting `0x13` to START, based on sitting A.
+/// Provisional minimum delay from setting `0x13` to START, based on sitting A.
 pub const MODE_SETTLE_MS: u64 = 150;
+/// The most START may wait for logind after mode settling.
+pub const INHIBIT_WAIT_MS: u64 = 100;
 /// The longest wait for the started score or first audio.
 pub const DOAP_START_ANSWER_MS: u64 = 500;
 /// The longest wait for the streaming end after STOP.
@@ -135,6 +137,10 @@ impl Dictation {
 
     pub(super) fn active(&self) -> bool {
         self.session.code().is_some()
+    }
+
+    pub(super) fn set_inhibit_pending(&mut self, pending: bool) {
+        self.session.set_inhibit_pending(pending);
     }
 
     #[must_use]

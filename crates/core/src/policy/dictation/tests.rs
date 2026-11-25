@@ -15,6 +15,11 @@ fn the_provisional_mode_settle_time_is_150_ms() {
     assert_eq!(MODE_SETTLE_MS, 150);
 }
 
+#[test]
+fn the_inhibitor_wait_after_settling_is_100_ms() {
+    assert_eq!(INHIBIT_WAIT_MS, 100);
+}
+
 struct Row {
     cell: &'static str,
     connected: bool,
@@ -445,6 +450,95 @@ fn session_table(cells: impl IntoIterator<Item = SessionCell>) {
             .collect();
         assert_eq!(sent, Vec::from_iter(request), "at {ms} ms");
         assert_eq!(session.code(), status, "at {ms} ms");
+    }
+}
+
+fn tick_session(session: &mut Session, ms: u64, stop: Option<Stop>) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    assert!(!session.step(&Fact::Tick, Duration::from_millis(ms), stop, &mut effects));
+    effects
+}
+
+fn settling_with_pending_inhibitor() -> Session {
+    let mut session = Session::default();
+    assert_eq!(
+        tick_session(&mut session, 0, None),
+        [Effect::Dictation(DictationRequest::Mode)]
+    );
+    session.set_inhibit_pending(true);
+    session
+}
+
+#[test]
+fn start_needs_both_the_mode_settle_and_a_resolved_inhibitor() {
+    for resolved in [MODE_SETTLE_MS - 1, MODE_SETTLE_MS + 1] {
+        let mut session = settling_with_pending_inhibitor();
+        assert_eq!(tick_session(&mut session, resolved, None), []);
+        session.set_inhibit_pending(false);
+        let start_at = resolved.max(MODE_SETTLE_MS);
+        assert_eq!(
+            session.deadline(),
+            Some(Duration::from_millis(MODE_SETTLE_MS))
+        );
+        assert!(
+            tick_session(&mut session, start_at, None)
+                .contains(&Effect::Dictation(DictationRequest::Start))
+        );
+        assert_eq!(
+            session.deadline(),
+            Some(Duration::from_millis(
+                start_at.saturating_add(DOAP_START_ANSWER_MS)
+            ))
+        );
+    }
+}
+
+#[test]
+fn an_unresolved_inhibitor_starts_at_the_bound_and_logs_once_across_a_retry() {
+    const BOUND: u64 = MODE_SETTLE_MS + INHIBIT_WAIT_MS;
+    const RETRY: u64 = BOUND + 1;
+    let mut session = settling_with_pending_inhibitor();
+    let timeout = Effect::Log("dictation: logind inhibitor timed out, starting without it".into());
+    let start = Effect::Dictation(DictationRequest::Start);
+    assert_eq!(session.deadline(), Some(Duration::from_millis(BOUND)));
+    assert_eq!(tick_session(&mut session, BOUND - 1, None), []);
+    let effects = tick_session(&mut session, BOUND, None);
+    assert!(effects.contains(&start));
+    assert_eq!(
+        effects.iter().filter(|effect| **effect == timeout).count(),
+        1
+    );
+
+    let refused = Fact::Dictation(DictationFact::Refused {
+        reason: pods_proto::doap::STOP_REASON_UNSOLICITED,
+    });
+    let mut effects = Vec::new();
+    session.step(&refused, Duration::from_millis(RETRY), None, &mut effects);
+    assert!(effects.contains(&Effect::Dictation(DictationRequest::Mode)));
+    assert_eq!(tick_session(&mut session, RETRY + BOUND - 1, None), []);
+    let effects = tick_session(&mut session, RETRY + BOUND, None);
+    assert!(effects.contains(&start));
+    assert!(!effects.contains(&timeout));
+}
+
+#[test]
+fn sleep_and_recorder_departure_clear_mode_while_start_waits() {
+    const NEW_MODE: u64 = MODE_SETTLE_MS + INHIBIT_WAIT_MS;
+    for stop in [Stop::Sleep, Stop::Left] {
+        let mut session = settling_with_pending_inhibitor();
+        assert_eq!(
+            tick_session(&mut session, MODE_SETTLE_MS + 1, Some(stop)),
+            [Effect::Dictation(DictationRequest::ModeOff)]
+        );
+        assert_eq!(session.deadline(), None);
+        assert_eq!(
+            tick_session(&mut session, NEW_MODE, None),
+            [Effect::Dictation(DictationRequest::Mode)]
+        );
+        assert!(
+            tick_session(&mut session, NEW_MODE + MODE_SETTLE_MS, None)
+                .contains(&Effect::Dictation(DictationRequest::Start))
+        );
     }
 }
 

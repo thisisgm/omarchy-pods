@@ -305,6 +305,11 @@ impl Policy {
         self.dictation.active()
     }
 
+    /// Whether logind has yet to answer this session's delay-lock request.
+    pub fn set_dictation_inhibit_pending(&mut self, pending: bool) {
+        self.dictation.set_inhibit_pending(pending);
+    }
+
     /// Whether a due STOP of the uplink still waits for a quiet sink or the last bud out.
     #[must_use]
     pub fn mic_stop_waits(&self) -> bool {
