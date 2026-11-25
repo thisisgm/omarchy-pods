@@ -12,18 +12,27 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
+    use pods_core::policy::mic::UPLINK_STALL_MS;
     use pods_fake::Profile;
+    use pods_samples::MODEL_NUMBER;
+    use pulseaudio::protocol::SinkState;
     use serde_json::Value;
 
     use super::support::bus::Listener;
     use super::support::logind::SLEEP_SIGNAL;
     use super::support::omarchy::{DISCONNECT_NOTICE, RECORDED_WITHIN, loss_is_announced};
     use super::support::parked::refused_pods;
-    use super::support::rig::{ABSENT_GRACE, HELD_LADDER, REAL_TIME_SLACK, Rig, assert_gap};
+    use super::support::recording::wait_packets;
+    use super::support::rig::{
+        ABSENT_GRACE, HELD_LADDER, REAL_TIME_SLACK, Rig, assert_gap, connected,
+    };
     use super::support::sleep::{
         RESUME_SETTLE, SLEEPING, SYSTEM_BUS_RETRY, WATCHING, WOKE, logged, sleep, wake,
     };
-    use super::support::{HANG_LIMIT, pause, wait_within};
+    use super::support::uplink::{
+        link_heard, read_up_to_now, rig_with_audio, starts, stops, wait_mic, wait_starts, wait_stop,
+    };
+    use super::support::{HANG_LIMIT, pause, wait_for, wait_within};
 
     /// The held dials before the wake; the wait after the last of them is `HELD_LADDER[3]`, far past the settle.
     const DIALS_BEFORE_THE_WAKE: usize = 4;
@@ -154,6 +163,49 @@ mod tests {
         rig.omarchy().never_ran(RECORDED_WITHIN);
         assert_eq!(without_mic(rig.status()), before);
         assert_eq!(rig.dials().len(), dials);
+        rig.finish();
+    }
+
+    #[test]
+    fn sleep_during_a_stall_retry_stops_then_wakes_on_the_same_link() {
+        const STALL_WINDOW: Duration = Duration::from_millis(UPLINK_STALL_MS);
+        const SILENCE: Duration = STALL_WINDOW.saturating_mul(3);
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Suspended);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        let dials = rig.dials().len();
+        let uplink = device.pods.uplink();
+        wait_packets(&uplink, 1);
+        uplink.stall(SILENCE);
+        let retry = wait_starts(&device, 2)[1].at;
+        sleep(&mut rig);
+        rig.wait_queued_inputs_applied();
+        assert!(
+            retry.elapsed() < STALL_WINDOW,
+            "the sleep missed the stall retry window"
+        );
+        uplink.stall(Duration::ZERO);
+        let stop = wait_stop(&device);
+        let earliest = STALL_WINDOW.saturating_sub(REAL_TIME_SLACK);
+        assert_gap("the STOP after the retry", retry, stop.at, &(earliest..));
+        wait_for("the uplink to stop", || (!uplink.running()).then_some(()));
+        read_up_to_now(&rig, &device);
+        wait_mic(&rig, "no_audio_server");
+        assert_eq!(starts(&device).len(), 2, "STARTs before the wake");
+
+        let sweeps = rig.bluez().sweeps().len();
+        let woke = wake(&mut rig);
+        let restarted = wait_starts(&device, 3)[2].at;
+        assert!(restarted >= woke, "the restart came before the wake");
+        wait_wake_sweep(&rig, sweeps, woke);
+        let status = rig.status();
+        assert!(connected(&status), "the control link did not survive");
+        assert_eq!(status["mic"], "live");
+        assert_eq!(rig.dials().len(), dials, "dials after the wake");
+        assert_eq!(starts(&device).len(), 3, "STARTs after the wake");
+        assert_eq!(stops(&device).len(), 1, "STOPs across sleep and wake");
+        assert!(audio.writes().is_empty(), "sink writes after a quiet STOP");
         rig.finish();
     }
 

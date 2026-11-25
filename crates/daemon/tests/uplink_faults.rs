@@ -21,7 +21,9 @@ mod tests {
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
-    use super::support::audio::FakeAudio;
+    use super::support::audio::{Asked, FakeAudio};
+    use super::support::pipewire::{record, start};
+    use super::support::recording::wait_packets;
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::settings::set;
     use super::support::sleep::{logged, sleep, wake};
@@ -142,6 +144,57 @@ mod tests {
     #[test]
     fn a_stop_nobody_asked_for_restores_and_does_not_start_again() {
         let (rig, _device, _audio) = stopped_by_the_pods();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_held_start_after_an_unasked_stop_cancels_the_restore() {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        let pipewire = start(&rig);
+        let uplink = device.pods.uplink();
+        uplink.hold_starts(true);
+        link_heard(&rig, &device);
+        let recorder = record(&rig, &pipewire, "capture.wav");
+        wait_starts(&device, 2);
+        uplink.release_start();
+        wait_mic(&rig, "recording");
+
+        audio.hold_replies(true);
+        uplink.stop_unasked();
+        wait_mic(&rig, "stopping");
+        assert!(
+            audio.writes().is_empty(),
+            "sink writes while replies are held"
+        );
+        let sent = uplink.sent_packets();
+        uplink.release_start();
+        wait_packets(&uplink, sent.saturating_add(1));
+        read_up_to_now(&rig, &device);
+        assert_eq!(
+            mic(&rig),
+            "recording",
+            "mic after the second START took effect"
+        );
+
+        let asked = audio.requests().len();
+        audio.hold_replies(false);
+        rig.wait_sink_told();
+        // This read follows the sink refresh and any restore left queued.
+        wait_for("the source list after releasing the audio replies", || {
+            audio.requests()[asked..]
+                .contains(&Asked::SourceList)
+                .then_some(())
+        });
+        assert!(
+            audio.writes().is_empty(),
+            "sink writes after the running marker"
+        );
+        assert_eq!(starts(&device).len(), 2, "STARTs heard by the pods");
+        assert!(
+            stops(&device).is_empty(),
+            "a STOP followed the running marker"
+        );
+        drop(recorder.finish());
         rig.finish();
     }
 
