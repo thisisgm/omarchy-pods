@@ -82,6 +82,12 @@ struct Stage {
 }
 
 impl Dictation {
+    pub(super) fn opening_pending(&self) -> bool {
+        self.stage
+            .as_ref()
+            .is_some_and(|stage| !stage.frames.is_empty())
+    }
+
     /// None when the decoder will not open.
     pub(crate) fn new() -> Option<Self> {
         Some(Self {

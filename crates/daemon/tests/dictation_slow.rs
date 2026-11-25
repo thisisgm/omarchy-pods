@@ -292,6 +292,35 @@ mod tests {
     }
 
     #[test]
+    fn buds_out_keeps_talking_dictation_then_withdraws_on_silence() {
+        use pods_core::policy::mic::{BUD_GRACE_MS, withdrawn_line};
+
+        use super::support::pipewire::node_name;
+        use super::support::uplink::take_out;
+
+        const PAST_THE_GRACE: Duration =
+            Duration::from_millis(BUD_GRACE_MS).saturating_add(Duration::from_secs(1));
+        let mut fixture = Fixture::new();
+        let doap = fixture.device.pods.doap();
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        fixture.streaming(1);
+        ready_to_read(&recorder, AUDIO);
+        take_out(&fixture.rig, &fixture.device);
+        fixture
+            .rig
+            .holds_for(PAST_THE_GRACE, "DoAP keeps the node", |status| {
+                status["mic_source"] == node_name() && status["mic_dictation"] == "streaming"
+            });
+        doap.silent(u32::MAX);
+        wait_no_node(&fixture.server);
+        drop(recorder.finish());
+        fixture.rig.wait_logged(&withdrawn_line("silent"));
+        fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
     fn the_link_lost_mid_dictation_ends_the_recorder_cleanly() {
         let fixture = Fixture::new();
         fixture.list(CAPTURE);

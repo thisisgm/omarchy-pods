@@ -79,6 +79,10 @@ impl Tap {
         self.packets.load(Ordering::Relaxed)
     }
 
+    pub(in crate::daemon) fn output_silent(&self) -> bool {
+        self.lock().chain.as_ref().is_some_and(Chain::output_silent)
+    }
+
     /// None outside dictation, otherwise whether this is the first notification of the run.
     pub(in crate::daemon) fn dictation(&self, audio: &AudioNotification<'_>) -> Option<bool> {
         self.dictation_packets.fetch_add(1, Ordering::Relaxed);

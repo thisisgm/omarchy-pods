@@ -257,6 +257,13 @@ pub struct Chain {
 }
 
 impl Chain {
+    /// The node has played a quiet stretch, with no speech queued in its opening or ring.
+    #[must_use]
+    pub fn output_silent(&self) -> bool {
+        (self.ring.path() != Path::Dictation || !self.dictation.opening_pending())
+            && self.ring.output_silent()
+    }
+
     /// The units of one SDU as (stamp, body), and the time the SDU arrived; on a run of the dictation stream it is a stale packet, neither written nor counted, until `reset` opens a run of the uplink.
     pub fn sdu<'a>(&mut self, now: Duration, units: impl Iterator<Item = (u32, &'a [u8])>) {
         if self.ring.path() != Path::Uplink {

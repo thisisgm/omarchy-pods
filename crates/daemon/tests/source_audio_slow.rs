@@ -12,7 +12,7 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pods_core::policy::mic::{BUD_GRACE_MS, START_TRIES, UPLINK_STALL_MS};
+    use pods_core::policy::mic::{START_TRIES, UPLINK_STALL_MS, withdrawn_line};
     use pods_fake::uplink::{PERIOD, TONE_LINE};
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ, SAMPLES_PER_UNIT};
     use pods_pwrig::tone::{CHECKED, SETTLE, assert_tone};
@@ -20,7 +20,7 @@ mod tests {
     use serde_json::json;
 
     use super::support::HANG_LIMIT;
-    use super::support::pipewire::{daemon_states_latency, node_name, ready, record, wait_node};
+    use super::support::pipewire::{daemon_states_latency, ready, record, wait_no_node, wait_node};
     use super::support::recording::{
         RECORDER_RATE, WORST_GAP, assert_rig_gap, assert_sounds, counts_after_leaving, first_sound,
         frames, gap_every, largest_step, line_hz, longest_zero_run, mark_next, marked,
@@ -55,8 +55,6 @@ mod tests {
     /// Twice the stall check's window, so the check fires well inside the silence.
     const STALL: Duration = Duration::from_millis(UPLINK_STALL_MS.saturating_mul(2));
     const STALLED: &str = "mic: stalled, no audio for ";
-    const GRACE: Duration = Duration::from_millis(BUD_GRACE_MS);
-    const PAST_THE_GRACE: Duration = GRACE.saturating_add(Duration::from_secs(1));
     /// The silence a recording must end in once the audio has fallen away.
     const SILENT_END: Duration = Duration::from_millis(500);
     /// The shares of the tone's peak a fall is timed between; the lower one stands above the ripple of a few counts that follows a cut.
@@ -276,15 +274,14 @@ mod tests {
 
     #[test]
     #[ignore = "the grace of a bud taken out at real time; the slow job runs it"]
-    fn a_bud_out_while_recording_fades_to_silence_and_keeps_the_node() {
+    fn buds_out_fades_to_silence_before_withdrawal() {
         let (mut rig, device, pipewire) = ready();
         let recorder = record(&rig, &pipewire, "capture.wav");
         wait_mic(&rig, "recording");
         recorder.wait_frames(frames(LEAD + SETTLE), HANG_LIMIT);
         device.pods.set_ear(Placed::InCase, Placed::InCase);
-        rig.holds_for(PAST_THE_GRACE, "the node kept", |status| {
-            status["mic_source"] == node_name()
-        });
+        wait_no_node(&pipewire);
+        rig.wait_logged(&withdrawn_line("silent"));
         let samples = recorder.finish();
         let (_, late) = rig_gap(&device.pods.uplink(), WORST_GAP);
         assert_sounds(&samples, &late);
