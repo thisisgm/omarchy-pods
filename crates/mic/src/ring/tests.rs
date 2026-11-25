@@ -7,8 +7,8 @@ use std::time::Duration;
 use pods_samples::opus::tone;
 
 use super::{
-    Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Reader, Ring, UNIT_FRAMES,
-    fade_in, scaled,
+    Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Reader, Ring, SILENCE_FRAMES,
+    SILENCE_PEAK, UNIT_FRAMES, fade_in, scaled,
 };
 use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, chain, level};
 
@@ -128,8 +128,6 @@ fn a_write_longer_than_a_unit_shows_its_index_every_unit() {
 
 #[test]
 fn a_quiet_output_waits_for_the_whole_window_and_any_unplayed_signal() {
-    use super::{SILENCE_FRAMES, SILENCE_PEAK};
-
     let ring = Arc::new(Ring::new());
     let (mut reader, _) = Reader::new(Arc::clone(&ring), Arc::default());
     let mut quiet = vec![0.0; usize::try_from(SILENCE_FRAMES - 1).unwrap()];
@@ -149,6 +147,37 @@ fn a_quiet_output_waits_for_the_whole_window_and_any_unplayed_signal() {
     assert!(ring.output_silent());
     ring.note_output(1, &[0.0], true);
     assert!(!ring.output_silent());
+}
+
+#[test]
+fn a_dry_read_leaves_the_next_signal_unplayed() {
+    let ring = Arc::new(Ring::new());
+    let (mut reader, _) = Reader::new(Arc::clone(&ring), Arc::default());
+    ring.write(std::iter::repeat_n(0.0, usize::from(UNIT_FRAMES)));
+    ring.publish(ring.arrival_at(Duration::ZERO));
+
+    let now = Duration::from_millis(u64::from(NODE_LATENCY_MS)).saturating_add(PERIOD);
+    let mut quiet = vec![0.0; usize::try_from(SILENCE_FRAMES).unwrap()];
+    reader.read(now, &mut quiet);
+    assert!(reader.next > ring.end());
+    assert!(ring.output_silent());
+
+    ring.write(std::iter::once(SILENCE_PEAK * 2.0));
+    assert!(!ring.output_silent());
+}
+
+#[test]
+fn a_staged_dictation_burst_keeps_the_chain_from_reporting_silence() {
+    let (mut chain, mut reader, _) = chain(Arc::new(Counters::default())).unwrap();
+    let mut quiet = vec![0.0; usize::try_from(SILENCE_FRAMES.saturating_add(1)).unwrap()];
+    reader.read(Duration::ZERO, &mut quiet);
+    assert!(chain.output_silent());
+
+    chain.dictation_run();
+    chain.frames(PERIOD, (0..BURST).zip(tone()));
+    assert!(chain.dictation.opening_pending());
+    assert!(chain.ring.output_silent());
+    assert!(!chain.output_silent());
 }
 
 #[test]
