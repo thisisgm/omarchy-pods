@@ -568,8 +568,10 @@ fn a_follow_of_the_device_already_followed_keeps_its_restore() {
     let [
         AudioFact::Up,
         AudioFact::Sink(Some(first)),
+        AudioFact::Headset(false),
         AudioFact::Up,
         AudioFact::Sink(Some(second)),
+        AudioFact::Headset(false),
         AudioFact::Restored(answered),
     ] = told[..]
     else {
@@ -615,6 +617,7 @@ fn a_follow_of_another_device_ends_the_follow_of_the_one_before() {
     let [
         AudioFact::Up,
         AudioFact::Sink(Some(_)),
+        AudioFact::Headset(false),
         AudioFact::Up,
         AudioFact::Sink(None),
     ] = told[..]

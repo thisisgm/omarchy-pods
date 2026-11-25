@@ -89,11 +89,19 @@ enum Buds {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum CardProfile {
+    #[default]
+    Unread,
+    Headset,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct Node {
     source: Source,
     next_id: u32,
     exiting: bool,
-    blocked: bool,
+    card_profile: CardProfile,
     buds: Buds,
 }
 
@@ -109,10 +117,16 @@ impl Node {
         match fact {
             Fact::Mic(fact) => self.heard(*fact, effects),
             Fact::Exit => self.exiting = true,
-            Fact::Audio(AudioFact::Headset(blocked)) => {
-                self.blocked = state.audio_server != AudioServer::Idle && *blocked;
+            Fact::Audio(AudioFact::Headset(headset)) => {
+                self.card_profile = match (state.audio_server, *headset) {
+                    (AudioServer::Idle, _) => CardProfile::Unread,
+                    (_, true) => CardProfile::Headset,
+                    (_, false) => CardProfile::Other,
+                };
             }
-            Fact::Link(Signal::Lost { .. }) | Fact::Audio(AudioFact::Down) => self.blocked = false,
+            Fact::Link(Signal::Lost { .. }) | Fact::Audio(AudioFact::Down) => {
+                self.card_profile = CardProfile::Unread;
+            }
             Fact::Link(_)
             | Fact::Changed
             | Fact::Sleep(_)
@@ -194,7 +208,7 @@ impl Node {
     fn wanted(&self, state: &State) -> bool {
         let near = self.buds != Buds::Out || self.recording();
         !self.exiting
-            && !self.blocked
+            && !self.blocked()
             && near
             && state.connected
             && state.microphone.preference() != MicPref::Off
@@ -208,7 +222,7 @@ impl Node {
             "exit"
         } else if !state.connected {
             "link"
-        } else if self.blocked {
+        } else if self.blocked() {
             "blocked"
         } else if state.microphone.preference() == MicPref::Off {
             "off"
@@ -236,7 +250,11 @@ impl Node {
     }
 
     pub(super) fn blocked(&self) -> bool {
-        self.blocked
+        self.card_profile == CardProfile::Headset
+    }
+
+    pub(super) fn awaiting_profile(&self, server: AudioServer) -> bool {
+        server == AudioServer::Up && self.card_profile == CardProfile::Unread
     }
 
     pub(super) fn broken(&self) -> bool {

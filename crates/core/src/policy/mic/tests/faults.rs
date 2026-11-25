@@ -99,6 +99,25 @@ fn a_channel_end_during_an_owed_stop_still_restores() {
 }
 
 #[test]
+fn always_waits_for_the_first_card_profile() {
+    let state = State {
+        audio_server: AudioServer::Up,
+        ..linked(Column::AlwaysKnown)
+    };
+    let headset = Fact::Audio(AudioFact::Headset(true));
+    let playback = Fact::Audio(AudioFact::Headset(false));
+
+    let mut mic = Mic::default();
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
+    assert_eq!(requests(&mic.step(&state, &playback, SENT)), START);
+
+    let mut mic = Mic::default();
+    assert_eq!(requests(&mic.step(&state, &headset, SENT)), NOTHING);
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
+    assert_eq!(requests(&mic.step(&state, &playback, SENT)), START);
+}
+
+#[test]
 fn a_fast_capture_hint_starts_the_uplink_while_dictation_arms() {
     let state = State {
         audio_server: AudioServer::Up,

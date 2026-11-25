@@ -337,6 +337,11 @@ impl FakeAudio {
         self.change(|state| state.hold(hold));
     }
 
+    /// Starts holding messages at the next card-list reply.
+    pub(crate) fn hold_at_card_list(&self) {
+        self.change(State::hold_at_card_list);
+    }
+
     /// A sink change event cut inside its payload, with replies held; `hold_replies(false)` sends the rest.
     pub(crate) fn send_split_event(&self) {
         self.change(State::send_split_event);

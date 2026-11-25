@@ -350,7 +350,7 @@ impl Mic {
             Phase::Stopped { .. } if self.exiting => effects.push(Effect::Exited),
             Phase::Stopped {
                 spent: Some(Spent::Unasked),
-            } if !self.wants(state) => self.phase = Phase::Stopped { spent: None },
+            } if !self.uplink_wanted(state) => self.phase = Phase::Stopped { spent: None },
             Phase::Stopped { spent: None } if !probe_waits && self.wants(state) && !self.asleep => {
                 self.phase = self.start(Try::FIRST, now, effects);
             }
@@ -371,7 +371,7 @@ impl Mic {
                 since,
                 id,
                 spent: Some(Spent::Unasked),
-            } if !self.wants(state) => {
+            } if !self.uplink_wanted(state) => {
                 self.phase = Phase::Restoring {
                     since,
                     id,
@@ -408,7 +408,7 @@ impl Mic {
         } else if self.asleep && gate::open(in_ear, self.audio.quiet).is_some() {
             Next::Stop(Word::Sleep)
         } else {
-            hold.follow(self.wants(state), in_ear, self.audio.quiet, now)
+            hold.follow(self.uplink_wanted(state), in_ear, self.audio.quiet, now)
         };
         self.phase = match next {
             // No STOP overtakes an unanswered START sent by the stall check.
@@ -481,11 +481,14 @@ impl Mic {
         now: Duration,
         effects: &mut Vec<Effect>,
     ) -> Phase {
-        if !self.wants(state) || self.exiting {
+        if !self.uplink_wanted(state) || self.exiting {
             return Phase::Stopped { spent: None };
         }
         match tried.next() {
-            Some(next) => self.start(next, now, effects),
+            Some(next) if !self.node.awaiting_profile(state.audio_server) => {
+                self.start(next, now, effects)
+            }
+            Some(_) => Phase::Stopped { spent: None },
             None => Phase::Stopped {
                 spent: Some(spent(state, effects)),
             },
@@ -531,7 +534,11 @@ impl Mic {
                 watch,
                 for_ms,
                 next,
-            } if self.wants(state) && !self.asleep && !self.exiting => {
+            } if self.uplink_wanted(state)
+                && !self.asleep
+                && !self.exiting
+                && (next.is_none() || !self.node.awaiting_profile(state.audio_server)) =>
+            {
                 effects.push(Effect::Log(stalled_line(for_ms)));
                 self.start_failures = self.start_failures.saturating_add(1);
                 if let Some(next) = next {
@@ -573,8 +580,12 @@ impl Mic {
         uplink.into_iter().chain(self.node.deadline()).min()
     }
 
-    /// A linked recorder or a program asking for fast capture can hold the uplink under `auto`.
     fn wants(&self, state: &State) -> bool {
+        !self.node.awaiting_profile(state.audio_server) && self.uplink_wanted(state)
+    }
+
+    /// A linked recorder or a program asking for fast capture can hold the uplink under `auto`.
+    fn uplink_wanted(&self, state: &State) -> bool {
         !self.node.blocked() && wanted(state, self.audio.hint || self.node.recording())
     }
 

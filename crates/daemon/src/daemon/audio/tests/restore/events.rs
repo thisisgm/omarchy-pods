@@ -92,6 +92,7 @@ impl AudioServer {
         server.answered.clear();
         assert_eq!(server.fact().await, AudioFact::Up);
         assert!(matches!(server.fact().await, AudioFact::Sink(Some(_))));
+        assert_eq!(server.fact().await, AudioFact::Headset(false));
         server
     }
 

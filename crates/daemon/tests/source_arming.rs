@@ -14,7 +14,7 @@ mod tests {
 
     use pods_core::policy::mic::{STOPPED_BY_THE_PODS_LINE, withdrawn_line};
     use pods_pwrig::Server;
-    use pods_samples::MODEL_NUMBER;
+    use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
     use super::support::audio::wire::card_named;
@@ -197,6 +197,50 @@ mod tests {
         );
         rig.finish();
         audio.assert_only_reads();
+    }
+
+    #[test]
+    fn always_starts_after_the_first_playback_profile_is_read() {
+        let (rig, device, audio) = always_with_card_reply_held(PLAYBACK);
+        audio.hold_replies(false);
+        armed(&rig, &device);
+        rig.finish();
+        audio.assert_only_reads();
+    }
+
+    #[test]
+    fn always_sends_no_start_when_the_first_profile_is_headset() {
+        let (rig, device, audio) = always_with_card_reply_held(HEADSET);
+        audio.hold_replies(false);
+        wait_mic(&rig, "blocked");
+        rig.wait_sink_told();
+        read_up_to_now(&rig, &device);
+        assert!(starts(&device).is_empty(), "START with a headset profile");
+        rig.finish();
+        audio.assert_only_reads();
+    }
+
+    fn always_with_card_reply_held(active: &str) -> (Rig, Device, Rc<FakeAudio>) {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Suspended);
+        audio.add_card(&card_named(device.address), &PROFILES, active);
+        audio.hold_at_card_list();
+        device.pods.set_ear(Placed::InCase, Placed::InCase);
+        rig.link_up(&device);
+        wait_for("the first card read to reach the fake server", || {
+            audio.requests().contains(&Asked::CardList).then_some(())
+        });
+        rig.wait_status(
+            "the model reported while the card reply is held",
+            |status| status["model_number"] == MODEL_NUMBER,
+        );
+        put_in(&rig, &device);
+        read_up_to_now(&rig, &device);
+        assert!(
+            starts(&device).is_empty(),
+            "START before the first card reply"
+        );
+        assert_eq!(rig.status()["audio_server"], "up");
+        (rig, device, audio)
     }
 
     #[test]
