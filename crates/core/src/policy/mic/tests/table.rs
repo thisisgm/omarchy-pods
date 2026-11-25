@@ -388,7 +388,7 @@ sleep_during_a_call_with_music_sends_nothing Running Sleep AlwaysKnown
 ";
 
 /// The tests of the uplink suites whose case no column holds: no bud worn, no model number, the settings file, a check across a whole suite.
-const OUTSIDE_THE_TABLE: [&str; 8] = [
+const OUTSIDE_THE_TABLE: &[&str] = &[
     "no_bud_worn_sends_no_start",
     "a_bud_taken_out_while_the_stop_waits_gets_the_grace",
     "the_owed_stop_goes_out_when_the_last_bud_leaves",
@@ -397,6 +397,9 @@ const OUTSIDE_THE_TABLE: [&str; 8] = [
     "always_sends_no_start_without_a_model_number",
     "a_settings_file_with_a_bad_model_entry_is_refused",
     "a_seventeenth_model_drops_the_oldest",
+    // The table does not track ownership across unsolicited and late START markers.
+    "unsolicited_uplink_markers_leave_a_playing_sink_alone",
+    "the_first_start_answered_after_timeout_still_owns_the_restore",
 ];
 
 #[test]
