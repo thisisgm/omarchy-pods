@@ -85,7 +85,10 @@ fn the_requests_ending_ends_the_adapter_and_its_channel() {
         let Bench {
             requests, adapter, ..
         } = Bench::start(connect);
-        requests.send(DictationRequest::Arm).await.unwrap();
+        requests
+            .send((ArmId::default(), DictationRequest::Arm))
+            .await
+            .unwrap();
         assert_eq!(peer.read().await.unwrap(), host::declarations_from(1));
         drop(requests);
         timeout(HANG_LIMIT, adapter).await.unwrap().unwrap();

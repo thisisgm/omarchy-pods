@@ -23,7 +23,7 @@ impl ControlId {
     /// Value 0 to 100.
     pub const ADAPTIVE_NOISE_LEVEL: Self = Self(0x2E);
     pub const ALLOW_OFF_OPTION: Self = Self(0x34);
-    /// Set once a connection, it lets a host start the dictation stream.
+    /// Enables dictation before START and restores the stem action after the stream ends.
     pub const DOAP_MODE: Self = Self(0x13);
 }
 
@@ -35,7 +35,7 @@ pub struct ControlCommand {
 
 impl ControlCommand {
     #[must_use]
-    pub fn switch(id: ControlId, enabled: bool) -> Self {
+    pub const fn switch(id: ControlId, enabled: bool) -> Self {
         let state = if enabled {
             STATE_ENABLED
         } else {
@@ -69,7 +69,7 @@ impl ControlCommand {
 
     /// Sample output for `switch(DOAP_MODE, true)`: `04 00 04 00 09 00 13 01 00 00 00`.
     #[must_use]
-    pub fn frame(&self) -> [u8; FRAME_LEN] {
+    pub const fn frame(&self) -> [u8; FRAME_LEN] {
         let [h0, h1, h2, h3, h4, h5] = HEADER;
         let [v0, v1, v2, v3] = self.value;
         [h0, h1, h2, h3, h4, h5, self.id.0, v0, v1, v2, v3]

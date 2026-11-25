@@ -84,7 +84,7 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
-| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn; `auto` starts it the same way on each link until the model's uplink has answered once, then not again for that model; `off` removes the daemon's microphone source at once and stops the uplink once no bud is worn or the AirPods' sink is suspended or gone; a stop of the daemon does the same and waits at most 2 seconds for the stop and the restore before it exits, with the uplink left running when a worn bud's sink is not known to be suspended or gone by then; any other end of the want while the link holds lets it linger first, as the `mic` reply says |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. `auto` probes the uplink for models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. |
 
 `ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
@@ -92,8 +92,9 @@ file is absent, the daemon takes the first two choices once from the older
 `${XDG_CONFIG_HOME:-$HOME/.config}/AirPodsTrayApp/AirPodsTrayApp.conf` and
 writes `settings.json`; it never changes the older file. A `settings.json`
 without `microphone` reads `auto`. `settings.json` also keeps `mic_models`, the
-model numbers whose uplink answered, oldest first and at most 16, each 1 to 8
-characters of `A` to `Z` and `0` to `9`; a seventeenth drops the oldest, and a
+model numbers whose uplink answered or whose dictation service armed. It keeps
+the oldest first, with at most 16 model numbers, each 1 to 8 characters of
+`A` to `Z` and `0` to `9`. A seventeenth drops the oldest, and a
 file without the key reads an empty list. A `settings.json` the daemon cannot read or
 parse, or finds larger than 65536 bytes, gives the defaults, `one`, `true` and
 `auto`, and one line in the log; the next change replaces it unless it is a
@@ -183,16 +184,22 @@ A reply carries the request's `id` and `ok`.
   and come back. At the edge into sleep a running uplink is stopped with no
   restore when no bud is worn or the sink is suspended or gone, and is left
   running otherwise, as the sleep ends the link; a START waiting for its answer
-  is dropped; after the wake a stopped uplink starts again while it is wanted. Its `mic_start_failures` counts every
-  START left unanswered, each try once, since the daemon started. Its
-  `mic_source` is the name of the daemon's microphone source,
+  is dropped; after the wake a stopped uplink starts again while it is wanted.
+  Its `mic_start_failures` counts every
+  START left unanswered, each try once, since the daemon started.
+  `mic_dictation` reads `off` when the link is down or the microphone setting
+  is `off`, `arming` while the daemon prepares the service or retries its
+  channel, `armed` when subscriptions and codec selection are ready, or
+  `unavailable` for the rest of a connection after a terminal failure. The
+  daemon prepares the service without setting dictation mode or starting a
+  stream. `mic_source` is the name of the daemon's microphone source,
   `omarchypods_input.` and the model number in lower case, while the source is
   on the audio server, and empty otherwise. The source is wanted while the
-  link is up, the model's uplink has answered once, the setting is not `off`,
-  and a bud is worn or was taken out less than a few seconds ago; while a
-  program records from it, it stays through a bud taken out. It carries the
-  AirPods' microphone, held a fixed delay behind the audio as it arrives, and
-  silence while none comes. A program that records from it
+  link is up, the model has answered an uplink START or armed for dictation,
+  the setting is enabled, and a bud is worn or was taken out less than a few
+  seconds ago. It stays while a program records from it, even if the bud is
+  taken out. It carries the AirPods' microphone, held a fixed delay behind
+  the audio as it arrives, and silence while none comes. A program that records from it
   wants the uplink as `always` does, while a bud is worn. A wanted running
   uplink that sends no audio for about a second while a bud is worn is sent
   START again, unless the system is going to sleep or the daemon is stopping.

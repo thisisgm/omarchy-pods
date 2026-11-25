@@ -10,6 +10,7 @@ use std::sync::{Arc, mpsc as std_mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use pods_core::link::End;
 use pods_core::policy::MicRequest;
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
@@ -264,7 +265,9 @@ fn forward_through(tap: Tap, link: mpsc::Sender<Input>) -> mpsc::Sender<Input> {
     let (tapped, mut taken) = mpsc::channel(super::INPUT_QUEUE);
     tokio::spawn(async move {
         while let Some(input) = taken.recv().await {
-            tap(&input);
+            if matches!(input, Input::Opened(..) | Input::Ended(End::ConnectFailed)) {
+                tap(&input);
+            }
             if link.send(input).await.is_err() {
                 return;
             }

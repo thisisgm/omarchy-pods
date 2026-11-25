@@ -117,6 +117,7 @@ const INTROSPECTED: &str = r#"
   <property name="Mic" type="s" access="read"/>
   <property name="MicConcealed" type="u" access="read"/>
   <property name="MicDecodeErrors" type="u" access="read"/>
+  <property name="MicDictation" type="s" access="read"/>
   <property name="MicLimited" type="u" access="read"/>
   <property name="MicNonfinite" type="u" access="read"/>
   <property name="MicSource" type="s" access="read"/>

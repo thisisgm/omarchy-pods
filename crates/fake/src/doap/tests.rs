@@ -48,6 +48,47 @@ fn start(machine: &mut Machine, now: Instant) -> Vec<Vec<u8>> {
     sent
 }
 
+#[test]
+fn start_needs_settle_time_after_mode_and_mode_off_disables_it() {
+    let (mut machine, since) = armed();
+    let refusal = sample::stopped(&TABLE, REASON_UNASKED);
+    let settled = since + ms(100);
+    assert_eq!(start(&mut machine, since), [refusal]);
+    assert_eq!(start(&mut machine, since + ms(99)), [refusal]);
+    assert_eq!(start(&mut machine, settled)[0], sample::score(&TABLE));
+
+    machine.on_att(ATT, &host::stop(&TABLE, REASON_HOST), settled);
+    assert_eq!(start(&mut machine, settled)[0], sample::score(&TABLE));
+    machine.on_att(ATT, &host::stop(&TABLE, REASON_HOST), settled);
+    machine.on_control(CONTROL, &setting(DOAP_MODE, 1), settled);
+    assert_eq!(start(&mut machine, settled), [refusal]);
+    let settled_again = settled + ms(100);
+    assert_eq!(start(&mut machine, settled_again)[0], sample::score(&TABLE));
+    machine.on_att(ATT, &host::stop(&TABLE, REASON_HOST), settled_again);
+    machine.on_control(CONTROL, &setting(DOAP_MODE, 2), settled_again);
+    assert!(machine.mic.is_none());
+    assert_eq!(start(&mut machine, settled_again + ms(100)), [refusal]);
+}
+
+#[test]
+fn selecting_codec_before_subscriptions_does_not_arm() {
+    let mut machine = Machine::new();
+    let now = Instant::now();
+    machine.opened(ATT);
+
+    machine.on_att(ATT, &host::select_codec(&TABLE), now);
+    assert_eq!(machine.selections, 0);
+    for descriptor in TABLE.cccds {
+        machine.on_att(ATT, &host::subscribe(descriptor), now);
+    }
+    assert_eq!(machine.selections, 0);
+    machine.on_att(ATT, &host::select_codec(&TABLE), now);
+    assert_eq!(
+        machine.selections, 1,
+        "a selection after the subscriptions counts"
+    );
+}
+
 /// One notification of `fixture` frames: each counter with the place the microphone heard it at.
 fn audio(fixture: &[&'static [u8]], packet: u8, heard: &[(u16, usize)]) -> Vec<u8> {
     let frames: Vec<(u16, &[u8])> = heard
@@ -256,13 +297,14 @@ fn a_frame_is_due_every_20_ms_from_the_mode_and_never_before() {
 #[test]
 fn the_starts_refused_are_counted_down_then_one_is_answered() {
     let (mut machine, since) = armed();
+    let settled = since + MODE_SETTLE;
     machine.refusals = 2;
     machine.burst = (0, 5);
     let refusal = sample::stopped(&TABLE, REASON_UNASKED);
     for _ in 0..2 {
-        assert_eq!(start(&mut machine, since), [refusal]);
+        assert_eq!(start(&mut machine, settled), [refusal]);
     }
-    assert_eq!(start(&mut machine, since), [sample::score(&TABLE)]);
+    assert_eq!(start(&mut machine, settled), [sample::score(&TABLE)]);
     assert_eq!((machine.starts, machine.refusals), (3, 0));
 }
 
@@ -527,22 +569,25 @@ fn a_channel_that_ends_takes_what_ran_on_it() {
     // The control channel takes the mode with it, and the stream and a waiting START with the mode.
     for hold in [false, true] {
         let (mut machine, since) = armed();
+        let settled = since + MODE_SETTLE;
         machine.hold_start = hold;
-        assert_eq!(start(&mut machine, since).len(), usize::from(!hold));
+        machine.burst.0 = 0;
+        assert_eq!(start(&mut machine, settled).len(), usize::from(!hold));
         machine.closed(OTHER_CONTROL);
         assert!(machine.mic.is_some());
         machine.closed(CONTROL);
         assert!(machine.mic.is_none() && machine.run.is_none() && machine.held.is_none());
-        machine.release_start(since);
+        machine.release_start(settled);
         let refusal = sample::stopped(&TABLE, REASON_UNASKED);
-        assert_eq!(start(&mut machine, since + ms(100)), [refusal]);
+        assert_eq!(start(&mut machine, settled), [refusal]);
     }
     // A START that waits goes with its own channel too.
     let (mut machine, since) = armed();
+    let settled = since + MODE_SETTLE;
     machine.hold_start = true;
-    assert_eq!(start(&mut machine, since), NOTHING);
+    assert_eq!(start(&mut machine, settled), NOTHING);
     machine.closed(ATT);
     assert!(machine.held.is_none());
-    machine.release_start(since);
+    machine.release_start(settled);
     assert!(machine.run.is_none());
 }

@@ -15,11 +15,12 @@ use pods_proto::keys::ProximityKeys;
 use pods_proto::uplink::UplinkState;
 
 use crate::link::Signal;
-use crate::state::{AdvertIntake, State};
+use crate::state::{AdvertIntake, MicDictation, State};
 use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
 use audio::{AudioFact, AudioRequest};
 use battery::Latches;
+use dictation::Dictation;
 pub use dictation::{DictationFact, DictationRequest};
 use ear::Ear;
 pub use ear::{BOTH_OUT_SETTLE_MS, Era, MediaRequest, PAUSED_MAX, PlayerOwner};
@@ -80,6 +81,7 @@ pub struct Policy {
     ear: Ear,
     adverts: Adverts,
     mic: Mic,
+    dictation: Dictation,
 }
 
 impl Policy {
@@ -98,7 +100,7 @@ impl Policy {
         Vec::from_iter(self.adverts.wanted().then_some(Effect::Monitor(true)))
     }
 
-    /// Folds a fact into `state` before `step` sees it: an advert from our pods, what the advert monitor reads, and a model whose uplink runs.
+    /// Folds adverts, monitor state and model confirmations into `state` before `step` sees them.
     pub fn apply(&self, state: &mut State, fact: &Fact) {
         match fact {
             Fact::Link(Signal::Up { .. }) => state.advert_intake = AdvertIntake::Paused,
@@ -111,6 +113,13 @@ impl Policy {
                 state.advert_intake = monitor.intake();
             }
             Fact::Link(Signal::Uplink(UplinkState::Running)) => {
+                state.mic_models.confirm(&state.model_number);
+            }
+            Fact::Dictation(DictationFact::Armed) if self.dictation.accepts_armed(state) => {
+                state.mic_models.confirm(&state.model_number);
+            }
+            // The attribute arm can finish before the control channel sends its model number.
+            Fact::Changed if self.dictation.armed() && state.connected => {
                 state.mic_models.confirm(&state.model_number);
             }
             Fact::Link(
@@ -135,7 +144,9 @@ impl Policy {
     /// `state` is the state after the step the fact comes from; `now` is on the link machine's clock.
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
-        let mic = self.mic.step(state, &fact, now);
+        let dictation = self.dictation.step(state, &fact, now);
+        let arming = self.dictation.code(state) == MicDictation::Arming;
+        let mic = self.mic.step_with_probe(state, &fact, now, arming);
         let monitor = if let Fact::Link(signal) = &fact {
             self.adverts.follow(signal)
         } else {
@@ -177,6 +188,7 @@ impl Policy {
         };
         effects.extend(monitor);
         effects.extend(mic);
+        effects.extend(dictation);
         // After the fact, so a window that closes with the link up is forgotten in the same step.
         if state.connected {
             self.suspend.relinked();
@@ -201,6 +213,7 @@ impl Policy {
             .into_iter()
             .chain(self.ear.deadline())
             .chain(self.mic.deadline())
+            .chain(self.dictation.deadline())
             .min()
     }
 
@@ -219,6 +232,7 @@ impl Policy {
     /// What the `mic` status keys show, which the driver writes into the state before each publish.
     pub fn show_mic(&self, state: &mut State) {
         self.mic.show(state);
+        state.mic_dictation = self.dictation.code(state);
     }
 }
 

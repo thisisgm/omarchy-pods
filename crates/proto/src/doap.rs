@@ -36,10 +36,16 @@ const UUIDS: [[u8; 16]; CHARACTERISTICS] = [
     0xc7c6_947d_3165_4bcb_8eaf_b328_896c_b531_u128.to_le_bytes(),
 ];
 
-/// Sample output: `04 00 04 00 09 00 13 01 00 00 00`, sent once a connection before the first start.
+/// Sample output: `04 00 04 00 09 00 13 01 00 00 00`, sent at the start of each dictation.
 #[must_use]
-pub fn doap_mode_on() -> [u8; 11] {
+pub const fn doap_mode_on() -> [u8; 11] {
     ControlCommand::switch(ControlId::DOAP_MODE, true).frame()
+}
+
+/// Sample output: `04 00 04 00 09 00 13 02 00 00 00`, which returns the stem to its usual action.
+#[must_use]
+pub const fn doap_mode_off() -> [u8; 11] {
+    ControlCommand::switch(ControlId::DOAP_MODE, false).frame()
 }
 
 /// Where one table holds the service; a reconnect or another firmware may move every one.

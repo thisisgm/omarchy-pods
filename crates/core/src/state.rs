@@ -34,7 +34,8 @@ pub struct State {
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
     pub microphone: Microphone,
-    /// The models whose uplink answered, which `auto` does not start again.
+    pub mic_dictation: MicDictation,
+    /// Models confirmed by an uplink answer or a successful dictation arm.
     pub mic_models: MicModels,
     pub audio_server: AudioServer,
     pub advert_intake: AdvertIntake,
@@ -61,6 +62,7 @@ impl Default for State {
             // The C++ `Notifier` starts enabled.
             notifications: true,
             microphone: Microphone::default(),
+            mic_dictation: MicDictation::Off,
             mic_models: MicModels::default(),
             audio_server: AudioServer::Idle,
             advert_intake: AdvertIntake::Paused,
@@ -165,6 +167,28 @@ impl LidState {
             Self::Open => 0,
             Self::Closed => 1,
             Self::Unknown => 2,
+        }
+    }
+}
+
+/// What the dictation service is ready to do on the current link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MicDictation {
+    #[default]
+    Off,
+    Arming,
+    Armed,
+    Unavailable,
+}
+
+impl MicDictation {
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Arming => "arming",
+            Self::Armed => "armed",
+            Self::Unavailable => "unavailable",
         }
     }
 }

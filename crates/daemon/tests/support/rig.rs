@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use pods_fake::{Pods, Profile};
+use pods_fake::{Pods, Profile, doap::Table};
 use pods_proto::addr::BdAddr;
 use pods_proto::packets::CONTROL_PSM;
 use pods_trap::{Answer, Dial, Route, Trap, TrapError};
@@ -256,17 +256,20 @@ impl Rig {
             .saturating_add(1);
         let address = test_address(last);
         let pods = Pods::new(profile);
+        // This fixture's control suites exercise the non-DoAP models unless a suite opts in.
+        pods.doap().table(Table::Absent);
         let path = self
             .bluez()
             .add_device(self.adapter(), address, &[AAP_UUID], false);
-        if let Some(trap) = &self.trap {
-            trap.route(address, CONTROL_PSM, serve(&pods, Duration::ZERO));
-        }
         let device = Device {
             address,
             path,
             pods,
         };
+        if let Some(trap) = &self.trap {
+            trap.route(address, CONTROL_PSM, serve(&device.pods, Duration::ZERO));
+            self.route(super::doap::route(&device));
+        }
         lock(&self.devices).push(device.clone());
         device
     }
@@ -332,10 +335,15 @@ impl Rig {
     pub(crate) fn start(&mut self) {
         let routes = lock(&self.devices)
             .iter()
-            .map(|device| Route {
-                device: device.address,
-                psm: CONTROL_PSM,
-                answer: serve(&device.pods, Duration::ZERO),
+            .flat_map(|device| {
+                [
+                    Route {
+                        device: device.address,
+                        psm: CONTROL_PSM,
+                        answer: serve(&device.pods, Duration::ZERO),
+                    },
+                    super::doap::route(device),
+                ]
             })
             .collect();
         let command = self.command();
@@ -411,6 +419,10 @@ impl Rig {
         self.trap().route(device.address, CONTROL_PSM, answer);
     }
 
+    pub(crate) fn route(&self, route: Route) {
+        self.trap().route(route.device, route.psm, route.answer);
+    }
+
     /// Routes the device back to its fake pods.
     pub(crate) fn accept(&self, device: &Device) {
         self.trap().route(
@@ -420,8 +432,12 @@ impl Rig {
         );
     }
 
-    pub(crate) fn dials(&self) -> Vec<Dial> {
+    pub(crate) fn all_dials(&self) -> Vec<Dial> {
         self.trap().dials()
+    }
+
+    pub(crate) fn dials(&self) -> Vec<Dial> {
+        control_dials(self.all_dials())
     }
 
     /// The Bluetooth socket calls the trap saw.
@@ -429,17 +445,41 @@ impl Rig {
         self.trap().sockets()
     }
 
-    /// Waits for `count` dials in all, failing with the whole record at the deadline.
+    /// Waits for `count` control dials, failing with the whole record at the deadline.
     pub(crate) fn wait_dials(&self, count: usize, deadline: Duration) -> Vec<Dial> {
-        self.trap()
-            .wait_dials(count, deadline)
+        self.wait_control_dials(count, deadline)
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    /// Fails with the record if a dial comes within `quiet`.
+    fn wait_control_dials(&self, count: usize, deadline: Duration) -> Result<Vec<Dial>, TrapError> {
+        let started = Instant::now();
+        let mut dials = self.all_dials();
+        loop {
+            let next = dials.len().saturating_add(1);
+            let control = control_dials(dials);
+            if control.len() >= count {
+                return Ok(control);
+            }
+            dials = self
+                .trap()
+                .wait_dials(next, deadline.saturating_sub(started.elapsed()))?;
+        }
+    }
+
+    /// Fails with the record if the daemon dials another control channel within `quiet`.
     pub(crate) fn no_dial_for(&self, quiet: Duration) {
-        let before = self.dials().len();
-        match self.trap().wait_dials(before.saturating_add(1), quiet) {
+        let count = self.dials().len().saturating_add(1);
+        Self::expect_quiet(self.wait_control_dials(count, quiet), quiet);
+    }
+
+    /// Fails with the record if the daemon dials either channel within `quiet`.
+    pub(crate) fn no_bluetooth_dial_for(&self, quiet: Duration) {
+        let count = self.all_dials().len().saturating_add(1);
+        Self::expect_quiet(self.trap().wait_dials(count, quiet), quiet);
+    }
+
+    fn expect_quiet(result: Result<Vec<Dial>, TrapError>, quiet: Duration) {
+        match result {
             Err(TrapError::Deadline { .. }) => {}
             Err(error) => panic!("{error}"),
             Ok(dials) => {
@@ -690,6 +730,11 @@ impl Rig {
                 .unwrap_or_else(|failure| panic!("{failure}"));
         }
     }
+}
+
+fn control_dials(mut dials: Vec<Dial>) -> Vec<Dial> {
+    dials.retain(|dial| dial.psm == CONTROL_PSM);
+    dials
 }
 
 fn lock(devices: &Mutex<Vec<Device>>) -> MutexGuard<'_, Vec<Device>> {

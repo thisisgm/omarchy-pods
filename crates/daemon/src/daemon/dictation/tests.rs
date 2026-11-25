@@ -1,11 +1,11 @@
-//! Support tests: the adapter in process, against the fake pods over socket pairs and against a pods' end the test holds itself; no policy asks for the channel yet, so no test against the binary reaches it.
+//! Support tests: the adapter in process, against the fake pods and a pods' end the test holds itself.
 
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::thread;
 use std::time::Duration;
 
 use pods_core::policy::{DictationFact, DictationRequest};
-use pods_fake::doap::{Doap, Table};
+use pods_fake::doap::{Doap, MODE_SETTLE, Table};
 use pods_fake::{Pods, Profile, pair};
 use pods_proto::addr::BdAddr;
 use pods_proto::dictation::{DictationPacket, Event};
@@ -21,7 +21,7 @@ use tokio::sync::mpsc::{self, error::TryRecvError};
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, sleep, timeout};
 
-use super::{ARM_ANSWER_MS, DICTATION_REQUEST_QUEUE, Outlet, run, told};
+use super::{ARM_ANSWER_MS, ArmId, DICTATION_REQUEST_QUEUE, Outlet, TaggedRequest, run, told};
 use crate::daemon::link::tests::{HANG_LIMIT, refusing};
 use crate::daemon::link::{self, Connector, Input, Open};
 use crate::daemon::mic::Tap;
@@ -83,7 +83,7 @@ fn hold_clock() -> HeldClock {
 
 /// The adapter on the test's runtime, with the two queues its driver holds.
 struct Bench {
-    requests: mpsc::Sender<DictationRequest>,
+    requests: mpsc::Sender<TaggedRequest>,
     facts: mpsc::Receiver<Input>,
     tap: Arc<Tap>,
     adapter: JoinHandle<()>,
@@ -104,13 +104,16 @@ impl Bench {
     }
 
     async fn ask(&self, request: DictationRequest) {
-        self.requests.send(request).await.unwrap();
+        self.requests
+            .send((ArmId::default(), request))
+            .await
+            .unwrap();
     }
 
     /// The next thing the driver is told, which must come inside `HANG_LIMIT`.
     async fn told(&mut self) -> DictationFact {
         match timeout(HANG_LIMIT, self.facts.recv()).await {
-            Ok(Some(Input::Dictation(fact))) => fact,
+            Ok(Some(Input::Dictation(_, fact))) => fact,
             other => panic!("a dictation fact within {HANG_LIMIT:?}, not {other:?}"),
         }
     }
@@ -129,7 +132,7 @@ impl Bench {
     /// What the driver was told and has not read yet; none when it was told nothing.
     fn told_so_far(&mut self) -> Option<DictationFact> {
         match self.facts.try_recv() {
-            Ok(Input::Dictation(fact)) => Some(fact),
+            Ok(Input::Dictation(_, fact)) => Some(fact),
             Ok(other) => panic!("a dictation fact, not {other:?}"),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => panic!("the dictation adapter died"),
@@ -171,10 +174,11 @@ impl Served {
         })
     }
 
-    /// The mode as the driver writes it; returns once the pods' microphone runs.
+    /// The mode as the driver writes it; returns once the fake accepts START.
     async fn mode(&self) {
         self.control.try_send(&doap_mode_on()).unwrap();
         wait_for("the mode heard", || self.doap.mode_seen()).await;
+        sleep(MODE_SETTLE).await;
     }
 }
 

@@ -208,6 +208,15 @@ impl Pods {
         }
     }
 
+    /// Closes the attribute channels while the control link stays up.
+    pub fn hang_up_att(&self) {
+        for line in &mut self.shared.lock().lines {
+            if line.side == Side::Att {
+                line.hang_up = true;
+            }
+        }
+    }
+
     /// Returns once every channel `hang_up` marked has ended; one opened since is not waited for.
     pub fn wait_hung_up(&self, deadline: Duration) -> Result<(), Deadline> {
         self.shared.wait_until(deadline, |state| {

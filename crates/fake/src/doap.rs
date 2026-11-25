@@ -16,6 +16,8 @@ use crate::serve::Shared;
 
 /// The audio one frame holds, which is the time between two frames.
 pub const FRAME: Duration = Duration::from_millis(20);
+/// Sitting A refused START at 0 ms and accepted it at 100 ms, the shortest successful wait measured.
+pub const MODE_SETTLE: Duration = Duration::from_millis(100);
 /// The frames the microphone keeps, 1.6 s: what a start can still send of the time before it.
 pub const KEPT_FRAMES: usize = 80;
 /// The frames a start sends at once and how many go in a notification, until a test sets others; as a Mac was seen to get them.
@@ -161,6 +163,18 @@ impl Doap {
         self.shared.doap(|doap| doap.mic.is_some())
     }
 
+    /// The attribute channels open now.
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.shared.doap(|doap| doap.lines.len())
+    }
+
+    /// `SelectCodec` writes received after all four notification subscriptions.
+    #[must_use]
+    pub fn selections(&self) -> u32 {
+        self.shared.doap(|doap| doap.selections)
+    }
+
     /// From a START heard with the mode set, or its release, until the end of its stream; the score may still be on its way.
     #[must_use]
     pub fn streaming(&self) -> bool {
@@ -201,6 +215,7 @@ pub(crate) struct Machine {
     /// What a test made the pods send on a channel, oldest first.
     owed: VecDeque<(usize, Vec<u8>)>,
     starts: u32,
+    selections: u32,
     stops: Vec<u8>,
     refused: u32,
     confirmed: u32,
@@ -214,6 +229,7 @@ pub(crate) struct Machine {
 struct Mic {
     control: usize,
     since: Instant,
+    mode_set_at: Instant,
     /// The frames heard so far, which is the place of the next one.
     heard: u32,
     kept: VecDeque<Heard>,
@@ -260,6 +276,7 @@ impl Machine {
             lines: Vec::new(),
             owed: VecDeque::new(),
             starts: 0,
+            selections: 0,
             stops: Vec::new(),
             refused: 0,
             confirmed: 0,
@@ -271,14 +288,25 @@ impl Machine {
 
     /// A frame the host sent on control channel `line` at `now`; only the mode is this service's.
     pub(crate) fn on_control(&mut self, line: usize, sdu: &[u8], now: Instant) {
-        // corner: assumed until measured on hardware, the mode set again changes nothing
-        if self.mic.is_none() && sdu == setting(DOAP_MODE, 1) {
-            self.mic = Some(Mic {
-                control: line,
-                since: now,
-                heard: 0,
-                kept: VecDeque::new(),
-            });
+        let on = sdu == setting(DOAP_MODE, 1);
+        match &mut self.mic {
+            None if on => {
+                self.mic = Some(Mic {
+                    control: line,
+                    since: now,
+                    mode_set_at: now,
+                    heard: 0,
+                    kept: VecDeque::new(),
+                });
+            }
+            Some(mic) if mic.control == line && on => {
+                // corner: assumed until measured on hardware, a second mode write requires settling but keeps what the microphone heard.
+                mic.mode_set_at = now;
+            }
+            Some(mic) if mic.control == line && sdu == setting(DOAP_MODE, 2) => {
+                (self.mic, self.run, self.held) = (None, None, None);
+            }
+            _ => {}
         }
     }
 
@@ -345,6 +373,13 @@ impl Machine {
             }
             return vec![sample::WRITTEN.to_vec()];
         }
+        if pdu == host::select_codec(&served)
+            && self.lines.iter().any(|(open, descriptors)| {
+                *open == line && served.cccds.iter().all(|cccd| descriptors.contains(cccd))
+            })
+        {
+            self.selections = self.selections.saturating_add(1);
+        }
         table::answer(Some(&served), pdu).into_iter().collect()
     }
 
@@ -408,7 +443,10 @@ impl Machine {
     /// Whether the START just heard on `line` is refused; one that is not starts the stream, or waits while starts are held.
     fn on_start(&mut self, line: usize, now: Instant) -> bool {
         self.starts = self.starts.saturating_add(1);
-        if self.mic.is_none() {
+        let Some(mic) = &self.mic else {
+            return true;
+        };
+        if now.saturating_duration_since(mic.mode_set_at) < MODE_SETTLE {
             return true;
         }
         if self.refusals > 0 {

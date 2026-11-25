@@ -179,6 +179,7 @@ struct Properties {
     advert_intake: &'static str,
     microphone: &'static str,
     mic: &'static str,
+    mic_dictation: &'static str,
     mic_start_failures: u32,
     mic_source: String,
     mic_counts: MicCounts,
@@ -222,13 +223,14 @@ impl Properties {
             advert_intake: state.advert_intake.word(),
             microphone: state.microphone.preference().word(),
             mic: state.microphone.code().word(),
+            mic_dictation: state.mic_dictation.word(),
             mic_start_failures: state.microphone.start_failures(),
             mic_source: state.mic_source(),
             mic_counts: state.microphone.counts(),
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 23] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 24] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -249,6 +251,7 @@ impl Properties {
             ("AdvertIntake", Variant::from(self.advert_intake)),
             ("Microphone", Variant::from(self.microphone)),
             ("Mic", Variant::from(self.mic)),
+            ("MicDictation", Variant::from(self.mic_dictation)),
             ("MicStartFailures", Variant::from(self.mic_start_failures)),
             ("MicSource", Variant::from(self.mic_source.as_str())),
             ("MicUnderruns", Variant::from(self.mic_counts.underruns)),
@@ -386,6 +389,11 @@ impl Omapods {
     #[zbus(property)]
     fn mic(&self) -> &'static str {
         self.now().mic
+    }
+
+    #[zbus(property)]
+    fn mic_dictation(&self) -> &'static str {
+        self.now().mic_dictation
     }
 
     #[zbus(property)]

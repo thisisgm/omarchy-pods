@@ -256,6 +256,12 @@ fn doap_mode_on_is_the_packet_the_pods_took() {
 }
 
 #[test]
+fn doap_mode_off_gives_the_stem_back() {
+    const MODE_OFF: [u8; 11] = doap_mode_off();
+    assert_eq!(MODE_OFF.to_vec(), hex("04 00 04 00 09 00 13 02 00 00 00"));
+}
+
+#[test]
 fn the_builders_give_the_bytes_seen_at_the_observed_handles() {
     let handles = Handles::OBSERVED;
     let subscriptions = handles.cccds.map(cccd_on);
