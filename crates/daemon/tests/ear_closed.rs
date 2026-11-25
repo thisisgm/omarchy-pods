@@ -10,8 +10,11 @@ mod support;
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use pods_core::policy::BOTH_OUT_SETTLE_MS;
     use pods_fake::Profile;
-    use pods_samples::Placed::{InEar, OutOfEar};
+    use pods_samples::Placed::{self, InEar, OutOfEar};
     use pods_samples::advert::HEADER_LEN;
 
     use super::support::HANG_LIMIT;
@@ -19,11 +22,19 @@ mod tests {
     use super::support::audio::PERCENT;
     use super::support::audio::wire::sink_named;
     use super::support::players::{Asked, Playback};
-    use super::support::rig::{Device, Rig, pause_ended};
+    use super::support::rig::{Device, REAL_TIME_SLACK, Rig, pause_ended};
+    use super::support::settings::set;
+
+    const SETTLE: Duration = Duration::from_millis(BOTH_OUT_SETTLE_MS);
 
     /// `HEADER` with both buds in an ear: status `0x2a`, the left bud primary and out of the case.
     const BOTH_IN_HEADER: [u8; HEADER_LEN] = [
         0x07, 0x19, 0x01, 0x27, 0x20, 0x2a, 0x88, 0x47, 0x00, 0x00, 0x04,
+    ];
+
+    /// `HEADER` with neither bud in an ear: status `0x20`, the left bud primary and out of the case.
+    const BOTH_OUT_HEADER: [u8; HEADER_LEN] = [
+        0x07, 0x19, 0x01, 0x27, 0x20, 0x20, 0x88, 0x47, 0x00, 0x00, 0x04,
     ];
 
     /// The sample keys stored, the fake audio server holding the pods' sink as its default, then the pods linked and the advert monitor dropped.
@@ -118,6 +129,43 @@ mod tests {
         assert_eq!(player.asked(), [Asked::Pause, Asked::Play]);
         player.leave();
         rig.finish();
+    }
+
+    /// After a loss the adverts show both buds in, then as `out` has them; the pods link again placed the same, and no pause comes once their sink is read.
+    fn out_in_an_advert_after_a_loss_pauses_nothing(
+        prefers: &str,
+        out: [u8; HEADER_LEN],
+        primary: Placed,
+    ) {
+        let (rig, device) = linked_with_keys();
+        set(rig.session(), "ear_detection", prefers);
+        let player = rig.player("one", Playback::Playing);
+        rig.disconnect();
+        rig.bluez().wait_monitors(1, HANG_LIMIT);
+        let both_in = ours(BOTH_IN_HEADER, PAYLOAD);
+        let advertiser = rig.bluez().advertise(&both_in.address, &both_in.data);
+        wait_worn(&rig, 2);
+        advertiser.update(&ours(out, PAYLOAD).data);
+        wait_worn(&rig, usize::from(primary == InEar));
+        device.pods.set_ear(primary, OutOfEar);
+        rig.relink(&device);
+        rig.wait_sink_told();
+        // A pause left waiting for the link or for this sink read would come within one settle of the read.
+        player.none_for(SETTLE.saturating_add(REAL_TIME_SLACK));
+        assert_eq!(player.asked(), []);
+        assert_eq!(player.playback(), Playback::Playing);
+        player.leave();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_bud_out_in_an_advert_after_a_loss_pauses_nothing_once_relinked() {
+        out_in_an_advert_after_a_loss_pauses_nothing("one", HEADER, InEar);
+    }
+
+    #[test]
+    fn both_buds_out_in_an_advert_after_a_loss_pause_nothing_once_relinked() {
+        out_in_an_advert_after_a_loss_pauses_nothing("both", BOTH_OUT_HEADER, OutOfEar);
     }
 
     #[test]

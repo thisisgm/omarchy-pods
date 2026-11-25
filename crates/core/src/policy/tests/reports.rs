@@ -78,6 +78,8 @@ fn a_pause_report_from_before_a_loss_is_dropped_after_the_relink() {
         ..State::default()
     };
     let now = Duration::ZERO;
+    let up = || Fact::Link(Signal::Up { device: device() });
+    drop(policy.step(&state, up(), now));
     let one_out = |policy: &mut Policy, state: &mut State| {
         drop(policy.step(state, sink_in(OURS, SinkState::Running), now));
         state.ear = EarReport::from_in_ear(true, true);
@@ -94,8 +96,7 @@ fn a_pause_report_from_before_a_loss_is_dropped_after_the_relink() {
     };
     drop(policy.step(&state, Fact::Link(lost), now));
     state.connected = true;
-    let up = Signal::Up { device: device() };
-    drop(policy.step(&state, Fact::Link(up), now));
+    drop(policy.step(&state, up(), now));
     let after_relink = one_out(&mut policy, &mut state);
     assert_ne!(before_loss, after_relink);
     let late = Fact::Paused(before_loss, vec![player()]);
@@ -116,6 +117,8 @@ fn a_late_pause_with_the_buds_back_plays_only_its_own_players() {
     };
     state.ear = EarReport::from_in_ear(true, true);
     let now = Duration::ZERO;
+    let up = Fact::Link(Signal::Up { device: device() });
+    drop(policy.step(&state, up, now));
     let other = PlayerOwner::new(&format!("{PLAYER}2")).unwrap();
     assert_eq!(policy.step(&state, Fact::Changed, now), []);
     assert_eq!(
