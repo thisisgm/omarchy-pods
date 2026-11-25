@@ -151,7 +151,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Starting, RunningMarker, RUN),
         (Starting, StoppedMarker, STARTING),
         (Starting, Deadline, RETRY),
-        (Starting, Down, RESET),
+        (Starting, Down, same(Restoring)),
         (Starting, Lost, RESET),
         (Starting, Changed, STARTING),
         (Starting, Restored, STARTING),
@@ -162,7 +162,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (LastTry, RunningMarker, RUN),
         (LastTry, StoppedMarker, LAST_TRY),
         (LastTry, Deadline, UNANSWERED),
-        (LastTry, Down, RESET),
+        (LastTry, Down, same(Restoring)),
         (LastTry, Lost, RESET),
         (LastTry, Changed, LAST_TRY),
         (LastTry, Restored, LAST_TRY),
@@ -173,7 +173,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Owed, RunningMarker, RUN),
         (Owed, StoppedMarker, same(Owed)),
         (Owed, Deadline, RETRY),
-        (Owed, Down, RESET),
+        (Owed, Down, same(Restoring)),
         (Owed, Lost, RESET),
         (Owed, Changed, same(Owed)),
         (Owed, Restored, same(Owed)),
@@ -184,7 +184,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Running, RunningMarker, RUN),
         (Running, StoppedMarker, RESTORING_UNASKED),
         (Running, Deadline, RUN),
-        (Running, Down, RESET),
+        (Running, Down, same(Restoring)),
         (Running, Lost, RESET),
         (Running, Changed, RUN),
         (Running, Restored, RUN),
@@ -195,7 +195,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Lingering, RunningMarker, RUN),
         (Lingering, StoppedMarker, RESTORING_UNASKED),
         (Lingering, Deadline, WAIT),
-        (Lingering, Down, RESET),
+        (Lingering, Down, same(Restoring)),
         (Lingering, Lost, RESET),
         (Lingering, Changed, RUN),
         (Lingering, Restored, RUN),
@@ -206,7 +206,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Waiting, RunningMarker, WAIT),
         (Waiting, StoppedMarker, RESTORING_UNASKED),
         (Waiting, Deadline, WAIT),
-        (Waiting, Down, RESET),
+        (Waiting, Down, same(Restoring)),
         (Waiting, Lost, RESET),
         (Waiting, Changed, WAIT),
         (Waiting, Restored, WAIT),
@@ -217,7 +217,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Stopping, RunningMarker, same(Stopping)),
         (Stopping, StoppedMarker, same(Restoring)),
         (Stopping, Deadline, same(Restoring)),
-        (Stopping, Down, RESET),
+        (Stopping, Down, same(Restoring)),
         (Stopping, Lost, RESET),
         (Stopping, Changed, same(Stopping)),
         (Stopping, Restored, same(Stopping)),
@@ -239,7 +239,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Restoring, RunningMarker, WAIT),
         (Restoring, StoppedMarker, same(Restoring)),
         (Restoring, Deadline, RESTART),
-        (Restoring, Down, RESET),
+        (Restoring, Down, same(Restoring)),
         (Restoring, Lost, RESET),
         (Restoring, Changed, same(Restoring)),
         (Restoring, Restored, RESTART),
@@ -250,7 +250,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (RestoringUnasked, RunningMarker, WAIT),
         (RestoringUnasked, StoppedMarker, RESTORING_UNASKED),
         (RestoringUnasked, Deadline, UNASKED),
-        (RestoringUnasked, Down, RESET),
+        (RestoringUnasked, Down, same(Restoring)),
         (RestoringUnasked, Lost, RESET),
         (RestoringUnasked, Changed, RESTORING_UNASKED),
         (RestoringUnasked, Restored, UNASKED),
@@ -299,6 +299,7 @@ two_dictations_inside_the_linger_send_one_start_and_no_stop Lingering Changed Al
 setting_off_with_no_bud_worn_sends_stop_and_one_restore_inside_the_bound Stopping StoppedMarker Off
 setting_off_with_no_bud_worn_sends_stop_and_one_restore_inside_the_bound Restoring Restored Off
 setting_off_with_a_suspended_sink_stops_at_once_and_touches_no_sink StoppingQuiet StoppedMarker Off
+a_sink_that_wakes_during_a_quiet_stop_is_restored Stopping StoppedMarker Off
 setting_off_while_starting_restores_after_the_owed_stop Owed RunningMarker Off
 setting_off_while_starting_restores_after_the_owed_stop Stopping StoppedMarker Off
 the_restore_waits_for_the_stopped_marker Stopping Changed Off
@@ -321,7 +322,12 @@ exit_with_the_stop_and_the_restore_stalled_ends_at_the_bound Stopping Deadline E
 exit_with_the_server_lost_inside_the_restore_resumes_the_sink_before_it_ends Restoring Restored Exit
 a_restore_owed_while_the_server_was_down_is_dropped_by_a_newer_start Stopped Changed AlwaysKnown
 exit_with_the_uplink_stopped_is_answered_at_once Stopped Exit Auto
-the_link_dropping_in_stopping_orders_no_restore Stopping Lost Off
+a_device_removed_during_a_stop_writes_nothing_to_its_gone_sink Stopping Down Off
+a_channel_end_in_stopping_restores_the_running_sink Stopping Down Off
+a_channel_end_while_live_restores_the_running_sink Running Down AlwaysKnown
+a_channel_end_before_the_running_marker_restores_the_running_sink Starting Down AlwaysKnown
+a_sink_removed_during_a_channel_end_restore_keeps_the_audio_server_up Running Down AlwaysKnown
+a_sink_removed_during_a_channel_end_restore_keeps_the_audio_server_up Restoring Restored AlwaysKnown
 the_stop_waits_while_the_sink_is_not_suspended_and_a_bud_is_worn Lingering Deadline Auto
 an_idle_sink_still_holds_the_stop Waiting Changed Auto
 the_stop_goes_out_when_the_sink_is_suspended_and_no_restore_follows Waiting Quiet Auto

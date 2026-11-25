@@ -42,6 +42,12 @@ impl Uplink {
         self.shared.uplink(|uplink| uplink.hold_starts = hold);
     }
 
+    /// Starts the uplink on START while keeping both running markers from the host.
+    pub fn hold_running_markers(&self) {
+        self.shared
+            .uplink(|uplink| uplink.hold_running_markers = true);
+    }
+
     /// Answers the oldest held START as one that just came: both running markers, then audio.
     pub fn release_start(&self) {
         self.shared
@@ -113,8 +119,13 @@ impl Uplink {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each fault can be set independently."
+)]
 pub(crate) struct Machine {
     hold_starts: bool,
+    hold_running_markers: bool,
     hold_stops: bool,
     never_answer: bool,
     /// The channel of each START heard and not answered, oldest first.
@@ -162,6 +173,7 @@ impl Machine {
     pub(crate) fn new() -> Self {
         Self {
             hold_starts: false,
+            hold_running_markers: false,
             hold_stops: false,
             never_answer: false,
             held_starts: VecDeque::new(),
@@ -214,7 +226,7 @@ impl Machine {
         let Some(mut run) = self.run.take_if(|run| run.line == line) else {
             return due;
         };
-        if !mem::replace(&mut run.announced, true) {
+        if !self.hold_running_markers && !mem::replace(&mut run.announced, true) {
             due.extend(markers(true));
         }
         while !run.ended() && self.wait_of(&run, now).is_zero() {
@@ -231,7 +243,7 @@ impl Machine {
     /// How long channel `line` may wait at `now` before something is due on it; none while the uplink does not run on it.
     pub(crate) fn wait(&self, line: usize, now: Instant) -> Option<Duration> {
         let run = self.run.as_ref().filter(|run| run.line == line)?;
-        let owed = !run.announced || run.ended();
+        let owed = (!self.hold_running_markers && !run.announced) || run.ended();
         Some(if owed {
             Duration::ZERO
         } else {

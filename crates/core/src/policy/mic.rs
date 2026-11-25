@@ -23,9 +23,9 @@ pub use node::{MicFact, MicRequest, OpenId, SOURCE_BROKEN_LINE, SOURCE_UP_LINE, 
 use tries::{Read, Try, Watch};
 pub use tries::{START_TRIES, UPLINK_STALL_MS, stalled_line, start_sent_line, unanswered_line};
 
-/// The slowest answer to a START measured on the pods.
-const SLOWEST_START_ANSWER_MS: u64 = 510;
-/// About three times `SLOWEST_START_ANSWER_MS`.
+/// The slowest measured START answer, from sitting H1's slow tail.
+const SLOWEST_START_ANSWER_MS: u64 = 610;
+/// About two and a half times `SLOWEST_START_ANSWER_MS`.
 pub const START_ANSWER_MS: u64 = 1500;
 /// About three times the slowest answer to a STOP measured on the pods, rounded up.
 pub const STOP_ANSWER_MS: u64 = 1500;
@@ -74,7 +74,7 @@ enum Phase {
         owed: bool,
     },
     Running(Hold, Watch),
-    /// A STOP went out at `since` and the pods have not said they stopped; `restore` says whether to restore the sink, and `spent` what the stop ends in.
+    /// A STOP went out at `since` and the pods have not said they stopped; `restore` says whether the sink needs a restore, and `spent` what the stop ends in.
     Stopping {
         since: Duration,
         restore: bool,
@@ -88,7 +88,7 @@ enum Phase {
     },
 }
 
-/// Why a STOP went out; `Quiet` needs no restore because the sink was already suspended or absent.
+/// Why a STOP went out; only `Quiet` starts without an owed restore because the sink was already suspended or absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Word {
     Quiet,
@@ -160,10 +160,7 @@ impl Mic {
         let mut effects = Vec::new();
         self.node.step(state, fact, now, &mut effects);
         match fact {
-            Fact::Link(Signal::Down) => {
-                self.phase = Phase::Stopped { spent: None };
-                self.unconfirmed_stop = false;
-            }
+            Fact::Link(Signal::Down) => self.down(now, &mut effects),
             Fact::Link(Signal::Lost { .. }) => {
                 self.phase = Phase::Stopped { spent: None };
                 self.unconfirmed_stop = false;
@@ -186,6 +183,27 @@ impl Mic {
         }
         self.follow(state, now, &mut effects);
         effects
+    }
+
+    /// A channel drop can leave the device and its sink up, so an owed restore still runs.
+    fn down(&mut self, now: Duration, effects: &mut Vec<Effect>) {
+        self.unconfirmed_stop = false;
+        self.phase = match self.phase {
+            Phase::Stopping { restore: true, .. } => self.restore(None, now, effects),
+            // The pods can start the uplink before the running marker arrives.
+            Phase::Starting { .. } | Phase::Running(..) if !self.quiet && !self.asleep => {
+                self.restore(None, now, effects)
+            }
+            Phase::Restoring { since, id, .. } => Phase::Restoring {
+                since,
+                id,
+                spent: None,
+            },
+            Phase::Stopped { .. }
+            | Phase::Starting { .. }
+            | Phase::Running(..)
+            | Phase::Stopping { restore: false, .. } => Phase::Stopped { spent: None },
+        };
     }
 
     /// The pods' word is the truth of whether the uplink runs, except that a START waits only for the running marker.
@@ -250,9 +268,9 @@ impl Mic {
     fn audio(&mut self, fact: AudioFact, effects: &mut Vec<Effect>) {
         match fact {
             AudioFact::Up => {}
-            AudioFact::Down => self.quiet = false,
+            AudioFact::Down => self.set_quiet(false),
             AudioFact::Sink(sink) => {
-                self.quiet = sink.is_none_or(|sink| sink.state == SinkState::Suspended);
+                self.set_quiet(sink.is_none_or(|sink| sink.state == SinkState::Suspended));
             }
             AudioFact::Restored(answered) => {
                 if let Phase::Restoring { id, spent, .. } = self.phase
@@ -266,6 +284,13 @@ impl Mic {
                     "mic: recorders (dictation {dictation}, other {other})"
                 )));
             }
+        }
+    }
+
+    fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
+        if !quiet && let Phase::Stopping { restore, .. } = &mut self.phase {
+            *restore = true;
         }
     }
 

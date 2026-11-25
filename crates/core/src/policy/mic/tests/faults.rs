@@ -53,6 +53,82 @@ fn the_failures_outlive_the_link_and_reach_the_state() {
 }
 
 #[test]
+fn a_channel_end_during_an_owed_stop_still_restores() {
+    for from in [Kind::Starting, Kind::Owed, Kind::Stopping, Kind::Running] {
+        let (effects, after) = run(from, Event::Down, Column::Off);
+        assert_eq!(
+            effects,
+            [Effect::Audio(AudioRequest::Restore(RestoreId(0)))],
+            "{from:?}"
+        );
+        assert_eq!(kind(after.phase), Kind::Restoring, "{from:?}");
+    }
+
+    for (from, event) in [
+        (Kind::StoppingQuiet, Event::Down),
+        (Kind::Stopping, Event::Lost),
+    ] {
+        let (effects, after) = run(from, event, Column::Off);
+        assert_eq!(effects, [], "{from:?}, {event:?}");
+        assert_eq!(kind(after.phase), Kind::Stopped, "{from:?}, {event:?}");
+    }
+
+    let (down, at, state) = stepped(Event::Down, Column::Off);
+    for from in [Kind::Starting, Kind::Owed, Kind::Running] {
+        for (quiet, asleep) in [(true, false), (false, true)] {
+            let mut mic = Mic {
+                quiet,
+                asleep,
+                ..mic(phase(from))
+            };
+            assert_eq!(
+                mic.step(&state, &down, at),
+                [],
+                "{from:?}, {quiet}, {asleep}"
+            );
+            assert_eq!(
+                kind(mic.phase),
+                Kind::Stopped,
+                "{from:?}, {quiet}, {asleep}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_channel_end_keeps_the_pending_restore_until_it_answers() {
+    let id = RestoreId(1);
+    let mut mic = Mic {
+        phase: Phase::Restoring {
+            since: SENT,
+            id,
+            spent: Some(Spent::Unasked),
+        },
+        unconfirmed_stop: true,
+        exiting: true,
+        ..Mic::default()
+    };
+    let (down, at, state) = stepped(Event::Down, Column::Exit);
+    let deadline = mic.deadline();
+    assert_eq!(mic.step(&state, &down, at), []);
+    assert!(!mic.unconfirmed_stop);
+    assert_eq!(
+        mic.phase,
+        Phase::Restoring {
+            since: SENT,
+            id,
+            spent: None,
+        }
+    );
+    assert_eq!(mic.deadline(), deadline);
+
+    let earlier = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    assert_eq!(mic.step(&state, &earlier, at), []);
+    let restored = Fact::Audio(AudioFact::Restored(id));
+    assert_eq!(mic.step(&state, &restored, at), [Effect::Exited]);
+}
+
+#[test]
 fn a_running_marker_with_no_want_meets_the_gate_at_once() {
     let marker = Fact::Link(Signal::Uplink(UplinkState::Running));
     for (worn, quiet, sent, to, line) in [
@@ -71,6 +147,45 @@ fn a_running_marker_with_no_want_meets_the_gate_at_once() {
         assert_eq!(lines(&effects), [line], "{worn} {quiet}");
         assert_eq!(kind(mic.phase), to, "{worn} {quiet}");
     }
+}
+
+#[test]
+fn a_sink_that_wakes_under_a_quiet_stop_owes_a_restore() {
+    let (stopped, at, state) = stepped(Event::StoppedMarker, Column::Off);
+    let quiet_stop = Mic {
+        quiet: true,
+        ..mic(phase(Kind::StoppingQuiet))
+    };
+    for (name, fact) in [
+        ("running", sink_in(true, SinkState::Running)),
+        ("idle", sink_in(true, SinkState::Idle)),
+        ("audio server down", Fact::Audio(AudioFact::Down)),
+    ] {
+        let mut promoted = quiet_stop;
+        assert_eq!(promoted.step(&state, &fact, at), [], "{name}");
+        assert_eq!(kind(promoted.phase), Kind::Stopping, "{name}");
+        for answer in [Event::StoppedMarker, Event::Deadline] {
+            let mut mic = promoted;
+            let (fact, at, _) = stepped(answer, Column::Off);
+            let effects = mic.step(&state, &fact, at);
+            assert!(
+                effects.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0)))),
+                "{name}, {answer:?}: {effects:?}"
+            );
+            assert_eq!(kind(mic.phase), Kind::Restoring, "{name}, {answer:?}");
+        }
+    }
+
+    let mut still_quiet = quiet_stop;
+    let quiet = sink_in(true, SinkState::Suspended);
+    assert_eq!(still_quiet.step(&state, &quiet, at), []);
+    assert_eq!(kind(still_quiet.phase), Kind::StoppingQuiet);
+    let effects = still_quiet.step(&state, &stopped, at);
+    assert!(
+        matches!(effects.as_slice(), [Effect::Log(_)]),
+        "{effects:?}"
+    );
+    assert_eq!(kind(still_quiet.phase), Kind::Stopped);
 }
 
 #[test]

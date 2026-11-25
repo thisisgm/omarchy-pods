@@ -120,6 +120,27 @@ mod tests {
     }
 
     #[test]
+    fn a_sink_that_wakes_during_a_quiet_stop_is_restored() {
+        let (mut rig, device, audio) = live(SinkState::Suspended);
+        device.pods.uplink().hold_stops(true);
+        set(rig.session(), "microphone", "off");
+        wait_stop(&device);
+        rig.wait_logged(STOP_QUIET_LINE);
+        move_sink(&rig, &audio, &device, SinkState::Running);
+        audio.assert_only_reads();
+
+        let released = Instant::now();
+        device.pods.uplink().release_stop();
+        let (suspended, resumed) = wait_restore(&audio, &device);
+        assert!(
+            suspended >= released,
+            "the suspend came before the STOP answer"
+        );
+        assert_hold(suspended, resumed);
+        rig.finish();
+    }
+
+    #[test]
     fn setting_off_while_starting_restores_after_the_owed_stop() {
         let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
         device.pods.uplink().hold_starts(true);

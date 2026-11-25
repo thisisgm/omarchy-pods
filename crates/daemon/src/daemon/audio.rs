@@ -20,7 +20,7 @@ use pods_core::policy::audio::{
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{
-    AuthParams, Command, CommandTag, Prop, Props, SubscriptionMask, SuspendParams,
+    AuthParams, Command, CommandTag, Prop, Props, PulseError, SubscriptionMask, SuspendParams,
 };
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, error::TrySendError};
@@ -46,6 +46,12 @@ const CLIENT_NAME: &CStr = c"librepods";
 
 /// The cookie's length in the auth request; `PipeWire`'s pulse server does not check its bytes.
 const COOKIE_LENGTH: usize = 256;
+
+#[expect(
+    clippy::as_conversions,
+    reason = "the discriminant is the PulseAudio protocol's error code"
+)]
+const NO_ENTITY: u32 = PulseError::NoEntity as u32;
 
 /// Sinks added, removed or changed in volume, the server's default sink, and the sources and record streams that come, go or link.
 const EVENTS: SubscriptionMask = SubscriptionMask::SINK
@@ -460,16 +466,29 @@ impl<'a> Follower<'a> {
                     || (self.suspended && is_suspended(fact.state)) =>
             {
                 let began = Instant::now();
-                if !is_suspended(fact.state) {
-                    self.suspended = true;
-                    connection.suspend(index, true, stale).await?;
-                    if fact.state == SinkState::Running {
-                        sleep(Duration::from_millis(RESTORE_HOLD_MS)).await;
+                let restored = async {
+                    if !is_suspended(fact.state) {
+                        self.suspended = true;
+                        connection.suspend(index, true, stale).await?;
+                        if fact.state == SinkState::Running {
+                            sleep(Duration::from_millis(RESTORE_HOLD_MS)).await;
+                        }
                     }
+                    connection.suspend(index, false, stale).await
                 }
-                connection.suspend(index, false, stale).await?;
-                let took = began.elapsed().as_millis();
-                log(&format!("mic: restore done in {took} ms"));
+                .await;
+                match restored {
+                    Ok(()) => {
+                        let took = began.elapsed().as_millis();
+                        log(&format!("mic: restore done in {took} ms"));
+                    }
+                    // The sink vanished since it was read, so refresh and settle as for a missing sink.
+                    Err(Lost::Refused {
+                        command: CommandTag::SuspendSink,
+                        code: NO_ENTITY,
+                    }) => *stale |= SubscriptionMask::SINK,
+                    Err(lost) => return Err(lost.into()),
+                }
             }
             Some(_) if owed => log(RESTORE_SKIPPED_LINE),
             _ => {}
