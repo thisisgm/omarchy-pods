@@ -171,6 +171,10 @@ impl FakeAudio {
         self.change(|state| state.set_default_sink(name));
     }
 
+    pub(crate) fn announce_server_change(&self) {
+        self.change(State::announce_server_change);
+    }
+
     pub(crate) fn channel_volume(&self, name: &str) -> ChannelVolume {
         self.state().channel_volume(name)
     }
