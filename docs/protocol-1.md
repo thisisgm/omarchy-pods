@@ -175,18 +175,18 @@ A reply carries the request's `id` and `ok`.
   drop can still leave the sink up and a restore owed. The daemon skips the
   restore for a sink that is already suspended or absent. With no audio server
   it owes the restore until the server is back, and a newer START drops a
-  restore not yet begun. Unsolicited uplink markers leave that restore owed
-  and do not request another.
+  restore not yet begun. Unsolicited uplink markers leave that restore owed.
   At a stop of the daemon the STOP has 2 s to go out, be answered and have its
   restore done; the daemon then exits, and logs that the uplink still runs
   when a worn bud's sink was not known to be suspended or gone in that time.
   A START the AirPods leave unanswered is sent again, three tries in all,
   unless the want or the link is gone or the daemon is stopping, and no STOP
-  is sent while one waits for its answer. An uplink the AirPods say
-  runs while nothing wants it, such as a late answer, is stopped as one whose
-  linger has passed. A running report less than 2.5 s after a START was sent
-  (the 1.5 s answer wait plus one 1 s stall window) still belongs to the
-  daemon's START. A STOP the AirPods do not confirm in time is taken as
+  is sent while one waits for its answer. With no current want, an uplink
+  that answers a late START is stopped as one whose linger has passed. While
+  stopped or restoring playback, the daemon accepts a running marker only
+  within the outstanding START window. That window is 2.5 s after a START
+  (the 1.5 s answer wait plus one 1 s stall window) or 1 s after a stall
+  retry. A STOP the AirPods do not confirm in time is taken as
   done, and a later START still goes out. If the pods stop an uplink the daemon
   started, the daemon restores playback at once. After a stop from the pods,
   another START waits until the want has gone and come back. While a headset

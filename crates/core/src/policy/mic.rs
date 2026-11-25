@@ -165,7 +165,6 @@ struct Audio {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ownership {
-    Unowned,
     Owned,
 }
 
@@ -300,7 +299,7 @@ impl Mic {
         };
     }
 
-    /// The pods' word is the truth of whether the uplink runs, except that a START waits only for the running marker.
+    /// Running answers a daemon START, including a late answer inside its window.
     fn marker(&mut self, marker: UplinkState, now: Duration, effects: &mut Vec<Effect>) {
         self.phase = match (self.phase, marker) {
             (Phase::Starting { since, tried, .. }, UplinkState::Running) => {
@@ -309,18 +308,18 @@ impl Mic {
                 Phase::Running(Hold::Wanted, Watch::new(tried, now), Ownership::Owned)
             }
             (Phase::Stopped(stopped) | Phase::Restoring { stopped, .. }, UplinkState::Running) => {
+                let owned = matches!(
+                    stopped.pending,
+                    PendingMarker::StartUntil(until) | PendingMarker::RetryUntil(until) if now < until
+                );
+                if !owned {
+                    return;
+                }
                 self.armed = None;
-                let ownership = if matches!(stopped.pending,
-                    PendingMarker::StartUntil(until) | PendingMarker::RetryUntil(until) if now < until)
-                {
-                    Ownership::Owned
-                } else {
-                    Ownership::Unowned
-                };
-                if ownership == Ownership::Owned && matches!(self.phase, Phase::Restoring { .. }) {
+                if matches!(self.phase, Phase::Restoring { .. }) {
                     effects.push(Effect::Audio(AudioRequest::CancelRestore));
                 }
-                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now), ownership)
+                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now), Ownership::Owned)
             }
             (
                 Phase::Stopping {
@@ -436,11 +435,11 @@ impl Mic {
                 ..
             } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
-                let pending = match ownership {
-                    Ownership::Owned => PendingMarker::Stop,
-                    Ownership::Unowned => PendingMarker::None,
+                let stopped = Stopped {
+                    spent,
+                    pending: PendingMarker::Stop,
                 };
-                self.finish_stop(restore, ownership, Stopped { spent, pending }, now, effects)
+                self.finish_stop(restore, ownership, stopped, now, effects)
             }
             Phase::Restoring { stopped, .. } => Phase::Stopped(stopped),
             phase @ (Phase::Stopped(_) | Phase::Running(..)) => phase,
@@ -567,12 +566,12 @@ impl Mic {
     /// A restore for an owned uplink under a fresh id, provided the active profile allows it.
     fn restore(
         &mut self,
-        ownership: Ownership,
+        Ownership::Owned: Ownership,
         stopped: Stopped,
         now: Duration,
         effects: &mut Vec<Effect>,
     ) -> Phase {
-        if ownership != Ownership::Owned || self.node.blocked() {
+        if self.node.blocked() {
             return Phase::Stopped(stopped);
         }
         let id = RestoreId(self.next_restore);

@@ -3,35 +3,23 @@
 use super::*;
 
 #[test]
-fn unowned_uplink_quiet_stop_skips_restore_when_the_sink_wakes() {
+fn an_unsolicited_uplink_marker_leaves_later_sink_edges_alone() {
     let state = linked(Column::Auto);
     let running = Fact::Link(Signal::Uplink(UplinkState::Running));
     let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
     let mut mic = Mic::default();
-    assert_eq!(requests(&mic.step(&state, &running, SENT)), NOTHING);
-
-    let quiet = sink_in(true, SinkState::Suspended);
-    let effects = mic.step(&state, &quiet, SENT.saturating_add(SOON));
-    assert_eq!(requests(&effects), STOP);
-    assert_eq!(lines(&effects), [STOP_QUIET_LINE]);
-    let awake = sink_in(true, SinkState::Running);
-    let now = SENT.saturating_add(SOON.saturating_mul(2));
-    assert_no_restore(&mic.step(&state, &awake, now));
-    let mut confirmed = mic;
-    assert_no_restore(&confirmed.step(&state, &stopped, now.saturating_add(SOON)));
-
-    let (down, _, disconnected) = stepped(Event::Down, Column::Auto);
-    let mut dropped = mic;
-    assert_no_restore(&dropped.step(&disconnected, &down, now));
-
-    let overdue = SENT
-        .saturating_add(SOON)
-        .saturating_add(Duration::from_millis(STOP_ANSWER_MS));
-    let expired = mic.step(&state, &Fact::Tick, overdue);
-    assert_eq!(lines(&expired), [STOP_UNCONFIRMED_LINE]);
-    assert_no_restore(&expired);
-    assert_eq!(mic.phase, Phase::Stopped(Stopped::default()));
-    assert_no_restore(&mic.step(&state, &stopped, overdue.saturating_add(SOON)));
+    drop(mic.step(&state, &Fact::Changed, LEFT));
+    let mut now = SENT;
+    for fact in [
+        running,
+        sink_in(true, SinkState::Suspended),
+        sink_in(true, SinkState::Running),
+        stopped,
+    ] {
+        assert_eq!(mic.step(&state, &fact, now), [], "{fact:?}");
+        assert_eq!(mic.phase, Phase::Stopped(Stopped::default()));
+        now = now.saturating_add(SOON);
+    }
 }
 
 #[test]
@@ -73,20 +61,25 @@ fn a_late_first_start_answer_owns_the_uplink_only_inside_its_window() {
 }
 
 #[test]
-fn unowned_uplink_stopped_from_late_skips_restore() {
-    let state = linked(Column::Auto);
+fn a_running_marker_at_the_start_window_boundary_is_ignored() {
+    let state = linked(Column::Off);
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
     let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
     let mut mic = Mic {
-        phase: Phase::Running(Hold::Late, watch(), Ownership::Unowned),
+        phase: Phase::Stopped(Stopped {
+            spent: None,
+            pending: PendingMarker::StartUntil(SENT),
+        }),
         ..Mic::default()
     };
-    let effects = mic.step(&state, &stopped, SENT.saturating_add(SOON));
-    assert_eq!(lines(&effects), [STOPPED_BY_THE_PODS_LINE]);
-    assert_no_restore(&effects);
+    let phase = mic.phase;
+    assert_eq!(mic.step(&state, &running, SENT), []);
+    assert_eq!(mic.step(&state, &stopped, SENT.saturating_add(SOON)), []);
+    assert_eq!(mic.phase, phase);
 }
 
 #[test]
-fn unowned_uplink_preserves_a_pending_playback_restore() {
+fn an_unsolicited_uplink_preserves_a_pending_playback_restore() {
     let always = linked(Column::AlwaysKnown);
     let auto = linked(Column::Auto);
     let running = Fact::Link(Signal::Uplink(UplinkState::Running));
@@ -97,17 +90,16 @@ fn unowned_uplink_preserves_a_pending_playback_restore() {
     let initial = mic.step(&always, &stopped, SENT);
     assert_eq!(restore_ids(&initial), [RestoreId(0)]);
 
+    let id = RestoreId(0);
     let began = mic.step(&auto, &running, SENT.saturating_add(SOON));
     let ended = mic.step(&auto, &stopped, SENT.saturating_add(SOON.saturating_mul(2)));
-    for effects in [began, ended] {
-        assert_eq!(requests(&effects), NOTHING);
-        assert_no_restore(&effects);
-        assert!(!effects.contains(&Effect::Audio(AudioRequest::CancelRestore)));
-    }
+    assert_eq!(began, []);
+    assert_eq!(ended, []);
+    assert!(matches!(mic.phase, Phase::Restoring { id: held, .. } if held == id));
 }
 
 #[test]
-fn unowned_uplink_marker_pairs_do_not_repeat_a_playback_restore() {
+fn unsolicited_uplink_marker_pairs_do_not_repeat_a_playback_restore() {
     const MARKER_PAIRS: u32 = 3;
     let state = linked(Column::Auto);
     let always = linked(Column::AlwaysKnown);
@@ -119,23 +111,18 @@ fn unowned_uplink_marker_pairs_do_not_repeat_a_playback_restore() {
     let initial = mic.step(&always, &stopped, SENT);
     assert!(initial.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0)))));
 
-    let mut restores = Vec::new();
     let mut now = SENT.saturating_add(SOON);
-    for id in 0..MARKER_PAIRS {
+    for pair in 0..MARKER_PAIRS {
         let began = mic.step(&state, &running, now);
-        assert_eq!(requests(&began), NOTHING);
-        assert_no_restore(&began);
-        let resumed = Fact::Audio(AudioFact::Restored(RestoreId(id)));
-        assert_no_restore(&mic.step(&state, &resumed, now));
+        assert_eq!(began, []);
+        if pair == 0 {
+            let resumed = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+            assert_eq!(mic.step(&state, &resumed, now), []);
+        }
         now = now.saturating_add(SOON);
         let ended = mic.step(&state, &stopped, now);
-        assert_eq!(requests(&ended), NOTHING);
-        restores.extend(restore_ids(&ended));
+        assert_eq!(ended, []);
+        assert_eq!(kind(mic.phase), Kind::Stopped);
         now = now.saturating_add(SOON);
     }
-    assert_eq!(restores, []);
-}
-
-fn assert_no_restore(effects: &[Effect]) {
-    assert_eq!(restore_ids(effects), []);
 }

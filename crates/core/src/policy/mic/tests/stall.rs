@@ -35,6 +35,28 @@ fn counted() -> (State, Mic) {
 }
 
 #[test]
+fn a_recorder_linked_after_an_unsolicited_marker_sends_try_one_at_once() {
+    let state = linked(Column::Auto);
+    let mut mic = Mic::default();
+    let id = OpenId::default();
+    drop(mic.step(&state, &Fact::Changed, Duration::ZERO));
+    drop(mic.step(&state, &Fact::Mic(MicFact::Up(id)), Duration::ZERO));
+
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let marker = mic.step(&state, &running, SENT);
+    drop(mic.step(&state, &heard(0), SENT));
+    drop(mic.step(&state, &heard(0), after(1)));
+
+    let recording = Fact::Mic(MicFact::Recording(id, true));
+    let effects = mic.step(&state, &recording, after(1).saturating_add(STALL / 2));
+    assert_eq!(requests(&effects), [UplinkRequest::Start]);
+    assert_eq!(lines(&effects), [start_sent_line(1).as_str()]);
+    assert_eq!(mic.start_failures, 0);
+    assert_eq!(kind(mic.phase), Kind::Starting);
+    assert_eq!(marker, []);
+}
+
+#[test]
 fn a_count_that_moved_reads_again_one_window_later_and_sends_nothing() {
     let (state, mut mic) = counted();
     assert_eq!(mic.deadline(), Some(after(1)));
@@ -130,7 +152,7 @@ fn retried() -> (State, Mic) {
 }
 
 #[test]
-fn a_stall_retry_cancels_a_pending_playback_restore() {
+fn an_unsolicited_marker_does_not_arm_a_stall_during_a_restore() {
     let state = linked(Column::AlwaysKnown);
     let running = Fact::Link(Signal::Uplink(UplinkState::Running));
     let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
@@ -142,22 +164,16 @@ fn a_stall_retry_cancels_a_pending_playback_restore() {
 
     let resumed = SENT.saturating_add(SOON);
     assert_eq!(mic.step(&state, &running, resumed), []);
-    assert!(matches!(
-        mic.phase,
-        Phase::Running(_, _, Ownership::Unowned)
-    ));
+    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
     assert_eq!(mic.step(&state, &heard(COUNT), resumed), []);
 
-    let retry = mic.step(&state, &heard(COUNT), resumed.saturating_add(STALL));
-    assert_eq!(
-        retry,
-        [
-            Effect::Log(stalled_line(STALL.as_millis())),
-            Effect::Audio(AudioRequest::CancelRestore),
-            Effect::Uplink(UplinkRequest::Start),
-            Effect::Log(start_sent_line(2)),
-        ]
-    );
+    let after_stall = resumed.saturating_add(STALL);
+    assert_eq!(mic.step(&state, &heard(COUNT), after_stall), []);
+    assert_eq!(mic.start_failures, 0);
+    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    assert_eq!(mic.step(&state, &restored, after_stall), []);
+    assert_eq!(kind(mic.phase), Kind::Unasked);
 }
 
 #[test]
@@ -384,17 +400,16 @@ fn a_running_uplink_wakes_at_the_earlier_of_its_hold_and_its_check() {
 }
 
 #[test]
-fn a_late_uplink_logs_no_first_audio_for_an_old_start() {
+fn an_unsolicited_marker_leaves_the_failed_start_and_audio_clock_alone() {
     let state = linked(Column::AlwaysKnown);
     let mut mic = Mic {
         armed: Some(SENT),
         ..mic(phase(Kind::Failed))
     };
     let marker = Fact::Link(Signal::Uplink(UplinkState::Running));
-    drop(mic.step(&state, &marker, LATER));
-    assert_eq!(mic.armed, None);
-    let first = Fact::Mic(MicFact::FirstAudio);
-    assert!(quiet(&mic.step(&state, &first, LATER.saturating_add(SOON))));
+    assert!(quiet(&mic.step(&state, &marker, LATER)));
+    assert_eq!(mic.armed, Some(SENT));
+    assert_eq!(kind(mic.phase), Kind::Failed);
 }
 
 #[test]
