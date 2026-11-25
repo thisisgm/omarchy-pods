@@ -130,6 +130,23 @@ fn retried() -> (State, Mic) {
 }
 
 #[test]
+fn a_stall_start_answered_during_restore_tracks_the_next_unasked_stop() {
+    let (state, mut mic) = retried();
+    let at = after(1).saturating_add(SOON);
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let first = mic.step(&state, &stopped, at);
+    assert!(first.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0)))));
+    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    let answered = mic.step(&state, &running, at);
+    assert_eq!(kind(mic.phase), Kind::Running);
+    assert!(answered.contains(&Effect::Audio(AudioRequest::CancelRestore)));
+    let second = mic.step(&state, &stopped, at);
+    assert!(second.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(1)))));
+    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+}
+
+#[test]
 fn off_while_a_stall_start_is_out_owes_the_stop_until_its_answer_window_ends() {
     for worn in [false, true] {
         let (_, mut mic) = retried();
@@ -180,19 +197,34 @@ fn off_while_a_stall_start_is_out_over_a_playing_sink_waits_for_the_gate() {
 }
 
 #[test]
-fn a_sleep_while_a_stall_start_is_out_sends_nothing() {
+fn a_sleep_while_a_stall_start_is_out_keeps_running_until_its_window_ends() {
     let (state, mut mic) = retried();
     // A quiet sink, so the gate is open and only the START unanswered holds the STOP.
     mic.quiet = true;
-    let sleeping = Fact::Sleep(SleepEdge::Sleeping);
-    let effects = mic.step(&state, &sleeping, after(1).saturating_add(SOON));
+    let owed = after(1).saturating_add(SOON);
+    let effects = mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), owed);
     assert_eq!(requests(&effects), NOTHING);
-    assert_eq!(kind(mic.phase), Kind::Stopped);
-    // The START answered asleep is stopped at once.
-    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
-    let effects = mic.step(&state, &running, after(1).saturating_add(SOON));
-    assert_eq!(requests(&effects), [UplinkRequest::Stop]);
-    assert_eq!(kind(mic.phase), Kind::Stopped);
+    assert_eq!(kind(mic.phase), Kind::Running);
+    assert_eq!(lines(&effects), [STOP_OWED_LINE]);
+
+    let mut woke = mic;
+    let effects = mic.step(&state, &Fact::Tick, after(2));
+    assert_eq!(requests(&effects), STOP);
+    assert_eq!(lines(&effects), [Word::Sleep.line()]);
+    assert_eq!(kind_of(&mic), Kind::Asleep);
+
+    let effects = woke.step(&state, &Fact::Sleep(SleepEdge::Woke), owed);
+    assert_eq!(requests(&effects), NOTHING);
+    assert_eq!(kind(woke.phase), Kind::Running);
+    let auto = linked(Column::Auto);
+    assert_eq!(
+        requests(&woke.step(&auto, &Fact::Changed, after(2))),
+        NOTHING
+    );
+    assert_eq!(kind(woke.phase), Kind::Lingering);
+    let linger_ends = after(2).saturating_add(Duration::from_millis(UPLINK_LINGER_MS));
+    assert_eq!(requests(&woke.step(&auto, &Fact::Tick, linger_ends)), STOP);
+    assert_eq!(kind(woke.phase), Kind::StoppingQuiet);
 }
 
 #[test]

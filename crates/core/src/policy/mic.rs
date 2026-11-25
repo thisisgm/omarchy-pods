@@ -117,8 +117,14 @@ enum Spent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Sink state, exit, sleep, and pending STOP confirmation are independent."
+)]
 pub(super) struct Mic {
     phase: Phase,
+    /// A STOP whose deadline passed and whose stopped marker can still arrive.
+    unconfirmed_stop: bool,
     /// The followed sink is known to be suspended or absent; unknown counts as running.
     quiet: bool,
     exiting: bool,
@@ -136,6 +142,7 @@ impl Default for Mic {
     fn default() -> Self {
         Self {
             phase: Phase::Stopped { spent: None },
+            unconfirmed_stop: false,
             quiet: false,
             exiting: false,
             next_restore: 0,
@@ -153,9 +160,13 @@ impl Mic {
         let mut effects = Vec::new();
         self.node.step(state, fact, now, &mut effects);
         match fact {
-            Fact::Link(Signal::Down) => self.phase = Phase::Stopped { spent: None },
+            Fact::Link(Signal::Down) => {
+                self.phase = Phase::Stopped { spent: None };
+                self.unconfirmed_stop = false;
+            }
             Fact::Link(Signal::Lost { .. }) => {
                 self.phase = Phase::Stopped { spent: None };
+                self.unconfirmed_stop = false;
                 self.quiet = false;
             }
             Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
@@ -181,12 +192,20 @@ impl Mic {
     fn marker(&mut self, marker: UplinkState, now: Duration, effects: &mut Vec<Effect>) {
         self.phase = match (self.phase, marker) {
             (Phase::Starting { since, tried, .. }, UplinkState::Running) => {
+                self.unconfirmed_stop = false;
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("{RUNNING_AFTER_PREFIX}{after} ms")));
                 Phase::Running(Hold::Wanted, Watch::new(tried, now))
             }
             (Phase::Stopped { .. }, UplinkState::Running) => {
                 self.armed = None;
+                self.unconfirmed_stop = false;
+                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now))
+            }
+            (Phase::Restoring { .. }, UplinkState::Running) => {
+                self.armed = None;
+                self.unconfirmed_stop = false;
+                effects.push(Effect::Audio(AudioRequest::CancelRestore));
                 Phase::Running(Hold::Late, Watch::new(Try::FIRST, now))
             }
             (
@@ -205,6 +224,16 @@ impl Mic {
             (Phase::Running(..), UplinkState::Stopped) => {
                 effects.push(log(STOPPED_BY_THE_PODS_LINE));
                 self.restore(Some(Spent::Unasked), now, effects)
+            }
+            (Phase::Stopped { spent } | Phase::Restoring { spent, .. }, UplinkState::Stopped)
+                if self.unconfirmed_stop =>
+            {
+                self.unconfirmed_stop = false;
+                if !self.asleep && !self.quiet {
+                    self.restore(spent, now, effects)
+                } else {
+                    self.phase
+                }
             }
             (phase, _) => phase,
         };
@@ -252,6 +281,7 @@ impl Mic {
             }
             Phase::Stopping { restore, spent, .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
+                self.unconfirmed_stop = true;
                 self.stopped(restore, spent, now, effects)
             }
             Phase::Restoring { spent, .. } => Phase::Stopped { spent },
@@ -324,8 +354,7 @@ impl Mic {
             hold.follow(self.wants(state), in_ear, self.quiet, now)
         };
         self.phase = match next {
-            // A stall's START unanswered is a START unanswered: no STOP overtakes it, and a suspend sends nothing.
-            Next::Stop(Word::Sleep) if watch.retrying() => Phase::Stopped { spent: None },
+            // No STOP overtakes an unanswered START sent by the stall check.
             Next::Stop(_) if watch.retrying() => {
                 if !watch.owes() {
                     effects.push(log(STOP_OWED_LINE));
@@ -404,6 +433,7 @@ impl Mic {
     }
 
     fn start(&mut self, tried: Try, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+        self.unconfirmed_stop = false;
         effects.push(Effect::Audio(AudioRequest::CancelRestore));
         self.send_start(tried, now, effects);
         Phase::Starting {
