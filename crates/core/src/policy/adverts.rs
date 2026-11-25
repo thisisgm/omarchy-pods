@@ -6,7 +6,7 @@ use pods_proto::addr::BdAddr;
 use pods_proto::battery::BatteryReport;
 use pods_proto::keys::ProximityKeys;
 use pods_proto::model::{Product, product};
-use pods_proto::proximity::{self, ADVERT_LEN, Lid};
+use pods_proto::proximity::{self, ADVERT_LEN, ConnectionState, Lid};
 
 use super::Effect;
 use crate::link::Signal;
@@ -67,7 +67,7 @@ impl Adverts {
         let Some(keys) = self.keys.as_ref().filter(|_| !self.link_up) else {
             return false;
         };
-        let Some(in_case) = read(state, keys, sighting) else {
+        let Some((in_case, connection)) = read(state, keys, sighting) else {
             return false;
         };
         if state.connected || state.advert_intake != AdvertIntake::Listening {
@@ -76,7 +76,8 @@ impl Adverts {
         let worn = state.ear.any_in_ear();
         let edge = self.was_worn.replace(worn) == Some(false) && worn;
         self.clear_hold(worn, in_case, now);
-        edge && !self.manual_hold
+        edge && connection == ConnectionState::Disconnected
+            && !self.manual_hold
             && self.last_connect.is_none_or(|last| {
                 now.saturating_sub(last) >= Duration::from_millis(CONNECT_COOLDOWN_MS)
             })
@@ -121,6 +122,7 @@ impl Adverts {
         match signal {
             Signal::Up { .. } => {
                 self.link_up = true;
+                self.manual_hold = false;
                 self.interrupt_wear_observation();
             }
             Signal::Down => self.link_up = false,
@@ -137,8 +139,12 @@ impl Adverts {
     }
 }
 
-/// Updates status from a resolved proximity advert and returns whether it shows the buds in the case.
-fn read(state: &mut State, keys: &ProximityKeys, sighting: &Sighting) -> Option<bool> {
+/// Updates status from a resolved proximity advert and returns case evidence and the connection state.
+fn read(
+    state: &mut State,
+    keys: &ProximityKeys,
+    sighting: &Sighting,
+) -> Option<(bool, ConnectionState)> {
     if !proximity::resolves(sighting.address, &keys.identity) {
         return None;
     }
@@ -172,7 +178,8 @@ fn read(state: &mut State, keys: &ProximityKeys, sighting: &Sighting) -> Option<
         Lid::Closed => LidState::Closed,
         Lid::Unknown => LidState::Unknown,
     };
-    Some(advert.this_pod_in_case && (advert.lid == Lid::Closed || both_charging))
+    let in_case = advert.this_pod_in_case && (advert.lid == Lid::Closed || both_charging);
+    Some((in_case, advert.connection))
 }
 
 #[cfg(test)]
