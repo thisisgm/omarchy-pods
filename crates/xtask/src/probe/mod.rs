@@ -142,6 +142,9 @@ struct CaptureArgs {
     /// The microphone stream to ask for: uplink, dictation or both.
     #[arg(long, default_value_t = Route::Uplink)]
     route: Route,
+    /// Requests this incoming L2CAP MTU in bytes on the control channel.
+    #[arg(long)]
+    imtu: Option<u16>,
     /// The script to follow; a name that is not one is answered with the list.
     #[arg(long, required_unless_present = "steps")]
     script: Option<ScriptName>,
@@ -215,6 +218,8 @@ enum ProbeError {
     Steps { path: PathBuf, error: StepsError },
     #[error("pass --script or --steps")]
     NoScript,
+    #[error("--imtu requires a script that opens the control channel")]
+    ImtuWithoutControl,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -243,9 +248,17 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let capture_imtu = if let ProbeCommand::Capture(args) = &command {
+        Some(args.imtu)
+    } else {
+        None
+    };
     let connect = |peer, psm| {
         let timeout = Duration::from_millis(CONNECT_TIMEOUT_MS);
-        l2cap::connect(peer, psm, timeout)
+        match capture_imtu {
+            Some(imtu) if psm == CONTROL_PSM => capture::connect_control(peer, timeout, imtu),
+            _ => l2cap::connect(peer, psm, timeout),
+        }
     };
     let mut host = Host {
         home: &home,
@@ -343,6 +356,9 @@ fn record(
     interrupted: &AtomicBool,
 ) -> Result<Outcome, ProbeError> {
     let (script, steps_text) = plan(args)?;
+    if args.imtu.is_some() && matches!(script.opening, Opening::AttKnock | Opening::AttMap) {
+        return Err(ProbeError::ImtuWithoutControl);
+    }
     let script = if args.unchecked {
         script.allow_unchecked(args.route)?
     } else {
@@ -568,6 +584,7 @@ fn exit_code(outcome: &Outcome) -> ExitCode {
 fn summary(outcome: &Outcome, route: Route) -> String {
     let Outcome {
         sdus_in,
+        largest_sdu,
         audio_sdus,
         starts,
         stops,
@@ -587,7 +604,7 @@ fn summary(outcome: &Outcome, route: Route) -> String {
         ),
     };
     let counts = format!(
-        "packets in {sdus_in}, with audio {audio_sdus}, not logged {truncated}, START sent {starts}, STOP sent {stops}{att_counts}"
+        "packets in {sdus_in}, with audio {audio_sdus}, not logged {truncated}, largest SDU {largest_sdu} bytes, START sent {starts}, STOP sent {stops}{att_counts}"
     );
     if *end == EndReason::ScriptDone {
         return format!("capture complete: {counts}");

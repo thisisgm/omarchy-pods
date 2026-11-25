@@ -486,6 +486,15 @@ impl Analysed {
     }
 }
 
+pub(crate) const DEFAULT_CONTROL_MTUS: &str =
+    "xtask probe: control channel MTU incoming 672 bytes, outgoing 672 bytes\n";
+
+pub(crate) fn after_default_control_mtus(stderr: &str) -> &str {
+    stderr
+        .strip_prefix(DEFAULT_CONTROL_MTUS)
+        .unwrap_or_else(|| panic!("missing default control MTUs in {stderr}"))
+}
+
 /// The three packets of the handshake, in the order the command sends them.
 pub(crate) const HANDSHAKE_SENT: [&[u8]; 3] =
     [&HANDSHAKE, &SET_SPECIFIC_FEATURES, &REQUEST_NOTIFICATIONS];

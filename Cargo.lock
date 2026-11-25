@@ -600,6 +600,7 @@ dependencies = [
 name = "pods-sys"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "pods-proto",
  "rustix",
  "thiserror 2.0.21",

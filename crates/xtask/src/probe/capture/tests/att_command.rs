@@ -31,6 +31,7 @@ use super::{DEVICE_LINE, ROOT_NAME, counted_nothing, home_with_device};
 /// A minute of the dictation `soak`, which a test ends long before with a signal.
 pub(super) fn soak_args(run: &str, no_marker: bool) -> CaptureArgs {
     CaptureArgs {
+        imtu: None,
         stamp: STAMP.to_owned(),
         run: run.to_owned(),
         route: Route::Dictation,
@@ -92,6 +93,7 @@ fn assert_soak_ran(ran: &Ran, pods: &Transcript, run: &std::path::Path) {
 
 fn knock_args(run: &str) -> CaptureArgs {
     CaptureArgs {
+        imtu: None,
         stamp: STAMP.to_owned(),
         run: run.to_owned(),
         route: Route::Dictation,
@@ -122,7 +124,7 @@ fn the_att_knock_command_dials_the_attribute_psm_alone_and_records_a_run() {
     );
     assert_eq!(
         ran.stderr,
-        "xtask probe: capture complete: packets in 0, with audio 0, not logged 0, START sent 0, STOP sent 0, attribute packets in 1, with audio 0, dictation start sent 0, dictation stop sent 0, requests refused 0\n"
+        "xtask probe: capture complete: packets in 0, with audio 0, not logged 0, largest SDU 0 bytes, START sent 0, STOP sent 0, attribute packets in 1, with audio 0, dictation start sent 0, dictation stop sent 0, requests refused 0\n"
     );
     assert_eq!(ran.stdout, "");
     // The control channel is never asked for, and the one connect names the attribute PSM.
@@ -222,6 +224,7 @@ fn the_summary_of_a_dictation_run_adds_the_attribute_counts() {
     // Every count differs from the others, so one printed under another's name is seen.
     let outcome = Outcome {
         sdus_in: 9,
+        largest_sdu: 180,
         audio_sdus: 4,
         starts: 3,
         stops: 5,
@@ -234,7 +237,7 @@ fn the_summary_of_a_dictation_run_adds_the_attribute_counts() {
         att_requests_refused: 12,
         end: EndReason::ScriptDone,
     };
-    let control = "packets in 9, with audio 4, not logged 7, START sent 3, STOP sent 5";
+    let control = "packets in 9, with audio 4, not logged 7, largest SDU 180 bytes, START sent 3, STOP sent 5";
     let att = "attribute packets in 11, with audio 8, dictation start sent 2, dictation stop sent 6, requests refused 12";
     for route in [Route::Dictation, Route::Both] {
         let sentence = summary(&outcome, route);

@@ -104,6 +104,12 @@ impl Trap {
         self.shared.lock().sockets
     }
 
+    /// Refuses `L2CAP_OPTIONS` writes with `EACCES` after a successful read on the same socket.
+    pub fn refuse_l2cap_option_writes(&self) {
+        self.shared
+            .update(|state| state.refuse_l2cap_option_writes = true);
+    }
+
     /// Waits until at least `count` dials were trapped and returns them all.
     pub fn wait_dials(&self, count: usize, deadline: Duration) -> Result<Vec<Dial>, TrapError> {
         let started = Instant::now();

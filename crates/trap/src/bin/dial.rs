@@ -3,6 +3,7 @@
 use std::fmt::Write;
 use std::io::{self, BufRead};
 use std::num::NonZeroU32;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -26,6 +27,14 @@ const IDLE: Timespec = Timespec {
 const REPLY_LEN: usize = 4096;
 /// `BTPROTO_HCI` in include/net/bluetooth/bluetooth.h, a protocol the trap refuses.
 const BTPROTO_HCI: u32 = 1;
+/// The legacy L2CAP socket option level in include/net/bluetooth/bluetooth.h.
+const SOL_L2CAP: libc::c_int = 6;
+const L2CAP_OPTIONS: libc::c_int = 0x01;
+/// An L2CAP option in include/net/bluetooth/l2cap.h that the trap does not serve.
+const L2CAP_CONNINFO: libc::c_int = 0x02;
+/// Kernel defaults: outgoing and incoming MTU 672, flush timeout ffff, Basic mode, FCS 1, max transmit 3, padding, window 63.
+const DEFAULT_L2CAP_OPTIONS: [u8; 12] = [0xa0, 0x02, 0xa0, 0x02, 0xff, 0xff, 0, 1, 3, 0, 63, 0];
+const SHORT_OPTIONS_LEN: usize = 4;
 
 fn main() -> ExitCode {
     #[expect(
@@ -44,9 +53,14 @@ fn main() -> ExitCode {
     };
     match mode {
         Mode::Dial { device, psms } => dial_each(device, &psms),
-        Mode::Late { device, psm } => late(device, psm),
+        Mode::DialWithImtu { device, psm, imtu } => say(&dial(device, psm, Some(imtu))),
+        Mode::Late { device, psm, imtu } => late(device, psm, imtu),
         Mode::Socket => say(&socket()),
         Mode::Raw => say(&raw()),
+        Mode::OtherOption => say(&other_option()),
+        Mode::ReusedTcpSocket => say(&reused_tcp_socket()),
+        Mode::OptionAfterConnect { device, psm } => say(&option_after_connect(device, psm)),
+        Mode::ShortOption => say(&short_option()),
         Mode::Unix { name } => say(&unix(&name)),
         Mode::Idle => say(&idle()),
     }
@@ -54,11 +68,32 @@ fn main() -> ExitCode {
 }
 
 enum Mode {
-    Dial { device: BdAddr, psms: Vec<u16> },
-    Late { device: BdAddr, psm: u16 },
+    Dial {
+        device: BdAddr,
+        psms: Vec<u16>,
+    },
+    DialWithImtu {
+        device: BdAddr,
+        psm: u16,
+        imtu: u16,
+    },
+    Late {
+        device: BdAddr,
+        psm: u16,
+        imtu: Option<u16>,
+    },
     Socket,
     Raw,
-    Unix { name: String },
+    OtherOption,
+    ReusedTcpSocket,
+    OptionAfterConnect {
+        device: BdAddr,
+        psm: u16,
+    },
+    ShortOption,
+    Unix {
+        name: String,
+    },
     Idle,
 }
 
@@ -70,6 +105,11 @@ impl Mode {
                 device: device.parse().ok()?,
                 psms: vec![parse_psm(psm)?],
             },
+            ["dial-imtu", device, psm, imtu] => Self::DialWithImtu {
+                device: device.parse().ok()?,
+                psm: parse_psm(psm)?,
+                imtu: imtu.parse().ok()?,
+            },
             ["twice", device, first, second] => Self::Dial {
                 device: device.parse().ok()?,
                 psms: vec![parse_psm(first)?, parse_psm(second)?],
@@ -77,9 +117,22 @@ impl Mode {
             ["late", device, psm] => Self::Late {
                 device: device.parse().ok()?,
                 psm: parse_psm(psm)?,
+                imtu: None,
+            },
+            ["late", device, psm, imtu] => Self::Late {
+                device: device.parse().ok()?,
+                psm: parse_psm(psm)?,
+                imtu: Some(imtu.parse().ok()?),
             },
             ["socket"] => Self::Socket,
             ["raw"] => Self::Raw,
+            ["other-option"] => Self::OtherOption,
+            ["reused-tcp-socket"] => Self::ReusedTcpSocket,
+            ["option-after-connect", device, psm] => Self::OptionAfterConnect {
+                device: device.parse().ok()?,
+                psm: parse_psm(psm)?,
+            },
+            ["short-option"] => Self::ShortOption,
             ["unix", name] => Self::Unix {
                 name: name.to_owned(),
             },
@@ -106,22 +159,22 @@ fn say(line: &str) {
 #[expect(clippy::print_stderr, reason = "a usage error goes to standard error")]
 fn report_usage() {
     eprintln!(
-        "usage: trap-dial dial|late <address> <psm> | twice <address> <psm> <psm> | socket | raw | unix <name> | idle"
+        "usage: trap-dial dial|option-after-connect <address> <psm> | late <address> <psm> [<imtu>] | dial-imtu <address> <psm> <imtu> | twice <address> <psm> <psm> | socket | raw | other-option | reused-tcp-socket | short-option | unix <name> | idle"
     );
 }
 
 /// One line per PSM, dialled one after the other.
 fn dial_each(device: BdAddr, psms: &[u16]) {
     for psm in psms {
-        say(&dial(device, *psm));
+        say(&dial(device, *psm, None));
     }
 }
 
 /// Reads one line from standard input first, so the test decides when the dial happens.
-fn late(device: BdAddr, psm: u16) {
+fn late(device: BdAddr, psm: u16, imtu: Option<u16>) {
     let mut line = String::new();
     match io::stdin().lock().read_line(&mut line) {
-        Ok(_) => say(&dial(device, psm)),
+        Ok(_) => say(&dial(device, psm, imtu)),
         Err(error) => say(&format!("error stdin {error}")),
     }
 }
@@ -131,14 +184,25 @@ fn errno_line(step: &str, errno: Errno) -> String {
 }
 
 /// Connects, sends `ping` and reads one SDU.
-fn dial(device: BdAddr, psm: u16) -> String {
-    let channel = match l2cap::connect(device, psm, DIAL_TIMEOUT) {
+fn dial(device: BdAddr, psm: u16, imtu: Option<u16>) -> String {
+    let connected = match imtu {
+        Some(imtu) => l2cap::connect_with_imtu(device, psm, DIAL_TIMEOUT, imtu),
+        None => l2cap::connect(device, psm, DIAL_TIMEOUT),
+    };
+    let channel = match connected {
         Ok(channel) => channel,
         Err(ChannelError::Socket(errno)) => return errno_line("socket", errno),
-        Err(ChannelError::Option(errno)) => return errno_line("option", errno),
+        Err(ChannelError::Timeout(errno)) => return errno_line("timeout", errno),
+        Err(error @ ChannelError::Option { .. }) => return format!("error option {error}"),
         Err(ChannelError::Connect(errno)) => return errno_line("connect", errno),
         Err(other) => return format!("error connect {other}"),
     };
+    if imtu.is_some() {
+        match channel.mtus() {
+            Ok(mtus) => say(&format!("mtus {} {}", mtus.incoming, mtus.outgoing)),
+            Err(error) => return format!("error mtus {error}"),
+        }
+    }
     let exchanged = channel
         .send(b"ping")
         .and_then(|()| channel.set_recv_timeout(DIAL_TIMEOUT))
@@ -184,6 +248,89 @@ fn socket() -> String {
         Ok((0, _)) => "error recv end of file, the far end is closed".to_owned(),
         Ok((read, _)) => format!("error recv read {read} bytes nobody sent"),
     }
+}
+
+fn bluetooth_socket() -> Result<OwnedFd, Errno> {
+    socket_with(
+        AddressFamily::BLUETOOTH,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+}
+
+fn other_option() -> String {
+    match bluetooth_socket() {
+        Ok(socket) => set_l2cap_option(&socket, L2CAP_CONNINFO, &[0]),
+        Err(errno) => errno_line("socket", errno),
+    }
+}
+
+fn reused_tcp_socket() -> String {
+    let trapped = match bluetooth_socket() {
+        Ok(socket) => socket,
+        Err(errno) => return errno_line("socket", errno),
+    };
+    let number = trapped.as_raw_fd();
+    drop(trapped);
+    let tcp = match socket_with(
+        AddressFamily::INET,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC,
+        Some(rustix::net::ipproto::TCP),
+    ) {
+        Ok(socket) => socket,
+        Err(errno) => return errno_line("TCP socket", errno),
+    };
+    if tcp.as_raw_fd() != number {
+        return format!("error TCP socket did not reuse descriptor {number}");
+    }
+    // TCP_NODELAY has the same numeric level and option as L2CAP_OPTIONS.
+    match rustix::net::sockopt::set_tcp_nodelay(&tcp, true) {
+        Ok(()) => "ok".to_owned(),
+        Err(errno) => errno_line("TCP_NODELAY", errno),
+    }
+}
+
+fn option_after_connect(device: BdAddr, psm: u16) -> String {
+    match l2cap::connect(device, psm, DIAL_TIMEOUT) {
+        Ok(channel) => set_l2cap_option(&channel, L2CAP_OPTIONS, &DEFAULT_L2CAP_OPTIONS),
+        Err(error) => format!("error connect {error}"),
+    }
+}
+
+fn short_option() -> String {
+    let options = DEFAULT_L2CAP_OPTIONS;
+    let (short, _) = options.split_at(SHORT_OPTIONS_LEN);
+    match bluetooth_socket() {
+        Ok(socket) => set_l2cap_option(&socket, L2CAP_OPTIONS, short),
+        Err(errno) => errno_line("socket", errno),
+    }
+}
+
+fn set_l2cap_option(socket: &impl AsRawFd, option: libc::c_int, value: &[u8]) -> String {
+    let Ok(len) = libc::socklen_t::try_from(value.len()) else {
+        return errno_line("option length", Errno::INVAL);
+    };
+    #[expect(
+        unsafe_code,
+        reason = "the stand-in asks for an option rustix does not expose"
+    )]
+    // SAFETY: the socket is open and the kernel can read len bytes from value for the entire call.
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            SOL_L2CAP,
+            option,
+            value.as_ptr().cast(),
+            len,
+        )
+    };
+    if result == 0 {
+        return "ok".to_owned();
+    }
+    let errno = Errno::from_io_error(&io::Error::last_os_error()).unwrap_or(Errno::IO);
+    errno_line("option", errno)
 }
 
 fn raw() -> String {

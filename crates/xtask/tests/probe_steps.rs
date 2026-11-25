@@ -55,10 +55,11 @@ mod tests {
         WRITE_NOT_PERMITTED, WRITE_RESPONSE,
     };
     use super::capture::{
-        FAILED, HANDSHAKE_SENT, OWNER_FILE, Ran, Running, after_handshake, assert_att_ran,
-        assert_control_logged, capture, control_step, far_end, files_of, hand_over,
-        home_with_device, kinds, logged, plan, read, refusal_of, route, run_path, run_steps,
-        stamp_of, step_marks, steps_args, transcript, wait_for_cue, wait_for_packets_after,
+        FAILED, HANDSHAKE_SENT, OWNER_FILE, Ran, Running, after_default_control_mtus,
+        after_handshake, assert_att_ran, assert_control_logged, capture, control_step, far_end,
+        files_of, hand_over, home_with_device, kinds, logged, plan, read, refusal_of, route,
+        run_path, run_steps, stamp_of, step_marks, steps_args, transcript, wait_for_cue,
+        wait_for_packets_after,
     };
     use super::pods::{self, Pods, Transcript};
 
@@ -304,7 +305,11 @@ mod tests {
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
         assert_eq!(ran.stdout, "cue nobody answers\n");
         let said = format!("xtask probe: capture ended early: {NO_LINE}; STOP was sent (");
-        assert!(ran.stderr.starts_with(&said), "{}", ran.stderr);
+        assert!(
+            after_default_control_mtus(&ran.stderr).starts_with(&said),
+            "{}",
+            ran.stderr
+        );
         let expected: [&[u8]; 2] = [&START, &STOP];
         assert_eq!(after_handshake(&pods), expected);
         let marks = read(&run_path(&home, "unanswered"), "marks.tsv");
@@ -320,13 +325,13 @@ mod tests {
         assert!(late <= LATE_LIMIT, "{what} is {late:?} late\n{marks}");
     }
 
-    /// Asserts the run ran to its end and said so in one line that shows no packet.
+    /// Asserts the run printed the default MTUs and ended with a summary that shows no packet.
     fn assert_completed(ran: &Ran) {
         assert_eq!(ran.code, Some(0), "{}", ran.stderr);
         assert_eq!(ran.stdout, "");
+        let summary = after_default_control_mtus(&ran.stderr);
         assert!(
-            ran.stderr.starts_with("xtask probe: capture complete: ")
-                && ran.stderr.lines().count() == 1,
+            summary.starts_with("xtask probe: capture complete: ") && summary.lines().count() == 1,
             "{}",
             ran.stderr
         );
