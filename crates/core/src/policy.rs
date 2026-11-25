@@ -108,15 +108,24 @@ impl Policy {
         Vec::from_iter(self.adverts.wanted().then_some(Effect::Monitor(true)))
     }
 
-    /// Folds adverts, monitor state and model confirmations into `state` before `step` sees them.
+    /// Updates the state from an advert and reports whether a wear edge can connect.
+    #[must_use]
+    pub fn advert(&mut self, state: &mut State, sighting: &Sighting, now: Duration) -> bool {
+        self.adverts.read(state, sighting, now)
+    }
+
+    pub fn manual_disconnect(&mut self) {
+        self.adverts.manual_disconnect();
+    }
+
+    pub fn connect_attempted(&mut self, now: Duration) {
+        self.adverts.connect_attempted(now);
+    }
+
+    /// Folds monitor state and model confirmations into `state` before `step` sees them.
     pub fn apply(&self, state: &mut State, fact: &Fact) {
         match fact {
             Fact::Link(Signal::Up { .. }) => state.advert_intake = AdvertIntake::Paused,
-            Fact::Advert(sighting) => {
-                if let Some(keys) = self.adverts.keys() {
-                    adverts::read(state, keys, sighting);
-                }
-            }
             Fact::Monitor(monitor) if self.adverts.wanted() => {
                 state.advert_intake = monitor.intake();
             }
@@ -137,6 +146,7 @@ impl Policy {
                 | Signal::Awareness(_)
                 | Signal::Uplink(UplinkState::Stopped),
             )
+            | Fact::Advert(_)
             | Fact::Monitor(_)
             | Fact::Changed
             | Fact::Sleep(_)
@@ -160,6 +170,9 @@ impl Policy {
         } else {
             None
         };
+        if matches!(fact, Fact::Monitor(MonitorFact::Unavailable)) {
+            self.adverts.interrupt_wear_observation();
+        }
         let mut effects = match fact {
             Fact::Link(Signal::Keys(keys)) => vec![Effect::StoreKeys(keys)],
             Fact::Link(signal) => {

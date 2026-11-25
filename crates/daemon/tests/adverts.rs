@@ -36,6 +36,12 @@ mod tests {
     const LOW_CASE_HEADER: [u8; HEADER_LEN] = [
         0x07, 0x19, 0x01, 0x27, 0x20, 0x62, 0x88, 0x01, 0x00, 0x00, 0x04,
     ];
+    const BOTH_OUT_HEADER: [u8; HEADER_LEN] = [
+        0x07, 0x19, 0x01, 0x27, 0x20, 0x20, 0x88, 0x47, 0x00, 0x00, 0x04,
+    ];
+    const IN_CASE_HEADER: [u8; HEADER_LEN] = [
+        0x07, 0x19, 0x01, 0x27, 0x20, 0x60, 0x88, 0x47, 0x08, 0x00, 0x04,
+    ];
     /// The primary byte of 75 percent and charging.
     const PRIMARY_75_CHARGING: u8 = 0xcb;
     const PRIMARY_AT: usize = 1;
@@ -416,20 +422,92 @@ mod tests {
     }
 
     #[test]
-    fn an_advert_never_dials() {
+    fn a_wear_edge_connects_the_paired_device_through_bluez() {
         let mut rig = keyed();
-        rig.add_pods(Profile::default());
+        let device = rig.add_pods(Profile::default());
         rig.start();
         wait_intake(&rig, "listening");
         let advert = ours(HEADER, PAYLOAD);
-        let _advertiser = rig.bluez().advertise(&advert.address, &advert.data);
+        let advertiser = rig.bluez().advertise(&advert.address, &advert.data);
         rig.wait_status("the advert in the status", |status| {
             picked(status) == filled()
         });
         rig.no_dial_for(QUIET);
-        assert_eq!(rig.dials().len(), 0);
         assert_eq!(rig.bluez().calls(), registration(rig.adapter()));
+        advertiser.update(&ours(BOTH_OUT_HEADER, PAYLOAD).data);
+        rig.wait_status("both buds out of ear", |status| {
+            status["right"]["in_ear"] == false
+        });
+        advertiser.update(&advert.data);
+        let connect = wait_for("BlueZ Connect after the wear edge", || wear_call(&rig));
+        assert_eq!(connect.object, device.path.0);
+        rig.wait_filled();
+        assert_eq!(logged(&mut rig, "link: connect when worn"), 1);
         rig.finish();
+    }
+
+    fn wear_call(rig: &Rig) -> Option<Call> {
+        rig.bluez()
+            .calls()
+            .into_iter()
+            .find(|call| call.method == DeviceMethod::Connect)
+    }
+
+    #[test]
+    fn a_wear_edge_does_not_connect_an_unpaired_device() {
+        let mut rig = keyed();
+        let device = rig.add_pods(Profile::default());
+        rig.bluez()
+            .set(&device.path, "Paired", OwnedVariant::from(false));
+        rig.start();
+        wait_intake(&rig, "listening");
+        let out = ours(BOTH_OUT_HEADER, PAYLOAD);
+        let advertiser = rig.bluez().advertise(&out.address, &out.data);
+        rig.wait_status("both buds out of ear", |status| {
+            status["right"]["available"] == true && status["right"]["in_ear"] == false
+        });
+        advertiser.update(&ours(HEADER, PAYLOAD).data);
+        rig.wait_logged("bluez: Connect failed: BlueZ did not confirm pairing");
+        assert!(wear_call(&rig).is_none());
+        assert_eq!(logged(&mut rig, "link: connect when worn"), 0);
+        rig.finish();
+    }
+
+    #[test]
+    fn disconnect_sources_hold_auto_connect_until_the_case() {
+        for from_command in [true, false] {
+            let mut rig = keyed();
+            let device = rig.add_pods(Profile::default());
+            rig.start();
+            rig.link_up(&device);
+            rig.wait_filled();
+            assert!(
+                rig.status()["left"]["in_ear"] == true || rig.status()["right"]["in_ear"] == true
+            );
+            if from_command {
+                rig.disconnect();
+            } else {
+                rig.bluez()
+                    .set(&device.path, "Connected", OwnedVariant::from(false));
+            }
+            wait_intake(&rig, "listening");
+            let out = ours(BOTH_OUT_HEADER, PAYLOAD);
+            let advertiser = rig.bluez().advertise(&out.address, &out.data);
+            rig.wait_status("the out-of-ear advert", |status| {
+                picked(status)["case"]["level"] == 70 && status["right"]["in_ear"] == false
+            });
+            advertiser.update(&ours(HEADER, PAYLOAD).data);
+            rig.wait_status("the worn advert", |status| {
+                status["right"]["in_ear"] == true
+            });
+            rig.no_dial_for(QUIET);
+            assert!(wear_call(&rig).is_none());
+            advertiser.update(&ours(IN_CASE_HEADER, PAYLOAD).data);
+            rig.wait_status("the case advert", |status| status["lid_state"] == 1);
+            advertiser.update(&ours(HEADER, PAYLOAD).data);
+            wait_for("the wear edge after the case", || wear_call(&rig));
+            rig.finish();
+        }
     }
 
     #[test]

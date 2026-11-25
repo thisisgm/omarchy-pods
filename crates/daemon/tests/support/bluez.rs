@@ -118,6 +118,7 @@ struct Device {
     address: BdAddr,
     uuids: Vec<String>,
     connected: bool,
+    paired: bool,
     modalias: Option<String>,
 }
 
@@ -274,6 +275,7 @@ impl Bluez {
             address,
             uuids: uuids.iter().map(|uuid| (*uuid).to_owned()).collect(),
             connected,
+            paired: true,
             modalias: None,
         };
         let interfaces = HashMap::from([(DEVICE_INTERFACE.to_owned(), device.properties())]);
@@ -312,6 +314,7 @@ impl Bluez {
                     }
                 }
                 "UUIDs" => device.uuids = Vec::try_from(value.try_clone().unwrap()).unwrap(),
+                "Paired" => device.paired = bool::try_from(&value).unwrap(),
                 "Modalias" => {
                     device.modalias = Some(String::try_from(value.try_clone().unwrap()).unwrap());
                 }
@@ -646,7 +649,7 @@ impl Device {
                 "Adapter".to_owned(),
                 OwnedVariant::from(object(&self.adapter)),
             ),
-            ("Paired".to_owned(), OwnedVariant::from(true)),
+            ("Paired".to_owned(), OwnedVariant::from(self.paired)),
             ("UUIDs".to_owned(), uuids),
             ("Connected".to_owned(), OwnedVariant::from(self.connected)),
             (
