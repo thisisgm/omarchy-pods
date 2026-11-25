@@ -65,7 +65,7 @@ struct Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
-        let held = self.tap.lock().is_some();
+        let held = self.tap.lock().chain.is_some();
         self.chain_at_drop.store(held, Ordering::Relaxed);
     }
 }
@@ -155,6 +155,33 @@ fn a_node_opened_after_the_first_dictation_audio_still_gets_its_run() {
         1,
         "the chain took the frames as a dictation run"
     );
+}
+
+#[test]
+fn a_reopened_node_keeps_dictation_until_an_uplink_start() {
+    let tap = Tap::new();
+    let (feed, _resync) = open(&tap);
+    tap.arm_dictation();
+    assert!(tap.dictation(&dictated(&notification(0))));
+    assert!(!feed.reader.read_all());
+    tap.close(feed);
+    assert!(!tap.dictation(&dictated(&notification(1))));
+
+    let (feed, _resync) = open(&tap);
+    assert!(!tap.dictation(&dictated(&notification(2))));
+    assert!(!feed.reader.read_all(), "the reopened node has audio to play");
+
+    tap.arm();
+    assert!(tap.audio(&audio(&packet(0))));
+    assert!(!tap.audio(&audio(&packet(2))));
+    assert_eq!(concealed(&tap), UNITS);
+    tap.close(feed);
+
+    let (feed, _resync) = open(&tap);
+    assert!(!tap.dictation(&dictated(&notification(3))));
+    assert!(feed.reader.read_all(), "late dictation left the node empty");
+    assert!(!tap.audio(&audio(&packet(3))));
+    assert!(!feed.reader.read_all(), "uplink plays on the reopened node");
 }
 
 #[test]
