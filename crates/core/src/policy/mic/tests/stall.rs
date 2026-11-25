@@ -130,6 +130,37 @@ fn retried() -> (State, Mic) {
 }
 
 #[test]
+fn a_stall_retry_cancels_a_pending_playback_restore() {
+    let state = linked(Column::AlwaysKnown);
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    let mut mic = Mic::default();
+    assert_eq!(requests(&mic.step(&state, &Fact::Changed, LEFT)), START);
+    drop(mic.step(&state, &running, LEFT.saturating_add(SOON)));
+    let ended = mic.step(&state, &stopped, SENT);
+    assert_eq!(restore_ids(&ended), [RestoreId(0)]);
+
+    let resumed = SENT.saturating_add(SOON);
+    assert_eq!(mic.step(&state, &running, resumed), []);
+    assert!(matches!(
+        mic.phase,
+        Phase::Running(_, _, Ownership::Unowned)
+    ));
+    assert_eq!(mic.step(&state, &heard(COUNT), resumed), []);
+
+    let retry = mic.step(&state, &heard(COUNT), resumed.saturating_add(STALL));
+    assert_eq!(
+        retry,
+        [
+            Effect::Log(stalled_line(STALL.as_millis())),
+            Effect::Audio(AudioRequest::CancelRestore),
+            Effect::Uplink(UplinkRequest::Start),
+            Effect::Log(start_sent_line(2)),
+        ]
+    );
+}
+
+#[test]
 fn a_stall_start_answered_in_its_window_tracks_the_next_unasked_stop() {
     let (state, mut mic) = retried();
     let at = after(1).saturating_add(SOON);

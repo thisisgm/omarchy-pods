@@ -191,13 +191,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unsolicited_uplink_markers_preserve_a_pending_playback_restore() {
+    fn hold_card_read(audio: &FakeAudio, device: &Device) {
         const PLAYBACK: &str = "a2dp-sink";
-        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
-        link_heard(&rig, &device);
-        wait_mic(&rig, "live");
-
         let before = audio.requests().len();
         audio.hold_at_card_list();
         let profile = FakeProfile {
@@ -212,6 +207,14 @@ mod tests {
                 .contains(&Asked::CardList)
                 .then_some(())
         });
+    }
+
+    #[test]
+    fn unsolicited_uplink_markers_preserve_a_pending_playback_restore() {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        hold_card_read(&audio, &device);
 
         device.pods.uplink().stop_unasked();
         wait_mic(&rig, "stopping");
@@ -231,6 +234,31 @@ mod tests {
         assert!(stops(&device).is_empty(), "STOPs sent by the daemon");
         rig.finish();
         assert_eq!(audio.writes().len(), 2, "sink writes after both stops");
+    }
+
+    #[test]
+    fn a_stall_retry_cancels_a_pending_playback_restore() {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        let uplink = device.pods.uplink();
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        hold_card_read(&audio, &device);
+
+        uplink.hold_starts(true);
+        uplink.stop_unasked();
+        wait_mic(&rig, "stopping");
+        device.pods.send(&state_marker(true));
+        device.pods.send(&session_marker(true));
+        wait_mic(&rig, "live");
+        wait_starts(&device, 2);
+        assert_eq!(start_failures(&rig), 1, "the stall before the retry");
+        audio.assert_only_reads();
+
+        audio.hold_replies(false);
+        // The next sink refresh follows the restore check after the held card read.
+        rig.wait_sink_told();
+        audio.assert_only_reads();
+        rig.finish();
     }
 
     /// The pods live with `always` over a playing sink, then stopped by the pods and the sink restored for it.
