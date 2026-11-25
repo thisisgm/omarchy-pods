@@ -473,7 +473,10 @@ impl<'a> Follower<'a> {
             if matches!(observed, Observed::Adjusted) {
                 self.tell(AudioFact::VolumeAdjusted).await;
             }
-            let confirmed = matches!(observed, Observed::Publish);
+            if let Observed::Skipped(stamp) = observed {
+                self.tell(AudioFact::VolumeSkipped(stamp)).await;
+            }
+            let confirmed = matches!(observed, Observed::Publish | Observed::Skipped(_));
             if confirmed && let Some(sink) = &mut sink {
                 // This sample settles a restore without a later write changing it.
                 sink.volume_stamp = self.volume.stamp;

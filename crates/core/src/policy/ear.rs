@@ -184,6 +184,7 @@ impl Ear {
             | AudioFact::Recorders(_)
             | AudioFact::Recording(_)
             | AudioFact::VolumeAdjusted
+            | AudioFact::VolumeSkipped(_)
             | AudioFact::Hint(_)
             | AudioFact::Headset(_) => return None,
         };
