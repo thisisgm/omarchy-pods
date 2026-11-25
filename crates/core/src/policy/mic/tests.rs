@@ -157,26 +157,23 @@ fn phase(kind: Kind) -> Phase {
             tried: Try::FIRST,
             owed: true,
         },
-        Kind::Running => Phase::Running(Hold::Wanted, watch(), Ownership::Owned),
+        Kind::Running => Phase::Running(Hold::Wanted, watch()),
         Kind::Lingering => Phase::Running(
             Hold::Lingering {
                 since: SENT,
                 unworn: None,
             },
             watch(),
-            Ownership::Owned,
         ),
-        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }, watch(), Ownership::Owned),
+        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }, watch()),
         Kind::Stopping => Phase::Stopping {
             since: SENT,
             restore: true,
-            ownership: Ownership::Owned,
             spent: None,
         },
         Kind::StoppingQuiet => Phase::Stopping {
             since: SENT,
             restore: false,
-            ownership: Ownership::Owned,
             spent: None,
         },
         Kind::Restoring => Phase::Restoring {

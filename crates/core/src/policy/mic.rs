@@ -74,12 +74,11 @@ enum Phase {
         tried: Try,
         owed: bool,
     },
-    Running(Hold, Watch, Ownership),
+    Running(Hold, Watch),
     /// The STOP sent at `since` still awaits confirmation. `restore` records whether the gate or a sink wake called for a reset.
     Stopping {
         since: Duration,
         restore: bool,
-        ownership: Ownership,
         spent: Option<Spent>,
     },
     /// The uplink is stopped and the sink restore `id` requested at `since` still awaits completion.
@@ -161,11 +160,6 @@ struct Audio {
     /// The followed sink is known to be suspended or absent; unknown counts as running.
     quiet: bool,
     hint: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ownership {
-    Owned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,17 +273,10 @@ impl Mic {
     fn down(&mut self, now: Duration, effects: &mut Vec<Effect>) {
         let stopped = Stopped::default();
         self.phase = match self.phase {
-            Phase::Stopping {
-                restore: true,
-                ownership,
-                ..
-            } => self.restore(ownership, stopped, now, effects),
+            Phase::Stopping { restore: true, .. } => self.restore(stopped, now, effects),
             // The pods can start the uplink before the running marker arrives.
-            Phase::Starting { .. } if !self.audio.quiet && !self.asleep => {
-                self.restore(Ownership::Owned, stopped, now, effects)
-            }
-            Phase::Running(_, _, ownership) if !self.audio.quiet && !self.asleep => {
-                self.restore(ownership, stopped, now, effects)
+            Phase::Starting { .. } | Phase::Running(..) if !self.audio.quiet && !self.asleep => {
+                self.restore(stopped, now, effects)
             }
             Phase::Restoring { since, id, .. } => Phase::Restoring { since, id, stopped },
             Phase::Stopped(_)
@@ -305,7 +292,7 @@ impl Mic {
             (Phase::Starting { since, tried, .. }, UplinkState::Running) => {
                 let after = now.saturating_sub(since).as_millis();
                 effects.push(Effect::Log(format!("{RUNNING_AFTER_PREFIX}{after} ms")));
-                Phase::Running(Hold::Wanted, Watch::new(tried, now), Ownership::Owned)
+                Phase::Running(Hold::Wanted, Watch::new(tried, now))
             }
             (Phase::Stopped(stopped) | Phase::Restoring { stopped, .. }, UplinkState::Running) => {
                 let owned = matches!(
@@ -319,13 +306,12 @@ impl Mic {
                 if matches!(self.phase, Phase::Restoring { .. }) {
                     effects.push(Effect::Audio(AudioRequest::CancelRestore));
                 }
-                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now), Ownership::Owned)
+                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now))
             }
             (
                 Phase::Stopping {
                     since,
                     restore,
-                    ownership,
                     spent,
                 },
                 UplinkState::Stopped,
@@ -336,10 +322,10 @@ impl Mic {
                     spent,
                     pending: PendingMarker::None,
                 };
-                self.finish_stop(restore, ownership, stopped, now, effects)
+                self.finish_stop(restore, stopped, now, effects)
             }
             // The stopped marker bypasses the playback gate, but a headset profile still blocks a restore.
-            (Phase::Running(_, watch, ownership), UplinkState::Stopped) => {
+            (Phase::Running(_, watch), UplinkState::Stopped) => {
                 effects.push(log(STOPPED_BY_THE_PODS_LINE));
                 let stopped = Stopped {
                     spent: Some(Spent::Unasked),
@@ -347,7 +333,7 @@ impl Mic {
                         .answer_by()
                         .map_or(PendingMarker::None, PendingMarker::RetryUntil),
                 };
-                self.restore(ownership, stopped, now, effects)
+                self.restore(stopped, now, effects)
             }
             (mut phase, UplinkState::Stopped) => {
                 let Some(stopped) = phase.stopped_mut() else {
@@ -358,7 +344,7 @@ impl Mic {
                 }
                 stopped.pending = PendingMarker::None;
                 if !self.asleep && !self.audio.quiet && !self.node.blocked() {
-                    self.restore(Ownership::Owned, *stopped, now, effects)
+                    self.restore(*stopped, now, effects)
                 } else {
                     phase
                 }
@@ -424,18 +410,13 @@ impl Mic {
                 self.start_failures = self.start_failures.saturating_add(1);
                 self.unanswered(state, tried, since, now, effects)
             }
-            Phase::Stopping {
-                restore,
-                ownership,
-                spent,
-                ..
-            } => {
+            Phase::Stopping { restore, spent, .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
                 let stopped = Stopped {
                     spent,
                     pending: PendingMarker::Stop,
                 };
-                self.finish_stop(restore, ownership, stopped, now, effects)
+                self.finish_stop(restore, stopped, now, effects)
             }
             Phase::Restoring { stopped, .. } => Phase::Stopped(stopped),
             phase @ (Phase::Stopped(_) | Phase::Running(..)) => phase,
@@ -471,12 +452,12 @@ impl Mic {
                     owed: true,
                 };
             }
-            Phase::Running(hold, watch, ownership) if self.node.blocked() => {
-                self.phase = Phase::Running(hold, watch.follow(false, now), ownership);
+            Phase::Running(hold, watch) if self.node.blocked() => {
+                self.phase = Phase::Running(hold, watch.follow(false, now));
             }
-            Phase::Running(hold, watch, ownership) => {
+            Phase::Running(hold, watch) => {
                 let watch = watch.follow(state.ear.any_in_ear(), now);
-                self.running(hold, watch, ownership, state, now, effects);
+                self.running(hold, watch, state, now, effects);
             }
             Phase::Stopped(_) | Phase::Restoring { .. } => {
                 if !self.uplink_wanted(state)
@@ -495,7 +476,6 @@ impl Mic {
         &mut self,
         hold: Hold,
         watch: Watch,
-        ownership: Ownership,
         state: &State,
         now: Duration,
         effects: &mut Vec<Effect>,
@@ -515,7 +495,7 @@ impl Mic {
                 if !watch.owes() {
                     effects.push(log(STOP_OWED_LINE));
                 }
-                Phase::Running(hold, watch.owe(), ownership)
+                Phase::Running(hold, watch.owe())
             }
             Next::Hold(Hold::Waiting { unworn: None }) if !matches!(hold, Hold::Waiting { .. }) => {
                 let owed = off || self.exiting;
@@ -524,9 +504,9 @@ impl Mic {
                 } else {
                     STOP_WAITS_LINE
                 }));
-                Phase::Running(Hold::Waiting { unworn: None }, watch, ownership)
+                Phase::Running(Hold::Waiting { unworn: None }, watch)
             }
-            Next::Hold(hold) => Phase::Running(hold, watch, ownership),
+            Next::Hold(hold) => Phase::Running(hold, watch),
             // The suspend comes before any answer could, so nothing waits for one.
             Next::Stop(Word::Sleep) => {
                 effects.extend([Effect::Uplink(UplinkRequest::Stop), log(Word::Sleep.line())]);
@@ -537,7 +517,6 @@ impl Mic {
                 Phase::Stopping {
                     since: now,
                     restore: word != Word::Quiet,
-                    ownership,
                     spent: None,
                 }
             }
@@ -548,7 +527,6 @@ impl Mic {
     fn finish_stop(
         &mut self,
         restore: bool,
-        ownership: Ownership,
         stopped: Stopped,
         now: Duration,
         effects: &mut Vec<Effect>,
@@ -556,17 +534,11 @@ impl Mic {
         if !restore {
             return Phase::Stopped(stopped);
         }
-        self.restore(ownership, stopped, now, effects)
+        self.restore(stopped, now, effects)
     }
 
     /// A restore for an owned uplink under a fresh id, provided the active profile allows it.
-    fn restore(
-        &mut self,
-        Ownership::Owned: Ownership,
-        stopped: Stopped,
-        now: Duration,
-        effects: &mut Vec<Effect>,
-    ) -> Phase {
+    fn restore(&mut self, stopped: Stopped, now: Duration, effects: &mut Vec<Effect>) -> Phase {
         if self.node.blocked() {
             return Phase::Stopped(stopped);
         }
@@ -630,7 +602,7 @@ impl Mic {
 
     /// The stall check: while the uplink is wanted, a count that did not move is a try gone unanswered, as `unanswered` counts one.
     fn heard(&mut self, state: &State, packets: u64, now: Duration, effects: &mut Vec<Effect>) {
-        let Phase::Running(hold, watch, ownership) = self.phase else {
+        let Phase::Running(hold, watch) = self.phase else {
             return;
         };
         let Some(read) = watch.read(packets, now) else {
@@ -651,7 +623,7 @@ impl Mic {
                 if let Some(next) = next {
                     effects.push(Effect::Audio(AudioRequest::CancelRestore));
                     self.send_start(next, now, effects);
-                    Phase::Running(hold, watch.retry(next, now), Ownership::Owned)
+                    Phase::Running(hold, watch.retry(next, now))
                 } else {
                     // The pods said they run, so the uplink is stopped and the sink restored before `mic` reads the tries spent.
                     let spent = spent(state, effects);
@@ -659,15 +631,12 @@ impl Mic {
                     Phase::Stopping {
                         since: now,
                         restore: true,
-                        ownership,
                         spent: Some(spent),
                     }
                 }
             }
             // Only a wanted uplink on an awake, running daemon can spend a try on a stall.
-            Read::Moved(watch) | Read::Stalled { watch, .. } => {
-                Phase::Running(hold, watch, ownership)
-            }
+            Read::Moved(watch) | Read::Stalled { watch, .. } => Phase::Running(hold, watch),
         };
     }
 
@@ -683,7 +652,7 @@ impl Mic {
                 Some(since.saturating_add(Duration::from_millis(RESTORE_WAIT_MS)))
             }
             Phase::Running(..) if self.node.blocked() => None,
-            Phase::Running(hold, watch, _) => {
+            Phase::Running(hold, watch) => {
                 hold.deadline().into_iter().chain(watch.deadline()).min()
             }
             Phase::Stopped(_) => None,

@@ -54,11 +54,7 @@ fn the_gate_lets_a_due_stop_out_only_with_no_bud_worn_or_a_quiet_sink() {
         let mut state = linked(Column::Auto);
         state.ear = EarReport::from_in_ear(worn, false);
         let unworn = (!worn).then_some(LEFT);
-        let mut mic = mic(Phase::Running(
-            Hold::Waiting { unworn },
-            watch(),
-            Ownership::Owned,
-        ));
+        let mut mic = mic(Phase::Running(Hold::Waiting { unworn }, watch()));
         let effects = mic.step(&state, fact, SENT);
         assert_eq!(kind(mic.phase), to, "{worn} {fact:?}");
         let sent = if to == Kind::Waiting { NOTHING } else { STOP };
@@ -166,11 +162,7 @@ fn each_stop_logs_the_word_of_the_gate_and_only_a_quiet_one_skips_the_restore() 
             };
             let mut mic = Mic {
                 exiting: column == Column::Exit,
-                ..mic(Phase::Running(
-                    Hold::Waiting { unworn },
-                    watch(),
-                    Ownership::Owned,
-                ))
+                ..mic(Phase::Running(Hold::Waiting { unworn }, watch()))
             };
             assert_eq!(
                 lines(&mic.step(&state, &fact, SENT)),
@@ -206,7 +198,7 @@ fn off_and_the_exit_owe_the_stop_with_no_linger_and_only_through_the_gate() {
                         quiet,
                         ..Audio::default()
                     },
-                    ..mic(Phase::Running(from, watch(), Ownership::Owned))
+                    ..mic(Phase::Running(from, watch()))
                 };
                 let effects = mic.step(&state, &Fact::Changed, SENT);
                 let cell = format!("{column:?} {from:?} {worn} {quiet}");

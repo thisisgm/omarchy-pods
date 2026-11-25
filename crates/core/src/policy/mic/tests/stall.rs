@@ -20,7 +20,7 @@ fn quiet(effects: &[Effect]) -> bool {
 }
 
 fn watch_of(mic: &Mic) -> Watch {
-    let Phase::Running(_, watch, _) = mic.phase else {
+    let Phase::Running(_, watch) = mic.phase else {
         panic!("not running: {:?}", mic.phase);
     };
     watch
