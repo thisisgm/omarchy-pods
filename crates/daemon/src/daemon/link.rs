@@ -436,6 +436,7 @@ impl Driver {
     fn step(&mut self, event: Event<'_>) {
         let before = self.machine.phase();
         let last = self.hub.state();
+        // BlueZ gives no reason, so an unrequested drop holds reconnects if the buds were worn at link loss.
         let external_disconnect = matches!(event, Event::DeviceDown(device)
             if self.machine.unrequested_down_while_worn(device, &last));
         let mut next = last.clone();

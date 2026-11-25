@@ -110,7 +110,7 @@ pub(super) async fn run(
 
 // Sample input: `variant boolean true`, the reply to `Get` of `Paired`.
 async fn require_paired(connection: &Connection, path: &str) -> zbus::Result<()> {
-    let paired = connection
+    let reply = connection
         .call_method(
             Some(BLUEZ),
             path,
@@ -118,16 +118,21 @@ async fn require_paired(connection: &Connection, path: &str) -> zbus::Result<()>
             "Get",
             &(DEVICE_INTERFACE, "Paired"),
         )
-        .await
+        .await?;
+    let paired = reply
+        .body()
+        .deserialize::<OwnedVariant>()
         .ok()
-        .and_then(|reply| reply.body().deserialize::<OwnedVariant>().ok())
         .and_then(|value| bool::try_from(value).ok());
-    if paired != Some(true) {
-        return Err(zbus::Error::Failure(
+    match paired {
+        Some(true) => Ok(()),
+        Some(false) => Err(zbus::Error::Failure(
             "BlueZ did not confirm pairing".to_owned(),
-        ));
+        )),
+        None => Err(zbus::Error::Failure(
+            "BlueZ Paired reply was not a boolean".to_owned(),
+        )),
     }
-    Ok(())
 }
 
 /// `RemoveDevice` on the adapter the device's `Adapter` property names.
