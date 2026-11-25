@@ -408,7 +408,7 @@ impl Bluez {
         self.lock().fail = fail;
     }
 
-    /// Answers a Device1 Paired read with an UnknownObject reply carrying a fixture path.
+    /// Answers a `Device1` `Paired` read with an `UnknownObject` reply carrying a fixture path.
     pub(crate) fn fail_paired_read(&self) {
         self.lock().fail_paired_read = true;
     }
