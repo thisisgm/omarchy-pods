@@ -14,6 +14,7 @@ use crate::policy::audio::SinkState;
 use crate::policy::mic::tests::{confirmed, hold, lines, requests};
 use crate::policy::mic::{Mic, STOP_OWED_PLAYING_LINE, UPLINK_LINGER_MS};
 use crate::policy::tests::{device, sink_in};
+use crate::prefs::MicModels;
 use crate::state::Microphone;
 
 /// When the last bud of a node in its grace left.
@@ -439,6 +440,19 @@ fn every_kind_against_every_fact() {
         if to == from && from == Kind::Grace {
             assert_eq!(node.deadline(), self::node(from).deadline(), "{cell}");
         }
+    }
+}
+
+#[test]
+fn a_closed_node_without_a_confirmed_model_stays_closed_on_a_silent_fact() {
+    for event in [Event::SilentUnworn, Event::SilentWorn] {
+        let mut node = node(Kind::Closed);
+        let (fact, now, mut state) = stepped(event);
+        state.mic_models = MicModels::default();
+        let mut effects = Vec::new();
+        node.step(&state, &fact, now, &mut effects);
+        assert_eq!(sent(&effects), Sent::Nothing, "{event:?}");
+        assert_eq!(kind(node), Kind::Closed, "{event:?}");
     }
 }
 
