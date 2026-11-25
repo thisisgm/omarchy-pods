@@ -127,12 +127,13 @@ enum PendingMarker {
     RetryUntil(Duration),
 }
 
-/// Why a STOP went out; only `Quiet` starts without an owed restore because the sink was already suspended or absent.
+/// Why a STOP went out, including a handoff that can stop while the sink is playing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Word {
     Quiet,
     NotWorn,
     Sleep,
+    Dictation,
 }
 
 impl Word {
@@ -141,6 +142,7 @@ impl Word {
             Self::Quiet => STOP_QUIET_LINE,
             Self::NotWorn => STOP_NOT_WORN_LINE,
             Self::Sleep => STOP_SLEEP_LINE,
+            Self::Dictation => "mic: stop sent (dictation)",
         }
     }
 }
@@ -177,6 +179,7 @@ pub(super) struct Mic {
     node: Node,
     route: Option<Route>,
     dictation_armed: bool,
+    dictation_active: bool,
 }
 
 impl Default for Mic {
@@ -192,6 +195,7 @@ impl Default for Mic {
             node: Node::default(),
             route: None,
             dictation_armed: false,
+            dictation_active: false,
         }
     }
 }
@@ -213,7 +217,9 @@ impl Mic {
         let mut effects = Vec::new();
         self.step_node(state, fact, now, &mut effects);
         let route = self.recording().then_some(Route::Uplink);
-        self.step_uplink(state, fact, now, dictation, route, &mut effects);
+        self.set_route(route, dictation);
+        self.observe_uplink(state, fact, now, &mut effects);
+        self.follow_uplink(state, now, dictation, &mut effects);
         effects
     }
 
@@ -228,18 +234,27 @@ impl Mic {
         self.node.recorders()
     }
 
+    pub(super) fn set_route(&mut self, route: Option<Route>, dictation: &Dictation) {
+        self.route = route;
+        self.dictation_armed = dictation.armed();
+        self.dictation_active = dictation.active();
+    }
+
+    /// A new session waits for the STOP and its restore; a late stopped marker can owe a restore after `DoAP` begins.
+    pub(super) fn ready_for_dictation(&self, dictation: MicDictation) -> bool {
+        matches!(self.phase, Phase::Stopped(_))
+            || (matches!(self.phase, Phase::Restoring { .. })
+                && matches!(dictation, MicDictation::Starting | MicDictation::Streaming))
+    }
+
     /// `state` is the state after the step the fact comes from.
-    pub(super) fn step_uplink(
+    pub(super) fn observe_uplink(
         &mut self,
         state: &State,
         fact: &Fact,
         now: Duration,
-        dictation: &Dictation,
-        route: Option<Route>,
         effects: &mut Vec<Effect>,
     ) {
-        self.route = route;
-        self.dictation_armed = dictation.armed();
         match fact {
             Fact::Link(Signal::Down) => self.down(now, effects),
             Fact::Link(Signal::Lost { .. }) => {
@@ -262,6 +277,15 @@ impl Mic {
             | Fact::Mic(_)
             | Fact::Dictation(_) => {}
         }
+    }
+
+    pub(super) fn follow_uplink(
+        &mut self,
+        state: &State,
+        now: Duration,
+        dictation: &Dictation,
+        effects: &mut Vec<Effect>,
+    ) {
         // A successful arm confirms an auto model without the uplink probe.
         let probe_waits = dictation.code(state) == MicDictation::Arming
             && state.microphone.preference() == MicPref::Auto
@@ -413,7 +437,12 @@ impl Mic {
             Phase::Starting { since, tried, .. } => {
                 effects.push(Effect::Log(unanswered_line(tried.number())));
                 self.start_failures = self.start_failures.saturating_add(1);
-                self.unanswered(state, tried, since, now, effects)
+                if self.route == Some(Route::Dictation) && !self.node.blocked() {
+                    // The lost running marker can hide a live uplink; send STOP after its START window.
+                    self.send_stop(Word::Dictation, now, effects)
+                } else {
+                    self.unanswered(state, tried, since, now, effects)
+                }
             }
             Phase::Stopping { restore, spent, .. } => {
                 effects.push(log(STOP_UNCONFIRMED_LINE));
@@ -444,7 +473,7 @@ impl Mic {
             {
                 self.phase = self.start(Try::FIRST, now, effects);
             }
-            // No STOP is ever written while a START is unanswered: the running marker sends it.
+            // A START's answer window gives the running marker a chance to send the owed STOP.
             Phase::Starting {
                 since,
                 tried,
@@ -491,6 +520,8 @@ impl Mic {
             hold.owed(in_ear, self.audio.quiet, now)
         } else if self.asleep && gate::open(in_ear, self.audio.quiet).is_some() {
             Next::Stop(Word::Sleep)
+        } else if self.route == Some(Route::Dictation) && !self.asleep {
+            Next::Stop(Word::Dictation)
         } else {
             hold.follow(self.uplink_wanted(state), in_ear, self.audio.quiet, now)
         };
@@ -517,15 +548,21 @@ impl Mic {
                 effects.extend([Effect::Uplink(UplinkRequest::Stop), log(Word::Sleep.line())]);
                 Phase::Stopped(Stopped::default())
             }
-            Next::Stop(word) => {
-                effects.extend([Effect::Uplink(UplinkRequest::Stop), log(word.line())]);
-                Phase::Stopping {
-                    since: now,
-                    restore: word != Word::Quiet,
-                    spent: None,
-                }
-            }
+            Next::Stop(word) => self.send_stop(word, now, effects),
         };
+    }
+
+    fn send_stop(&self, word: Word, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+        effects.extend([Effect::Uplink(UplinkRequest::Stop), log(word.line())]);
+        Phase::Stopping {
+            since: now,
+            restore: match word {
+                Word::Quiet => false,
+                Word::Dictation => !self.audio.quiet,
+                Word::NotWorn | Word::Sleep => true,
+            },
+            spent: None,
+        }
     }
 
     /// The end of a STOP: the restore it is owed, or nothing.
@@ -671,8 +708,10 @@ impl Mic {
 
     /// An uplink recording, or a fast-capture hint with dictation neither armed nor routed, can hold the uplink under `auto`.
     fn uplink_wanted(&self, state: &State) -> bool {
-        let hint = self.audio.hint && !self.dictation_armed && self.route != Some(Route::Dictation);
-        !self.node.blocked()
+        let hint = self.audio.hint && !self.dictation_armed;
+        !self.dictation_active
+            && self.route != Some(Route::Dictation)
+            && !self.node.blocked()
             && (wanted(state, hint)
                 || (self.route == Some(Route::Uplink) && state.ear.any_in_ear()))
     }

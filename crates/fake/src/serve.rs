@@ -575,7 +575,11 @@ impl Shared {
                     return;
                 }
                 state.att_heard = state.att_heard.saturating_add(1);
-                state.doap.on_att(id, sdu, at)
+                if state.uplink.running() && state.doap.ignore_start(sdu) {
+                    Vec::new()
+                } else {
+                    state.doap.on_att(id, sdu, at)
+                }
             }
         };
         let queued = match state.lines.iter_mut().find(|line| line.id == id) {

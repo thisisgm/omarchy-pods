@@ -416,6 +416,92 @@ mod tests {
     }
 
     #[test]
+    fn dictation_records_doap_after_stopping_the_lingering_uplink() {
+        use super::support::recording::dictation_marks;
+        use super::support::uplink::{assert_hold, starts, stops, wait_restore};
+
+        let mut fixture = Fixture::new();
+        let call_id = fixture.list(Listed::Program);
+        let call = fixture.call();
+        uplink(&fixture);
+        let mic = fixture.device.pods.uplink();
+        wait_for("the uplink running", || mic.running().then_some(()));
+        mic.hold_stops(true);
+        fixture.audio.remove_recorder(call_id);
+        drop(call.finish());
+        fixture.rig.wait_logged(NO_RECORDER);
+
+        fixture.list(CAPTURE);
+        fixture
+            .rig
+            .wait_logged("mic: recorders (dictation 1, other 0)");
+        let recorder = fixture.capture();
+        let doap = fixture.device.pods.doap();
+        wait_for("the uplink STOP or an out-of-order DoAP START", || {
+            (!stops(&fixture.device).is_empty() || doap.starts() > 0).then_some(())
+        });
+        assert_eq!(
+            stops(&fixture.device).len(),
+            1,
+            "DoAP must send 0x58 STOP first"
+        );
+        assert_eq!(
+            fixture.mode_writes(),
+            0,
+            "mode must wait for the STOP answer"
+        );
+        assert_eq!(doap.starts(), 0);
+        assert!(mic.running());
+
+        doap.mark(MARK_FRAMES);
+        mic.release_stop();
+        let (suspended, resumed) = wait_restore(&fixture.audio, &fixture.device);
+        assert_hold(suspended, resumed);
+        status(&fixture.rig, "streaming");
+        pause(MARK_LENGTH.saturating_add(MAX_TAIL));
+        let samples = recorder.finish();
+        fixture.stopped(1);
+        assert!(!dictation_marks(&samples).is_empty(), "missing DoAP audio");
+        assert_eq!(doap.starts(), 1);
+        assert_eq!(starts(&fixture.device).len(), 1);
+        fixture.finish();
+    }
+
+    #[test]
+    fn dictation_records_uplink_after_two_unanswered_starts() {
+        use pods_fake::uplink::PERIOD;
+
+        use super::support::recording::marked;
+        use super::support::uplink::starts;
+
+        let mut fixture = Fixture::new();
+        let doap = fixture.device.pods.doap();
+        doap.hold_start(true);
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        uplink(&fixture);
+        assert_eq!(doap.starts(), 2);
+        assert!(!doap.streaming());
+        assert_eq!(fixture.mode_writes(), 2);
+        wait_for("dictation mode cleared", || {
+            (!doap.mode_seen()).then_some(())
+        });
+
+        fixture.device.pods.uplink().mark(MARK_FRAMES);
+        pause(PERIOD.saturating_mul(MARK_FRAMES).saturating_add(MAX_TAIL));
+        let samples = recorder.finish();
+        fixture
+            .rig
+            .wait_logged("dictation: this recording takes the uplink");
+        assert!(
+            !marked(&samples).is_empty(),
+            "missing fallback uplink audio"
+        );
+        assert_eq!(starts(&fixture.device).len(), 1);
+        fixture.finish();
+    }
+
+    #[test]
     fn a_call_after_dictation_routes_from_its_delayed_list() {
         let mut fixture = Fixture::new();
         let log_path = fixture.rig.daemon().log.clone();
@@ -565,7 +651,7 @@ mod tests {
         drop(recorder.finish());
         fixture
             .rig
-            .wait_logged("dictation: refused twice, this recording takes the uplink");
+            .wait_logged("dictation: this recording takes the uplink");
         fixture.finish();
     }
 
