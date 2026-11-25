@@ -14,6 +14,7 @@ use crate::policy::audio::SinkState;
 use crate::policy::mic::tests::{confirmed, hold, lines, requests};
 use crate::policy::mic::{Mic, STOP_OWED_PLAYING_LINE, UPLINK_LINGER_MS};
 use crate::policy::tests::{device, sink_in};
+use crate::prefs::MicModels;
 use crate::state::Microphone;
 
 /// When the last bud of a node in its grace left.
@@ -55,6 +56,8 @@ enum Event {
     /// The recorder gone with no bud worn.
     PausedOut,
     BudOut,
+    SilentUnworn,
+    SilentWorn,
     /// The clock at the end of the grace of `Grace`, no bud worn.
     Deadline,
     Lost,
@@ -86,7 +89,7 @@ const KINDS: [Kind; 8] = [
     Kind::Broken,
 ];
 
-const EVENTS: [Event; 15] = [
+const EVENTS: [Event; 17] = [
     Event::Changed,
     Event::Opened,
     Event::Refused,
@@ -95,6 +98,8 @@ const EVENTS: [Event; 15] = [
     Event::Paused,
     Event::PausedOut,
     Event::BudOut,
+    Event::SilentUnworn,
+    Event::SilentWorn,
     Event::Deadline,
     Event::Lost,
     Event::Off,
@@ -104,10 +109,10 @@ const EVENTS: [Event; 15] = [
     Event::StaleStreaming,
 ];
 
-static CELLS: [(Kind, Event, Sent, Kind); 120] = {
+static CELLS: [(Kind, Event, Sent, Kind); 136] = {
     use Event::{
         BudOut, Changed, Deadline, Exit, Failed, Lost, Off, Opened, Paused, PausedOut, Refused,
-        StaleDown, StaleStreaming, StaleUp, Streaming,
+        SilentUnworn, SilentWorn, StaleDown, StaleStreaming, StaleUp, Streaming,
     };
     use Kind::{Broken, Closed, Down, Grace, Opening, Recording, RecordingOut, Up};
     use Sent::{Close, Nothing, Open};
@@ -120,6 +125,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Closed, Paused, Open, Opening),
         (Closed, PausedOut, Open, Opening),
         (Closed, BudOut, Open, Opening),
+        (Closed, SilentUnworn, Nothing, Closed),
+        (Closed, SilentWorn, Nothing, Closed),
         (Closed, Deadline, Open, Opening),
         (Closed, Lost, Nothing, Closed),
         (Closed, Off, Nothing, Closed),
@@ -135,6 +142,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Opening, Paused, Nothing, Opening),
         (Opening, PausedOut, Nothing, Opening),
         (Opening, BudOut, Nothing, Opening),
+        (Opening, SilentUnworn, Nothing, Opening),
+        (Opening, SilentWorn, Nothing, Opening),
         (Opening, Deadline, Nothing, Opening),
         (Opening, Lost, Close, Closed),
         (Opening, Off, Close, Closed),
@@ -150,6 +159,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Up, Paused, Nothing, Up),
         (Up, PausedOut, Nothing, Grace),
         (Up, BudOut, Nothing, Grace),
+        (Up, SilentUnworn, Nothing, Grace),
+        (Up, SilentWorn, Nothing, Up),
         (Up, Deadline, Nothing, Grace),
         (Up, Lost, Close, Closed),
         (Up, Off, Close, Closed),
@@ -165,6 +176,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Down, Paused, Nothing, Down),
         (Down, PausedOut, Nothing, Down),
         (Down, BudOut, Nothing, Down),
+        (Down, SilentUnworn, Nothing, Down),
+        (Down, SilentWorn, Nothing, Down),
         (Down, Deadline, Nothing, Down),
         (Down, Lost, Close, Closed),
         (Down, Off, Close, Closed),
@@ -180,6 +193,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Recording, Paused, Nothing, Up),
         (Recording, PausedOut, Nothing, Grace),
         (Recording, BudOut, Nothing, RecordingOut),
+        (Recording, SilentUnworn, Nothing, RecordingOut),
+        (Recording, SilentWorn, Nothing, Recording),
         (Recording, Deadline, Nothing, RecordingOut),
         (Recording, Lost, Close, Closed),
         (Recording, Off, Close, Closed),
@@ -195,6 +210,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Grace, Paused, Nothing, Up),
         (Grace, PausedOut, Nothing, Grace),
         (Grace, BudOut, Nothing, Grace),
+        (Grace, SilentUnworn, Nothing, Grace),
+        (Grace, SilentWorn, Nothing, Up),
         (Grace, Deadline, Close, Closed),
         (Grace, Lost, Close, Closed),
         (Grace, Off, Close, Closed),
@@ -210,6 +227,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (RecordingOut, Paused, Nothing, Up),
         (RecordingOut, PausedOut, Close, Closed),
         (RecordingOut, BudOut, Nothing, RecordingOut),
+        (RecordingOut, SilentUnworn, Close, Closed),
+        (RecordingOut, SilentWorn, Nothing, Recording),
         (RecordingOut, Deadline, Nothing, RecordingOut),
         (RecordingOut, Lost, Close, Closed),
         (RecordingOut, Off, Close, Closed),
@@ -225,6 +244,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
         (Broken, Paused, Nothing, Broken),
         (Broken, PausedOut, Nothing, Broken),
         (Broken, BudOut, Nothing, Broken),
+        (Broken, SilentUnworn, Nothing, Broken),
+        (Broken, SilentWorn, Nothing, Broken),
         (Broken, Deadline, Nothing, Broken),
         (Broken, Lost, Nothing, Broken),
         (Broken, Off, Nothing, Broken),
@@ -252,8 +273,8 @@ an_outage_logs_its_reason_once_and_a_late_server_gets_the_node Down Refused
 an_outage_logs_its_reason_once_and_a_late_server_gets_the_node Down Opened
 the_last_bud_out_withdraws_the_node_after_the_grace Up BudOut
 the_last_bud_out_withdraws_the_node_after_the_grace Grace Deadline
-buds_out_withdraws_a_stopped_stream_while_the_recorder_is_linked Recording BudOut
-buds_out_keeps_a_talking_uplink_then_withdraws_on_silence Recording BudOut
+buds_out_withdraws_a_stopped_stream_while_the_recorder_is_linked RecordingOut SilentUnworn
+buds_out_keeps_a_talking_uplink_then_withdraws_on_silence RecordingOut SilentUnworn
 buds_out_keeps_the_node_if_one_is_worn_or_returns_in_time Recording BudOut
 turns_of_the_setting_while_an_open_hangs_end_on_the_last Opening Off
 turns_of_the_setting_while_an_open_hangs_end_on_the_last Closed Changed
@@ -311,6 +332,8 @@ fn node(kind: Kind) -> Node {
         source,
         next_id: NEXT_ID,
         buds,
+        silence_check: (kind == Kind::RecordingOut)
+            .then_some(SENT.saturating_add(SILENCE_CHECK_INTERVAL)),
         ..Node::default()
     }
 }
@@ -342,6 +365,7 @@ fn stepped(event: Event) -> (Fact, Duration, State) {
         Event::Failed => Fact::Mic(MicFact::Broken),
         Event::Streaming => Fact::Mic(MicFact::Recording(CURRENT, true)),
         Event::Paused | Event::PausedOut => Fact::Mic(MicFact::Recording(CURRENT, false)),
+        Event::SilentUnworn | Event::SilentWorn => Fact::Mic(MicFact::OutputSilent),
         Event::StaleUp => Fact::Mic(MicFact::Up(EARLIER)),
         Event::StaleDown => Fact::Mic(MicFact::Down(EARLIER)),
         Event::StaleStreaming => Fact::Mic(MicFact::Recording(EARLIER, true)),
@@ -356,7 +380,9 @@ fn stepped(event: Event) -> (Fact, Duration, State) {
         Event::Exit => Fact::Exit,
     };
     match event {
-        Event::PausedOut | Event::BudOut | Event::Deadline => state.ear = EarReport::default(),
+        Event::PausedOut | Event::BudOut | Event::SilentUnworn | Event::Deadline => {
+            state.ear = EarReport::default();
+        }
         Event::Lost => state.connected = false,
         Event::Off => state.microphone.set_preference(MicPref::Off),
         Event::Changed
@@ -365,6 +391,7 @@ fn stepped(event: Event) -> (Fact, Duration, State) {
         | Event::Failed
         | Event::Streaming
         | Event::Paused
+        | Event::SilentWorn
         | Event::Exit
         | Event::StaleUp
         | Event::StaleDown
@@ -396,12 +423,23 @@ fn sent(effects: &[Effect]) -> Sent {
 fn every_kind_against_every_fact() {
     for (from, event, wanted, to) in CELLS {
         let mut node = node(from);
-        let (fact, now, state) = stepped(event);
+        let (fact, now, mut state) = stepped(event);
+        // A closed node with a confirmed model would open on a silent fact just as on Changed.
+        if from == Kind::Closed && matches!(event, Event::SilentUnworn | Event::SilentWorn) {
+            state.mic_models = MicModels::default();
+        }
         let mut effects = Vec::new();
         node.step(&state, &fact, now, &mut effects);
         let cell = format!("{from:?}, {event:?}");
         assert_eq!(sent(&effects), wanted, "{cell}");
         assert_eq!(kind(node), to, "{cell}");
+        if from == Kind::RecordingOut && event == Event::SilentUnworn {
+            assert_eq!(lines(&effects), [withdrawn_line("silent")], "{cell}");
+        }
+        if from == Kind::RecordingOut && event != Event::Deadline {
+            let held = self::node(from).deadline().filter(|_| to == from);
+            assert_eq!(node.deadline(), held, "{cell}");
+        }
         // A grace that holds keeps its end; a restarted one would move it.
         if to == from && from == Kind::Grace {
             assert_eq!(node.deadline(), self::node(from).deadline(), "{cell}");
