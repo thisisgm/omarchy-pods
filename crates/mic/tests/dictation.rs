@@ -14,6 +14,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use pods_mic::decode::Decoded;
     use pods_mic::level::MIC_GAIN_DB;
     use pods_mic::opus::{Decoder, MAX_OPUS_FRAME_BYTES};
     use pods_mic::{
@@ -21,7 +22,7 @@ mod tests {
         MAX_GAP_FRAMES, MAX_UNITS_PER_SDU, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, STAMP_STEP,
         STEADY_FRAMES, chain,
     };
-    use pods_samples::opus::{TONE_DBFS, TONE_HZ, tone};
+    use pods_samples::opus::{TONE_DBFS, TONE_HZ, silence, tone};
     use pods_samples::uplink::tone_unit;
 
     use super::support::{
@@ -208,6 +209,29 @@ mod tests {
             (level - f64::from(TONE_DBFS) - f64::from(MIC_GAIN_DB)).abs() <= TONE_SLACK_DB,
             "the tone peaks at {level} dBFS"
         );
+    }
+
+    #[test]
+    fn the_dictation_span_peak_measures_silence_and_ungained_tone() {
+        let mut quiet = Stream::new();
+        quiet.chain.frames(FIRST, iter::once((0, silence())));
+        assert_eq!(counted(&quiet.counters), [0; 4]);
+        assert_eq!(quiet.counters.decoded_peak().to_bits(), 0);
+
+        let frame = tone().next().unwrap();
+        let mut decoder = Decoder::new().unwrap();
+        let Decoded::Samples(samples) = decoder.frame(frame) else {
+            panic!("the decoder refused the tone frame");
+        };
+        let raw_peak = samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0, f32::max);
+        assert!(raw_peak > 0.0);
+
+        let mut stream = Stream::new();
+        stream.land(1);
+        assert_eq!(stream.counters.decoded_peak().to_bits(), raw_peak.to_bits());
     }
 
     #[test]

@@ -279,7 +279,16 @@ mod tests {
     #[test]
     fn recorder_departures_log_each_spans_own_counters() {
         let (mut rig, device, pipewire) = ready();
-        drop(recorded(&rig, &device, &pipewire, TAP_LEVEL));
+        let uplink = device.pods.uplink();
+        uplink.set_level(TAP_LEVEL);
+        let recorder = record(&rig, &pipewire, "capture.wav");
+        rig.wait_status("the first span's decoded audio", |status| {
+            status["mic"] == "recording" && status["mic_span_peak_dbfs"].is_number()
+        });
+        // The recorder can write silent frames before the decoder has audio to play.
+        let before_playout = usize::try_from(recorder.frames_on_disk()).unwrap();
+        recorder.wait_frames(before_playout.saturating_add(frames(LEAD)), HANG_LIMIT);
+        drop(recorder.finish());
         let first = wait_mic(&rig, "live");
         let total = counts(&first);
         let peak = first["mic_span_peak_dbfs"].as_f64().unwrap();
@@ -295,8 +304,8 @@ mod tests {
             [total.underruns, total.concealed, total.limited],
         );
 
-        let uplink = device.pods.uplink();
         uplink.set_level(KNOWN_LEVEL);
+        uplink.lose(1);
         // The uplink lingers between recorders, so let the loud samples pass the playout delay.
         let lead_packets = u64::try_from(LEAD.as_millis() / PERIOD.as_millis()).unwrap();
         wait_packets(&uplink, uplink.sent_packets().saturating_add(lead_packets));
@@ -311,9 +320,13 @@ mod tests {
             assert_eq!(start[key], 0, "{start}");
         }
         assert!(start["mic_span_peak_dbfs"].is_null(), "{start}");
-        assert_eq!(counts(&start).limited, total.limited);
+        let baseline = counts(&start);
+        assert_eq!(baseline.limited, total.limited);
+        assert!(baseline.concealed > total.concealed, "{start}");
         let during = rig.wait_status("the second span's audio", |status| {
-            status["mic"] == "recording" && status["mic_span_sdus"].as_u64().unwrap() > 0
+            status["mic"] == "recording"
+                && status["mic_span_sdus"].as_u64().unwrap() > 0
+                && status["mic_span_peak_dbfs"].is_number()
         });
         let peak = during["mic_span_peak_dbfs"].as_f64().unwrap();
         let (_, decoded_peak) = decoded_dbfs(KNOWN_LEVEL);
@@ -327,8 +340,8 @@ mod tests {
             &end,
             1,
             [
-                lifetime.underruns - total.underruns,
-                lifetime.concealed - total.concealed,
+                lifetime.underruns - baseline.underruns,
+                lifetime.concealed - baseline.concealed,
                 0,
             ],
         );
