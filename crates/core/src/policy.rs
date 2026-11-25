@@ -154,7 +154,7 @@ impl Policy {
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
         let mic = self.step_mic(state, &fact, now);
-        let ducking = self.ducking.step(state, &fact);
+        let ducking = self.ducking.step_at(state, &fact, now);
         let monitor = if let Fact::Link(signal) = &fact {
             self.adverts.follow(signal)
         } else {
@@ -290,6 +290,7 @@ impl Policy {
             .chain(self.mic.deadline())
             .chain(self.dictation.deadline())
             .chain(self.edge.deadline())
+            .chain(self.ducking.deadline())
             .min()
     }
 

@@ -1,5 +1,7 @@
 //! Conversation Awareness volume, including a restore owed through a missing sink.
 
+use std::time::Duration;
+
 use pods_proto::addr::BdAddr;
 use pods_proto::awareness::Awareness;
 
@@ -10,6 +12,8 @@ use crate::state::{AudioServer, State};
 
 pub(super) const LOWERED_PERCENT: u8 = 20;
 pub(super) const VOLUME_GRID: u8 = 5;
+// Superwhisper Muffle takes 1500 ms to release after recording stops.
+const MUFFLE_RELEASE: Duration = Duration::from_millis(1500);
 
 #[expect(
     clippy::arithmetic_side_effects,
@@ -33,6 +37,8 @@ pub(super) struct Ducking {
     volume_writes: u64,
     pending_volume: Option<PendingVolume>,
     recording: bool,
+    release_until: Option<Duration>,
+    deferred_start: bool,
     conversation: Conversation,
     parked_restores: Vec<(BdAddr, Percent, Percent)>,
 }
@@ -62,13 +68,18 @@ enum Conversation {
 }
 
 impl Ducking {
-    pub(super) fn step(&mut self, state: &State, fact: &Fact) -> Vec<Effect> {
+    pub(super) fn deadline(&self) -> Option<Duration> {
+        self.release_until.filter(|_| self.deferred_start)
+    }
+
+    pub(super) fn step_at(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
         let volume = match fact {
             Fact::Link(Signal::Up { device }) => {
                 self.follow(*device);
                 None
             }
             Fact::Link(Signal::Down | Signal::Lost { .. }) => {
+                self.deferred_start = false;
                 self.await_sink();
                 if matches!(self.conversation, Conversation::UserAdjusted) {
                     self.conversation = Conversation::Idle;
@@ -95,12 +106,7 @@ impl Ducking {
             Fact::Audio(AudioFact::Recording(recording))
                 if state.audio_server != AudioServer::Idle =>
             {
-                self.recording = *recording;
-                if self.recording && matches!(self.conversation, Conversation::Lowered { .. }) {
-                    self.restore()
-                } else {
-                    None
-                }
+                self.on_recording(*recording, now)
             }
             Fact::Audio(AudioFact::VolumeAdjusted)
                 if state.connected && state.audio_server == AudioServer::Up =>
@@ -113,10 +119,27 @@ impl Ducking {
                 };
                 None
             }
+            Fact::Audio(AudioFact::VolumeSkipped(stamp)) => {
+                self.skip(*stamp);
+                None
+            }
             Fact::Link(Signal::Awareness(Awareness::Started))
                 if state.connected && state.conversational_awareness && !self.recording =>
             {
-                self.start()
+                self.deferred_start = self.release_until.is_some_and(|until| now < until);
+                if self.deferred_start {
+                    None
+                } else {
+                    self.start()
+                }
+            }
+            Fact::Tick if self.deadline().is_some_and(|until| now >= until) => {
+                self.deferred_start = false;
+                if state.connected && state.conversational_awareness {
+                    self.start()
+                } else {
+                    None
+                }
             }
             Fact::Link(Signal::Awareness(Awareness::Ended)) | Fact::Exit => self.restore(),
             Fact::Changed if !state.conversational_awareness => self.restore(),
@@ -145,6 +168,33 @@ impl Ducking {
             return Vec::new();
         };
         vec![self.request_volume(volume, sink)]
+    }
+
+    fn on_recording(&mut self, active: bool, now: Duration) -> Option<Percent> {
+        self.recording = active;
+        self.release_until = (!active).then(|| now.saturating_add(MUFFLE_RELEASE));
+        if active {
+            self.deferred_start = false;
+            if matches!(self.conversation, Conversation::Lowered { .. }) {
+                return self.restore();
+            }
+        }
+        None
+    }
+
+    fn skip(&mut self, stamp: VolumeStamp) {
+        if self.volume_writes == stamp.writes
+            && self
+                .sink
+                .is_some_and(|sink| sink.volume_stamp.epoch == stamp.epoch)
+            && matches!(
+                self.conversation,
+                Conversation::Lowered { .. } | Conversation::Restoring { .. }
+            )
+        {
+            self.pending_volume = None;
+            self.conversation = Conversation::Idle;
+        }
     }
 
     fn request_volume(&mut self, volume: Percent, sink: SinkFact) -> Effect {
@@ -182,6 +232,7 @@ impl Ducking {
         if self.device == Some(device) {
             return;
         }
+        self.deferred_start = false;
         if let (Some(previous), Conversation::Restoring { saved, ducked }) =
             (self.device, &self.conversation)
         {
@@ -214,6 +265,7 @@ impl Ducking {
     }
 
     fn restore(&mut self) -> Option<Percent> {
+        self.deferred_start = false;
         match self.conversation {
             Conversation::Lowered { saved, ducked } => {
                 self.conversation = Conversation::Restoring { saved, ducked };
@@ -239,11 +291,19 @@ impl Ducking {
     fn read_sink(&mut self, sink: SinkFact) -> Option<Percent> {
         let last = self.sink.replace(sink);
         let replaced = last.is_some_and(|last| last.index != sink.index);
-        if replaced {
+        let epoch_changed =
+            last.is_some_and(|last| last.volume_stamp.epoch != sink.volume_stamp.epoch);
+        if replaced
+            || (epoch_changed
+                && self.pending_volume.is_some()
+                && matches!(self.conversation, Conversation::Lowered { .. }))
+        {
             self.pending_volume = None;
+            if let Conversation::Lowered { saved, ducked } = self.conversation {
+                self.conversation = Conversation::Restoring { saved, ducked };
+            }
         }
-        // The adapter can apply an older write, but counts only writes in the current epoch.
-        if replaced || last.is_some_and(|last| last.volume_stamp.epoch != sink.volume_stamp.epoch) {
+        if replaced || epoch_changed {
             self.volume_writes = 0;
         }
         if sink.volume_stamp.writes < self.volume_writes {
@@ -270,9 +330,6 @@ impl Ducking {
             }
             self.pending_volume = None;
         }
-        if replaced && let Conversation::Lowered { saved, ducked } = self.conversation {
-            self.conversation = Conversation::Restoring { saved, ducked };
-        }
         match self.conversation {
             Conversation::Restoring { saved, ducked } if sink.volume == ducked => Some(saved),
             Conversation::Restoring { .. } => {
@@ -292,12 +349,20 @@ impl Ducking {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::super::tests::device;
     use super::{
         AudioFact, AudioRequest, AudioServer, Awareness, Ducking, Effect, Fact, Percent, Signal,
         SinkFact, State, VolumeStamp, lowered,
     };
     use crate::policy::audio::SinkState;
+
+    impl Ducking {
+        fn step(&mut self, state: &State, fact: &Fact) -> Vec<Effect> {
+            self.step_at(state, fact, Duration::ZERO)
+        }
+    }
 
     const STARTED: Fact = Fact::Link(Signal::Awareness(Awareness::Started));
     const ENDED: Fact = Fact::Link(Signal::Awareness(Awareness::Ended));
@@ -349,24 +414,17 @@ mod tests {
     }
 
     #[test]
-    fn a_duck_from_the_previous_epoch_restores_the_wearers_volume() {
-        let mut state = connected();
+    fn a_duck_discarded_after_an_epoch_change_leaves_the_baseline_available() {
+        let state = connected();
         let mut ducking = Ducking::default();
-        let up = Fact::Link(Signal::Up { device: device() });
 
-        assert_eq!(ducking.step(&state, &up), []);
-        assert_eq!(ducking.step(&state, &sink(1, 50, 0, 0)), []);
-        state.connected = false;
-        assert_eq!(ducking.step(&state, &Fact::Link(Signal::Down)), []);
-        state.connected = true;
-        assert_eq!(ducking.step(&state, &up), []);
         assert_eq!(ducking.step(&state, &sink(1, 55, 0, 0)), []);
         assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 1)]);
-
-        // Re-follow resets the adapter count before it applies the queued duck.
         assert_eq!(ducking.step(&state, &sink(1, 55, 1, 0)), []);
-        assert_eq!(ducking.step(&state, &sink(1, 10, 1, 0)), []);
-        assert_eq!(ducking.step(&state, &ENDED), [restore(55, 1, 1)]);
+        assert_eq!(ducking.step(&state, &ENDED), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(10, 1, 1)]);
+        assert_eq!(ducking.step(&state, &sink(1, 10, 1, 1)), []);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(55, 1, 2)]);
     }
 
     #[test]
@@ -449,6 +507,83 @@ mod tests {
         assert!(ducking.pending_volume.is_none());
         assert_eq!(ducking.step(&state, &sink(1, 10, 0, 2)), []);
         assert_eq!(ducking.step(&state, &STARTED), [set(0, 0, 3)]);
+    }
+
+    #[test]
+    fn a_dropped_duck_allows_a_second_duck_or_an_unrelated_volume_change() {
+        for ended_off_default in [false, true] {
+            let state = connected();
+            let mut ducking = Ducking::default();
+
+            assert_eq!(ducking.step(&state, &sink(1, 80, 0, 0)), []);
+            assert_eq!(ducking.step(&state, &STARTED), [set(15, 0, 1)]);
+            let skipped = Fact::Audio(AudioFact::VolumeSkipped(VolumeStamp {
+                epoch: 0,
+                writes: 1,
+            }));
+            assert_eq!(ducking.step(&state, &skipped), []);
+            let other_output = |volume| {
+                let Fact::Audio(AudioFact::Sink(Some(mut reading))) = sink(1, volume, 0, 1) else {
+                    panic!("expected a sink reading");
+                };
+                reading.is_default = false;
+                Fact::Audio(AudioFact::Sink(Some(reading)))
+            };
+            assert_eq!(ducking.step(&state, &other_output(80)), []);
+            if ended_off_default {
+                assert_eq!(ducking.step(&state, &other_output(15)), []);
+                assert_eq!(ducking.step(&state, &ENDED), []);
+                assert_eq!(ducking.step(&state, &sink(1, 15, 0, 1)), []);
+                assert_eq!(ducking.step(&state, &STARTED), [set(5, 0, 2)]);
+            } else {
+                assert_eq!(ducking.step(&state, &sink(1, 80, 0, 1)), []);
+                assert_eq!(ducking.step(&state, &STARTED), [set(15, 0, 2)]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_skipped_older_request_cannot_cancel_a_newer_duck() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 80, 0, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(15, 0, 1)]);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(80, 0, 2)]);
+        assert_eq!(ducking.step(&state, &STARTED), [set(15, 0, 3)]);
+        let skipped = Fact::Audio(AudioFact::VolumeSkipped(VolumeStamp {
+            epoch: 0,
+            writes: 2,
+        }));
+        assert_eq!(ducking.step(&state, &skipped), []);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(80, 0, 4)]);
+    }
+
+    #[test]
+    fn recording_release_defers_a_duck_until_the_muffle_fades() {
+        use crate::policy::Policy;
+
+        let at = Duration::from_millis;
+        for still_speaking in [true, false] {
+            let state = connected();
+            let mut policy = Policy::new(None);
+            drop(policy.step(&state, sink(1, 80, 0, 0), at(0)));
+            drop(policy.step(&state, Fact::Audio(AudioFact::Recording(true)), at(10)));
+            drop(policy.step(&state, Fact::Audio(AudioFact::Recording(false)), at(100)));
+
+            assert_eq!(policy.step(&state, STARTED, at(101)), []);
+            assert_eq!(policy.deadline(), Some(at(1600)));
+            assert_eq!(policy.step(&state, Fact::Tick, at(1599)), []);
+
+            if still_speaking {
+                assert_eq!(policy.step(&state, Fact::Tick, at(1600)), [set(15, 0, 1)]);
+                assert_eq!(policy.step(&state, ENDED, at(1601)), [restore(80, 0, 2)]);
+            } else {
+                assert_eq!(policy.step(&state, ENDED, at(1599)), []);
+                assert_eq!(policy.step(&state, Fact::Tick, at(1600)), []);
+                assert_eq!(policy.step(&state, STARTED, at(1600)), [set(15, 0, 1)]);
+            }
+        }
     }
 
     #[test]

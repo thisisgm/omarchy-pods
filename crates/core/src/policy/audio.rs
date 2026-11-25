@@ -74,6 +74,8 @@ pub enum AudioFact {
     Recording(bool),
     /// The sink changed outside a Conversation Awareness volume write.
     VolumeAdjusted,
+    /// A volume request finished with no channel write or remaining restore owed.
+    VolumeSkipped(VolumeStamp),
     /// A program asks to keep capture ready.
     Hint(bool),
     /// The followed card has an active headset profile.

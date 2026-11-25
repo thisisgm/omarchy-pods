@@ -387,7 +387,8 @@ impl Mic {
             AudioFact::Up
             | AudioFact::Headset(_)
             | AudioFact::Recording(_)
-            | AudioFact::VolumeAdjusted => {}
+            | AudioFact::VolumeAdjusted
+            | AudioFact::VolumeSkipped(_) => {}
             AudioFact::Down => {
                 self.set_quiet(false);
                 self.audio.hint = false;

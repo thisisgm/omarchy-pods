@@ -16,7 +16,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
-use super::super::volume::{VolumeWrite, Volumes, device_sink, protocol_volume};
+use super::super::volume::{Observed, VolumeWrite, Volumes, device_sink, protocol_volume};
 use super::super::wire::PROTOCOL_VERSION;
 use super::super::wire::tests::{sink, sink_list};
 use super::super::{Connection, Follower, Input, Left, Requests, Restore, queue};
@@ -98,6 +98,61 @@ fn set_volume_rounds_to_the_nearest_protocol_value() {
 }
 
 #[test]
+fn a_duck_dropped_on_a_non_default_sink_acknowledges_the_write() {
+    on_paused_clock(async {
+        let (stream, mut server) = UnixStream::pair().unwrap();
+        let mut connection = Connection {
+            stream,
+            seq: 0,
+            pending: Vec::new(),
+        };
+        let name = CString::new(OUTPUT).unwrap();
+        let list = sink_list(&[(&name, &[NORM])]);
+        let speakers_are_default = device_sink(&list, OUTPUT, None).unwrap();
+        let mut volume = Volumes::default();
+        let mut pending = VolumeWrite::queued(set_volume(Percent::new(20).unwrap(), 1));
+        let observed = volume
+            .apply(
+                DEVICE.parse().unwrap(),
+                &mut pending,
+                &mut connection,
+                speakers_are_default,
+                &mut SubscriptionMask::empty(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(volume.stamp.writes, 1, "the dropped duck must settle");
+        assert!(matches!(observed, Observed::Skipped(stamp) if stamp == volume.stamp));
+        assert!(pending.is_none());
+        assert!(volume.saved.is_empty());
+
+        let manual = protocol_volume(Percent::new(20).unwrap()).as_u32();
+        let list = sink_list(&[(&name, &[manual])]);
+        let manual = device_sink(&list, OUTPUT, None).unwrap();
+        pending = VolumeWrite::queued(AudioRequest::RestoreVolume(
+            Percent::FULL,
+            VolumeStamp {
+                epoch: 0,
+                writes: 2,
+            },
+        ));
+        let observed = volume
+            .apply(
+                DEVICE.parse().unwrap(),
+                &mut pending,
+                &mut connection,
+                manual,
+                &mut SubscriptionMask::empty(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(observed, Observed::Skipped(stamp) if stamp == volume.stamp));
+        assert_no_volume_write(&mut server).await;
+    });
+}
+
+#[test]
 fn a_duck_replacing_a_queued_restore_keeps_the_original_channels() {
     on_paused_clock(async {
         let (stream, mut server) = UnixStream::pair().unwrap();
@@ -168,12 +223,12 @@ fn a_duck_replacing_a_queued_restore_keeps_the_original_channels() {
 }
 
 #[test]
-fn volume_requested_during_a_refresh_uses_the_new_sink_index() {
+fn a_replacement_during_a_refresh_drops_the_old_duck() {
     on_paused_clock(check_new_sink(RequestDuring::Refresh));
 }
 
 #[test]
-fn volume_requested_while_waiting_refreshes_the_sink_before_writing() {
+fn a_replacement_found_by_a_volume_wake_drops_the_old_duck() {
     on_paused_clock(check_new_sink(RequestDuring::Wait));
 }
 
@@ -220,7 +275,7 @@ fn a_volume_wake_keeps_a_card_change_read_during_a_call() {
 }
 
 #[test]
-fn a_volume_write_refused_for_a_missing_sink_retries_on_the_same_connection() {
+fn a_missing_sink_retry_does_not_duck_the_replacement() {
     on_paused_clock(async {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("pulse");
@@ -241,10 +296,7 @@ fn a_volume_write_refused_for_a_missing_sink_retries_on_the_same_connection() {
 
             answer_command(&mut server, CommandTag::GetServerInfo).await;
             answer_command_with_sink(&mut server, NEW_INDEX).await;
-            let (seq, retried) = volume_command(&mut server).await;
-            assert_eq!(retried.device_index, Some(NEW_INDEX));
-            assert_eq!(retried.volume.channels(), original.volume.channels());
-            server.write_all(&ack(seq)).await.unwrap();
+            assert_no_volume_write(&mut server).await;
             let Some(Input::Audio(AudioFact::Sink(Some(current)))) = facts.recv().await else {
                 panic!("the next fact should report the replacement sink");
             };
@@ -395,36 +447,68 @@ async fn check_new_sink(during: RequestDuring) {
             request_volume();
         }
         answer_sink_list(&mut server, seq, NEW_INDEX, HALF).await;
-        let (seq, params) = volume_command(&mut server).await;
-        assert_eq!(params.device_index, Some(NEW_INDEX));
-        assert_eq!(params.volume.channels().first().unwrap().as_u32(), NORM);
-        server.write_all(&ack(seq)).await.unwrap();
-        let Some(Input::Audio(AudioFact::Sink(Some(before_write)))) = facts.recv().await else {
+        assert_no_volume_write(&mut server).await;
+        let Some(Input::Audio(AudioFact::Sink(Some(replacement)))) = facts.recv().await else {
             panic!("the next fact should report the replacement sink");
         };
-        assert_eq!(before_write.index, NEW_INDEX);
-        assert_eq!(before_write.volume.get(), 50);
-
-        notify_change(&mut server, SubscriptionEventFacility::Sink, NEW_INDEX).await;
-        answer_command_with_sink(&mut server, NEW_INDEX).await;
-        let Some(Input::Audio(AudioFact::Sink(Some(after_write)))) = facts.recv().await else {
-            panic!("the next fact should report the written volume");
-        };
-        assert_eq!(after_write.index, NEW_INDEX);
-        assert_eq!(after_write.volume, Percent::FULL);
+        assert_eq!(replacement.index, NEW_INDEX);
+        assert_eq!(replacement.volume.get(), 50);
         assert_eq!(
-            after_write.volume_stamp,
+            replacement.volume_stamp,
             VolumeStamp {
                 epoch: 1,
                 writes: 0
             }
         );
+
+        requests
+            .try_send(AudioRequest::RestoreVolume(
+                replacement.volume,
+                VolumeStamp {
+                    epoch: 1,
+                    writes: 1,
+                },
+            ))
+            .unwrap();
+        answer_command(&mut server, CommandTag::GetServerInfo).await;
+        let (seq, _) = expect_command(&mut server, CommandTag::GetSinkInfoList).await;
+        answer_sink_list(&mut server, seq, NEW_INDEX, HALF).await;
+        assert_no_volume_write(&mut server).await;
+
+        requests
+            .try_send(AudioRequest::SetVolume(
+                Percent::new(10).unwrap(),
+                VolumeStamp {
+                    epoch: 1,
+                    writes: 2,
+                },
+            ))
+            .unwrap();
+        answer_command(&mut server, CommandTag::GetServerInfo).await;
+        let (seq, _) = expect_command(&mut server, CommandTag::GetSinkInfoList).await;
+        answer_sink_list(&mut server, seq, NEW_INDEX, HALF).await;
+        let (seq, params) = volume_command(&mut server).await;
+        assert_eq!(params.device_index, Some(NEW_INDEX));
+        assert_eq!(
+            params.volume.channels(),
+            &[protocol_volume(Percent::new(10).unwrap())]
+        );
+        server.write_all(&ack(seq)).await.unwrap();
     });
     assert!(matches!(
         follower.follow(&socket).await,
         Left::Request(None)
     ));
     check.await.unwrap();
+}
+
+async fn assert_no_volume_write(server: &mut UnixStream) {
+    let unexpected = timeout(Duration::from_millis(1), read_command(server)).await;
+    assert!(
+        unexpected.is_err(),
+        "unexpected command after the write was dropped: {:?}",
+        unexpected.ok().flatten().map(|(_, command)| command.tag())
+    );
 }
 
 async fn notify_change(server: &mut UnixStream, facility: SubscriptionEventFacility, index: u32) {
