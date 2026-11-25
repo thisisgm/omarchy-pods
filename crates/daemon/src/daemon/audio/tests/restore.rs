@@ -523,6 +523,49 @@ fn a_refused_read_of_the_record_streams_holds_back_no_restore() {
 }
 
 #[test]
+fn a_refused_card_list_after_a_miss_tells_the_server_down_again() {
+    let told = on_paused_clock(async {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(SOCKET);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let (inputs, mut facts) = mpsc::channel(FACTS);
+        let (requests, asked) = queue();
+        let state = watch::channel(State::default()).1;
+        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        requests
+            .send(AudioRequest::Follow(Some(DEVICE.parse().unwrap())))
+            .await
+            .unwrap();
+        assert!(told_down(&mut facts).await, "the first dial should miss");
+
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (refuse, refused) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            while let Some((seq, command)) = read_command(&mut stream).await {
+                if command.tag() == CommandTag::GetCardInfoList {
+                    refused.await.unwrap();
+                    stream.write_all(&error(seq)).await.unwrap();
+                    return;
+                }
+                let bytes = answer(seq, &command, SinkState::Running, None);
+                stream.write_all(&bytes).await.unwrap();
+            }
+            panic!("the adapter disconnected before asking for the card list");
+        });
+        let mut told = told_through(&mut facts, |fact| fact == AudioFact::Up).await;
+        assert_eq!(told, [AudioFact::Up]);
+        refuse.send(()).unwrap();
+        server.await.unwrap();
+        told.extend(told_through(&mut facts, |fact| fact == AudioFact::Down).await);
+        drop(requests);
+        stop(adapter).await;
+        told
+    });
+    assert_eq!(told, [AudioFact::Up, AudioFact::Down]);
+}
+
+#[test]
 fn a_restore_asked_while_the_sources_are_read_is_done_before_the_record_streams_are_read() {
     let held = CommandTag::GetSourceInfoList;
     let heard = heard_from(held, &microphone());

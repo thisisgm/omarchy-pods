@@ -1,6 +1,7 @@
 //! Support tests for the faults the uplink suites drive through the built daemon: the tries, the markers nobody asked for, a sleep and the failures counted.
 
 use super::*;
+use crate::policy::audio::server_after;
 
 fn owned(effects: &[Effect]) -> Vec<String> {
     lines(effects).into_iter().map(str::to_owned).collect()
@@ -115,6 +116,116 @@ fn always_waits_for_the_first_card_profile() {
     assert_eq!(requests(&mic.step(&state, &headset, SENT)), NOTHING);
     assert_eq!(requests(&mic.step(&state, &Fact::Changed, SENT)), NOTHING);
     assert_eq!(requests(&mic.step(&state, &playback, SENT)), START);
+}
+
+fn reconnect_audio(mic: &mut Mic, state: &mut State, at: Duration) {
+    for fact in [Fact::Audio(AudioFact::Down), Fact::Audio(AudioFact::Up)] {
+        state.audio_server = server_after(state.audio_server, &fact);
+        assert_eq!(requests(&mic.step(state, &fact, at)), NOTHING);
+    }
+}
+
+#[test]
+fn a_start_retry_waits_for_the_card_profile_after_audio_reconnects() {
+    let mut state = State {
+        audio_server: AudioServer::Up,
+        ..linked(Column::AlwaysKnown)
+    };
+    let mut mic = Mic::default();
+    let playback = Fact::Audio(AudioFact::Headset(false));
+    assert_eq!(requests(&mic.step(&state, &playback, SENT)), START);
+    reconnect_audio(&mut mic, &mut state, SENT.saturating_add(SOON));
+
+    let deadline = mic.deadline().unwrap();
+    let unanswered = mic.step(&state, &Fact::Tick, deadline);
+    assert_eq!(requests(&unanswered), NOTHING);
+    assert_eq!(kind(mic.phase), Kind::Stopped);
+
+    let resumed = mic.step(&state, &playback, deadline.saturating_add(SOON));
+    assert_eq!(requests(&resumed), START);
+    assert_eq!(owned(&resumed), [start_sent_line(Try::FIRST.number())]);
+}
+
+#[test]
+fn a_stall_start_waits_for_the_card_profile_after_audio_reconnects() {
+    let mut state = State {
+        audio_server: AudioServer::Up,
+        ..linked(Column::AlwaysKnown)
+    };
+    let mut mic = Mic::default();
+    let playback = Fact::Audio(AudioFact::Headset(false));
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let no_packets = Fact::Mic(MicFact::Heard { packets: 0 });
+    assert_eq!(requests(&mic.step(&state, &playback, SENT)), START);
+    assert_eq!(requests(&mic.step(&state, &running, SENT)), NOTHING);
+    assert_eq!(requests(&mic.step(&state, &no_packets, SENT)), NOTHING);
+    reconnect_audio(&mut mic, &mut state, SENT.saturating_add(SOON));
+
+    let deadline = mic.deadline().unwrap();
+    assert_eq!(requests(&mic.step(&state, &no_packets, deadline)), NOTHING);
+    assert_eq!(mic.start_failures, 0);
+
+    assert_eq!(requests(&mic.step(&state, &playback, deadline)), NOTHING);
+    let next_read = mic.deadline().unwrap();
+    assert_eq!(requests(&mic.step(&state, &no_packets, next_read)), START);
+    assert_eq!(mic.start_failures, 1);
+}
+
+#[test]
+fn link_loss_and_audio_down_discard_the_last_card_profile() {
+    let (lost, at, _) = stepped(Event::Lost, Column::AlwaysKnown);
+    let relink = Fact::Link(Signal::Up { device: device() });
+    let down = Fact::Audio(AudioFact::Down);
+    let up = Fact::Audio(AudioFact::Up);
+    let playback = Fact::Audio(AudioFact::Headset(false));
+    let worn = linked(Column::AlwaysKnown);
+
+    for (case, outage) in [
+        ("link loss", &[(lost, false), (relink, true)][..]),
+        ("audio down", &[(down, true)][..]),
+    ] {
+        let mut state = State {
+            audio_server: AudioServer::Up,
+            ear: EarReport::default(),
+            ..worn.clone()
+        };
+        let mut mic = Mic::default();
+        assert_eq!(requests(&mic.step(&state, &playback, SENT)), NOTHING);
+        for (fact, connected) in outage {
+            state.connected = *connected;
+            state.audio_server = server_after(state.audio_server, fact);
+            assert_eq!(requests(&mic.step(&state, fact, at)), NOTHING, "{case}");
+        }
+        state.audio_server = server_after(state.audio_server, &up);
+        assert_eq!(requests(&mic.step(&state, &up, at)), NOTHING, "{case}");
+        state.ear = worn.ear;
+        assert_eq!(
+            requests(&mic.step(&state, &Fact::Changed, at)),
+            NOTHING,
+            "{case}"
+        );
+        assert_eq!(requests(&mic.step(&state, &playback, at)), START, "{case}");
+    }
+}
+
+#[test]
+fn auto_clears_an_unasked_stop_when_capture_ends_with_the_card_profile_unread() {
+    let state = State {
+        audio_server: AudioServer::Up,
+        ..linked(Column::Auto)
+    };
+    let capture = Fact::Audio(AudioFact::Hint(true));
+    let no_capture = Fact::Audio(AudioFact::Hint(false));
+    for (from, to) in [
+        (Kind::Unasked, Kind::Stopped),
+        (Kind::RestoringUnasked, Kind::Restoring),
+    ] {
+        let mut mic = mic(phase(from));
+        assert_eq!(requests(&mic.step(&state, &capture, SENT)), NOTHING);
+        assert_eq!(mic.phase, phase(from), "{from:?}");
+        assert_eq!(requests(&mic.step(&state, &no_capture, SENT)), NOTHING);
+        assert_eq!(mic.phase, phase(to), "{from:?}");
+    }
 }
 
 #[test]
