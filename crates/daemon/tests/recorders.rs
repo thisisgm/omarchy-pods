@@ -172,12 +172,13 @@ mod tests {
 
     #[test]
     fn a_recorder_listed_before_the_source_is_up_is_counted_once_it_is() {
+        const OPENING_REQUESTS_WITH_CAPTURE: usize = 9;
+
         let (mut rig, device, audio) =
             rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
         audio.add_source(&node_name());
         audio.add_recorder(&node_name(), Recorder::Named(CAPTURE));
         link_heard(&rig, &device);
-        const OPENING_REQUESTS_WITH_CAPTURE: usize = 9;
         let before = audio.wait_requests(OPENING_REQUESTS_WITH_CAPTURE, HANG_LIMIT);
         assert!(before.contains(&Asked::SourceList));
         assert!(before.contains(&Asked::RecorderList));
