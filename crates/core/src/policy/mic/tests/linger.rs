@@ -3,6 +3,37 @@
 use super::*;
 
 #[test]
+fn off_shows_stopping_until_the_owed_stop_completes() {
+    let mut state = linked(Column::AlwaysKnown);
+    let mut mic = mic(phase(Kind::Running));
+    let playing = sink_in(true, SinkState::Running);
+    assert_eq!(requests(&mic.step(&state, &playing, SENT)), NOTHING);
+    mic.show(&mut state);
+    assert_eq!(state.microphone.code(), MicCode::Live);
+
+    state.microphone.set_preference(MicPref::Off);
+    let written = SENT.saturating_add(SOON);
+    assert_eq!(
+        requests(&mic.step(&state, &Fact::Changed, written)),
+        NOTHING
+    );
+    assert_eq!(hold(&mic).deadline(), None);
+    mic.show(&mut state);
+    assert_eq!(state.microphone.code(), MicCode::Stopping);
+
+    let suspended = written.saturating_add(LATER);
+    let quiet = sink_in(true, SinkState::Suspended);
+    assert_eq!(requests(&mic.step(&state, &quiet, suspended)), STOP);
+    mic.show(&mut state);
+    assert_eq!(state.microphone.code(), MicCode::Stopping);
+
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    assert_eq!(requests(&mic.step(&state, &stopped, suspended)), NOTHING);
+    mic.show(&mut state);
+    assert_eq!(state.microphone.code(), MicCode::Off);
+}
+
+#[test]
 fn the_gate_lets_a_due_stop_out_only_with_no_bud_worn_or_a_quiet_sink() {
     let absent = Fact::Audio(AudioFact::Sink(None));
     let down = Fact::Audio(AudioFact::Down);

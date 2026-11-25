@@ -64,7 +64,7 @@ fn lid_state_numbers_match_the_cpp_enum() {
 }
 
 #[test]
-fn mic_shows_off_exactly_while_the_preference_is_off() {
+fn off_preference_keeps_stopping_visible() {
     let codes = [
         MicCode::Off,
         MicCode::Idle,
@@ -84,6 +84,7 @@ fn mic_shows_off_exactly_while_the_preference_is_off() {
             let mut microphone = Microphone::new(preference);
             microphone.show(code, 2, false);
             let shown = match (preference, code) {
+                (_, MicCode::Stopping) => MicCode::Stopping,
                 (MicPref::Off, _) => MicCode::Off,
                 (_, MicCode::Off) => MicCode::Idle,
                 (_, code) => code,

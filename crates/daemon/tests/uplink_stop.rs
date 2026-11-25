@@ -75,7 +75,6 @@ mod tests {
         take_out(&rig, &device);
         let written = Instant::now();
         set(rig.session(), "microphone", "off");
-        assert_eq!(mic(&rig), "off");
         assert_gap(
             "the STOP after the write",
             written,
@@ -84,6 +83,7 @@ mod tests {
         );
         let (suspended, resumed) = wait_restore(&audio, &device);
         assert_hold(suspended, resumed);
+        wait_mic(&rig, "off");
         let within = Duration::ZERO..=RESTORED_WITHIN;
         assert_gap("the resume after the write", written, resumed, &within);
         read_up_to_now(&rig, &device);
@@ -137,7 +137,7 @@ mod tests {
         set_off_unworn(&rig, &device);
         wait_stop(&device);
         read_up_to_now(&rig, &device);
-        assert_eq!(mic(&rig), "off");
+        assert_eq!(mic(&rig), "stopping");
         audio.assert_only_reads();
         let released = Instant::now();
         device.pods.uplink().release_stop();

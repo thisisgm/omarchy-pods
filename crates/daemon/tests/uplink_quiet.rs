@@ -84,7 +84,7 @@ mod tests {
     /// `off` during the call, and no STOP in the pods' record once the daemon has read past the write.
     fn set_off(rig: &Rig, device: &Device) {
         set(rig.session(), "microphone", "off");
-        assert_eq!(mic(rig), "off");
+        assert_eq!(mic(rig), "stopping");
         read_up_to_now(rig, device);
         assert!(stops(device).is_empty(), "{:?}", device.pods.heard());
     }
@@ -130,7 +130,7 @@ mod tests {
         read_up_to_now(&rig, &device);
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
         assert!(device.pods.uplink().running());
-        assert_eq!(mic(&rig), "off");
+        assert_eq!(mic(&rig), "stopping");
         assert_no_sink_call(&rig, &audio);
         drop(recorder.finish());
         end(rig, &device, &audio, None)
@@ -141,14 +141,18 @@ mod tests {
         let recorder = call(&rig, &pipewire);
         set_off(&rig, &device);
         rig.wait_logged(STOP_OWED_PLAYING_LINE);
+        device.pods.uplink().hold_stops(true);
         let suspended = Instant::now();
         move_sink(&rig, &audio, &device, SinkState::Suspended);
         let stop = wait_stop(&device);
         assert_gap("the STOP after the suspend", suspended, stop.at, &at_once());
         rig.wait_logged(STOP_QUIET_LINE);
+        assert_eq!(mic(&rig), "stopping");
+        device.pods.uplink().release_stop();
         wait_for("the uplink to stop", || {
             (!device.pods.uplink().running()).then_some(())
         });
+        wait_mic(&rig, "off");
         read_up_to_now(&rig, &device);
         assert_eq!(stops(&device).len(), 1, "{:?}", device.pods.heard());
         assert_no_sink_call(&rig, &audio);

@@ -242,11 +242,12 @@ impl Microphone {
         self.code = MicCode::resting(preference);
     }
 
-    /// Shows the uplink machine's `code` and `start_failures` and whether the node is up, except that `off` is shown exactly while the preference is `off`.
+    /// Shows the uplink status and source details, with `off` taking precedence over codes other than `stopping`.
     pub fn show(&mut self, code: MicCode, start_failures: u32, source_up: bool) {
         self.start_failures = start_failures;
         self.source_up = source_up;
         self.code = match (self.preference, code) {
+            (_, MicCode::Stopping) => MicCode::Stopping,
             (MicPref::Off, _) | (_, MicCode::Off) => MicCode::resting(self.preference),
             (MicPref::Auto | MicPref::Always, code) => code,
         };

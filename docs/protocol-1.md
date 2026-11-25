@@ -142,11 +142,14 @@ A reply carries the request's `id` and `ok`.
 - `get` and `subscribe` reply with `state`, the same object `librepods status`
   prints and the state file holds. Besides the keys the older daemon wrote, it
   carries `notifications_enabled`, the `notifications` setting, and
-  `microphone`, the `microphone` setting. Its `mic` is `off` while that setting
-  is `off`; else `library_error` once the audio library failed, until the
-  daemon restarts; else `idle` while no link is up; `unsupported` once a model never
-  confirmed left its START unanswered three times, and `failed` once a
-  confirmed one did, each until the link is lost; `stopping` from a STOP until the sink's restore
+  `microphone`, the `microphone` setting. With the setting `off`, `mic` reads
+  `stopping` while the uplink runs, its STOP is owed or awaiting confirmation,
+  or a sink restore is in progress. Otherwise it reads `off`.
+  With the setting `auto` or `always`, `mic` reads `library_error` once the audio
+  library failed, until the daemon restarts; else `idle` while no link is up;
+  `unsupported` once a model never confirmed left its START unanswered three
+  times, and `failed` once a confirmed one did, each until the link is lost.
+  It reads `stopping` from a STOP until the sink's restore
   after it is done or owed, or, for a STOP sent because the sink was suspended
   or gone, until the AirPods say the uplink stopped; `not_worn` while no bud is
   worn; `starting` from the START until the AirPods say the uplink runs, then
@@ -160,12 +163,12 @@ A reply carries the request's `id` and `ok`.
   not known to be suspended or gone, and goes out once the sink is, or once the
   last bud has been out those few seconds. `off` and a stop of the daemon skip
   the linger: their STOP goes out at once when no bud is worn or the sink is
-  suspended or gone, and waits the same way otherwise, with `mic` reading `off`
-  from the write. Once a STOP is waiting, a suspended or absent sink releases
-  it even during the last bud's grace. After a STOP, while the link holds,
-  the daemon suspends and resumes the AirPods' sink unless it is already
-  suspended or the STOP went out because it was suspended or gone, which
-  reopens a stream the uplink's end broke; with no audio server it owes that
+  suspended or gone, and waits the same way otherwise. Once a STOP is waiting,
+  a suspended or absent sink releases it even during the last bud's grace.
+  After a STOP, while the link holds, the daemon suspends and resumes the
+  AirPods' sink unless it is already suspended or the STOP went out because
+  it was suspended or gone, which reopens a stream the uplink's end broke.
+  With no audio server it owes that
   restore until the server is back, and a newer START drops a restore not yet
   begun. At a stop of the daemon the STOP has 2 s to go out, be answered and
   have its restore done; the daemon then exits, and logs that the uplink still

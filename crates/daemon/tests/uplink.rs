@@ -127,7 +127,6 @@ mod tests {
         take_out(&rig, &device);
         let written = Instant::now();
         set(rig.session(), "microphone", "off");
-        assert_eq!(mic(&rig), "off");
         let stop = wait_stop(&device);
         // Core's `off_and_the_exit_owe_the_stop_with_no_linger_and_only_through_the_gate` owns "at once": the STOP leaves in the write's own step.
         assert_gap(
@@ -139,6 +138,7 @@ mod tests {
         wait_for("the uplink to stop", || {
             (!device.pods.uplink().running()).then_some(())
         });
+        wait_mic(&rig, "off");
         assert_eq!(stops(&device).len(), 1);
         rig.finish();
     }
@@ -150,7 +150,7 @@ mod tests {
         link(&rig, &device);
         wait_starts(&device, 1);
         set(rig.session(), "microphone", "off");
-        assert_eq!(mic(&rig), "off");
+        assert_eq!(mic(&rig), "stopping");
         rig.wait_logged(STOP_OWED_LINE);
         read_up_to_now(&rig, &device);
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
@@ -170,7 +170,7 @@ mod tests {
         let log = rig.daemon().log();
         assert!(!log.lines().any(|line| line == unanswered_line(1)), "{log}");
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
-        assert_eq!(mic(&rig), "off");
+        wait_mic(&rig, "off");
         rig.finish();
     }
 
@@ -181,7 +181,7 @@ mod tests {
         link(&rig, &device);
         wait_starts(&device, 1);
         set(rig.session(), "microphone", "off");
-        assert_eq!(mic(&rig), "off");
+        assert_eq!(mic(&rig), "stopping");
         rig.wait_logged(&unanswered_line(1));
         read_up_to_now(&rig, &device);
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
@@ -220,7 +220,7 @@ mod tests {
             stop.at,
             &(Duration::ZERO..),
         );
-        assert_eq!(mic(&rig), "off");
+        wait_mic(&rig, "off");
         rig.finish();
     }
 
@@ -242,7 +242,7 @@ mod tests {
             Instant::now(),
             &(STOP_ANSWER..),
         );
-        assert_eq!(mic(&rig), "off");
+        wait_mic(&rig, "off");
         set(rig.session(), "microphone", "always");
         put_in(&rig, &device);
         wait_starts(&device, 2);
