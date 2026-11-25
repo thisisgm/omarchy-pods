@@ -289,13 +289,14 @@ struct Follower<'a> {
     told: Told,
     /// Attempts failed since the server was last read, which picks the step of the ladder.
     misses: usize,
+    up: bool,
     /// A suspend sent and not yet undone, which the next connection resumes.
     suspended: bool,
     state: watch::Receiver<State>,
     /// The record streams last told, none once the server is told down.
     recorders: Recorders,
     hint: bool,
-    headset: bool,
+    headset: Option<bool>,
 }
 
 impl<'a> Follower<'a> {
@@ -316,11 +317,12 @@ impl<'a> Follower<'a> {
             card: card_name(device).into_bytes(),
             told: Told::Nothing,
             misses: 0,
+            up: false,
             suspended: false,
             state,
             recorders: Recorders::default(),
             hint: false,
-            headset: false,
+            headset: None,
         }
     }
 
@@ -347,11 +349,12 @@ impl<'a> Follower<'a> {
     async fn retry(&mut self, lost: Lost) -> Result<(), Left> {
         if self.misses == 0 {
             log(&format!("audio: the audio server is down: {lost}"));
+        }
+        if std::mem::take(&mut self.up) || self.misses == 0 {
             // The next connection reads the sink afresh, so it is told again even when unchanged.
             self.told = Told::Nothing;
             self.recorders = Recorders::default();
             self.hint = false;
-            self.headset = false;
             self.tell(AudioFact::Down).await?;
         }
         let [.., longest] = AUDIO_RETRY_MS;
@@ -378,6 +381,7 @@ impl<'a> Follower<'a> {
     /// One connection from its connect to its loss; events arriving during a refresh mark what the next refresh needs.
     async fn serve(&mut self, socket: &Path) -> Result<Infallible, Ended> {
         let mut connection = self.requests.watched(Connection::open(socket)).await?;
+        self.headset = None;
         let mut stale = EVENTS;
         let mut read = false;
         let mut default_sink = None;
@@ -405,13 +409,17 @@ impl<'a> Follower<'a> {
                 });
                 sink = self.requests.watched(listed).await?;
             }
+            if !read {
+                self.tell(AudioFact::Up).await?;
+                self.up = true;
+            }
             let headset = if refresh.contains(SubscriptionMask::CARD) {
                 let listed = connection.call(&Command::GetCardInfoList, &mut stale, |body| {
                     wire::headset(body, &self.card)
                 });
                 self.requests.watched(listed).await?
             } else {
-                self.headset
+                self.headset.unwrap_or_default()
             };
             let hint = if refresh.contains(SubscriptionMask::CLIENT) {
                 let listed = connection.call(
@@ -426,7 +434,6 @@ impl<'a> Follower<'a> {
             if !read {
                 read = true;
                 self.misses = 0;
-                self.tell(AudioFact::Up).await?;
             }
             // Apply a new block before a want, and lift it only after the current want and sink are known.
             if headset {
@@ -503,7 +510,7 @@ impl<'a> Follower<'a> {
         let owed = self.requests.restore != Restore::Clear;
         let is_suspended = |state| state == SinkState::Suspended;
         match sink {
-            _ if self.headset => log(RESTORE_HEADSET_LINE),
+            _ if self.headset == Some(true) => log(RESTORE_HEADSET_LINE),
             Some(Followed { index, fact })
                 if (owed && !is_suspended(fact.state))
                     || (self.suspended && is_suspended(fact.state)) =>
@@ -549,8 +556,8 @@ impl<'a> Follower<'a> {
     }
 
     async fn tell_headset(&mut self, headset: bool) -> Result<(), DriverGone> {
-        if self.headset != headset {
-            self.headset = headset;
+        if self.headset != Some(headset) {
+            self.headset = Some(headset);
             self.tell(AudioFact::Headset(headset)).await?;
         }
         Ok(())

@@ -78,6 +78,14 @@ struct Client {
     held: Vec<Vec<u8>>,
 }
 
+#[derive(Default, PartialEq, Eq)]
+enum Replies {
+    #[default]
+    Sending,
+    HoldAtCardList,
+    Holding,
+}
+
 #[derive(Default)]
 pub(super) struct State {
     sinks: Vec<Sink>,
@@ -90,7 +98,7 @@ pub(super) struct State {
     clients: Vec<Client>,
     next_client: u32,
     threads: Vec<JoinHandle<()>>,
-    hold: bool,
+    replies: Replies,
     pub(super) silent_events: bool,
     pub(super) stopping: bool,
     pub(super) fault: Option<String>,
@@ -204,7 +212,7 @@ impl State {
     }
 
     fn send(&mut self, id: u32, bytes: Vec<u8>) {
-        let hold = self.hold;
+        let hold = self.replies == Replies::Holding;
         if let Err(fault) = self.client(id).send(hold, bytes) {
             self.fail(fault);
         }
@@ -212,7 +220,7 @@ impl State {
 
     /// Sends `message` to every client `to` picks, each in its own protocol version.
     fn send_each(&mut self, to: impl Fn(&Client) -> bool, message: impl Fn(u16) -> Vec<u8>) {
-        let hold = self.hold;
+        let hold = self.replies == Replies::Holding;
         let mut faults = Vec::new();
         for client in self.clients.iter_mut().filter(|client| to(client)) {
             let bytes = message(client.version());
@@ -405,10 +413,11 @@ impl State {
     }
 
     pub(super) fn hold(&mut self, hold: bool) {
-        self.hold = hold;
         if hold {
+            self.replies = Replies::Holding;
             return;
         }
+        self.replies = Replies::Sending;
         let mut faults = Vec::new();
         for client in &mut self.clients {
             for bytes in mem::take(&mut client.held) {
@@ -420,9 +429,13 @@ impl State {
         }
     }
 
+    pub(super) fn hold_at_card_list(&mut self) {
+        self.replies = Replies::HoldAtCardList;
+    }
+
     /// Writes the head of a sink change event to every client and holds its tail, and every later message, for the release of `hold`.
     pub(super) fn send_split_event(&mut self) {
-        self.hold = true;
+        self.replies = Replies::Holding;
         let event = Command::SubscribeEvent(SubscriptionEvent {
             event_facility: SubscriptionEventFacility::Sink,
             event_type: SubscriptionEventType::Changed,
@@ -560,7 +573,12 @@ impl State {
                 None => wire::error(seq, PulseError::NoEntity),
             },
             Command::GetClientInfoList => wire::reply(seq, &self.listed_clients.known, version),
-            Command::GetCardInfoList => wire::reply(seq, &self.cards.list(), version),
+            Command::GetCardInfoList => {
+                if self.replies == Replies::HoldAtCardList {
+                    self.replies = Replies::Holding;
+                }
+                wire::reply(seq, &self.cards.list(), version)
+            }
             Command::SetCardProfile(SetCardProfileParams {
                 card_index: None,
                 card_name: Some(card),
