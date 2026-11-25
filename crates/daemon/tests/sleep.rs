@@ -199,9 +199,9 @@ mod tests {
         let restarted = wait_starts(&device, 3)[2].at;
         assert!(restarted >= woke, "the restart came before the wake");
         wait_wake_sweep(&rig, sweeps, woke);
+        wait_mic(&rig, "live");
         let status = rig.status();
         assert!(connected(&status), "the control link did not survive");
-        assert_eq!(status["mic"], "live");
         assert_eq!(rig.dials().len(), dials, "dials after the wake");
         assert_eq!(starts(&device).len(), 3, "STARTs after the wake");
         assert_eq!(stops(&device).len(), 1, "STOPs across sleep and wake");
