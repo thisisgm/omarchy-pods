@@ -297,6 +297,16 @@ mod tests {
     const WINDOW: Duration = Duration::from_secs(1);
     const FAST_WINDOW_LIMIT: Duration = Duration::from_secs(2);
 
+    /// A longer poll step or sleeper must grow `WINDOW` too, so a slow host still ends the thread inside it.
+    #[test]
+    fn the_sleeper_lives_at_most_half_the_window() {
+        let life = SLEEP_EVERY * u32::try_from(SLEEPS).unwrap() + SLEEPER_TAIL;
+        assert!(
+            life * 2 <= WINDOW,
+            "a {life:?} sleeper leaves no margin in {WINDOW:?}"
+        );
+    }
+
     #[test]
     fn the_production_wakeup_sample_interval_is_one_second() {
         assert_eq!(WAKEUP_SAMPLE_EVERY, Duration::from_secs(1));
