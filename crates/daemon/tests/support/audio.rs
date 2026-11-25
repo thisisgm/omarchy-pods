@@ -200,7 +200,7 @@ impl FakeAudio {
     }
 
     pub(crate) fn add_source(&self, name: &str) {
-        self.change(|state| state.capture.add_source(name));
+        self.change(|state| state.add_source(name));
     }
 
     /// A record stream on `target`: a sink for `Recorder::Monitor`, a source for every other kind, linked to none when absent.

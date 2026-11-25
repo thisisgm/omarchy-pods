@@ -495,7 +495,7 @@ impl Rig {
         audio.remove_sink(PASSING_SINK);
         wait_for("a refresh after a sink came and went", || {
             audio.requests()[before..]
-                .contains(&AudioAsked::ServerInfo)
+                .contains(&AudioAsked::SinkList)
                 .then_some(())
         });
         self.wait_queued_inputs_applied();

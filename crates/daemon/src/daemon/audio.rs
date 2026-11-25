@@ -30,7 +30,7 @@ use tokio::time::{Instant, sleep, timeout};
 
 use super::link::{Input, STOP_WAIT_MS};
 use super::log;
-use wire::{Frame, Malformed, Message, PROTOCOL_VERSION, read_frame, write_frame};
+use wire::{Frame, Malformed, Message, PROTOCOL_VERSION, read_frame, take_frame, write_frame};
 
 /// The driver asks once per link signal, and the adapter takes each request at once.
 pub(super) const REQUEST_QUEUE: usize = 8;
@@ -356,23 +356,36 @@ impl<'a> Follower<'a> {
         Ok(())
     }
 
-    /// One connection from its connect to its loss; an event during a refresh costs one more refresh, never more, and the record streams are read last, a restore asked during either read of them done as that read ends.
+    /// One connection from its connect to its loss; events arriving during a refresh mark what the next refresh needs.
     async fn serve(&mut self, socket: &Path) -> Result<Infallible, Ended> {
         let mut connection = self.requests.watched(Connection::open(socket)).await?;
-        let mut stale = true;
+        let mut stale = EVENTS;
         let mut read = false;
-        let mut source = String::new();
+        let mut default_sink = None;
+        let mut sink = None;
+        let mut source_name = String::new();
+        let mut source_index = None;
         loop {
-            if !stale {
-                let changed = connection.changed(&mut self.state, &source);
-                let event = self.requests.waited(changed).await?;
-                event.transpose()?;
-                stale = true;
-                continue;
+            let change = if stale.is_empty() {
+                let changed = connection.changed(&mut self.state, &source_name);
+                self.requests.waited(changed).await?
+            } else {
+                self.requests.waited(future::ready(Ok(stale))).await?
+            };
+            let refresh = change.transpose()?.unwrap_or(EVENTS);
+            stale = SubscriptionMask::empty();
+            if refresh.contains(SubscriptionMask::SERVER) {
+                let default = connection.call(&Command::GetServerInfo, &mut stale, |body| {
+                    Ok(wire::default_sink(body)?.map(<[u8]>::to_vec))
+                });
+                default_sink = self.requests.watched(default).await?;
             }
-            stale = false;
-            let refresh = connection.refresh(&self.prefix, &mut stale);
-            let sink = self.requests.watched(refresh).await?;
+            if refresh.intersects(SubscriptionMask::SERVER | SubscriptionMask::SINK) {
+                let listed = connection.call(&Command::GetSinkInfoList, &mut stale, |body| {
+                    device_sink(body, &self.prefix, default_sink.as_deref())
+                });
+                sink = self.requests.watched(listed).await?;
+            }
             if !read {
                 read = true;
                 self.misses = 0;
@@ -384,32 +397,41 @@ impl<'a> Follower<'a> {
                 self.tell(AudioFact::Sink(fact)).await?;
             }
             self.restore(&mut connection, sink, &mut stale).await?;
-            source = self.state.borrow().mic_source();
-            let recorders = self
-                .record_streams(&mut connection, sink, source.as_bytes(), &mut stale)
-                .await?;
-            if recorders != self.recorders {
-                self.recorders = recorders;
-                self.tell(AudioFact::Recorders(recorders)).await?;
+            let name = self.state.borrow().mic_source();
+            let reread_source = refresh.contains(SubscriptionMask::SOURCE) || name != source_name;
+            if reread_source {
+                source_name = name;
+                source_index = if source_name.is_empty() {
+                    None
+                } else {
+                    let listed = connection.call(&Command::GetSourceInfoList, &mut stale, |body| {
+                        streams::source_index(body, source_name.as_bytes())
+                    });
+                    let index = self.requests.watched(listed).await?;
+                    self.restore(&mut connection, sink, &mut stale).await?;
+                    index
+                };
+            }
+            if reread_source || refresh.contains(SubscriptionMask::SOURCE_OUTPUT) {
+                let recorders = self
+                    .record_streams(&mut connection, sink, source_index, &mut stale)
+                    .await?;
+                if recorders != self.recorders {
+                    self.recorders = recorders;
+                    self.tell(AudioFact::Recorders(recorders)).await?;
+                }
             }
         }
     }
 
-    /// The record streams on the source named `name`, none without the name or the source; a restore asked during either read is done as that read ends, on the sink as last read.
+    /// The record streams on `source`; a restore asked during the read is done as it ends, on the sink as last read.
     async fn record_streams(
         &mut self,
         connection: &mut Connection,
         sink: Option<Followed>,
-        name: &[u8],
-        stale: &mut bool,
+        source: Option<u32>,
+        stale: &mut SubscriptionMask,
     ) -> Result<Recorders, Ended> {
-        if name.is_empty() {
-            return Ok(Recorders::default());
-        }
-        let listed = |body: &[u8]| streams::source_index(body, name);
-        let source = connection.call(&Command::GetSourceInfoList, stale, listed);
-        let source = self.requests.watched(source).await?;
-        self.restore(connection, sink, stale).await?;
         let Some(source) = source else {
             return Ok(Recorders::default());
         };
@@ -425,7 +447,7 @@ impl<'a> Follower<'a> {
         &mut self,
         connection: &mut Connection,
         sink: Option<Followed>,
-        stale: &mut bool,
+        stale: &mut SubscriptionMask,
     ) -> Result<(), Ended> {
         if self.requests.restore == Restore::Clear && !self.suspended {
             return Ok(());
@@ -496,7 +518,7 @@ impl Connection {
             pending: Vec::new(),
         };
         // Before the subscription no event can come.
-        let mut stale = false;
+        let mut stale = SubscriptionMask::empty();
         let auth = Command::Auth(AuthParams {
             version: PROTOCOL_VERSION,
             cookie: vec![0; COOKIE_LENGTH],
@@ -517,20 +539,12 @@ impl Connection {
         Ok(connection)
     }
 
-    /// The device's sink, read after the default sink's name; an event in between marks it `stale`.
-    async fn refresh(&mut self, prefix: &[u8], stale: &mut bool) -> Result<Option<Followed>, Lost> {
-        let default = self
-            .call(&Command::GetServerInfo, stale, |body| {
-                Ok(wire::default_sink(body)?.map(<[u8]>::to_vec))
-            })
-            .await?;
-        self.call(&Command::GetSinkInfoList, stale, |body| {
-            device_sink(body, prefix, default.as_deref())
-        })
-        .await
-    }
-
-    async fn suspend(&mut self, index: u32, suspend: bool, stale: &mut bool) -> Result<(), Lost> {
+    async fn suspend(
+        &mut self,
+        index: u32,
+        suspend: bool,
+        stale: &mut SubscriptionMask,
+    ) -> Result<(), Lost> {
         let command = Command::SuspendSink(SuspendParams {
             device_index: Some(index),
             device_name: None,
@@ -544,7 +558,7 @@ impl Connection {
         &mut self,
         state: &mut watch::Receiver<State>,
         read: &str,
-    ) -> Result<(), Lost> {
+    ) -> Result<SubscriptionMask, Lost> {
         let mut renamed = pin!(async {
             let moved = state.wait_for(|state| state.mic_source() != read);
             let hub_gone = moved.await.is_err();
@@ -556,19 +570,26 @@ impl Connection {
         let mut event = pin!(self.next_event());
         poll_fn(|context| {
             if renamed.as_mut().poll(context).is_ready() {
-                return Poll::Ready(Ok(()));
+                return Poll::Ready(Ok(EVENTS));
             }
             event.as_mut().poll(context)
         })
         .await
     }
 
-    /// As long as it takes: only an event or the loss ends the wait.
-    async fn next_event(&mut self) -> Result<(), Lost> {
+    /// Waits for an event or the loss, folding in any other events already buffered with it.
+    async fn next_event(&mut self) -> Result<SubscriptionMask, Lost> {
+        let mut changed = SubscriptionMask::empty();
         loop {
-            let frame = read_frame(&mut self.stream, &mut self.pending).await?;
+            let frame = if changed.is_empty() {
+                read_frame(&mut self.stream, &mut self.pending).await?
+            } else if let Some(frame) = take_frame(&mut self.pending)? {
+                frame
+            } else {
+                return Ok(changed);
+            };
             match wire::message(&frame)? {
-                Message::Event => return Ok(()),
+                Message::Event(event) => changed |= event.unwrap_or(EVENTS),
                 Message::Other => {}
                 Message::Reply { seq, .. } | Message::Refused { seq, .. } => {
                     return Err(Lost::Unasked(seq));
@@ -581,7 +602,7 @@ impl Connection {
     async fn call<T>(
         &mut self,
         command: &Command,
-        stale: &mut bool,
+        stale: &mut SubscriptionMask,
         parse: impl FnOnce(&[u8]) -> Result<T, Malformed>,
     ) -> Result<T, Lost> {
         let seq = self.seq;
@@ -591,7 +612,7 @@ impl Connection {
             loop {
                 let frame = read_frame(&mut self.stream, &mut self.pending).await?;
                 match wire::message(&frame)? {
-                    Message::Event => *stale = true,
+                    Message::Event(event) => *stale |= event.unwrap_or(EVENTS),
                     Message::Other => {}
                     Message::Reply {
                         seq: answered,

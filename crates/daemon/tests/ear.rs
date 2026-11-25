@@ -90,7 +90,7 @@ mod tests {
             audio.set_volume(sink, PERCENT.saturating_add(step));
             wait_for("a refresh after the volume change", || {
                 audio.requests()[before..]
-                    .contains(&AudioAsked::ServerInfo)
+                    .contains(&AudioAsked::SinkList)
                     .then_some(())
             });
         }

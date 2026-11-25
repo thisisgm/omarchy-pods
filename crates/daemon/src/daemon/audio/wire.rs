@@ -6,8 +6,8 @@ use std::iter;
 
 use pods_core::policy::audio::{Percent, SinkState};
 use pulseaudio::protocol::{
-    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, Volume, encode_descriptor,
-    read_descriptor,
+    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SubscriptionMask, Volume,
+    encode_descriptor, read_descriptor,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -94,6 +94,25 @@ mod command {
     pub(super) const EVENT: u32 = CommandTag::SubscribeEvent as u32;
 }
 
+/// The flags of a subscription event hold the facility in their low four bits.
+#[expect(
+    clippy::as_conversions,
+    reason = "the discriminants are the protocol's facility and event type numbers"
+)]
+mod subscription {
+    use pulseaudio::protocol::{SubscriptionEventFacility, SubscriptionEventType};
+
+    pub(super) const SEQUENCE: u32 = u32::MAX;
+    pub(super) const FACILITY_MASK: u32 = 0x0f;
+    pub(super) const SINK: u32 = SubscriptionEventFacility::Sink as u32;
+    pub(super) const SOURCE: u32 = SubscriptionEventFacility::Source as u32;
+    pub(super) const SOURCE_OUTPUT: u32 = SubscriptionEventFacility::SourceOutput as u32;
+    pub(super) const SERVER: u32 = SubscriptionEventFacility::Server as u32;
+    pub(super) const NEW: u32 = SubscriptionEventType::New as u32;
+    pub(super) const CHANGED: u32 = SubscriptionEventType::Changed as u32;
+    pub(super) const REMOVED: u32 = SubscriptionEventType::Removed as u32;
+}
+
 /// What is wrong with the server's bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Malformed {
@@ -153,7 +172,7 @@ pub(super) async fn read_frame(
 }
 
 /// The first whole frame in `pending`, its length held to `AUDIO_FRAME_MAX` before its payload is awaited; sample: a descriptor declaring 10 bytes, then 10 bytes.
-fn take_frame(pending: &mut Vec<u8>) -> io::Result<Option<Frame>> {
+pub(super) fn take_frame(pending: &mut Vec<u8>) -> io::Result<Option<Frame>> {
     let Some(descriptor) = pending.first_chunk::<DESCRIPTOR_SIZE>() else {
         return Ok(None);
     };
@@ -209,7 +228,8 @@ pub(super) enum Message<'a> {
         seq: u32,
         code: u32,
     },
-    Event,
+    /// The facility that changed, or none when the event could invalidate anything.
+    Event(Option<SubscriptionMask>),
     /// A command this client never asks about, as a stream's.
     Other,
 }
@@ -218,6 +238,9 @@ pub(super) enum Message<'a> {
 pub(super) fn message(frame: &Frame) -> Result<Message<'_>, Malformed> {
     let mut tags = Tags(&frame.0);
     let number = tags.u32()?;
+    if number == command::EVENT {
+        return Ok(Message::Event(event(tags)));
+    }
     let seq = tags.u32()?;
     Ok(match number {
         command::REPLY => Message::Reply { seq, body: tags.0 },
@@ -225,9 +248,29 @@ pub(super) fn message(frame: &Frame) -> Result<Message<'_>, Malformed> {
             seq,
             code: tags.u32()?,
         },
-        command::EVENT => Message::Event,
         _ => Message::Other,
     })
+}
+
+/// An event's sequence, facility and type flags, and index; sample `L ffffffff L 00000010 L 00000007`: sink 7 changed.
+fn event(mut tags: Tags<'_>) -> Option<SubscriptionMask> {
+    use subscription::{CHANGED, FACILITY_MASK, NEW, REMOVED};
+
+    if tags.u32().ok()? != subscription::SEQUENCE {
+        return None;
+    }
+    let flags = tags.u32().ok()?;
+    tags.u32().ok()?;
+    if !tags.0.is_empty() || !matches!(flags & !FACILITY_MASK, NEW | CHANGED | REMOVED) {
+        return None;
+    }
+    match flags & FACILITY_MASK {
+        subscription::SINK => Some(SubscriptionMask::SINK),
+        subscription::SOURCE => Some(SubscriptionMask::SOURCE),
+        subscription::SOURCE_OUTPUT => Some(SubscriptionMask::SOURCE_OUTPUT),
+        subscription::SERVER => Some(SubscriptionMask::SERVER),
+        _ => None,
+    }
 }
 
 /// The version an auth reply grants, its high half being memory flags; sample `L 40 00 00 23`: 35 with memfd.

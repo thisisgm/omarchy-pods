@@ -1,5 +1,7 @@
 //! The driver's restore answers on a paused clock, against a server that holds one answer back until the test releases it.
 
+mod events;
+
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::time::Duration;

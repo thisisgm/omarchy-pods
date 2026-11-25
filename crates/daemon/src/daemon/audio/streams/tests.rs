@@ -57,7 +57,7 @@ fn source_list() -> Vec<u8> {
 }
 
 /// A record stream on `source`, its node named `node` when one is given.
-fn stream_on(source: u32, node: Option<&str>) -> SourceOutputInfo {
+pub(in crate::daemon::audio) fn stream_on(source: u32, node: Option<&str>) -> SourceOutputInfo {
     let mut props = Props::new();
     let keys = [
         ("media.class", Some("Stream/Input/Audio")),
