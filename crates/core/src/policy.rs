@@ -299,6 +299,12 @@ impl Policy {
         self.edge.route() != Some(Route::Dictation)
     }
 
+    /// Whether a `DoAP` START is out and the session has yet to end.
+    #[must_use]
+    pub fn dictation_session_open(&self) -> bool {
+        self.dictation.session_open()
+    }
+
     /// Whether a due STOP of the uplink still waits for a quiet sink or the last bud out.
     #[must_use]
     pub fn mic_stop_waits(&self) -> bool {

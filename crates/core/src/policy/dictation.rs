@@ -133,6 +133,10 @@ impl Dictation {
         fallback
     }
 
+    pub(super) fn session_open(&self) -> bool {
+        self.session.is_open()
+    }
+
     pub(super) fn active(&self) -> bool {
         self.session.code().is_some()
     }

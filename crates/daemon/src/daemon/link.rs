@@ -36,7 +36,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroizing;
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, audio, dictation, keys, log, media, mic, notify};
+use super::{MAX_CONNECTIONS, audio, dictation, keys, log, media, mic, notify, sleep};
 pub(super) use reader::Open;
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
@@ -115,6 +115,7 @@ pub(super) struct Outlets {
     pub(super) mic: watch::Sender<MicRequest>,
     /// The adapter of the link's attribute channel, started and ended with the control channel.
     pub(super) dictation: dictation::Outlet,
+    pub(super) sleep_bus: sleep::Bus,
     /// Where the pods' audio goes, shared with the source's node.
     pub(super) tap: Arc<mic::Tap>,
 }
@@ -211,6 +212,7 @@ struct Driver {
     /// `STATE_POPULATED_LINE` was logged since the link last came up.
     announced: bool,
     exit: Option<Exit>,
+    dictation_inhibitor: Option<sleep::Inhibitor>,
     /// The decoder resets counted at the last tick.
     resets: u32,
 }
@@ -247,6 +249,7 @@ impl Driver {
             fed_back: VecDeque::new(),
             announced: false,
             exit: None,
+            dictation_inhibitor: None,
             resets: 0,
         }
     }
@@ -433,9 +436,7 @@ impl Driver {
         for action in actions {
             self.execute(action);
         }
-        for effect in effects {
-            self.route(effect);
-        }
+        self.route_effects(effects);
     }
 
     /// A fact from outside the link machine: the server reading and the policy fold it in, then the policy steps on that state.
@@ -456,9 +457,7 @@ impl Driver {
         self.policy.show_mic(&mut next);
         self.fold(&last, &mut next, recorder);
         self.publish(next);
-        for effect in effects {
-            self.route(effect);
-        }
+        self.route_effects(effects);
     }
 
     /// Publishes preferences and state only when each changes.
@@ -472,6 +471,15 @@ impl Driver {
             changed
         });
         self.hub.publish(next);
+    }
+
+    fn route_effects(&mut self, effects: Vec<Effect>) {
+        for effect in effects {
+            self.route(effect);
+        }
+        if !self.policy.dictation_session_open() {
+            self.dictation_inhibitor = None;
+        }
     }
 
     /// After the step's own publish and actions, so a wake is a step of its own.
@@ -494,6 +502,10 @@ impl Driver {
             Effect::Dictation(DictationRequest::ModeOff) => {
                 self.outlets.tap.end_dictation();
                 self.send(&doap_mode_off());
+            }
+            Effect::Dictation(DictationRequest::Start) => {
+                self.dictation_inhibitor = sleep::inhibit(&self.outlets.sleep_bus);
+                self.outlets.dictation.offer(DictationRequest::Start);
             }
             Effect::Dictation(request) => self.outlets.dictation.offer(request),
             Effect::Log(line) => log(&line),

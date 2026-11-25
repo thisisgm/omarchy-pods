@@ -26,6 +26,13 @@ pub(crate) fn wake(rig: &mut Rig) -> Instant {
     edge(rig, false, WOKE)
 }
 
+/// The time the fake logind saw this delay lock's last writer close.
+pub(crate) fn inhibitor_closed(rig: &Rig, index: usize) -> Instant {
+    wait_for("the logind delay inhibitor to close", || {
+        rig.logind().inhibitors().get(index).copied().flatten()
+    })
+}
+
 /// How many lines of the daemon's log equal `line`.
 pub(crate) fn logged(rig: &mut Rig, line: &str) -> usize {
     rig.daemon()
