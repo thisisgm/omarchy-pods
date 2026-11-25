@@ -517,8 +517,20 @@ impl Mic {
         wanted(state) || (self.node.recording() && state.ear.any_in_ear())
     }
 
-    /// What `mic` shows while the preference is not `off`, which `Microphone::show` alone decides.
+    /// The uplink's status, including a pending STOP after the preference is turned off.
     pub(super) fn code(&self, state: &State) -> MicCode {
+        if state.connected
+            && state.microphone.preference() == MicPref::Off
+            && matches!(
+                self.phase,
+                Phase::Starting { owed: true, .. }
+                    | Phase::Running(..)
+                    | Phase::Stopping { .. }
+                    | Phase::Restoring { .. }
+            )
+        {
+            return MicCode::Stopping;
+        }
         if self.node.broken() {
             return MicCode::LibraryError;
         }

@@ -436,6 +436,8 @@ fn auto_and_always_wait_for_the_model_number() {
 
 #[test]
 fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_phase() {
+    use MicCode::{Failed, Idle, Live, NotWorn, Off, Starting, Stopping, Unsupported};
+
     let worn = linked(Column::AlwaysNew);
     let in_the_case = State {
         ear: EarReport::default(),
@@ -445,30 +447,43 @@ fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_p
         connected: false,
         ..worn.clone()
     };
-    for (from, on_worn, on_case) in [
-        (Kind::Stopped, MicCode::Idle, MicCode::NotWorn),
-        (Kind::Failed, MicCode::Failed, MicCode::Failed),
-        (
-            Kind::Unsupported,
-            MicCode::Unsupported,
-            MicCode::Unsupported,
-        ),
-        (Kind::Unasked, MicCode::Idle, MicCode::NotWorn),
-        (Kind::Starting, MicCode::Starting, MicCode::NotWorn),
-        (Kind::LastTry, MicCode::Starting, MicCode::NotWorn),
-        (Kind::Owed, MicCode::Starting, MicCode::NotWorn),
-        (Kind::Running, MicCode::Live, MicCode::NotWorn),
-        (Kind::Lingering, MicCode::Live, MicCode::NotWorn),
-        (Kind::Waiting, MicCode::Live, MicCode::NotWorn),
-        (Kind::Stopping, MicCode::Stopping, MicCode::Stopping),
-        (Kind::StoppingQuiet, MicCode::Stopping, MicCode::Stopping),
-        (Kind::Restoring, MicCode::Stopping, MicCode::Stopping),
-        (Kind::RestoringUnasked, MicCode::Stopping, MicCode::Stopping),
+    let mut off = linked(Column::Off);
+    let mut off_unlinked = State {
+        connected: false,
+        ..off.clone()
+    };
+    for (from, on_worn, on_case, on_off) in [
+        (Kind::Stopped, Idle, NotWorn, Off),
+        (Kind::Failed, Failed, Failed, Off),
+        (Kind::Unsupported, Unsupported, Unsupported, Off),
+        (Kind::Unasked, Idle, NotWorn, Off),
+        (Kind::Starting, Starting, NotWorn, Off),
+        (Kind::LastTry, Starting, NotWorn, Off),
+        (Kind::Owed, Starting, NotWorn, Stopping),
+        (Kind::Running, Live, NotWorn, Stopping),
+        (Kind::Lingering, Live, NotWorn, Stopping),
+        (Kind::Waiting, Live, NotWorn, Stopping),
+        (Kind::Stopping, Stopping, Stopping, Stopping),
+        (Kind::StoppingQuiet, Stopping, Stopping, Stopping),
+        (Kind::Restoring, Stopping, Stopping, Stopping),
+        (Kind::RestoringUnasked, Stopping, Stopping, Stopping),
     ] {
-        let mic = mic(phase(from));
+        let mut mic = mic(phase(from));
         assert_eq!(mic.code(&worn), on_worn, "{from:?}");
         assert_eq!(mic.code(&in_the_case), on_case, "{from:?}");
-        assert_eq!(mic.code(&unlinked), MicCode::Idle, "{from:?}");
+        assert_eq!(mic.code(&unlinked), Idle, "{from:?}");
+
+        // A source failure would mask a pending STOP if the off branch fell through.
+        mic.node
+            .step(&off, &Fact::Mic(MicFact::Broken), SENT, &mut Vec::new());
+        mic.show(&mut off);
+        assert_eq!(off.microphone.code(), on_off, "{from:?}, off and linked");
+        mic.show(&mut off_unlinked);
+        assert_eq!(
+            off_unlinked.microphone.code(),
+            Off,
+            "{from:?}, off and unlinked"
+        );
     }
 }
 

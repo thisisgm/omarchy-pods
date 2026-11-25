@@ -163,7 +163,7 @@ mod tests {
         let recorder = record(&rig, &pipewire, "capture.wav");
         wait_mic(&rig, "recording");
         set(rig.session(), "microphone", "off");
-        assert_eq!(mic(&rig), "off");
+        assert_eq!(mic(&rig), "stopping");
         wait_no_node(&pipewire);
         // The node is gone at the write; the STOP waits for the playing sink of a worn bud.
         move_sink(&rig, &audio, &device, SinkState::Suspended);

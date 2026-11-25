@@ -221,7 +221,7 @@ mod tests {
         device.pods.uplink().stop_unasked();
         rig.wait_logged(STOPPED_BY_THE_PODS_LINE);
         set(rig.session(), "microphone", "off");
-        wait_mic(&rig, "off");
+        assert_eq!(mic(&rig), "stopping");
         set(rig.session(), "microphone", "always");
         wait_mic(&rig, "stopping");
         audio.hold_replies(false);

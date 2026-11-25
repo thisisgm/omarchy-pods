@@ -167,8 +167,8 @@ mod tests {
         wait_mic(&rig, "not_worn");
         device.pods.set_ear(Placed::InEar, Placed::InEar);
         set(rig.session(), "microphone", "off");
-        wait_mic(&rig, "off");
         lose(&rig, &device);
+        wait_mic(&rig, "off");
         rig.term();
         assert!(rig.exited(HANG_LIMIT).success());
         let log = rig.daemon().log().to_lowercase();
