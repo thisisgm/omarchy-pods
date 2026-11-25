@@ -175,7 +175,8 @@ A reply carries the request's `id` and `ok`.
   drop can still leave the sink up and a restore owed. The daemon skips the
   restore for a sink that is already suspended or absent. With no audio server
   it owes the restore until the server is back, and a newer START drops a
-  restore not yet begun.
+  restore not yet begun. Unsolicited uplink markers leave that restore owed
+  and do not request another.
   At a stop of the daemon the STOP has 2 s to go out, be answered and have its
   restore done; the daemon then exits, and logs that the uplink still runs
   when a worn bud's sink was not known to be suspended or gone in that time.

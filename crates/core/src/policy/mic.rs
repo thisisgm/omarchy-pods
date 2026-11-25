@@ -317,7 +317,7 @@ impl Mic {
                 } else {
                     Ownership::Unowned
                 };
-                if matches!(self.phase, Phase::Restoring { .. }) {
+                if ownership == Ownership::Owned && matches!(self.phase, Phase::Restoring { .. }) {
                     effects.push(Effect::Audio(AudioRequest::CancelRestore));
                 }
                 Phase::Running(Hold::Late, Watch::new(Try::FIRST, now), ownership)

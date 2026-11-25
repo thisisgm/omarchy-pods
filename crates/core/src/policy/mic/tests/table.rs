@@ -399,6 +399,7 @@ const OUTSIDE_THE_TABLE: &[&str] = &[
     "a_seventeenth_model_drops_the_oldest",
     // The table does not track ownership across unsolicited and late START markers.
     "unsolicited_uplink_markers_leave_a_playing_sink_alone",
+    "unsolicited_uplink_markers_preserve_a_pending_playback_restore",
     "the_first_start_answered_after_timeout_still_owns_the_restore",
 ];
 
