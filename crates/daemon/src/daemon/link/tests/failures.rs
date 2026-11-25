@@ -105,7 +105,10 @@ fn packets_never_hold_back_a_passed_deadline() {
         }
         let seen = loop {
             match pods_end.recv(&mut buf) {
-                Ok(Received::Closed) => break Ok(connected.elapsed()),
+                // A close with flood packets still unread reaches this end as a reset.
+                Ok(Received::Closed) | Err(ChannelError::Recv(Errno::CONNRESET)) => {
+                    break Ok(connected.elapsed());
+                }
                 Ok(Received::Sdu(_) | Received::Truncated { .. }) => {}
                 Ok(Received::TimedOut) => {
                     break Err(format!("still in the handshake after {HANG_LIMIT:?}"));
