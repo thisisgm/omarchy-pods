@@ -168,6 +168,8 @@ fn a_reopened_node_keeps_dictation_until_an_uplink_start() {
     assert!(!tap.dictation(&dictated(&notification(1))));
 
     let (feed, _resync) = open(&tap);
+    assert!(!tap.audio(&audio(&packet(1))));
+    assert!(feed.reader.read_all(), "uplink plays while dictation is selected");
     assert!(!tap.dictation(&dictated(&notification(2))));
     assert!(
         !feed.reader.read_all(),
