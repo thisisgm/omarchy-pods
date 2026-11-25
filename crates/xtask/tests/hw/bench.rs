@@ -25,6 +25,10 @@ use pods_trap::{Answer, Dial, Route, Trap};
 use rustix::io::Errno;
 use rustix::process::{Pid, Signal, kill_process};
 
+mod command;
+
+pub(crate) use command::{QUICK_BURST_MS, QUICK_CONNECT_MS};
+
 /// The synthetic device every stub reports; none of it may reach the command's output.
 pub(crate) const ADDRESS: &str = "02:00:00:00:00:01";
 const UNDER_TEST: &str = "librepods-hw.service";
@@ -46,10 +50,6 @@ fn daemon_lines() -> String {
         phase_change_line(opening, handshake),
     )
 }
-
-const QUICK_IDLE_MS: &str = "250";
-pub(crate) const QUICK_BURST_MS: &str = "400";
-pub(crate) const QUICK_CONNECT_MS: &str = "800";
 
 /// How long a half typed line sits at the prompt before the stop signal follows it.
 const HALF_LINE_LEAD: Duration = Duration::from_millis(500);
@@ -366,53 +366,6 @@ impl Bench {
 
     pub(crate) fn read(&self, name: &str) -> String {
         fs::read_to_string(self.path(name)).unwrap_or_default()
-    }
-
-    pub(crate) fn command(&self, idle_seconds: Option<&str>, extra: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
-        command
-            .args(["hw", "link", "--binary"])
-            .arg(self.path("bin/librepods"));
-        if let Some(seconds) = idle_seconds {
-            command.args(["--idle-window-seconds", seconds]);
-        } else {
-            command.args(["--idle-window-ms", QUICK_IDLE_MS]);
-        }
-        command
-            .args(extra)
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    self.path("bin").display(),
-                    std::env::var("PATH").unwrap()
-                ),
-            )
-            .env("HOME", self.path("home"))
-            .env("TMPDIR", self.path("tmp"))
-            .env("XDG_RUNTIME_DIR", self.path("runtime"))
-            .env("STUB", self.root.path())
-            .current_dir(self.root.path())
-            .stdin(Stdio::null());
-        command
-    }
-
-    pub(crate) fn run(&self, extra: &[&str]) -> Output {
-        self.run_with_windows(None, Some(QUICK_BURST_MS), extra)
-    }
-
-    pub(crate) fn run_with_windows(
-        &self,
-        idle_seconds: Option<&str>,
-        burst_ms: Option<&str>,
-        extra: &[&str],
-    ) -> Output {
-        let mut command = self.command(idle_seconds, extra);
-        if let Some(milliseconds) = burst_ms {
-            command.args(["--burst-window-ms", milliseconds]);
-        }
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        finish(self.spawn(command), RUN_DEADLINE)
     }
 
     /// Starts `command` under the trap, the pods' control channel routed to the fake pods unless `refuse_with` was called.
@@ -806,7 +759,7 @@ pub(crate) fn signalled_once(
     signal: &str,
     wait: impl FnOnce(),
 ) -> Output {
-    let mut command = bench.command(Some(idle_seconds), &[]);
+    let mut command = bench.command(Some(["--idle-window-seconds", idle_seconds]), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = bench.spawn(command);
     wait();
