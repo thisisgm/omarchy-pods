@@ -191,6 +191,29 @@ fn the_previous_runs_tail_does_not_spend_the_new_spans_opening() {
 }
 
 #[test]
+fn an_empty_previous_run_does_not_spend_the_new_spans_opening() {
+    let (mut chain, mut reader, resync) = chain(Arc::new(Counters::default())).unwrap();
+    let mut heard = [1.0; QUANTUM];
+    resync.request();
+    reader.read(Duration::ZERO, &mut heard);
+    chain.dictation_run();
+    chain.flush_dictation(Duration::ZERO);
+    let previous = reader.ring.run();
+    let generation = reader.ring.generation.load(Ordering::Acquire);
+
+    let linked = Duration::from_millis(u64::from(DOAP_LATENCY_MS));
+    resync.request();
+    reader.read(linked, &mut heard);
+    assert!(silent(&heard));
+
+    let next = linked + PERIOD;
+    restart(&mut chain, next);
+    assert_eq!(reader.ring.run(), previous);
+    assert_ne!(reader.ring.generation.load(Ordering::Acquire), generation);
+    opens(&mut reader, next);
+}
+
+#[test]
 fn a_read_adds_what_the_level_met_to_the_counters_once() {
     /// Past the reader's fade in and before the last unit, which plays on backwards when the ring runs dry.
     const LOUD: [usize; 3] = [400, 401, 700];

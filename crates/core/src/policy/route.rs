@@ -375,11 +375,53 @@ mod tests {
         );
         let start = Effect::Uplink(UplinkRequest::Start);
         assert!(!effects.contains(&start), "DoAP STOP is still pending");
+        assert!(!effects.contains(&Effect::ResyncMic));
         assert_eq!(policy.edge.route(), Some(Route::Uplink));
         assert!(policy.mic_recording());
 
         let ended = Fact::Dictation(DictationFact::Ended);
         assert!(policy.step(&state, ended, idle).contains(&start));
+    }
+
+    #[test]
+    fn only_a_reopened_dictation_span_requests_mic_resync() {
+        let state = linked_auto();
+        let id = OpenId::default();
+        let list = || Fact::Audio(AudioFact::Recorders(DICTATION));
+        let recording = || Fact::Mic(MicFact::Recording(id, true));
+        for (order, facts) in [
+            ("list before recording", [list(), recording()]),
+            ("recording before list", [recording(), list()]),
+        ] {
+            let mut policy = Policy::default();
+            for fact in [
+                Fact::Link(Signal::Up { device: device() }),
+                Fact::Dictation(DictationFact::Armed),
+                Fact::Mic(MicFact::Up(id)),
+            ] {
+                drop(policy.step(&state, fact, Duration::ZERO));
+            }
+            for fact in facts {
+                let effects = policy.step(&state, fact, Duration::ZERO);
+                assert!(
+                    !effects.contains(&Effect::ResyncMic),
+                    "first dictation, {order}: {effects:?}"
+                );
+            }
+            assert_eq!(policy.edge.route(), Some(Route::Dictation), "{order}");
+
+            let empty = Fact::Audio(AudioFact::Recorders(Recorders::default()));
+            drop(policy.step(&state, empty, STREAMING_AT));
+            assert!(!policy.mic_recording());
+            assert_eq!(policy.edge.route(), None);
+
+            let effects = policy.step(&state, list(), STREAMING_AT);
+            assert!(
+                effects.contains(&Effect::ResyncMic),
+                "reopened dictation, {order}: {effects:?}"
+            );
+            assert_eq!(policy.edge.route(), Some(Route::Dictation));
+        }
     }
 
     #[test]
