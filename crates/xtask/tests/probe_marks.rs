@@ -412,6 +412,25 @@ mod marks {
     }
 
     #[test]
+    fn takeover_marks_a_disconnect_without_a_reason_as_reasonless() {
+        const DISCONNECT_MS: u64 = 15;
+        const STATUS_SUCCESS: u8 = 0x00;
+
+        let mut trace = playing_link();
+        trace.at_ms(DISCONNECT_MS);
+        let [low, high] = PODS_HANDLE.to_le_bytes();
+        trace.event(EVENT_DISCONNECTION_COMPLETE, &[STATUS_SUCCESS, low, high]);
+        let dir = sitting(&trace.bytes());
+        let trials = "1795176000.000000000 trial 7\n";
+        put(&dir, "trials.log", trials.as_bytes(), OWNER_FILE);
+        let rows = takeover_rows(&takeover(dir.path(), &TRACE_FILES));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["link"], "present");
+        assert_eq!(rows[0]["ended"], "reasonless");
+    }
+
+    #[test]
     fn takeover_marks_a_trial_with_no_link_as_missing() {
         const DISCONNECT_MS: u64 = 15;
 

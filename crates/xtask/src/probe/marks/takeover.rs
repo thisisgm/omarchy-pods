@@ -9,7 +9,7 @@ use pods_proto::packet::opcode_of;
 use pods_proto::sdulog::Direction;
 use pods_proto::uplink::state::STATE_OPCODE;
 
-use super::connect::{Began, ONLY_LINK, takeover_channels};
+use super::connect::{Began, Disconnect, ONLY_LINK, takeover_channels};
 use super::{MarksError, NANOS_PER_MICRO, Window};
 use crate::probe::a2dp::{self, Packet, Role};
 
@@ -123,7 +123,7 @@ struct Stream {
     suspend_us: Option<(u64, Began)>,
     close_us: Option<(u64, Began)>,
     restart_us: Option<u64>,
-    ended: Option<u8>,
+    ended: Option<Disconnect>,
     lifetime: Window,
 }
 

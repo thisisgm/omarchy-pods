@@ -351,7 +351,8 @@ fn read_link(
 pub(super) struct TakeoverLink {
     pub(super) channels: Channels,
     pub(super) lifetime: Window,
-    pub(super) ended: Option<u8>,
+    /// The link's recorded end inside the window.
+    pub(super) ended: Option<Disconnect>,
 }
 
 /// Channels from the named link active at the start of the window or first opened during it.
@@ -368,7 +369,7 @@ pub(super) fn takeover_channels(
                 to_us: link.ended.map_or(window.to_us, |end| end.at_us),
                 ..*window
             },
-            ended: link.ended.map(|end| end.reason),
+            ended: link.ended,
         }),
     )
 }

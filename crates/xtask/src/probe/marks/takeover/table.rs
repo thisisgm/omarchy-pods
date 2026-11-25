@@ -12,8 +12,8 @@ use crate::probe::marks::connect::Began;
 use crate::probe::marks::journal::line_us;
 use crate::probe::marks::sinks::state_changes;
 use crate::probe::marks::{
-    INCOMPLETE, MarksError, NANOS_PER_MICRO, STATE_POPULATED_LINE, Window, text, trace_extent,
-    up_line, windows,
+    INCOMPLETE, MarksError, NANOS_PER_MICRO, REASONLESS, STATE_POPULATED_LINE, Window, text,
+    trace_extent, up_line, windows,
 };
 use crate::probe::store;
 
@@ -169,7 +169,9 @@ impl Capture {
         let [suspend_us, suspend_from] = signal_fields(suspend);
         let [close_us, close_from] = signal_fields(close);
         let ended = match marks.as_ref().and_then(|marks| marks.ended) {
-            Some(reason) => format!("{reason:#04x}"),
+            Some(end) => end
+                .reason
+                .map_or_else(|| REASONLESS.to_owned(), |reason| format!("{reason:#04x}")),
             None if incomplete && marks.is_some() => INCOMPLETE.to_owned(),
             None => String::new(),
         };
