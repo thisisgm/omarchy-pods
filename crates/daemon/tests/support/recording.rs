@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use pods_fake::uplink::{DEFAULT_LEVEL, MARK_LINE, PERIOD, TONE_LINE, Uplink};
 use pods_mic::decode::{Decoded, Decoder};
+use pods_mic::level::MIC_GAIN_DB;
 use pods_mic::{RATE_HZ, SAMPLES_PER_UNIT};
 use pods_pwrig::{Process, Recorder, Server, write_wav};
 use pods_samples::uplink::tone_unit;
 use serde_json::Value;
 
 use super::rig::Rig;
-use super::wait_for;
+use super::{Daemon, wait_for};
 
 /// Superwhisper's recorder takes 16 kHz.
 pub(crate) const RECORDER_RATE: u32 = 16_000;
@@ -62,6 +63,8 @@ pub(crate) struct Counts {
     pub(crate) underruns: u64,
     pub(crate) concealed: u64,
     pub(crate) decode_errors: u64,
+    pub(crate) limited: u64,
+    pub(crate) nonfinite: u64,
 }
 
 pub(crate) fn counts(status: &Value) -> Counts {
@@ -74,7 +77,38 @@ pub(crate) fn counts(status: &Value) -> Counts {
         underruns: count("mic_underruns"),
         concealed: count("mic_concealed"),
         decode_errors: count("mic_decode_errors"),
+        limited: count("mic_limited"),
+        nonfinite: count("mic_nonfinite"),
     }
+}
+
+/// How the line a leaving recorder is logged with starts.
+pub(crate) const LEFT: &str = "mic: recorder left (underruns ";
+
+/// The underruns, the concealed units and the limited samples of the recorder left line.
+// Sample input: `mic: recorder left (underruns 0, concealed 4, limited 12)`.
+fn left_counts(line: &str) -> [u64; 3] {
+    let inside = line.strip_prefix(LEFT).unwrap().strip_suffix(')').unwrap();
+    let (underruns, rest) = inside.split_once(", concealed ").unwrap();
+    let (concealed, limited) = rest.split_once(", limited ").unwrap();
+    [underruns, concealed, limited].map(|count| count.parse().unwrap())
+}
+
+/// Waits for the recorder's departure log and checks its counters against status.
+pub(crate) fn assert_left_counts(daemon: &Daemon, counted: Counts) -> String {
+    let line = wait_for("the recorder left line", || {
+        daemon
+            .log()
+            .lines()
+            .find(|line| line.starts_with(LEFT))
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        left_counts(&line),
+        [counted.underruns, counted.concealed, counted.limited],
+        "{line}"
+    );
+    line
 }
 
 /// The counts once the last recorder has left and the status folded them, printed for the run's record.
@@ -92,25 +126,39 @@ pub(crate) fn line_hz(line: u16) -> f64 {
     f64::from(line.saturating_add(1)) * lines_per_second
 }
 
-/// The peak, of full scale, of the tone the decoder itself makes of the fake's units.
-pub(crate) fn own_amplitude() -> f64 {
+/// What the decoder itself makes of the fake's units at `level`, past its start.
+pub(crate) fn decoded_tone(level: u8) -> Vec<f32> {
     let mut decoder = Decoder::new().unwrap();
-    let unit = tone_unit(TONE_LINE, DEFAULT_LEVEL);
-    let mut power = 0.0;
-    let mut count = 0_u32;
+    let unit = tone_unit(TONE_LINE, level);
+    let mut tone = Vec::new();
     for at in 0..OWN_UNITS {
         let Decoded::Samples(frame) = decoder.unit(&unit) else {
             panic!("the decoder refused a tone unit");
         };
         if at >= OWN_SETTLE_UNITS {
-            power += frame
-                .iter()
-                .map(|&sample| f64::from(sample).powi(2))
-                .sum::<f64>();
-            count = count.saturating_add(u32::from(SAMPLES_PER_UNIT));
+            tone.extend_from_slice(frame);
         }
     }
-    (power / f64::from(count)).sqrt() * SQRT_2
+    tone
+}
+
+/// The level of `samples`, each a part of full scale, in dBFS.
+pub(crate) fn rms_dbfs(samples: impl ExactSizeIterator<Item = f64>) -> f64 {
+    let count = f64::from(u32::try_from(samples.len()).unwrap());
+    let power: f64 = samples.map(|sample| sample.powi(2)).sum();
+    10.0 * (power / count).log10()
+}
+
+/// The fixed gain the node gives every sample, as a factor.
+fn gain() -> f64 {
+    10_f64.powf(f64::from(MIC_GAIN_DB) / 20.0)
+}
+
+/// The peak, of full scale, of the tone a recorder gets of the fake's units at their default level: the decoder's own, raised by the gain, which leaves it under the limiter's knee.
+pub(crate) fn own_amplitude() -> f64 {
+    let tone = decoded_tone(DEFAULT_LEVEL);
+    let level = rms_dbfs(tone.iter().map(|&sample| f64::from(sample)));
+    10_f64.powf(level / 20.0) * SQRT_2 * gain()
 }
 
 /// The largest step the decoder's own tone can take from one sample to the next at the recorder's rate, 1 dB louder: a step to zero is more than twice it.

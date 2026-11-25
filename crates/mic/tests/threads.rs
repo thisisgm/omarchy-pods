@@ -18,7 +18,8 @@ mod tests {
     use pods_samples::uplink::tone_unit;
 
     use super::support::{
-        FADE, HELD, PACKET_FRAMES, SHAPE_SLACK, UNITS_PER_PACKET, frames_in, landing, ms, rise,
+        FADE, HELD, PACKET_FRAMES, SHAPE_SLACK, UNITS_PER_PACKET, frames_in, gain, landing, ms,
+        rise,
     };
 
     const PACKETS: u32 = 1000;
@@ -49,7 +50,8 @@ mod tests {
             let stamped = sent.map(|unit| (unit * STAMP_STEP, cycle(unit).as_slice()));
             chain.sdu(landing(packet), stamped);
         }
-        let units = [(8, 172), (15, 177), (22, 182), (13, 174), (20, 179)]
+        // Every level peaks under the limiter's knee after the gain, so a sample under a fade is the fade times the sample.
+        let units = [(8, 172), (15, 177), (22, 180), (13, 174), (20, 179)]
             .map(|(line, level)| tone_unit(line, level));
 
         // What the ring holds of the run, as a reader in step with the writer on one thread is handed it.
@@ -109,7 +111,7 @@ mod tests {
                         continue;
                     }
                     let same = if faded < FADE {
-                        (heard - wrote * rise(faded)).abs() <= SHAPE_SLACK
+                        (heard - wrote * rise(faded)).abs() <= SHAPE_SLACK * gain()
                     } else {
                         heard.to_bits() == wrote.to_bits()
                     };

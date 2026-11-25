@@ -27,8 +27,8 @@ mod tests {
 
     use super::support::{
         FADE, MAX_STEER, QUANTUM, QUANTUM_TIME, Rig, Twin, after, assert_live, assert_same,
-        assert_shaped, bits, frame_frames, frames_in, landing, ms, on_time, rise, run_start,
-        silent, unsteered,
+        assert_shaped, bits, frame_frames, frames_in, landing, levelled, ms, on_time, rise,
+        run_start, silent, unsteered,
     };
 
     /// The frame of the script the first steady notification holds, and when it lands; the frames before it are the burst.
@@ -127,9 +127,9 @@ mod tests {
         (1.0 - MAX_STEER..=1.0 + MAX_STEER).contains(&ratio)
     }
 
-    /// Every place `stretch` stands in `tape`, bit for bit.
+    /// Every place the twin's `stretch` stands in `tape` at the reader's level, bit for bit.
     fn places(tape: &[f32], stretch: &[f32]) -> Vec<usize> {
-        let (tape, stretch) = (bits(tape), bits(stretch));
+        let (tape, stretch) = (bits(tape), bits(&levelled(stretch)));
         let windows = tape.windows(stretch.len()).enumerate();
         windows
             .filter(|(_, window)| *window == stretch)

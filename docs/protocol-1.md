@@ -192,6 +192,13 @@ A reply carries the request's `id` and `ok`.
   in place of audio lost or refused, and `mic_decode_errors` the units the
   decoder refused or that came past the eight one packet may carry, each since
   the daemon started and updated only when `mic` changes or a recorder leaves.
+  The source applies a provisional +14 dB gain, checked with a steady-tone
+  fixture. Speech peaks are expected to stay at or below the limiter's knee,
+  and the gain still awaits measurement on speech. Above the knee, the
+  limiter bends samples to keep them below its ceiling. `mic_limited` counts
+  samples bent by the limiter. `mic_nonfinite` counts samples that were
+  not finite (NaN or infinite) and went out as silence. Both counters follow
+  the same rules as the other three.
   A unit is one frame of the AirPods' microphone codec, 480 samples at 64 kHz,
   7.5 ms of audio. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and

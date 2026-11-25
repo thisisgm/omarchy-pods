@@ -168,8 +168,8 @@ pub(crate) fn mic(rig: &Rig) -> String {
     rig.status()["mic"].as_str().unwrap().to_owned()
 }
 
-pub(crate) fn wait_mic(rig: &Rig, word: &str) {
-    rig.wait_status(&format!("mic {word}"), |status| status["mic"] == word);
+pub(crate) fn wait_mic(rig: &Rig, word: &str) -> Value {
+    rig.wait_status(&format!("mic {word}"), |status| status["mic"] == word)
 }
 
 pub(crate) fn starts(device: &Device) -> Vec<Heard> {

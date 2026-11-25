@@ -12,7 +12,10 @@ mod support;
 mod tests {
     use std::time::Duration;
 
+    use pods_mic::decode::Decoded;
+    use pods_mic::level::LIMIT_CEILING_DBFS;
     use pods_mic::{JITTER_COVER_MS, NODE_LATENCY_MS, SAMPLES_PER_UNIT};
+    use pods_samples::uplink::tone_unit;
 
     use super::support::*;
 
@@ -67,7 +70,8 @@ mod tests {
             let landed = FIRST + period() * MARKED;
             let first = usize::try_from(MARKED).unwrap() * PACKET_FRAMES;
             let last = first + PACKET_FRAMES - 1;
-            let place = |frame: usize| find(&tape, &rig.decoded[frame..frame + 64]).unwrap();
+            let place =
+                |frame: usize| find(&tape, &levelled(&rig.decoded[frame..frame + 64])).unwrap();
             let (first_in, last_in) = (place(first) / QUANTUM, (place(last - 63) + 63) / QUANTUM);
             let (cover, latency) = (landed + ms(JITTER_COVER_MS), landed + ms(NODE_LATENCY_MS));
             assert!(
@@ -93,7 +97,10 @@ mod tests {
             largest_step(&tape[dry..dry + unit]) > 0.0,
             "the dry stretch opens silent"
         );
-        assert!(largest_step(&tape) <= largest_step(&rig.decoded), "a step");
+        assert!(
+            largest_step(&tape) <= largest_step(&levelled(&rig.decoded)),
+            "a step"
+        );
         // The late packets land 65 ms after the ring ran dry, and the unit played backwards is 7.5 ms of that.
         assert!(
             back > dry + 2 * QUANTUM,
@@ -117,7 +124,8 @@ mod tests {
             &rig.decoded[frame + FADE..base + tape.len()],
         );
         // A unit before the gap and one after it stand as far from where they were decoded: nothing was held back.
-        let delay_of = |frame: usize| find(&tape, &rig.decoded[frame..frame + 64]).unwrap() + base;
+        let stretch = |frame: usize| levelled(&rig.decoded[frame..frame + 64]);
+        let delay_of = |frame: usize| find(&tape, &stretch(frame)).unwrap() + base;
         let (before, after) = (10 * PACKET_FRAMES, 30 * PACKET_FRAMES);
         assert_eq!((delay_of(before), delay_of(after)), (before, after));
     }
@@ -191,7 +199,7 @@ mod tests {
 
         let expected = |read: usize| {
             let end = due(times[read]);
-            bits(&rig.decoded[end - QUANTUM..end])
+            bits(&levelled(&rig.decoded[end - QUANTUM..end]))
         };
         let heard = |read: usize| bits(&tape[read * QUANTUM..(read + 1) * QUANTUM]);
         for read in (1..20).filter(|&read| read != 10) {
@@ -200,8 +208,59 @@ mod tests {
         // The one read that jumped ends on its target too, past the fade.
         assert_eq!(heard(10)[FADE..], expected(10)[FADE..]);
         assert_ne!(heard(10)[..FADE], expected(10)[..FADE]);
-        assert!(largest_step(&tape) <= largest_step(&rig.decoded), "a step");
+        assert!(
+            largest_step(&tape) <= largest_step(&levelled(&rig.decoded)),
+            "a step"
+        );
         assert_eq!(Rig::count(&rig.counters.underruns), 0);
+    }
+
+    #[test]
+    fn the_sum_of_a_fade_out_and_a_fade_in_never_passes_the_ceiling() {
+        const MISSED: Duration = Duration::from_millis(25);
+        /// A tone that decodes just under full scale, so after the gain both sides of the realign stand far over the knee.
+        const FULL_LEVEL: u8 = 195;
+        let ceiling = 10_f32.powf(LIMIT_CEILING_DBFS / 20.0);
+        let mut rig = Rig::new();
+        let packet =
+            vec![tone_unit(LINES[1], FULL_LEVEL); usize::try_from(UNITS_PER_PACKET).unwrap()];
+        for at in 0..30 {
+            for unit in &packet {
+                let Decoded::Samples(samples) = rig.twin.unit(unit) else {
+                    panic!("the twin refused the tone");
+                };
+                rig.decoded.extend_from_slice(samples);
+            }
+            rig.send(landing(at), &packet);
+        }
+        rig.resync.request();
+        let from = FIRST + period() * 3;
+        let mut times = reads(from, 10);
+        times.extend(reads(from + QUANTUM_TIME * 10 + MISSED, 10));
+        let mut tape = Vec::new();
+        for &now in &times {
+            tape.extend(rig.read(now, QUANTUM).0);
+        }
+        let loudest = tape
+            .iter()
+            .fold(0.0_f32, |most, sample| most.max(sample.abs()));
+        assert!(
+            loudest < ceiling,
+            "{loudest} at or over the ceiling {ceiling}"
+        );
+
+        // The read that jumped: what it left falls, backwards from its last frame, under the rise of what it came to.
+        let (left, came) = (due(times[9]) - 1, due(times[10]) - QUANTUM);
+        let falls = |at: usize| rig.decoded[left - at] * fall(at, FADE);
+        let rises = |at: usize| rig.decoded[came + at] * rise(at);
+        let jumped = &tape[10 * QUANTUM..][..FADE];
+        assert_shaped(jumped, (0..FADE).map(|at| rises(at) + falls(at)));
+        // Each side under the level alone would sum past the ceiling: the level comes after the sum.
+        let apart = (0..FADE).map(|at| levelled(&[rises(at)])[0] + levelled(&[falls(at)])[0]);
+        let apart = apart.fold(0.0_f32, |most, sum| most.max(sum.abs()));
+        assert!(apart > ceiling, "the two sides sum to {apart} at most");
+        assert!(Rig::count(&rig.counters.limited) > 0);
+        assert_eq!(Rig::count(&rig.counters.nonfinite), 0);
     }
 
     #[test]
@@ -229,7 +288,7 @@ mod tests {
             assert_same(&heard(2)[clear..], &rig.decoded[on + clear..on + SHORT]);
             assert_same(heard(6), owed(6));
             assert!(
-                largest_step(&tape) <= largest_step(&rig.decoded),
+                largest_step(&tape) <= largest_step(&levelled(&rig.decoded)),
                 "a step, {lag_ms} ms"
             );
         }

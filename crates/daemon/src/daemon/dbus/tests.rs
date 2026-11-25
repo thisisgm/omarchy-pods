@@ -117,6 +117,8 @@ const INTROSPECTED: &str = r#"
   <property name="Mic" type="s" access="read"/>
   <property name="MicConcealed" type="u" access="read"/>
   <property name="MicDecodeErrors" type="u" access="read"/>
+  <property name="MicLimited" type="u" access="read"/>
+  <property name="MicNonfinite" type="u" access="read"/>
   <property name="MicSource" type="s" access="read"/>
   <property name="MicStartFailures" type="u" access="read"/>
   <property name="MicUnderruns" type="u" access="read"/>
@@ -243,11 +245,13 @@ fn text(value: &OwnedVariant) -> String {
     String::try_from(value.try_clone().unwrap()).unwrap()
 }
 
-/// Three counts apart, so a property read from the wrong count shows.
+/// Five counts apart, so a property read from the wrong count shows.
 const FOLDED: MicCounts = MicCounts {
     underruns: 3,
     concealed: 5,
     decode_errors: 7,
+    limited: 11,
+    nonfinite: 13,
 };
 
 fn populated() -> State {
@@ -329,6 +333,8 @@ fn properties_reflect_the_state() {
             assert_eq!(count("MicUnderruns"), FOLDED.underruns);
             assert_eq!(count("MicConcealed"), FOLDED.concealed);
             assert_eq!(count("MicDecodeErrors"), FOLDED.decode_errors);
+            assert_eq!(count("MicLimited"), FOLDED.limited);
+            assert_eq!(count("MicNonfinite"), FOLDED.nonfinite);
         }
         let status_json = text(&value("StatusJson"));
         assert_eq!(format!("{status_json}\n"), to_status_line(&populated()));

@@ -19,7 +19,8 @@ mod tests {
     use super::support::HANG_LIMIT;
     use super::support::pipewire::{ready, record};
     use super::support::recording::{
-        assert_sounds, counts, counts_after_leaving, first_sound, frames, wait_packets,
+        LEFT, assert_left_counts, assert_sounds, counts, counts_after_leaving, first_sound, frames,
+        wait_packets,
     };
     use super::support::settings::set;
     use super::support::uplink::{lose, read_up_to_now, wait_mic};
@@ -32,7 +33,6 @@ mod tests {
     const AGAIN: Duration = Duration::from_millis(300);
     /// Packets of garbled units for the decoder to refuse.
     const GARBLED: u32 = 10;
-    const LEFT: &str = "mic: recorder left (underruns ";
     const LINKED: &str = "mic: recorder linked";
 
     /// The number of milliseconds in the first line of `log` that starts with `prefix`, and the line's place.
@@ -49,14 +49,6 @@ mod tests {
             .strip_suffix(" ms")
             .unwrap();
         (place, millis.parse().unwrap())
-    }
-
-    /// The underruns and concealed units of the recorder left line.
-    // Sample input: `mic: recorder left (underruns 0, concealed 4)`.
-    fn left_counts(line: &str) -> (u64, u64) {
-        let inside = line.strip_prefix(LEFT).unwrap().strip_suffix(')').unwrap();
-        let (underruns, concealed) = inside.split_once(", concealed ").unwrap();
-        (underruns.parse().unwrap(), concealed.parse().unwrap())
     }
 
     #[test]
@@ -149,18 +141,7 @@ mod tests {
         drop(recorder.finish());
         let counted = counts_after_leaving(&rig);
         let daemon = rig.daemon();
-        let line = super::support::wait_for("the recorder left line", || {
-            daemon
-                .log()
-                .lines()
-                .find(|line| line.starts_with(LEFT))
-                .map(str::to_owned)
-        });
-        assert_eq!(
-            left_counts(&line),
-            (counted.underruns, counted.concealed),
-            "{line}"
-        );
+        let line = assert_left_counts(daemon, counted);
         assert_eq!(counted.concealed, u64::from(UNITS_PER_PACKET), "{line}");
         let log = daemon.log();
         let linked = log.lines().position(|line| line == LINKED);

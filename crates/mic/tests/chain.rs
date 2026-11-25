@@ -114,7 +114,10 @@ mod tests {
             largest_step(&heard[lost..lost + unit]) > 0.0,
             "a block of zeros"
         );
-        assert!(largest_step(&heard) <= largest_step(&rig.decoded), "a step");
+        assert!(
+            largest_step(&heard) <= largest_step(&levelled(&rig.decoded)),
+            "a step"
+        );
         // The unit after the lost one stands one unit later than the twin decoded it, and fades in.
         let after = lost + unit;
         let rising = (0..FADE).map(|k| rig.decoded[lost + k] * rise(k));
@@ -170,7 +173,8 @@ mod tests {
             let (before, start) = heard.split_at(PACKET_FRAMES);
             assert!(silent(before), "hole {hole}");
             assert_shaped(&start[..FADE], run_start(alone));
-            assert_eq!(bits(&start[FADE..]), bits(&alone[FADE..]), "hole {hole}");
+            let fresh = bits(&levelled(&alone[FADE..]));
+            assert_eq!(bits(&start[FADE..]), fresh, "hole {hole}");
         }
     }
 

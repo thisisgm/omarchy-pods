@@ -186,6 +186,8 @@ pub struct MicCounts {
     pub underruns: u32,
     pub concealed: u32,
     pub decode_errors: u32,
+    pub limited: u32,
+    pub nonfinite: u32,
 }
 
 impl Microphone {
@@ -200,6 +202,8 @@ impl Microphone {
                 underruns: 0,
                 concealed: 0,
                 decode_errors: 0,
+                limited: 0,
+                nonfinite: 0,
             },
         }
     }

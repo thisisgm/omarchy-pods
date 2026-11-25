@@ -189,6 +189,11 @@ mod tests {
                 "MicDecodeErrors",
                 Variant::from(count(&document["mic_decode_errors"])),
             ),
+            ("MicLimited", Variant::from(count(&document["mic_limited"]))),
+            (
+                "MicNonfinite",
+                Variant::from(count(&document["mic_nonfinite"])),
+            ),
         ])
     }
 
