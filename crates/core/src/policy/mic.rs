@@ -650,6 +650,7 @@ impl Mic {
                 effects.push(Effect::Log(stalled_line(for_ms)));
                 self.start_failures = self.start_failures.saturating_add(1);
                 if let Some(next) = next {
+                    effects.push(Effect::Audio(AudioRequest::CancelRestore));
                     self.send_start(next, now, effects);
                     Phase::Running(hold, watch.retry(next, now), Ownership::Owned)
                 } else {
