@@ -202,7 +202,10 @@ fn answer(seq: u32, command: &Command, state: SinkState, lists: Option<&CStr>) -
             },
         ),
         Command::SetClientName(_) => reply(seq, &SetClientNameReply { client_id: 0 }),
-        Command::Subscribe(_) | Command::SuspendSink(_) => ack(seq),
+        Command::Subscribe(_)
+        | Command::SuspendSink(_)
+        | Command::GetCardInfoList
+        | Command::GetClientInfoList => ack(seq),
         Command::GetServerInfo => reply(seq, &server_info()),
         Command::GetSinkInfoList => reply(seq, &vec![sink(state)]),
         Command::GetSourceInfoList => match lists {

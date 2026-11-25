@@ -77,7 +77,10 @@ fn a_channel_end_during_an_owed_stop_still_restores() {
     for from in [Kind::Starting, Kind::Owed, Kind::Running] {
         for (quiet, asleep) in [(true, false), (false, true)] {
             let mut mic = Mic {
-                quiet,
+                audio: Audio {
+                    quiet,
+                    ..Audio::default()
+                },
                 asleep,
                 ..mic(phase(from))
             };
@@ -92,6 +95,73 @@ fn a_channel_end_during_an_owed_stop_still_restores() {
                 "{from:?}, {quiet}, {asleep}"
             );
         }
+    }
+}
+
+#[test]
+fn a_fast_capture_hint_starts_the_uplink_while_dictation_arms() {
+    let state = State {
+        audio_server: AudioServer::Up,
+        ..linked(Column::Auto)
+    };
+    let mut mic = Mic::default();
+    let block = Fact::Audio(AudioFact::Headset(true));
+    let hint = Fact::Audio(AudioFact::Hint(true));
+    let unblock = Fact::Audio(AudioFact::Headset(false));
+
+    let blocked = mic.step_with_probe(&state, &block, SENT, true);
+    let hinted = mic.step_with_probe(&state, &hint, SENT, true);
+    let unblocked = mic.step_with_probe(&state, &unblock, SENT, true);
+
+    assert_eq!(requests(&blocked), NOTHING);
+    assert_eq!(requests(&hinted), NOTHING);
+    assert_eq!(requests(&unblocked), START);
+}
+
+#[test]
+fn headset_and_hint_facts_are_ignored_while_the_audio_server_is_idle() {
+    for server in [AudioServer::Idle, AudioServer::Up] {
+        let state = State {
+            audio_server: server,
+            ..linked(Column::Auto)
+        };
+        let mut mic = Mic::default();
+
+        let hinted = mic.step(&state, &Fact::Audio(AudioFact::Hint(true)), SENT);
+        let blocked = mic.step(&state, &Fact::Audio(AudioFact::Headset(true)), SENT);
+
+        let kept = server == AudioServer::Up;
+        assert_eq!(mic.audio.hint, kept, "{server:?}");
+        assert_eq!(mic.node.blocked(), kept, "{server:?}");
+        if !kept {
+            assert_eq!(
+                requests(&hinted),
+                NOTHING,
+                "a hint while idle sends nothing"
+            );
+            assert_eq!(
+                requests(&blocked),
+                NOTHING,
+                "a block while idle sends nothing"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_channel_end_while_headset_is_active_skips_the_restore() {
+    let (down, at, mut state) = stepped(Event::Down, Column::Off);
+    state.audio_server = AudioServer::Up;
+    let connected = State {
+        connected: true,
+        ..state.clone()
+    };
+    let headset = Fact::Audio(AudioFact::Headset(true));
+    for from in [Kind::Starting, Kind::Stopping, Kind::Running] {
+        let mut mic = mic(phase(from));
+        drop(mic.step(&connected, &headset, SENT));
+        assert_eq!(mic.step(&state, &down, at), [], "{from:?}");
+        assert_eq!(kind(mic.phase), Kind::Stopped, "{from:?}");
     }
 }
 
@@ -139,7 +209,10 @@ fn a_running_marker_with_no_want_meets_the_gate_at_once() {
         let mut state = linked(Column::Auto);
         state.ear = EarReport::from_in_ear(worn, false);
         let mut mic = Mic {
-            quiet,
+            audio: Audio {
+                quiet,
+                ..Audio::default()
+            },
             ..Mic::default()
         };
         let effects = mic.step(&state, &marker, SENT);
@@ -153,7 +226,10 @@ fn a_running_marker_with_no_want_meets_the_gate_at_once() {
 fn a_sink_that_wakes_under_a_quiet_stop_owes_a_restore() {
     let (stopped, at, state) = stepped(Event::StoppedMarker, Column::Off);
     let quiet_stop = Mic {
-        quiet: true,
+        audio: Audio {
+            quiet: true,
+            ..Audio::default()
+        },
         ..mic(phase(Kind::StoppingQuiet))
     };
     for (name, fact) in [
@@ -267,7 +343,10 @@ fn a_stop_confirmed_after_its_deadline_restores_once_more() {
     }
 
     let mut quiet = Mic {
-        quiet: true,
+        audio: Audio {
+            quiet: true,
+            ..Audio::default()
+        },
         ..mic(phase(Kind::StoppingQuiet))
     };
     let due = SENT.saturating_add(Duration::from_millis(STOP_ANSWER_MS));
@@ -280,6 +359,42 @@ fn a_stop_confirmed_after_its_deadline_restores_once_more() {
     drop(asleep.step(&state, &Fact::Sleep(SleepEdge::Sleeping), late));
     assert_eq!(asleep.step(&state, &stopped, late), [], "asleep");
     assert_eq!(kind(asleep.phase), Kind::Restoring);
+}
+
+#[test]
+fn a_late_stop_while_headset_is_active_keeps_the_existing_restore() {
+    let (mut mic, at) = stop_past_its_deadline();
+    let (stopped, _, mut state) = stepped(Event::StoppedMarker, Column::Off);
+    state.audio_server = AudioServer::Up;
+    let headset = Fact::Audio(AudioFact::Headset(true));
+    drop(mic.step(&state, &headset, at));
+    assert_eq!(mic.step(&state, &stopped, at), []);
+    assert!(!mic.unconfirmed_stop);
+    assert_eq!(kind(mic.phase), Kind::Restoring);
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    assert_eq!(mic.step(&state, &restored, at), []);
+    assert_eq!(kind(mic.phase), Kind::Stopped);
+}
+
+#[test]
+fn a_sink_that_wakes_under_a_quiet_stop_while_headset_is_active_skips_the_restore() {
+    let (stopped, at, mut state) = stepped(Event::StoppedMarker, Column::Off);
+    state.audio_server = AudioServer::Up;
+    let mut mic = Mic {
+        audio: Audio {
+            quiet: true,
+            ..Audio::default()
+        },
+        ..mic(phase(Kind::StoppingQuiet))
+    };
+    let headset = Fact::Audio(AudioFact::Headset(true));
+    drop(mic.step(&state, &headset, SENT));
+    let awake = sink_in(true, SinkState::Running);
+    assert_eq!(mic.step(&state, &awake, at), []);
+    assert_eq!(kind(mic.phase), Kind::Stopping);
+    let effects = mic.step(&state, &stopped, at);
+    assert!(matches!(effects.as_slice(), [Effect::Log(_)]));
+    assert_eq!(kind(mic.phase), Kind::Stopped);
 }
 
 fn stop_past_its_deadline() -> (Mic, Duration) {
@@ -431,7 +546,10 @@ fn a_sleep_stops_a_running_uplink_only_through_an_open_gate_and_the_wake_starts_
         let mut state = linked(Column::AlwaysKnown);
         state.ear = EarReport::from_in_ear(worn, worn);
         let mut mic = Mic {
-            quiet,
+            audio: Audio {
+                quiet,
+                ..Audio::default()
+            },
             ..mic(phase(Kind::Running))
         };
         let effects = mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), SENT);

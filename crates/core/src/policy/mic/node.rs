@@ -3,9 +3,11 @@
 use std::time::Duration;
 
 use super::BUD_GRACE_MS;
+use crate::link::Signal;
+use crate::policy::audio::AudioFact;
 use crate::policy::{Effect, Fact};
 use crate::prefs::MicPref;
-use crate::state::{MicCode, State};
+use crate::state::{AudioServer, MicCode, State};
 
 const DESCRIPTION_SUFFIX: &str = " Microphone";
 /// The description of a model with no display name.
@@ -91,6 +93,7 @@ pub(super) struct Node {
     source: Source,
     next_id: u32,
     exiting: bool,
+    blocked: bool,
     buds: Buds,
 }
 
@@ -106,6 +109,10 @@ impl Node {
         match fact {
             Fact::Mic(fact) => self.heard(*fact, effects),
             Fact::Exit => self.exiting = true,
+            Fact::Audio(AudioFact::Headset(blocked)) => {
+                self.blocked = state.audio_server != AudioServer::Idle && *blocked;
+            }
+            Fact::Link(Signal::Lost { .. }) | Fact::Audio(AudioFact::Down) => self.blocked = false,
             Fact::Link(_)
             | Fact::Changed
             | Fact::Sleep(_)
@@ -187,6 +194,7 @@ impl Node {
     fn wanted(&self, state: &State) -> bool {
         let near = self.buds != Buds::Out || self.recording();
         !self.exiting
+            && !self.blocked
             && near
             && state.connected
             && state.microphone.preference() != MicPref::Off
@@ -200,6 +208,8 @@ impl Node {
             "exit"
         } else if !state.connected {
             "link"
+        } else if self.blocked {
+            "blocked"
         } else if state.microphone.preference() == MicPref::Off {
             "off"
         } else {
@@ -223,6 +233,10 @@ impl Node {
                 ..
             }
         )
+    }
+
+    pub(super) fn blocked(&self) -> bool {
+        self.blocked
     }
 
     pub(super) fn broken(&self) -> bool {

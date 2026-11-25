@@ -41,10 +41,14 @@ mod tests {
                 mask: SubscriptionMask::SINK
                     | SubscriptionMask::SERVER
                     | SubscriptionMask::SOURCE
-                    | SubscriptionMask::SOURCE_OUTPUT,
+                    | SubscriptionMask::SOURCE_OUTPUT
+                    | SubscriptionMask::CLIENT
+                    | SubscriptionMask::CARD,
             },
             Asked::ServerInfo,
             Asked::SinkList,
+            Asked::CardList,
+            Asked::ClientList,
         ]
     }
 

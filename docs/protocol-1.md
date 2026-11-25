@@ -84,7 +84,7 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
-| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. `auto` probes the uplink for models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. Under the same conditions, `auto` starts it for a recorder or a client asking for fast capture, and probes models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. While a headset profile is active, the daemon waits for the profile to change before sending START or STOP and skips restores. |
 
 `ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
@@ -144,12 +144,14 @@ A reply carries the request's `id` and `ok`.
   prints and the state file holds. Besides the keys the older daemon wrote, it
   carries `notifications_enabled`, the `notifications` setting, and
   `microphone`, the `microphone` setting. With the setting `off`, `mic` reads
-  `stopping` while the uplink runs, its STOP is owed or awaiting confirmation,
-  or a sink restore is in progress. Otherwise it reads `off`.
-  With the setting `auto` or `always`, `mic` reads `library_error` once the audio
-  library failed, until the daemon restarts; else `idle` while no link is up;
-  `unsupported` once a model never confirmed left its START unanswered three
-  times, and `failed` once a confirmed one did, each until the link is lost.
+  `stopping` while the link is up and the uplink runs, its STOP is owed or
+  awaiting confirmation, or a sink restore is in progress. Otherwise it reads
+  `off`. With the setting `auto` or `always`, `mic` reads `blocked` while the
+  link is up and the AirPods card's active profile starts with `headset-`.
+  Then it checks for `library_error` once the audio library failed, until the
+  daemon restarts; `idle` while no link is up; `unsupported` once a model never
+  confirmed left its START unanswered three times; and `failed` once a
+  confirmed one did. Both START failure statuses last until the link is lost.
   It reads `stopping` from a STOP until the sink's restore
   after it is done or owed, or, for a STOP sent because the sink was suspended
   or gone, until the AirPods say the uplink stopped; `not_worn` while no bud is
@@ -166,27 +168,34 @@ A reply carries the request's `id` and `ok`.
   the linger: their STOP goes out at once when no bud is worn or the sink is
   suspended or gone, and waits the same way otherwise. Once a STOP is waiting,
   a suspended or absent sink releases it even during the last bud's grace.
-  After a STOP, while the link holds, the daemon suspends and resumes the
-  AirPods' sink unless it is already suspended or the STOP went out because
-  it was suspended or gone, which reopens a stream the uplink's end broke.
-  With no audio server it owes that
-  restore until the server is back, and a newer START drops a restore not yet
-  begun. At a stop of the daemon the STOP has 2 s to go out, be answered and
-  have its restore done; the daemon then exits, and logs that the uplink still
-  runs when a worn bud's sink was not known to be suspended or gone in that
-  time. A START the AirPods leave unanswered is sent again, three tries
-  in all, unless the want or the link is gone or the daemon is stopping, and
-  no STOP is sent while one waits for its answer. An uplink the AirPods say
+  After a STOP the daemon suspends and resumes the AirPods' sink to reopen a
+  stream the uplink's end broke. A STOP sent for a suspended or absent sink
+  begins with no restore owed. If the sink becomes active or its state becomes
+  unknown before confirmation, a restore is owed. A channel drop can still
+  leave the sink up and a restore owed. The daemon skips the restore for a sink
+  that is already suspended or absent. With no audio server it owes the restore
+  until the server is back, and a newer START drops a restore not yet begun.
+  At a stop of the daemon the STOP has 2 s to go out, be answered and have its
+  restore done; the daemon then exits, and logs that the uplink still runs
+  when a worn bud's sink was not known to be suspended or gone in that time.
+  A START the AirPods leave unanswered is sent again, three tries in all,
+  unless the want or the link is gone or the daemon is stopping, and no STOP
+  is sent while one waits for its answer. An uplink the AirPods say
   runs while nothing wants it, such as a late answer, is stopped as one whose
   linger has passed. A STOP the AirPods do not confirm in time is taken as
   done, and a later START still goes out. An uplink the AirPods stop on their
   own gets the restore at once, and starts again only once the want has gone
-  and come back. At the edge into sleep a running uplink is stopped with no
-  restore when no bud is worn or the sink is suspended or gone, and is left
+  and come back. While a headset profile is active, the source is withdrawn
+  even with a recorder linked. The daemon waits for the profile to change
+  before sending START or STOP and skips restores while blocked, including one
+  owed before the block, and drops them rather than running them after the
+  profile changes. It only reads the profile.
+  At the edge into sleep a running uplink is stopped with no restore when no
+  bud is worn or the sink is suspended or gone, and is left
   running otherwise, as the sleep ends the link; a START waiting for its answer
   is dropped; after the wake a stopped uplink starts again while it is wanted.
-  Its `mic_start_failures` counts every
-  START left unanswered, each try once, since the daemon started.
+  Its `mic_start_failures` counts every START left unanswered, each try once,
+  since the daemon started.
   `mic_dictation` reads `off` when the link is down or the microphone setting
   is `off`, `arming` while the daemon prepares the service or retries its
   channel, `armed` when subscriptions and codec selection are ready, or
@@ -196,13 +205,19 @@ A reply carries the request's `id` and `ok`.
   `omarchypods_input.` and the model number in lower case, while the source is
   on the audio server, and empty otherwise. The source is wanted while the
   link is up, the model has answered an uplink START or armed for dictation,
-  the setting is enabled, and a bud is worn or was taken out less than a few
-  seconds ago. It stays while a program records from it, even if the bud is
-  taken out. It carries the AirPods' microphone, held a fixed delay behind
-  the audio as it arrives, and silence while none comes. A program that records from it
-  wants the uplink as `always` does, while a bud is worn. A wanted running
-  uplink that sends no audio for about a second while a bud is worn is sent
-  START again, unless the system is going to sleep or the daemon is stopping.
+  the setting is enabled, no headset profile is active, and a bud is worn or
+  was taken out less than a few seconds ago. It stays while a program records
+  from it, even if the bud is taken out, unless a headset profile is active. It
+  carries the AirPods' microphone,
+  held a fixed delay behind the audio as it arrives, and silence while none
+  comes. A program that records from it wants the uplink as `always` does,
+  while a bud is worn. A client with `session.fast-capture-start=true` also
+  wants it before any recorder links. When that client leaves, the uplink
+  follows the same linger and playback gate if no other client or recorder
+  wants it. Loss of the audio server clears the hint and the headset block,
+  and the source retries while still wanted. A wanted running uplink that
+  sends no audio for about a second while a bud is worn is sent START again,
+  unless the system is going to sleep or the daemon is stopping.
   Each such stall counts as an unanswered try in `mic_start_failures`. Once
   the tries are spent the uplink is stopped and `mic` reads `failed`.
   Its `mic_underruns` counts the times the source ran out of audio under a

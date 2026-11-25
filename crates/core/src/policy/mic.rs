@@ -15,7 +15,7 @@ use super::audio::{
 use super::{Effect, Fact, SleepEdge};
 use crate::link::Signal;
 use crate::prefs::MicPref;
-use crate::state::{MicCode, State};
+use crate::state::{AudioServer, MicCode, State};
 pub use gate::{BUD_GRACE_MS, STOP_OWED_PLAYING_LINE, STOP_WAITS_LINE, UPLINK_LINGER_MS};
 use gate::{Hold, Next};
 use node::Node;
@@ -116,17 +116,19 @@ enum Spent {
     Unasked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Audio {
+    /// The followed sink is known to be suspended or absent; unknown counts as running.
+    quiet: bool,
+    hint: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "Sink state, exit, sleep, and pending STOP confirmation are independent."
-)]
 pub(super) struct Mic {
     phase: Phase,
     /// A STOP whose deadline passed and whose stopped marker can still arrive.
     unconfirmed_stop: bool,
-    /// The followed sink is known to be suspended or absent; unknown counts as running.
-    quiet: bool,
+    audio: Audio,
     exiting: bool,
     next_restore: u32,
     /// From logind's edge into sleep until its wake.
@@ -143,7 +145,7 @@ impl Default for Mic {
         Self {
             phase: Phase::Stopped { spent: None },
             unconfirmed_stop: false,
-            quiet: false,
+            audio: Audio::default(),
             exiting: false,
             next_restore: 0,
             asleep: false,
@@ -175,11 +177,11 @@ impl Mic {
             Fact::Link(Signal::Lost { .. }) => {
                 self.phase = Phase::Stopped { spent: None };
                 self.unconfirmed_stop = false;
-                self.quiet = false;
+                self.audio = Audio::default();
             }
             Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
             Fact::Tick => self.tick(state, now, &mut effects),
-            Fact::Audio(fact) => self.audio(*fact, &mut effects),
+            Fact::Audio(fact) => self.audio(*fact, state.audio_server, &mut effects),
             Fact::Sleep(edge) => self.sleep(*edge),
             Fact::Exit => self.exiting = true,
             Fact::Mic(MicFact::FirstAudio) => self.first_audio(now, &mut effects),
@@ -194,8 +196,10 @@ impl Mic {
             | Fact::Dictation(_) => {}
         }
         // A successful arm confirms an auto model without the uplink probe.
-        let probe_waits =
-            arming && state.microphone.preference() == MicPref::Auto && !self.node.recording();
+        let probe_waits = arming
+            && state.microphone.preference() == MicPref::Auto
+            && !self.audio.hint
+            && !self.node.recording();
         self.follow(state, now, probe_waits, &mut effects);
         effects
     }
@@ -206,7 +210,7 @@ impl Mic {
         self.phase = match self.phase {
             Phase::Stopping { restore: true, .. } => self.restore(None, now, effects),
             // The pods can start the uplink before the running marker arrives.
-            Phase::Starting { .. } | Phase::Running(..) if !self.quiet && !self.asleep => {
+            Phase::Starting { .. } | Phase::Running(..) if !self.audio.quiet && !self.asleep => {
                 self.restore(None, now, effects)
             }
             Phase::Restoring { since, id, .. } => Phase::Restoring {
@@ -253,7 +257,7 @@ impl Mic {
                 effects.push(Effect::Log(format!("mic: uplink stopped after {after} ms")));
                 self.stopped(restore, spent, now, effects)
             }
-            // A pod is silent already, so the restore runs whatever the gate says.
+            // The stopped marker bypasses the playback gate, but a headset profile still blocks a restore.
             (Phase::Running(..), UplinkState::Stopped) => {
                 effects.push(log(STOPPED_BY_THE_PODS_LINE));
                 self.restore(Some(Spent::Unasked), now, effects)
@@ -262,7 +266,7 @@ impl Mic {
                 if self.unconfirmed_stop =>
             {
                 self.unconfirmed_stop = false;
-                if !self.asleep && !self.quiet {
+                if !self.asleep && !self.audio.quiet && !self.node.blocked() {
                     self.restore(spent, now, effects)
                 } else {
                     self.phase
@@ -280,10 +284,14 @@ impl Mic {
         }
     }
 
-    fn audio(&mut self, fact: AudioFact, effects: &mut Vec<Effect>) {
+    fn audio(&mut self, fact: AudioFact, server: AudioServer, effects: &mut Vec<Effect>) {
         match fact {
-            AudioFact::Up => {}
-            AudioFact::Down => self.set_quiet(false),
+            AudioFact::Up | AudioFact::Headset(_) => {}
+            AudioFact::Down => {
+                self.set_quiet(false);
+                self.audio.hint = false;
+            }
+            AudioFact::Hint(hint) => self.audio.hint = server != AudioServer::Idle && hint,
             AudioFact::Sink(sink) => {
                 self.set_quiet(sink.is_none_or(|sink| sink.state == SinkState::Suspended));
             }
@@ -303,7 +311,7 @@ impl Mic {
     }
 
     fn set_quiet(&mut self, quiet: bool) {
-        self.quiet = quiet;
+        self.audio.quiet = quiet;
         if !quiet && let Phase::Stopping { restore, .. } = &mut self.phase {
             *restore = true;
         }
@@ -370,6 +378,9 @@ impl Mic {
                     spent: None,
                 };
             }
+            Phase::Running(hold, watch) if self.node.blocked() => {
+                self.phase = Phase::Running(hold, watch.follow(false, now));
+            }
             Phase::Running(hold, watch) => {
                 let watch = watch.follow(state.ear.any_in_ear(), now);
                 self.running(hold, watch, state, off, now, effects);
@@ -393,11 +404,11 @@ impl Mic {
     ) {
         let in_ear = state.ear.any_in_ear();
         let next = if off || self.exiting {
-            hold.owed(in_ear, self.quiet, now)
-        } else if self.asleep && gate::open(in_ear, self.quiet).is_some() {
+            hold.owed(in_ear, self.audio.quiet, now)
+        } else if self.asleep && gate::open(in_ear, self.audio.quiet).is_some() {
             Next::Stop(Word::Sleep)
         } else {
-            hold.follow(self.wants(state), in_ear, self.quiet, now)
+            hold.follow(self.wants(state), in_ear, self.audio.quiet, now)
         };
         self.phase = match next {
             // No STOP overtakes an unanswered START sent by the stall check.
@@ -447,8 +458,11 @@ impl Mic {
         self.restore(spent, now, effects)
     }
 
-    /// A restore under an id no earlier restore had.
+    /// A restore under an id no earlier restore had, provided the active profile allows it.
     fn restore(&mut self, spent: Option<Spent>, now: Duration, effects: &mut Vec<Effect>) -> Phase {
+        if self.node.blocked() {
+            return Phase::Stopped { spent };
+        }
         let id = RestoreId(self.next_restore);
         self.next_restore = self.next_restore.wrapping_add(1);
         effects.push(Effect::Audio(AudioRequest::Restore(id)));
@@ -550,6 +564,7 @@ impl Mic {
             Phase::Restoring { since, .. } => {
                 Some(since.saturating_add(Duration::from_millis(RESTORE_WAIT_MS)))
             }
+            Phase::Running(..) if self.node.blocked() => None,
             Phase::Running(hold, watch) => {
                 hold.deadline().into_iter().chain(watch.deadline()).min()
             }
@@ -558,9 +573,9 @@ impl Mic {
         uplink.into_iter().chain(self.node.deadline()).min()
     }
 
-    /// A recorder linked to the node wants the uplink as `always` does.
+    /// A linked recorder or a program asking for fast capture can hold the uplink under `auto`.
     fn wants(&self, state: &State) -> bool {
-        wanted(state) || (self.node.recording() && state.ear.any_in_ear())
+        !self.node.blocked() && wanted(state, self.audio.hint || self.node.recording())
     }
 
     /// The uplink's status, including a pending STOP after the preference is turned off.
@@ -576,6 +591,9 @@ impl Mic {
             )
         {
             return MicCode::Stopping;
+        }
+        if self.node.blocked() && state.connected {
+            return MicCode::Blocked;
         }
         if self.node.broken() {
             return MicCode::LibraryError;
@@ -619,11 +637,11 @@ impl Mic {
 }
 
 /// Whether the uplink is wanted: `auto` starts a model once, to confirm it, and both wait for the model a confirmation is kept under.
-fn wanted(state: &State) -> bool {
+fn wanted(state: &State, capture: bool) -> bool {
     let preferred = match state.microphone.preference() {
         MicPref::Off => false,
         MicPref::Always => true,
-        MicPref::Auto => !state.mic_models.contains(&state.model_number),
+        MicPref::Auto => capture || !state.mic_models.contains(&state.model_number),
     };
     preferred && !state.model_number.is_empty() && state.connected && state.ear.any_in_ear()
 }

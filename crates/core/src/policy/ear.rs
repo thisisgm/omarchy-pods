@@ -179,7 +179,11 @@ impl Ear {
                 self.unread();
                 return None;
             }
-            AudioFact::Up | AudioFact::Restored(_) | AudioFact::Recorders(_) => return None,
+            AudioFact::Up
+            | AudioFact::Restored(_)
+            | AudioFact::Recorders(_)
+            | AudioFact::Hint(_)
+            | AudioFact::Headset(_) => return None,
         };
         if self.settle == Settle::Reopened {
             self.settle = settle_from(now);

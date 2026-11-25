@@ -29,9 +29,11 @@ const EVENT_SEQUENCE: u32 = u32::MAX;
 const CONTROL_CHANNEL: u32 = u32::MAX;
 /// On the paused clock, an idle socket has had time to deliver the next immediate request.
 const QUIET: Duration = Duration::from_millis(1);
-const ALL_READS: [CommandTag; 4] = [
+const ALL_READS: [CommandTag; 6] = [
     CommandTag::GetServerInfo,
     CommandTag::GetSinkInfoList,
+    CommandTag::GetCardInfoList,
+    CommandTag::GetClientInfoList,
     CommandTag::GetSourceInfoList,
     CommandTag::GetSourceOutputInfoList,
 ];

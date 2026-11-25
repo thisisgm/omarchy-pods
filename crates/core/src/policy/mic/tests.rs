@@ -428,9 +428,9 @@ fn auto_and_always_wait_for_the_model_number() {
         let mut state = linked(column);
         state.mic_models = MicModels::default();
         state.model_number.clear();
-        assert!(!wanted(&state), "{column:?}");
+        assert!(!wanted(&state, false), "{column:?}");
         state.model_number = MODEL_NUMBER.to_owned();
-        assert!(wanted(&state), "{column:?}");
+        assert!(wanted(&state, false), "{column:?}");
     }
 }
 
@@ -485,6 +485,29 @@ fn the_code_reads_the_link_then_a_spent_start_or_a_stop_then_the_buds_then_the_p
             "{from:?}, off and unlinked"
         );
     }
+}
+
+#[test]
+fn a_headset_profile_holds_a_due_stop_until_it_clears() {
+    let state = State {
+        audio_server: AudioServer::Up,
+        ..linked(Column::Auto)
+    };
+    let mut mic = mic(phase(Kind::Running));
+    mic.step(&state, &Fact::Audio(AudioFact::Hint(false)), SENT);
+    mic.step(&state, &Fact::Audio(AudioFact::Headset(true)), SENT);
+    let due = SENT.saturating_add(LATER);
+    assert_eq!(mic.deadline(), None);
+    assert_eq!(
+        requests(&mic.step(&state, &Fact::Audio(AudioFact::Sink(None)), due)),
+        []
+    );
+    assert_eq!(requests(&mic.step(&state, &Fact::Tick, due)), []);
+    assert_eq!(mic.code(&state), MicCode::Blocked);
+    assert_eq!(
+        requests(&mic.step(&state, &Fact::Audio(AudioFact::Headset(false)), due)),
+        [UplinkRequest::Stop]
+    );
 }
 
 #[test]
