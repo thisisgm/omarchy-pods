@@ -46,6 +46,7 @@ pub(crate) struct FakeLogind {
 struct State {
     calls: Vec<String>,
     refuse: bool,
+    held_inhibit: Option<oneshot::Receiver<()>>,
     inhibitors: Vec<Option<Instant>>,
 }
 
@@ -114,6 +115,15 @@ impl FakeLogind {
 
     pub(crate) fn refuse_inhibit(&self) {
         self.state.lock().unwrap().refuse = true;
+    }
+
+    /// Holds the next Inhibit reply until the test sends on the returned handle.
+    pub(crate) fn hold_inhibit(&self) -> oneshot::Sender<()> {
+        let (release, held) = oneshot::channel();
+        let mut state = self.state.lock().unwrap();
+        assert!(state.held_inhibit.is_none());
+        state.held_inhibit = Some(held);
+        release
     }
 
     /// One entry per granted pipe, open until the fake observes EOF and records its time.
@@ -202,18 +212,25 @@ async fn serve(
                 .await
                 .unwrap();
         } else {
-            let (write, mut read) = pipe::pipe().unwrap();
-            let write = OwnedFd::from(write.into_nonblocking_fd().unwrap());
-            let position = {
-                let mut state = state.lock().unwrap();
-                let position = state.inhibitors.len();
-                state.inhibitors.push(None);
-                position
-            };
-            connection.reply(&header, &write).await.unwrap();
-            drop(write);
+            let held = state.lock().unwrap().held_inhibit.take();
+            let connection = connection.clone();
             let state = Arc::clone(&state);
             drop(tokio::spawn(async move {
+                if let Some(held) = held
+                    && held.await.is_err()
+                {
+                    return;
+                }
+                let (write, mut read) = pipe::pipe().unwrap();
+                let write = OwnedFd::from(write.into_nonblocking_fd().unwrap());
+                let position = {
+                    let mut state = state.lock().unwrap();
+                    let position = state.inhibitors.len();
+                    state.inhibitors.push(None);
+                    position
+                };
+                connection.reply(&message.header(), &write).await.unwrap();
+                drop(write);
                 assert_eq!(read.read(&mut [0; 1]).await.unwrap(), 0);
                 let mut state = state.lock().unwrap();
                 let Some(closed) = state.inhibitors.get_mut(position) else {

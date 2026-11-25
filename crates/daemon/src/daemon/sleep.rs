@@ -32,7 +32,7 @@ pub(super) type Bus = watch::Receiver<Option<Connection>>;
 /// Keeps the granted fd alive until the driver drops the receiver.
 pub(super) type Inhibitor = oneshot::Receiver<OwnedFd>;
 
-/// Ask alongside START without holding up the audio path; dropping the receiver also cancels a pending call.
+/// Ask at mode set and cancel the pending call when the receiver is dropped.
 pub(super) fn inhibit(bus: &Bus) -> Option<Inhibitor> {
     let Some(connection) = bus.borrow().clone() else {
         log(&format!("{INHIBIT_FAILED}: no system bus"));

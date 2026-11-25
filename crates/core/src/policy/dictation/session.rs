@@ -72,13 +72,6 @@ impl Phase {
 }
 
 impl Session {
-    pub(super) fn is_open(&self) -> bool {
-        matches!(
-            self.phase,
-            Phase::Starting { .. } | Phase::Streaming { .. } | Phase::Stopping { .. }
-        )
-    }
-
     pub(super) fn code(&self) -> Option<MicDictation> {
         match self.phase {
             Phase::Idle | Phase::Spent => None,
