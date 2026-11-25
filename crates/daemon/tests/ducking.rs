@@ -21,7 +21,9 @@ mod tests {
     use pulseaudio::protocol::{CommandTag, SinkState};
 
     use super::support::audio::wire::sink_named;
-    use super::support::audio::{Asked, FakeAudio, Recorder, Volumes};
+    use super::support::audio::{
+        Asked, FakeAudio, Recorder, Volumes, writes_except_default_source,
+    };
     use super::support::pipewire::{node_name, start, wait_node};
     use super::support::rig::{Device, Rig, connected};
     use super::support::uplink::{link_heard, read_up_to_now, rig_with_audio, wait_mic};
@@ -151,8 +153,7 @@ mod tests {
 
     fn assert_writes(audio: &FakeAudio, device: &Device, expected: &[u8]) {
         let sink = sink_named(device.address);
-        let volumes: Vec<u8> = audio
-            .writes()
+        let volumes: Vec<u8> = writes_except_default_source(&audio.requests())
             .into_iter()
             .map(|write| {
                 let Asked::Volume {
@@ -174,8 +175,7 @@ mod tests {
     fn finish(rig: Rig, audio: &FakeAudio) {
         rig.finish();
         assert!(
-            audio
-                .writes()
+            writes_except_default_source(&audio.requests())
                 .iter()
                 .all(|write| matches!(write, Asked::Volume { index: Some(_), .. })),
             "Conversation Awareness may only write volume by sink index"
