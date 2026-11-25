@@ -414,3 +414,281 @@ fn loss_restarts_the_ladder_and_off_cancels_the_wait() {
         },
     ]);
 }
+
+type SessionCell = (
+    u64,
+    Fact,
+    Option<Stop>,
+    Option<MicDictation>,
+    Option<DictationRequest>,
+    bool,
+);
+
+fn session_table(cells: impl IntoIterator<Item = SessionCell>) {
+    let mut session = Session::default();
+    for (ms, fact, why, status, request, gives_up) in cells {
+        let mut effects = Vec::new();
+        assert_eq!(
+            session.step(&fact, Duration::from_millis(ms), why, &mut effects),
+            gives_up,
+            "at {ms} ms"
+        );
+        let sent: Vec<_> = effects
+            .into_iter()
+            .filter_map(|effect| {
+                if let Effect::Dictation(request) = effect {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(sent, Vec::from_iter(request), "at {ms} ms");
+        assert_eq!(session.code(), status, "at {ms} ms");
+    }
+}
+
+#[test]
+fn session_cells() {
+    use DictationFact::{Answered, Ended, FirstAudio};
+    use DictationRequest::{Mode, ModeOff, Start};
+    use MicDictation::{Starting, Stopping, Streaming};
+
+    let stop = DictationRequest::Stop {
+        reason: pods_proto::doap::STOP_REASON_HOST,
+    };
+    let left = Some(Stop::Left);
+    let exit = Some(Stop::Exit);
+    let sleep = Some(Stop::Sleep);
+    session_table([
+        (0, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (149, Fact::Tick, None, Some(Starting), None, false),
+        (150, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (
+            160,
+            Fact::Dictation(FirstAudio),
+            None,
+            Some(Streaming),
+            None,
+            false,
+        ),
+        (
+            161,
+            Fact::Dictation(Answered),
+            None,
+            Some(Streaming),
+            None,
+            false,
+        ),
+        (200, Fact::Tick, left, Some(Stopping), Some(stop), false),
+        (699, Fact::Tick, left, Some(Stopping), None, false),
+        (700, Fact::Tick, left, None, Some(ModeOff), false),
+        (701, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (851, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (852, Fact::Tick, exit, Some(Stopping), None, false),
+        (
+            853,
+            Fact::Dictation(Answered),
+            exit,
+            Some(Stopping),
+            Some(stop),
+            false,
+        ),
+        (
+            854,
+            Fact::Dictation(Ended),
+            exit,
+            None,
+            Some(ModeOff),
+            false,
+        ),
+        (855, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (1005, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (1006, Fact::Tick, sleep, Some(Stopping), None, false),
+        (
+            1505,
+            Fact::Dictation(Answered),
+            sleep,
+            Some(Stopping),
+            Some(stop),
+            false,
+        ),
+        (
+            1506,
+            Fact::Dictation(Ended),
+            sleep,
+            None,
+            Some(ModeOff),
+            false,
+        ),
+    ]);
+}
+
+#[test]
+fn session_end_cells() {
+    use DictationFact::{Answered, PodEvent, Refused, UnsolicitedAudio};
+    use DictationRequest::{Mode, ModeOff, Start};
+    use MicDictation::{Starting, Stopping, Streaming};
+    use pods_proto::doap::STOP_REASON_UNSOLICITED;
+
+    let stray = DictationRequest::Stop {
+        reason: STOP_REASON_UNSOLICITED,
+    };
+    let left = Some(Stop::Left);
+    session_table([
+        (
+            0,
+            Fact::Dictation(UnsolicitedAudio),
+            left,
+            None,
+            Some(stray),
+            false,
+        ),
+        (1, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (151, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (152, Fact::Tick, left, Some(Stopping), None, false),
+        (
+            153,
+            Fact::Dictation(Refused {
+                reason: STOP_REASON_UNSOLICITED,
+            }),
+            left,
+            None,
+            Some(ModeOff),
+            false,
+        ),
+        (154, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (304, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (
+            305,
+            Fact::Dictation(Answered),
+            None,
+            Some(Streaming),
+            None,
+            false,
+        ),
+        (
+            306,
+            Fact::Dictation(PodEvent(Event::SiriCancel)),
+            left,
+            None,
+            Some(ModeOff),
+            false,
+        ),
+    ]);
+}
+
+#[test]
+fn exit_during_an_open_session_defers_closing_the_bearer() {
+    let mut dictation = Dictation::default();
+    let state = State {
+        connected: true,
+        microphone: Microphone::new(MicPref::Auto),
+        ..State::default()
+    };
+    let armed = Fact::Dictation(DictationFact::Armed);
+    let answered = Fact::Dictation(DictationFact::Answered);
+    let ended = Fact::Dictation(DictationFact::Ended);
+    let route = Some(Route::Dictation);
+    let settled = Duration::from_millis(MODE_SETTLE_MS);
+
+    assert_eq!(
+        dictation.step(&state, &up(), Duration::ZERO),
+        [Effect::Dictation(DictationRequest::Arm)]
+    );
+    let mut effects = dictation.step(&state, &armed, Duration::ZERO);
+    dictation.session(&state, &armed, Duration::ZERO, route, &mut effects);
+    dictation.session(&state, &Fact::Tick, settled, route, &mut effects);
+    dictation.session(&state, &answered, settled, route, &mut effects);
+    assert_eq!(dictation.code(&state), MicDictation::Streaming);
+
+    let stop = DictationRequest::Stop {
+        reason: pods_proto::doap::STOP_REASON_HOST,
+    };
+    for (fact, keep, requests) in [
+        (&Fact::Exit, true, &[stop][..]),
+        (
+            &ended,
+            false,
+            &[DictationRequest::ModeOff, DictationRequest::Close][..],
+        ),
+    ] {
+        let mut effects = dictation.step(&state, fact, settled);
+        assert_eq!(effects, []);
+        dictation.session(&state, fact, settled, route, &mut effects);
+        assert_eq!(dictation.armed(), keep);
+        let sent: Vec<_> = effects
+            .into_iter()
+            .filter_map(|effect| {
+                if let Effect::Dictation(request) = effect {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(sent, requests);
+    }
+}
+
+#[test]
+fn a_refusal_with_another_reason_is_logged() {
+    const REASON: u8 = 9;
+    let settled = Duration::from_millis(MODE_SETTLE_MS);
+    let mut session = Session::default();
+    let mut effects = Vec::new();
+    session.step(&Fact::Tick, Duration::ZERO, None, &mut effects);
+    session.step(&Fact::Tick, settled, None, &mut effects);
+    effects.clear();
+    let fact = Fact::Dictation(DictationFact::Refused { reason: REASON });
+    assert!(!session.step(&fact, settled, None, &mut effects));
+    assert_eq!(session.code(), Some(MicDictation::Starting));
+    assert_eq!(
+        effects,
+        [Effect::Log(format!("dictation: refused (reason {REASON})"))]
+    );
+}
+
+#[test]
+fn two_refusals_are_required_for_fallback() {
+    use DictationRequest::{Mode, ModeOff, Start};
+    use MicDictation::Starting;
+
+    let refused = DictationFact::Refused {
+        reason: pods_proto::doap::STOP_REASON_UNSOLICITED,
+    };
+    session_table([
+        (1506, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (1656, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (
+            1657,
+            Fact::Dictation(refused.clone()),
+            None,
+            Some(Starting),
+            Some(Mode),
+            false,
+        ),
+        (1807, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (
+            1808,
+            Fact::Dictation(refused.clone()),
+            None,
+            None,
+            Some(ModeOff),
+            true,
+        ),
+        (1809, Fact::Tick, Some(Stop::Left), None, None, false),
+        (1810, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (1960, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (2460, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (2610, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (
+            2611,
+            Fact::Dictation(refused),
+            None,
+            None,
+            Some(ModeOff),
+            false,
+        ),
+    ]);
+}

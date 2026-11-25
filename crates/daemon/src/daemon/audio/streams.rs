@@ -1,14 +1,12 @@
 //! The record streams on the microphone's source, as the audio server lists them.
 
 use pods_core::policy::audio::Recorders;
+use pods_core::policy::route::DICTATION_RECORDERS;
 
 use super::wire::{self, Malformed, Tags};
 
 /// A desktop holds a few dozen record streams; a longer list is refused whole.
 pub(super) const MAX_RECORD_STREAMS: usize = 256;
-
-/// The node names Superwhisper gives its two recorders.
-const DICTATION_RECORDERS: [&[u8]; 2] = [b"superwhisper-capture", b"superwhisper-history"];
 
 const NODE_NAME: &[u8] = b"node.name";
 
@@ -44,7 +42,11 @@ pub(super) fn recorders(body: &[u8], source: u32) -> Result<Recorders, Malformed
         if on != source {
             continue;
         }
-        if node.is_some_and(|node| DICTATION_RECORDERS.contains(&node)) {
+        if node.is_some_and(|node| {
+            DICTATION_RECORDERS
+                .iter()
+                .any(|known| node == known.as_bytes())
+        }) {
             counted.dictation = counted.dictation.saturating_add(1);
         } else {
             counted.other = counted.other.saturating_add(1);

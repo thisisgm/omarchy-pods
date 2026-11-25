@@ -25,7 +25,7 @@ pub(in crate::daemon) struct Tap {
 struct State {
     chain: Option<Chain>,
     stream: Stream,
-    /// A START went out and its first audio has not come.
+    /// The next uplink audio starts a run after START or the end of dictation.
     armed: bool,
     /// A dictation start went out and its first audio has not come.
     dictation_armed: bool,
@@ -52,9 +52,9 @@ impl Tap {
         })
     }
 
-    /// Queues audio when uplink is selected and a node is open, returning true for the first SDU since `arm`.
+    /// Queues uplink audio for an open node and returns true on the first SDU after `arm` or a switch back from dictation.
     pub(in crate::daemon) fn audio(&self, sdu: &AudioSdu<'_>) -> bool {
-        self.packets.fetch_add(1, Ordering::Relaxed);
+        self.count_uplink();
         let now = self.epoch.elapsed();
         let mut state = self.lock();
         let first = mem::take(&mut state.armed);
@@ -69,16 +69,23 @@ impl Tap {
         first
     }
 
+    pub(in crate::daemon) fn count_uplink(&self) {
+        self.packets.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Audio SDUs read since the daemon started.
     pub(in crate::daemon) fn packets(&self) -> u64 {
         self.packets.load(Ordering::Relaxed)
     }
 
-    /// Queues audio when dictation is selected and a node is open, returning true for the first notification since `arm_dictation`.
-    pub(in crate::daemon) fn dictation(&self, audio: &AudioNotification<'_>) -> bool {
+    /// None outside dictation, otherwise whether this is the first notification of the run.
+    pub(in crate::daemon) fn dictation(&self, audio: &AudioNotification<'_>) -> Option<bool> {
         self.dictation_packets.fetch_add(1, Ordering::Relaxed);
         let now = self.epoch.elapsed();
         let mut state = self.lock();
+        if matches!(state.stream, Stream::Uplink) {
+            return None;
+        }
         let first = mem::take(&mut state.dictation_armed);
         if let State {
             chain: Some(chain),
@@ -92,7 +99,7 @@ impl Tap {
             let frames = audio.frames().map(|frame| (frame.counter, frame.data));
             chain.frames(now, frames);
         }
-        first
+        Some(first)
     }
 
     /// Dictation notifications read since the daemon started.
@@ -107,11 +114,17 @@ impl Tap {
         state.stream = Stream::Dictation { run_due: true };
     }
 
+    /// Once the end is in, the ring can play what it already has while further `DoAP` audio is refused.
+    pub(in crate::daemon) fn end_dictation(&self) {
+        let mut state = self.lock();
+        state.armed |= matches!(state.stream, Stream::Dictation { .. });
+        state.dictation_armed = false;
+        state.stream = Stream::Uplink;
+    }
+
     /// A START went out: the next audio starts a new run of the chain.
     pub(in crate::daemon) fn arm(&self) {
-        let mut state = self.lock();
-        state.armed = true;
-        state.stream = Stream::Uplink;
+        self.lock().armed = true;
     }
 
     pub(in crate::daemon) fn counters(&self) -> &Counters {

@@ -179,6 +179,9 @@ pub enum MicDictation {
     Arming,
     Armed,
     Unavailable,
+    Starting,
+    Streaming,
+    Stopping,
 }
 
 impl MicDictation {
@@ -189,6 +192,9 @@ impl MicDictation {
             Self::Arming => "arming",
             Self::Armed => "armed",
             Self::Unavailable => "unavailable",
+            Self::Starting => "starting",
+            Self::Streaming => "streaming",
+            Self::Stopping => "stopping",
         }
     }
 }

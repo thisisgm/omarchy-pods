@@ -133,12 +133,12 @@ fn a_dictation_start_begins_a_dictation_run_at_the_next_audio_and_reports_it_onc
     let tap = Tap::new();
     let (_feed, _resync) = open(&tap);
     // On the uplink's run a dictation frame is a stale packet: the one lost before it is not concealed.
-    assert!(!tap.dictation(&dictated(&notification(0))));
-    assert!(!tap.dictation(&dictated(&notification(2))));
+    assert_eq!(tap.dictation(&dictated(&notification(0))), None);
+    assert_eq!(tap.dictation(&dictated(&notification(2))), None);
     assert_eq!(concealed(&tap), 0);
     tap.arm_dictation();
-    assert!(tap.dictation(&dictated(&notification(10))));
-    assert!(!tap.dictation(&dictated(&notification(12))));
+    assert_eq!(tap.dictation(&dictated(&notification(10))), Some(true));
+    assert_eq!(tap.dictation(&dictated(&notification(12))), Some(false));
     assert_eq!(concealed(&tap), 1);
 }
 
@@ -146,10 +146,10 @@ fn a_dictation_start_begins_a_dictation_run_at_the_next_audio_and_reports_it_onc
 fn a_node_opened_after_the_first_dictation_audio_still_gets_its_run() {
     let tap = Tap::new();
     tap.arm_dictation();
-    assert!(tap.dictation(&dictated(&notification(0))));
+    assert_eq!(tap.dictation(&dictated(&notification(0))), Some(true));
     let (_feed, _resync) = open(&tap);
-    assert!(!tap.dictation(&dictated(&notification(1))));
-    assert!(!tap.dictation(&dictated(&notification(3))));
+    assert_eq!(tap.dictation(&dictated(&notification(1))), Some(false));
+    assert_eq!(tap.dictation(&dictated(&notification(3))), Some(false));
     assert_eq!(
         concealed(&tap),
         1,
@@ -158,14 +158,14 @@ fn a_node_opened_after_the_first_dictation_audio_still_gets_its_run() {
 }
 
 #[test]
-fn a_reopened_node_keeps_dictation_until_an_uplink_start() {
+fn a_reopened_node_keeps_dictation_until_the_session_ends() {
     let tap = Tap::new();
     let (feed, _resync) = open(&tap);
     tap.arm_dictation();
-    assert!(tap.dictation(&dictated(&notification(0))));
+    assert_eq!(tap.dictation(&dictated(&notification(0))), Some(true));
     assert!(!feed.reader.read_all());
     tap.close(feed);
-    assert!(!tap.dictation(&dictated(&notification(1))));
+    assert_eq!(tap.dictation(&dictated(&notification(1))), Some(false));
 
     let (feed, _resync) = open(&tap);
     assert!(!tap.audio(&audio(&packet(1))));
@@ -173,7 +173,7 @@ fn a_reopened_node_keeps_dictation_until_an_uplink_start() {
         feed.reader.read_all(),
         "uplink plays while dictation is selected"
     );
-    assert!(!tap.dictation(&dictated(&notification(2))));
+    assert_eq!(tap.dictation(&dictated(&notification(2))), Some(false));
     assert!(
         !feed.reader.read_all(),
         "the reopened node has audio to play"
@@ -181,12 +181,15 @@ fn a_reopened_node_keeps_dictation_until_an_uplink_start() {
 
     tap.arm();
     assert!(tap.audio(&audio(&packet(0))));
+    assert_eq!(tap.dictation(&dictated(&notification(3))), Some(false));
+    tap.end_dictation();
+    assert!(tap.audio(&audio(&packet(0))));
     assert!(!tap.audio(&audio(&packet(2))));
     assert_eq!(concealed(&tap), UNITS);
     tap.close(feed);
 
     let (feed, _resync) = open(&tap);
-    assert!(!tap.dictation(&dictated(&notification(3))));
+    assert_eq!(tap.dictation(&dictated(&notification(3))), None);
     assert!(feed.reader.read_all(), "late dictation left the node empty");
     assert!(!tap.audio(&audio(&packet(3))));
     assert!(!feed.reader.read_all(), "uplink plays on the reopened node");
@@ -206,7 +209,7 @@ fn an_uplink_start_and_a_dictation_start_each_wait_for_their_own_audio() {
     let tap = Tap::new();
     tap.arm();
     tap.arm_dictation();
-    assert!(tap.dictation(&dictated(&notification(0))));
+    assert_eq!(tap.dictation(&dictated(&notification(0))), Some(true));
     assert!(tap.audio(&audio(&packet(0))));
 }
 

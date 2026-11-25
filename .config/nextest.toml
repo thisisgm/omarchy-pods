@@ -12,6 +12,8 @@ cpu-heavy = { max-threads = 6 }
 # Private PipeWire graphs and paced audio captures need regular scheduling.
 [[profile.default.overrides]]
 filter = '''
+binary_id(=librepods::dictation) |
+binary_id(=librepods::dictation_slow) |
 binary_id(=librepods::recorders) |
 binary_id(=librepods::source) |
 binary_id(=librepods::source_arming) |

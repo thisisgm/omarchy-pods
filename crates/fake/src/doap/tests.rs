@@ -63,7 +63,9 @@ fn start_needs_settle_time_after_mode_and_mode_off_disables_it() {
     machine.on_control(CONTROL, &setting(DOAP_MODE, 1), settled);
     assert_eq!(start(&mut machine, settled), [refusal]);
     let settled_again = settled + ms(100);
-    assert_eq!(start(&mut machine, settled_again)[0], sample::score(&TABLE));
+    let sent = start(&mut machine, settled_again);
+    assert_eq!(sent[0], sample::score(&TABLE));
+    assert_eq!(sent[1..], [tone(0, 0..5), tone(1, 5..10)]);
     machine.on_att(ATT, &host::stop(&TABLE, REASON_HOST), settled_again);
     machine.on_control(CONTROL, &setting(DOAP_MODE, 2), settled_again);
     assert!(machine.mic.is_none());

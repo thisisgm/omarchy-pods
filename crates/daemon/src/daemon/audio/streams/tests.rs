@@ -171,7 +171,7 @@ proptest! {
             prop_assert!(bytes.windows(name.len()).any(|window| window == name));
         }
         if let Ok(counted) = recorders(&bytes, source) {
-            let named = |node: &&[u8]| bytes.windows(node.len()).any(|window| window == *node);
+            let named = |node: &&str| bytes.windows(node.len()).any(|window| window == node.as_bytes());
             prop_assert!(counted.dictation == 0 || DICTATION_RECORDERS.iter().any(named));
         }
     }

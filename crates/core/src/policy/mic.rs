@@ -12,10 +12,12 @@ use super::audio::{
     AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, Recorders, RestoreId,
     SinkState,
 };
+use super::dictation::Dictation;
+use super::route::Route;
 use super::{Effect, Fact, SleepEdge};
 use crate::link::Signal;
 use crate::prefs::MicPref;
-use crate::state::{AudioServer, MicCode, State};
+use crate::state::{AudioServer, MicCode, MicDictation, State};
 pub use gate::{BUD_GRACE_MS, STOP_OWED_PLAYING_LINE, STOP_WAITS_LINE, UPLINK_LINGER_MS};
 use gate::{Hold, Next};
 use node::Node;
@@ -124,6 +126,10 @@ struct Audio {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "STOP confirmation, exit, sleep, and DoAP arming are independent."
+)]
 pub(super) struct Mic {
     phase: Phase,
     /// A STOP whose deadline passed and whose stopped marker can still arrive.
@@ -138,6 +144,8 @@ pub(super) struct Mic {
     /// When the last START went out, until the first audio after it.
     armed: Option<Duration>,
     node: Node,
+    route: Option<Route>,
+    dictation_armed: bool,
 }
 
 impl Default for Mic {
@@ -152,6 +160,8 @@ impl Default for Mic {
             start_failures: 0,
             armed: None,
             node: Node::default(),
+            route: None,
+            dictation_armed: false,
         }
     }
 }
@@ -159,33 +169,60 @@ impl Default for Mic {
 impl Mic {
     #[cfg(test)]
     fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
-        self.step_with_probe(state, fact, now, false)
+        self.step_with_dictation(state, fact, now, &Dictation::default())
     }
 
-    /// `state` is the state after the step the fact comes from.
-    pub(super) fn step_with_probe(
+    #[cfg(test)]
+    fn step_with_dictation(
         &mut self,
         state: &State,
         fact: &Fact,
         now: Duration,
-        arming: bool,
+        dictation: &Dictation,
     ) -> Vec<Effect> {
         let mut effects = Vec::new();
-        self.node.step(state, fact, now, &mut effects);
+        self.step_node(state, fact, now, &mut effects);
+        let route = self.recording().then_some(Route::Uplink);
+        self.step_uplink(state, fact, now, dictation, route, &mut effects);
+        effects
+    }
+
+    pub(super) fn step_node(
+        &mut self,
+        state: &State,
+        fact: &Fact,
+        now: Duration,
+        effects: &mut Vec<Effect>,
+    ) {
+        self.node.step(state, fact, now, effects);
+    }
+
+    /// `state` is the state after the step the fact comes from.
+    pub(super) fn step_uplink(
+        &mut self,
+        state: &State,
+        fact: &Fact,
+        now: Duration,
+        dictation: &Dictation,
+        route: Option<Route>,
+        effects: &mut Vec<Effect>,
+    ) {
+        self.route = route;
+        self.dictation_armed = dictation.armed();
         match fact {
-            Fact::Link(Signal::Down) => self.down(now, &mut effects),
+            Fact::Link(Signal::Down) => self.down(now, effects),
             Fact::Link(Signal::Lost { .. }) => {
                 self.phase = Phase::Stopped { spent: None };
                 self.unconfirmed_stop = false;
                 self.audio = Audio::default();
             }
-            Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, &mut effects),
-            Fact::Tick => self.tick(state, now, &mut effects),
-            Fact::Audio(fact) => self.audio(*fact, state.audio_server, &mut effects),
+            Fact::Link(Signal::Uplink(marker)) => self.marker(*marker, now, effects),
+            Fact::Tick => self.tick(state, now, effects),
+            Fact::Audio(fact) => self.audio(*fact, state.audio_server, effects),
             Fact::Sleep(edge) => self.sleep(*edge),
             Fact::Exit => self.exiting = true,
-            Fact::Mic(MicFact::FirstAudio) => self.first_audio(now, &mut effects),
-            Fact::Mic(MicFact::Heard { packets }) => self.heard(state, *packets, now, &mut effects),
+            Fact::Mic(MicFact::FirstAudio) => self.first_audio(now, effects),
+            Fact::Mic(MicFact::Heard { packets }) => self.heard(state, *packets, now, effects),
             Fact::Link(Signal::Up { .. } | Signal::Keys(_))
             | Fact::Changed
             | Fact::Paused(..)
@@ -196,12 +233,11 @@ impl Mic {
             | Fact::Dictation(_) => {}
         }
         // A successful arm confirms an auto model without the uplink probe.
-        let probe_waits = arming
+        let probe_waits = dictation.code(state) == MicDictation::Arming
             && state.microphone.preference() == MicPref::Auto
             && !self.audio.hint
             && !self.node.recording();
-        self.follow(state, now, probe_waits, &mut effects);
-        effects
+        self.follow(state, now, probe_waits, effects);
     }
 
     /// A channel drop can leave the device and its sink up, so an owed restore still runs.
@@ -584,9 +620,11 @@ impl Mic {
         !self.node.awaiting_profile(state.audio_server) && self.uplink_wanted(state)
     }
 
-    /// A linked recorder or a program asking for fast capture can hold the uplink under `auto`.
+    /// An uplink recording or a fast-capture hint without armed dictation can hold the uplink under `auto`.
     fn uplink_wanted(&self, state: &State) -> bool {
-        !self.node.blocked() && wanted(state, self.audio.hint || self.node.recording())
+        !self.node.blocked()
+            && (wanted(state, self.audio.hint && !self.dictation_armed)
+                || (self.route == Some(Route::Uplink) && state.ear.any_in_ear()))
     }
 
     /// The uplink's status, including a pending STOP after the preference is turned off.
@@ -611,6 +649,9 @@ impl Mic {
         }
         if !state.connected {
             return MicCode::Idle;
+        }
+        if self.route == Some(Route::Dictation) && self.node.recording() {
+            return MicCode::Recording;
         }
         match self.phase {
             Phase::Stopped {
