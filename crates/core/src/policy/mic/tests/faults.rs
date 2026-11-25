@@ -74,6 +74,177 @@ fn a_running_marker_with_no_want_meets_the_gate_at_once() {
 }
 
 #[test]
+fn a_running_marker_while_restoring_cancels_the_restore() {
+    let (running, at, state) = stepped(Event::RunningMarker, Column::AlwaysKnown);
+    let mut mic = Mic {
+        armed: Some(SENT),
+        ..mic(phase(Kind::RestoringUnasked))
+    };
+    let effects = mic.step(&state, &running, at);
+    assert_eq!(kind(mic.phase), Kind::Running);
+    assert!(effects.contains(&Effect::Audio(AudioRequest::CancelRestore)));
+    assert_eq!(requests(&effects), NOTHING);
+    assert_eq!(mic.armed, None);
+
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    assert_eq!(mic.step(&state, &restored, at), []);
+    assert_eq!(kind(mic.phase), Kind::Running);
+    let quiet = sink_in(true, SinkState::Suspended);
+    assert_eq!(requests(&mic.step(&state, &quiet, at)), NOTHING);
+    let off = linked(Column::Off);
+    assert_eq!(requests(&mic.step(&off, &Fact::Changed, at)), STOP);
+    assert_eq!(kind(mic.phase), Kind::StoppingQuiet);
+}
+
+#[test]
+fn a_sleep_wake_start_answered_during_restore_tracks_the_uplink() {
+    let (_, mut mic) = run(Kind::Starting, Event::Sleep, Column::AlwaysKnown);
+    assert_eq!(kind_of(&mic), Kind::Asleep);
+    let (wake, at, state) = stepped(Event::Wake, Column::AlwaysKnown);
+    assert_eq!(requests(&mic.step(&state, &wake, at)), START);
+    assert_eq!(kind(mic.phase), Kind::Starting);
+
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    drop(mic.step(&state, &running, at));
+    assert_eq!(kind(mic.phase), Kind::Running);
+    drop(mic.step(&state, &stopped, at));
+    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    let answered = mic.step(&state, &running, at);
+    assert_eq!(kind(mic.phase), Kind::Running);
+    assert!(answered.contains(&Effect::Audio(AudioRequest::CancelRestore)));
+}
+
+#[test]
+fn a_stop_confirmed_after_its_deadline_restores_once_more() {
+    let (stopped, connected_at, state) = stepped(Event::StoppedMarker, Column::Off);
+    let mut fresh = Mic::default();
+    assert_eq!(
+        fresh.step(&state, &stopped, connected_at),
+        [],
+        "initial marker"
+    );
+
+    let (first, restoring) = run(Kind::Stopping, Event::Deadline, Column::Off);
+    let first_id = RestoreId(0);
+    let next_id = RestoreId(1);
+    assert!(first.contains(&Effect::Audio(AudioRequest::Restore(first_id))));
+    assert_eq!(kind(restoring.phase), Kind::Restoring);
+    let late = SENT.saturating_add(LATER).saturating_add(SOON);
+    let first_restored = Fact::Audio(AudioFact::Restored(first_id));
+    let next_restored = Fact::Audio(AudioFact::Restored(next_id));
+    for from in [Kind::Stopped, Kind::Restoring] {
+        let mut mic = restoring;
+        if from == Kind::Stopped {
+            assert_eq!(mic.step(&state, &first_restored, late), []);
+        }
+        assert_eq!(kind(mic.phase), from);
+        assert_eq!(
+            mic.step(&state, &stopped, late),
+            [Effect::Audio(AudioRequest::Restore(next_id))],
+            "{from:?}"
+        );
+        assert_eq!(mic.step(&state, &stopped, late), [], "duplicate marker");
+        assert_eq!(mic.step(&state, &first_restored, late), []);
+        assert_eq!(kind(mic.phase), Kind::Restoring);
+        assert_eq!(mic.step(&state, &next_restored, late), []);
+        assert_eq!(kind(mic.phase), Kind::Stopped);
+    }
+
+    let mut quiet = Mic {
+        quiet: true,
+        ..mic(phase(Kind::StoppingQuiet))
+    };
+    let due = SENT.saturating_add(Duration::from_millis(STOP_ANSWER_MS));
+    let effects = quiet.step(&state, &Fact::Tick, due);
+    assert_eq!(effects, [log(STOP_UNCONFIRMED_LINE)]);
+    assert_eq!(quiet.step(&state, &stopped, late), [], "quiet sink");
+    assert_eq!(kind(quiet.phase), Kind::Stopped);
+
+    let mut asleep = restoring;
+    drop(asleep.step(&state, &Fact::Sleep(SleepEdge::Sleeping), late));
+    assert_eq!(asleep.step(&state, &stopped, late), [], "asleep");
+    assert_eq!(kind(asleep.phase), Kind::Restoring);
+}
+
+fn stop_past_its_deadline() -> (Mic, Duration) {
+    let (effects, mic) = run(Kind::Stopping, Event::Deadline, Column::Off);
+    assert_eq!(
+        effects,
+        [
+            log(STOP_UNCONFIRMED_LINE),
+            Effect::Audio(AudioRequest::Restore(RestoreId(0))),
+        ]
+    );
+    assert!(mic.unconfirmed_stop);
+    (mic, SENT.saturating_add(LATER).saturating_add(SOON))
+}
+
+#[test]
+fn losing_the_link_discards_an_unconfirmed_stop() {
+    let (stopped, _, state) = stepped(Event::StoppedMarker, Column::Off);
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    let (mut mic, at) = stop_past_its_deadline();
+    assert_eq!(mic.step(&state, &restored, at), []);
+
+    for event in [Event::Down, Event::Lost] {
+        let mut mic = mic;
+        let (lost, _, disconnected) = stepped(event, Column::Off);
+        assert_eq!(mic.step(&disconnected, &lost, at), [], "{event:?}");
+        assert_eq!(mic.step(&disconnected, &stopped, at), [], "{event:?}");
+    }
+}
+
+#[test]
+fn a_new_start_discards_an_unconfirmed_stop() {
+    let (stopped, _, off) = stepped(Event::StoppedMarker, Column::Off);
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    let (mut mic, at) = stop_past_its_deadline();
+    assert_eq!(mic.step(&off, &restored, at), []);
+
+    let always = linked(Column::AlwaysKnown);
+    assert_eq!(requests(&mic.step(&always, &Fact::Changed, at)), START);
+    let deadline = at.saturating_add(Duration::from_millis(START_ANSWER_MS));
+    drop(mic.step(&off, &Fact::Tick, deadline));
+    assert_eq!(kind(mic.phase), Kind::Stopped);
+    assert_eq!(mic.step(&off, &stopped, deadline), []);
+}
+
+#[test]
+fn a_running_marker_discards_an_unconfirmed_stop() {
+    let (running, _, always) = stepped(Event::RunningMarker, Column::AlwaysKnown);
+    let (stopped_marker, _, off) = stepped(Event::StoppedMarker, Column::Off);
+    let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    let (restoring, at) = stop_past_its_deadline();
+    let mut stopped = restoring;
+    assert_eq!(stopped.step(&off, &restored, at), []);
+    // A normal START clears the flag first, so seed Starting to test the marker's own clear.
+    let starting = Mic {
+        phase: Phase::Starting {
+            since: at,
+            tried: Try::FIRST,
+            owed: false,
+        },
+        ..stopped
+    };
+
+    for mut mic in [starting, stopped, restoring] {
+        let from = kind(mic.phase);
+        drop(mic.step(&always, &running, at));
+        assert_eq!(kind(mic.phase), Kind::Running, "{from:?}");
+        assert_eq!(
+            mic.step(&always, &stopped_marker, at),
+            [
+                log(STOPPED_BY_THE_PODS_LINE),
+                Effect::Audio(AudioRequest::Restore(RestoreId(1))),
+            ],
+            "{from:?}"
+        );
+        assert_eq!(mic.step(&always, &stopped_marker, at), [], "{from:?}");
+    }
+}
+
+#[test]
 fn a_stop_nobody_asked_for_restores_and_starts_again_only_after_the_want_went() {
     let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
     let state = linked(Column::AlwaysKnown);
