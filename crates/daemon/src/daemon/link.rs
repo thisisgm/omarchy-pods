@@ -264,12 +264,28 @@ impl Driver {
             .min()
             .and_then(|at| self.started.checked_add(at));
         let next = next_of(inputs, self.channel.as_mut(), &mut self.channel_first);
-        match deadline {
-            // Served before the queue and the channel, which stay ready for as long as their peers keep talking.
-            Some(at) if at <= Instant::now() => Turn::Tick,
-            Some(at) => timeout_at(at, next).await.unwrap_or(Turn::Tick),
-            None => next.await,
-        }
+        let mut next = pin!(async {
+            match deadline {
+                // Served before the queue and the channel, which stay ready for as long as their peers keep talking.
+                Some(at) if at <= Instant::now() => Turn::Tick,
+                Some(at) => timeout_at(at, next).await.unwrap_or(Turn::Tick),
+                None => next.await,
+            }
+        });
+        poll_fn(|context| {
+            let turn = next.as_mut().poll(context);
+            if let Some(inhibitor) = &mut self.dictation_inhibitor
+                && inhibitor.poll_resolved(context).is_ready()
+            {
+                self.policy.set_dictation_inhibit_pending(false);
+                // A queued sleep or recorder edge can cancel before the new START deadline is checked.
+                if turn.is_pending() {
+                    return Poll::Ready(Turn::Tick);
+                }
+            }
+            turn
+        })
+        .await
     }
 
     fn take(&mut self, input: Input) {
@@ -502,6 +518,8 @@ impl Driver {
                 self.send(&doap_mode_on());
                 if self.dictation_inhibitor.is_none() {
                     self.dictation_inhibitor = sleep::inhibit(&self.outlets.sleep_bus);
+                    self.policy
+                        .set_dictation_inhibit_pending(self.dictation_inhibitor.is_some());
                 }
             }
             Effect::Dictation(DictationRequest::ModeOff) => {

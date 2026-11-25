@@ -3,7 +3,7 @@
 use std::future::poll_fn;
 use std::ops::ControlFlow;
 use std::pin::{Pin, pin};
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pods_core::policy::SleepEdge;
@@ -29,8 +29,23 @@ const SLEEPING: &str = "sleep: the system is going to sleep";
 const WOKE: &str = "sleep: the system woke";
 
 pub(super) type Bus = watch::Receiver<Option<Connection>>;
-/// Keeps the granted fd alive until the driver drops the receiver.
-pub(super) type Inhibitor = oneshot::Receiver<OwnedFd>;
+/// Keeps the request or granted fd alive until the driver drops the inhibitor.
+#[derive(Debug)]
+pub(super) enum Inhibitor {
+    Pending(oneshot::Receiver<OwnedFd>),
+    Resolved { _lock: Option<OwnedFd> },
+}
+
+impl Inhibitor {
+    pub(super) fn poll_resolved(&mut self, context: &mut Context<'_>) -> Poll<()> {
+        let Self::Pending(reply) = self else {
+            return Poll::Pending;
+        };
+        Pin::new(reply).poll(context).map(|reply| {
+            *self = Self::Resolved { _lock: reply.ok() };
+        })
+    }
+}
 
 /// Ask at mode set and cancel the pending call when the receiver is dropped.
 pub(super) fn inhibit(bus: &Bus) -> Option<Inhibitor> {
@@ -54,7 +69,7 @@ pub(super) fn inhibit(bus: &Bus) -> Option<Inhibitor> {
             None => {}
         }
     }));
-    Some(inhibitor)
+    Some(Inhibitor::Pending(inhibitor))
 }
 
 async fn request_inhibitor(connection: &Connection) -> zbus::Result<OwnedFd> {
