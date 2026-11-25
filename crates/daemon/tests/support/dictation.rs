@@ -11,7 +11,7 @@ use pulseaudio::protocol::SinkState;
 
 use super::audio::{FakeAudio, Recorder as Listed, RecorderId};
 use super::pipewire::{node_name, record, start, wait_node};
-use super::recording::frames;
+use super::recording::frames_at;
 use super::rig::{Device, Rig};
 use super::uplink::{read_up_to_now, rig_with_audio, starts, stops, wait_mic};
 use super::{HANG_LIMIT, wait_for};
@@ -121,6 +121,7 @@ pub(crate) fn uplink(fixture: &Fixture) {
     wait_mic(&fixture.rig, "recording");
 }
 
+/// Waits for `span` of audio at the recorder's own rate, since a call records at 48 kHz.
 pub(crate) fn ready_to_read(recorder: &Recorder<'_>, span: Duration) {
-    recorder.wait_frames(frames(span), HANG_LIMIT);
+    recorder.wait_frames(frames_at(span, recorder.rate()), HANG_LIMIT);
 }

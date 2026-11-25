@@ -177,8 +177,13 @@ pub(crate) fn tone_step_bound() -> u16 {
 
 /// The frames `span` holds at the recorder's rate.
 pub(crate) fn frames(span: Duration) -> usize {
+    frames_at(span, RECORDER_RATE)
+}
+
+/// The frames `span` holds at `rate`.
+pub(crate) fn frames_at(span: Duration, rate: u32) -> usize {
     let micros = u64::try_from(span.as_micros()).unwrap();
-    usize::try_from(micros.saturating_mul(u64::from(RECORDER_RATE)) / MICROS_PER_SECOND).unwrap()
+    usize::try_from(micros.saturating_mul(u64::from(rate)) / MICROS_PER_SECOND).unwrap()
 }
 
 /// Where the recording's first sample that is not zero is.
