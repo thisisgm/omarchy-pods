@@ -118,7 +118,13 @@ async fn require_paired(connection: &Connection, path: &str) -> zbus::Result<()>
             "Get",
             &(DEVICE_INTERFACE, "Paired"),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            zbus::Error::Failure(format!(
+                "BlueZ Paired read failed: {}",
+                super::failure(&error)
+            ))
+        })?;
     let paired = reply
         .body()
         .deserialize::<OwnedVariant>()
