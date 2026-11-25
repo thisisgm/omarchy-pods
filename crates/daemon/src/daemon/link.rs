@@ -56,6 +56,7 @@ pub(super) const STOP_WAIT_MS: u64 = MIC_EXIT_MS + 500;
 const CONNECT_THREAD: &str = "link-connect";
 
 const EXIT_BEFORE_RESTORE_LINE: &str = "mic: exit before restore";
+const EXIT_UPLINK_RUNNING_LINE: &str = "mic: exit with the uplink running, the sink is playing";
 const DECODER_RESET_LINE: &str = "mic: decoder reset";
 const RECORDER_LINKED_LINE: &str = "mic: recorder linked";
 
@@ -356,7 +357,11 @@ impl Driver {
             return Some(exit.done);
         }
         if self.started.elapsed() >= exit.by {
-            log(EXIT_BEFORE_RESTORE_LINE);
+            log(if self.policy.mic_stop_waits() {
+                EXIT_UPLINK_RUNNING_LINE
+            } else {
+                EXIT_BEFORE_RESTORE_LINE
+            });
             return Some(exit.done);
         }
         self.exit = Some(exit);

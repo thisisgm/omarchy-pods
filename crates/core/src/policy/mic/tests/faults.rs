@@ -140,23 +140,52 @@ fn a_recorder_kept_through_a_stop_nobody_asked_for_starts_again_only_once_it_lef
 }
 
 #[test]
-fn a_sleep_stops_a_running_uplink_with_no_restore_and_the_wake_starts_it_again() {
+fn a_sleep_stops_a_running_uplink_only_through_an_open_gate_and_the_wake_starts_it_again() {
+    for (worn, quiet) in [(true, true), (false, false)] {
+        let mut state = linked(Column::AlwaysKnown);
+        state.ear = EarReport::from_in_ear(worn, worn);
+        let mut mic = Mic {
+            quiet,
+            ..mic(phase(Kind::Running))
+        };
+        let effects = mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), SENT);
+        assert_eq!(requests(&effects), STOP, "{worn}");
+        assert_eq!(lines(&effects), [Word::Sleep.line()], "{worn}");
+        let audio = |effect: &Effect| matches!(effect, Effect::Audio(_));
+        assert!(!effects.iter().any(audio), "{worn}");
+        assert_eq!((kind_of(&mic), mic.deadline()), (Kind::Asleep, None));
+        let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+        assert_eq!(mic.step(&state, &marker, SENT), [], "{worn}");
+        assert_eq!(mic.step(&state, &Fact::Changed, SENT), [], "{worn}");
+        let worn = linked(Column::AlwaysKnown);
+        let woke = mic.step(&worn, &Fact::Sleep(SleepEdge::Woke), SENT);
+        assert_eq!(requests(&woke), START);
+    }
+}
+
+#[test]
+fn a_sleep_over_a_worn_buds_playing_sink_sends_nothing_and_keeps_the_uplink() {
     let state = linked(Column::AlwaysKnown);
     let mut mic = mic(phase(Kind::Running));
     let effects = mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), SENT);
+    assert_eq!((requests(&effects), lines(&effects)), (vec![], vec![]));
+    assert_eq!(kind_of(&mic), Kind::Running);
+    // The sink going quiet before the suspend opens the gate, and the STOP of the sleep goes out.
+    let quiet = sink_in(true, SinkState::Suspended);
+    let mut suspended = mic;
+    let effects = suspended.step(&state, &quiet, SENT);
     assert_eq!(requests(&effects), STOP);
     assert_eq!(lines(&effects), [Word::Sleep.line()]);
-    assert!(
-        !effects
-            .iter()
-            .any(|effect| matches!(effect, Effect::Audio(_)))
-    );
-    assert_eq!((kind_of(&mic), mic.deadline()), (Kind::Asleep, None));
-    let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
-    assert_eq!(mic.step(&state, &marker, SENT), []);
-    assert_eq!(mic.step(&state, &Fact::Changed, SENT), []);
+    let audio = |effect: &Effect| matches!(effect, Effect::Audio(_));
+    assert!(!effects.iter().any(audio));
+    assert_eq!(kind_of(&suspended), Kind::Asleep);
     let woke = mic.step(&state, &Fact::Sleep(SleepEdge::Woke), SENT);
-    assert_eq!(requests(&woke), START);
+    assert_eq!(woke, []);
+    assert_eq!(kind_of(&mic), Kind::Running);
+    // Awake again, a sink going quiet sends no STOP of a sleep: the want holds the uplink.
+    let effects = mic.step(&state, &quiet, SENT);
+    assert_eq!((requests(&effects), lines(&effects)), (vec![], vec![]));
+    assert_eq!(kind_of(&mic), Kind::Running);
 }
 
 #[test]

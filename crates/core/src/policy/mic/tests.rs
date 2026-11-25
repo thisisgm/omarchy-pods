@@ -72,7 +72,7 @@ enum Kind {
     Lingering,
     Waiting,
     Stopping,
-    /// A STOP the gate let out with a bud worn, which no restore follows.
+    /// A STOP the gate let out for a quiet sink, which no restore follows.
     StoppingQuiet,
     Restoring,
     /// The restore after a stop the pods made on their own.
@@ -353,10 +353,16 @@ fn a_start_and_its_answer_log_their_lines_and_the_time_it_took() {
 }
 
 #[test]
-fn off_while_live_logs_the_stop_and_its_answer() {
+fn off_while_live_logs_the_wait_once_then_the_stop_and_its_answer() {
     let mut mic = mic(phase(Kind::Running));
     let (fact, _, state) = stepped(Event::Changed, Column::Off);
-    assert_eq!(lines(&mic.step(&state, &fact, SENT)), [Word::Off.line()]);
+    assert_eq!(
+        lines(&mic.step(&state, &fact, SENT)),
+        [STOP_OWED_PLAYING_LINE]
+    );
+    assert_eq!(lines(&mic.step(&state, &fact, SENT)), Vec::<&str>::new());
+    let quiet = sink_in(true, SinkState::Suspended);
+    assert_eq!(lines(&mic.step(&state, &quiet, SENT)), [Word::Quiet.line()]);
     let (fact, _, state) = stepped(Event::StoppedMarker, Column::Off);
     let effects = mic.step(&state, &fact, SENT.saturating_add(SOON));
     assert_eq!(lines(&effects), ["mic: uplink stopped after 100 ms"]);
@@ -483,12 +489,23 @@ fn the_exit_is_answered_once_the_uplink_is_stopped_and_restored() {
     );
     let mut live = mic(phase(Kind::Running));
     let effects = live.step(&state, &Fact::Exit, SENT);
+    assert_eq!(requests(&effects), NOTHING);
+    assert!(!effects.contains(&Effect::Exited) && live.stop_waits());
+    let unworn = State {
+        ear: EarReport::default(),
+        ..state.clone()
+    };
+    let due = SENT.saturating_add(Duration::from_millis(BUD_GRACE_MS));
+    drop(live.step(&unworn, &Fact::Changed, SENT));
+    let early = due.saturating_sub(Duration::from_millis(1));
+    assert_eq!(requests(&live.step(&unworn, &Fact::Tick, early)), NOTHING);
+    let effects = live.step(&unworn, &Fact::Tick, due);
     assert_eq!(requests(&effects), STOP);
-    assert!(!effects.contains(&Effect::Exited));
+    assert!(!effects.contains(&Effect::Exited) && !live.stop_waits());
     let marker = Fact::Link(Signal::Uplink(UplinkState::Stopped));
-    assert!(!live.step(&state, &marker, SENT).contains(&Effect::Exited));
+    assert!(!live.step(&unworn, &marker, due).contains(&Effect::Exited));
     let restored = Fact::Audio(AudioFact::Restored(RestoreId(0)));
-    assert!(live.step(&state, &restored, SENT).contains(&Effect::Exited));
+    assert!(live.step(&unworn, &restored, due).contains(&Effect::Exited));
     let lost = Fact::Link(Signal::Lost {
         device: device(),
         down_at: None,
@@ -519,7 +536,11 @@ fn the_restore_window_opens_when_the_stop_ends() {
 #[test]
 fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
     let always = linked(Column::AlwaysKnown);
-    let off = linked(Column::Off);
+    // No bud worn, so the gate lets the STOP `off` owes out at once, with a restore.
+    let off = State {
+        ear: EarReport::default(),
+        ..linked(Column::Off)
+    };
     let mut mic = mic(phase(Kind::Stopping));
     let marker = |state| Fact::Link(Signal::Uplink(state));
     let mut at = SENT;

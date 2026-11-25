@@ -93,6 +93,7 @@ impl Pods {
     }
 
     fn start(&mut self) {
+        self.state.ear = EarReport::from_in_ear(true, true);
         self.until(
             MicPref::Always,
             Fact::Changed,
@@ -101,8 +102,9 @@ impl Pods {
         self.marker(UplinkState::Running);
     }
 
-    /// `off` until the STOP goes out, then its answer, which asks for the restore.
+    /// `off` with no bud worn, so the gate lets the STOP out, then its answer, which asks for the restore.
     fn stop(&mut self) {
+        self.state.ear = EarReport::default();
         self.until(
             MicPref::Off,
             Fact::Changed,
