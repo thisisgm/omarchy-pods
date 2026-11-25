@@ -401,8 +401,9 @@ mod tests {
             ] {
                 drop(policy.step(&state, fact, Duration::ZERO));
             }
+            // Late enough that a time gate alone cannot tell the first span from a reopened one.
             for fact in facts {
-                let effects = policy.step(&state, fact, Duration::ZERO);
+                let effects = policy.step(&state, fact, STREAMING_AT);
                 assert!(
                     !effects.contains(&Effect::ResyncMic),
                     "first dictation, {order}: {effects:?}"
@@ -411,11 +412,12 @@ mod tests {
             assert_eq!(policy.edge.route(), Some(Route::Dictation), "{order}");
 
             let empty = Fact::Audio(AudioFact::Recorders(Recorders::default()));
-            drop(policy.step(&state, empty, STREAMING_AT));
+            let reopen = STREAMING_AT.saturating_mul(2);
+            drop(policy.step(&state, empty, reopen));
             assert!(!policy.mic_recording());
             assert_eq!(policy.edge.route(), None);
 
-            let effects = policy.step(&state, list(), STREAMING_AT);
+            let effects = policy.step(&state, list(), reopen);
             assert!(
                 effects.contains(&Effect::ResyncMic),
                 "reopened dictation, {order}: {effects:?}"
