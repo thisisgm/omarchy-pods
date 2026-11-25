@@ -373,7 +373,7 @@ fn a_run_killed_outright_leaves_no_process_once_its_bench_is_gone() {
     let bench = Bench::new();
     bench.set("hang-status", "");
     let root = bench.path("");
-    let mut command = bench.command(Some("1"), &[]);
+    let mut command = bench.command(Some(["--idle-window-seconds", "1"]), &[]);
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let mut run = bench.spawn(command);
     let status: i32 = wait_for_file(&bench.path("status-pid"))
@@ -394,11 +394,11 @@ fn a_run_killed_outright_leaves_no_process_once_its_bench_is_gone() {
 fn a_second_run_during_a_run_stops_and_starts_nothing() {
     let bench = Bench::new();
     bench.set("hang-stop", "");
-    let mut command = bench.command(Some("1"), &[]);
+    let mut command = bench.command(Some(["--idle-window-seconds", "1"]), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let first = bench.spawn(command);
     wait_for_call(&bench, "systemctl --user stop librepods.service");
-    let mut command = bench.command(Some("1"), &[]);
+    let mut command = bench.command(Some(["--idle-window-seconds", "1"]), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let second = bench.spawn(command);
     let second = finish(second, RUN_DEADLINE);

@@ -381,16 +381,32 @@ fn a_stop_that_leaves_the_socket_and_state_file_fails() {
 
 #[test]
 fn a_daemon_woken_in_the_idle_window_misses_g3() {
-    const SECONDS_PER_MINUTE: u64 = 60;
+    const WINDOW_MS: u64 = 1000;
+    const RATE_PER_WAKEUP: u64 = 60;
+    assert_busy_idle_window(["--idle-window-seconds", "1"], WINDOW_MS, RATE_PER_WAKEUP);
+}
+
+#[test]
+fn g3_reports_the_wakeup_rate_over_a_subsecond_idle_window() {
+    const WINDOW_MS: u64 = 750;
+    const RATE_PER_WAKEUP: u64 = 80;
+    assert_busy_idle_window(
+        ["--idle-window-ms", &WINDOW_MS.to_string()],
+        WINDOW_MS,
+        RATE_PER_WAKEUP,
+    );
+}
+
+fn assert_busy_idle_window(idle_window: [&str; 2], window_ms: u64, rate_per_wakeup: u64) {
     let bench = Bench::new();
     bench.set("daemon-busy", "");
-    let output = bench.run_with_windows(Some("1"), Some(QUICK_BURST_MS), &[]);
+    let output = bench.run_with_windows(Some(idle_window), Some(QUICK_BURST_MS), &[]);
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
     let counted = stdout
         .lines()
-        .find(|line| line.contains("G3 link up: ") && line.contains(" wakeups in 1000 ms"))
+        .find(|line| line.contains("G3 link up: ") && line.contains(" wakeups in "))
         .unwrap_or_else(|| panic!("no G3 link up count: {stdout}"));
     // G3 link up: 2 wakeups in 1000 ms, 120.0 a minute, bound at most 12, watch lines 1
     let woke: u64 = counted
@@ -400,12 +416,12 @@ fn a_daemon_woken_in_the_idle_window_misses_g3() {
         .and_then(|count| count.parse().ok())
         .unwrap_or_else(|| panic!("no G3 link up count: {counted}"));
     assert!(woke >= 1, "{stdout}");
-    let per_minute = woke.saturating_mul(SECONDS_PER_MINUTE);
-    assert!(
-        stdout.contains(&format!(
-            "G3 link up: {woke} wakeups in 1000 ms, {per_minute}.0 a minute, bound at most 12, watch lines 1"
-        )),
-        "{stdout}"
+    let per_minute = woke.saturating_mul(rate_per_wakeup);
+    assert_eq!(
+        counted.trim_start(),
+        format!(
+            "G3 link up: {woke} wakeups in {window_ms} ms, {per_minute}.0 a minute, bound at most 12, watch lines 1"
+        ),
     );
     assert!(
         stdout.contains("G3 link up: over 12 wakeups a minute"),
