@@ -453,6 +453,15 @@ fn a_malformed_sink_ends_the_walk() {
 }
 
 #[test]
+fn a_volume_with_more_than_the_maximum_channels_is_refused() {
+    let too_many = MAX_CHANNELS.saturating_add(1);
+    assert_eq!(
+        Tags(&[tag::CVOLUME, too_many]).volume(),
+        Err(Malformed::TooManyChannels(too_many))
+    );
+}
+
+#[test]
 fn a_property_value_declared_past_the_frame_is_cut_without_reading_it() {
     let past = u32::MAX.to_be_bytes();
     let huge = [

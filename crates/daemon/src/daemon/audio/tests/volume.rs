@@ -16,9 +16,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
-use super::super::volume::protocol_volume;
+use super::super::volume::{VolumeWrite, Volumes, device_sink, protocol_volume};
 use super::super::wire::PROTOCOL_VERSION;
-use super::super::wire::tests::sink;
+use super::super::wire::tests::{sink, sink_list};
 use super::super::{Connection, Follower, Input, Left, Requests, Restore, queue};
 use super::restore::{ack, answer, read_command, reply};
 use super::{DEVICE, HALF, NORM, OUTPUT};
@@ -94,6 +94,76 @@ fn set_volume_rounds_to_the_nearest_protocol_value() {
         for ((_, expected), volume) in cases.into_iter().zip(replies.await.unwrap()) {
             assert_eq!(volume, expected);
         }
+    });
+}
+
+#[test]
+fn a_duck_replacing_a_queued_restore_keeps_the_original_channels() {
+    on_paused_clock(async {
+        let (stream, mut server) = UnixStream::pair().unwrap();
+        let mut connection = Connection {
+            stream,
+            seq: 0,
+            pending: Vec::new(),
+        };
+        let original = [NORM, HALF];
+        let lowered = Percent::new(15).unwrap();
+        let raw_lowered = protocol_volume(lowered).as_u32();
+        let replies = tokio::spawn(async move {
+            for expected in [[raw_lowered; 2], [raw_lowered; 2], original] {
+                let (seq, params) = volume_command(&mut server).await;
+                let actual: Vec<_> = params
+                    .volume
+                    .channels()
+                    .iter()
+                    .map(pulseaudio::protocol::Volume::as_u32)
+                    .collect();
+                assert_eq!(actual, expected);
+                server.write_all(&ack(seq)).await.unwrap();
+            }
+        });
+        let name = CString::new(OUTPUT).unwrap();
+        let read = |channels: &[u32]| {
+            let list = sink_list(&[(&name, channels)]);
+            device_sink(&list, OUTPUT, Some(OUTPUT)).unwrap()
+        };
+        let original = read(&original).unwrap();
+        let ducked = read(&[raw_lowered; 2]);
+        let device = DEVICE.parse().unwrap();
+        let mut volume = Volumes::default();
+        let mut stale = SubscriptionMask::empty();
+        let mut pending = VolumeWrite::queued(set_volume(lowered, 1));
+        volume
+            .apply(
+                device,
+                &mut pending,
+                &mut connection,
+                Some(original),
+                &mut stale,
+            )
+            .await
+            .unwrap();
+
+        let restore = |writes| {
+            AudioRequest::RestoreVolume(original.fact.volume, VolumeStamp { epoch: 0, writes })
+        };
+        pending = VolumeWrite::queued(restore(2));
+        assert!(
+            pending
+                .replace(VolumeWrite::queued(set_volume(lowered, 3)).unwrap())
+                .is_some()
+        );
+        volume
+            .apply(device, &mut pending, &mut connection, ducked, &mut stale)
+            .await
+            .unwrap();
+
+        pending = VolumeWrite::queued(restore(4));
+        volume
+            .apply(device, &mut pending, &mut connection, ducked, &mut stale)
+            .await
+            .unwrap();
+        replies.await.unwrap();
     });
 }
 

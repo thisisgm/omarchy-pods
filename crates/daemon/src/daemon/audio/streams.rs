@@ -7,7 +7,7 @@ use pulseaudio::protocol::{Command, SubscriptionMask};
 use super::wire::{self, Malformed, Tags};
 use super::{Connection, Ended, Follower};
 
-/// A desktop holds a few dozen record streams; a longer list is refused whole.
+/// Only routing counts are refused when the record stream list exceeds this cap.
 pub(super) const MAX_RECORD_STREAMS: usize = 256;
 
 const NODE_NAME: &[u8] = b"node.name";
@@ -18,8 +18,8 @@ const BEFORE_SOURCE: usize = 4;
 /// Sample spec, channel map, two latencies, resample method and driver, between the source and the properties.
 const BEFORE_PROPERTIES: usize = 6;
 
-/// Corked, volume, mute, two volume flags and the format.
-const AFTER_PROPERTIES: usize = 6;
+/// Volume, mute, two volume flags and the format, after the corked flag.
+const AFTER_CORKED: usize = 5;
 
 /// The protocol's invalid index means a source has no sink to monitor.
 const NO_MONITORED_SINK: u32 = u32::MAX;
@@ -113,8 +113,8 @@ impl Sources {
             if tags.0.is_empty() {
                 return Ok(counted);
             }
-            let (on, node) = stream(&mut tags)?;
-            counted.active |= self.capture.binary_search(&on).is_ok();
+            let (on, node, corked) = stream(&mut tags)?;
+            counted.active |= !corked && self.capture.binary_search(&on).is_ok();
             if Some(on) != self.microphone {
                 continue;
             }
@@ -133,21 +133,22 @@ impl Sources {
             counted.microphone = Recorders::default();
         }
         while !counted.active && !tags.0.is_empty() {
-            let (on, _) = stream(&mut tags)?;
-            counted.active = self.capture.binary_search(&on).is_ok();
+            let (on, _, corked) = stream(&mut tags)?;
+            counted.active = !corked && self.capture.binary_search(&on).is_ok();
         }
         Ok(counted)
     }
 }
 
-/// One record stream at protocol 35, its source and its node's name; sample `L 3 t "recorder\0" L m L c L 5 a m U U N N P t "node.name\0" L 00000015 x 00000015 "superwhisper-capture\0" N 0 v 01 00010000 0 1 1 f B 01 P N`.
-fn stream<'a>(tags: &mut Tags<'a>) -> Result<(u32, Option<&'a [u8]>), Malformed> {
+/// One record stream at protocol 35; sample `L 3 t "recorder\0" L m L c L 5 a m U U N N P N 0 v 01 00010000 0 1 1 f B 01 P N`.
+fn stream<'a>(tags: &mut Tags<'a>) -> Result<(u32, Option<&'a [u8]>, bool), Malformed> {
     tags.skip_n(BEFORE_SOURCE)?;
     let source = tags.u32()?;
     tags.skip_n(BEFORE_PROPERTIES)?;
     let node = tags.property(NODE_NAME)?;
-    tags.skip_n(AFTER_PROPERTIES)?;
-    Ok((source, node))
+    let corked = tags.boolean()?;
+    tags.skip_n(AFTER_CORKED)?;
+    Ok((source, node, corked))
 }
 
 #[cfg(test)]

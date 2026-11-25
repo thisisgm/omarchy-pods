@@ -171,7 +171,6 @@ impl FakeAudio {
         self.change(|state| state.set_default_sink(name));
     }
 
-    /// As a user would set it, so every subscriber hears the change.
     pub(crate) fn channel_volume(&self, name: &str) -> ChannelVolume {
         self.state().channel_volume(name)
     }
@@ -184,6 +183,7 @@ impl FakeAudio {
         self.change(|state| state.set_channel_volume(name, volumes));
     }
 
+    /// As a user would set it, so every subscriber hears the change.
     pub(crate) fn set_volume(&self, name: &str, percent: u8) {
         self.change(|state| state.set_volume(name, volume_of(percent)));
     }

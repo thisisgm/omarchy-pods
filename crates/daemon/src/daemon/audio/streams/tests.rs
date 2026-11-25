@@ -136,7 +136,7 @@ fn only_streams_on_the_source_are_counted_and_only_superwhispers_as_dictation() 
 }
 
 #[test]
-fn the_longest_list_is_read_and_one_stream_more_refuses_it_whole() {
+fn the_longest_list_is_counted_and_one_stream_more_refuses_the_counts() {
     let mut streams = vec![stream_on(MICROPHONE_INDEX, Some("superwhisper-capture")); 2];
     streams.resize(MAX_RECORD_STREAMS, stream_on(BUILT_IN_INDEX, None));
     let both = Recorders {
@@ -146,6 +146,29 @@ fn the_longest_list_is_read_and_one_stream_more_refuses_it_whole() {
     assert_eq!(counted(&stream_list(&streams)), Ok(both));
     streams.push(stream_on(BUILT_IN_INDEX, None));
     assert_eq!(counted(&stream_list(&streams)), Ok(Recorders::default()));
+}
+
+#[test]
+fn capture_activity_is_read_past_the_routing_cap() {
+    let sources = Sources::listed(&source_list(), MICROPHONE.to_bytes()).unwrap();
+    let corked = SourceOutputInfo {
+        corked: true,
+        ..stream_on(MICROPHONE_INDEX, None)
+    };
+    let mut streams = vec![corked.clone(); MAX_RECORD_STREAMS];
+    let counted = sources.recorders(&stream_list(&streams)).unwrap();
+    assert!(!counted.active);
+    assert_eq!(counted.microphone.other, u8::MAX);
+
+    streams.push(corked);
+    let counted = sources.recorders(&stream_list(&streams)).unwrap();
+    assert!(!counted.active);
+    assert_eq!(counted.microphone, Recorders::default());
+
+    streams.push(stream_on(BUILT_IN_INDEX, None));
+    let counted = sources.recorders(&stream_list(&streams)).unwrap();
+    assert!(counted.active);
+    assert_eq!(counted.microphone, Recorders::default());
 }
 
 #[test]
@@ -197,10 +220,16 @@ proptest! {
         if let Ok(counted) = counted(&streams) {
             prop_assert!(counted.dictation >= 1);
         }
+    }
+
+    #[test]
+    fn valid_sources_after_the_microphone_keep_its_index(indices in vec(any::<u32>(), 0..8)) {
+        let tail: Vec<_> = indices
+            .into_iter()
+            .map(|index| source(index, c"another-source", None))
+            .collect();
         let mut sources = source_list();
-        sources.extend(&tail);
-        if let Ok(found) = source_index(&sources, MICROPHONE.to_bytes()) {
-            prop_assert_eq!(found, Some(MICROPHONE_INDEX));
-        }
+        sources.extend(body(&reply(&tail)));
+        prop_assert_eq!(source_index(&sources, MICROPHONE.to_bytes()), Ok(Some(MICROPHONE_INDEX)));
     }
 }

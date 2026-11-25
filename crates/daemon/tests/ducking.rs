@@ -25,6 +25,8 @@ mod tests {
     use super::support::{HANG_LIMIT, wait_for};
 
     const SAVED: u8 = 80;
+    const BOOSTED_SAVED: u8 = 125;
+    const BOOSTED_LOWERED: u8 = 20;
     const LOWERED: u8 = 15;
     const USER_VOLUME: u8 = 55;
     const OTHER_SAVED: u8 = 50;
@@ -580,6 +582,19 @@ mod tests {
     }
 
     #[test]
+    fn a_corked_recorder_does_not_block_ducking() {
+        let (mut rig, device, audio, _pipewire) = recording_ready();
+        audio.add_recorder(&node_name(), Recorder::Corked);
+        rig.wait_logged("mic: recorders (dictation 0, other 1)");
+
+        duck(&rig, &device, &audio);
+        speak(&rig, &device, ENDED);
+        wait_volume(&audio, &device, SAVED);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[LOWERED, SAVED]);
+    }
+
+    #[test]
     fn another_capture_source_blocks_ducking_but_a_sink_monitor_does_not() {
         let (rig, device, audio) = ready(SAVED);
         let sink = sink_named(device.address);
@@ -640,10 +655,12 @@ mod tests {
         audio.set_channel_volume(&sink, &original);
         rig.wait_sink_told();
         speak(&rig, &device, STARTED);
-        wait_volume(&audio, &device, 20);
+        wait_volume(&audio, &device, BOOSTED_LOWERED);
+        let lowered_channels = audio.channel_volume(&sink);
         rig.link_down(&device);
         rig.wait_status("the link down", |status| !connected(status));
         audio.wait_clients(0, HANG_LIMIT);
+        assert_eq!(audio.channel_volume(&sink), lowered_channels);
         rig.relink(&device);
         wait_for("the original channel levels", || {
             audio
@@ -655,18 +672,32 @@ mod tests {
                 .then_some(())
         });
         finish(rig, &audio);
-        assert_writes(&audio, &device, &[20, 125]);
+        assert_writes(&audio, &device, &[BOOSTED_LOWERED, BOOSTED_SAVED]);
     }
 
     #[test]
-    fn a_balance_adjustment_at_the_ducked_percent_cancels_restore() {
+    fn a_nonuniform_readback_at_the_ducked_percent_restores_volume() {
         let (rig, device, audio) = ready(SAVED);
         let sink = sink_named(device.address);
         duck(&rig, &device, &audio);
         // These unequal raw channels round to the same 15% as the uniform duck.
-        let adjusted = [9_000, 10_660];
-        audio.set_channel_volume(&sink, &adjusted);
+        let readback = [9_000, 10_660];
+        audio.set_channel_volume(&sink, &readback);
         rig.wait_sink_told();
+        speak(&rig, &device, ENDED);
+        wait_volume(&audio, &device, SAVED);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[LOWERED, SAVED]);
+    }
+
+    #[test]
+    fn a_sink_channel_count_change_cancels_the_restore() {
+        let (rig, device, audio) = ready(SAVED);
+        let sink = sink_named(device.address);
+        duck(&rig, &device, &audio);
+        let lowered = audio.channel_volume(&sink).channels()[0].as_u32();
+        audio.silence_events();
+        audio.set_channel_volume(&sink, &[lowered]);
         speak(&rig, &device, ENDED);
         finish(rig, &audio);
         assert_writes(&audio, &device, &[LOWERED]);
@@ -676,7 +707,7 @@ mod tests {
                 .channels()
                 .iter()
                 .map(pulseaudio::protocol::Volume::as_u32)
-                .eq(adjusted)
+                .eq([lowered])
         );
     }
 
