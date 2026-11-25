@@ -14,7 +14,6 @@ use crate::policy::audio::SinkState;
 use crate::policy::mic::tests::{confirmed, hold, lines, requests};
 use crate::policy::mic::{Mic, STOP_OWED_PLAYING_LINE, UPLINK_LINGER_MS};
 use crate::policy::tests::{device, sink_in};
-use crate::prefs::MicModels;
 use crate::state::Microphone;
 
 /// When the last bud of a node in its grace left.
@@ -125,8 +124,8 @@ static CELLS: [(Kind, Event, Sent, Kind); 136] = {
         (Closed, Paused, Open, Opening),
         (Closed, PausedOut, Open, Opening),
         (Closed, BudOut, Open, Opening),
-        (Closed, SilentUnworn, Nothing, Closed),
-        (Closed, SilentWorn, Nothing, Closed),
+        (Closed, SilentUnworn, Open, Opening),
+        (Closed, SilentWorn, Open, Opening),
         (Closed, Deadline, Open, Opening),
         (Closed, Lost, Nothing, Closed),
         (Closed, Off, Nothing, Closed),
@@ -427,11 +426,7 @@ fn sent(effects: &[Effect]) -> Sent {
 fn every_kind_against_every_fact() {
     for (from, event, wanted, to) in CELLS {
         let mut node = node(from);
-        let (fact, now, mut state) = stepped(event);
-        // A closed node with a confirmed model would open on a silent fact just as on Changed.
-        if from == Kind::Closed && matches!(event, Event::SilentUnworn | Event::SilentWorn) {
-            state.mic_models = MicModels::default();
-        }
+        let (fact, now, state) = stepped(event);
         let mut effects = Vec::new();
         node.step(&state, &fact, now, &mut effects);
         let cell = format!("{from:?}, {event:?}");
