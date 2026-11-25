@@ -82,7 +82,7 @@ struct Client {
 enum Replies {
     #[default]
     Sending,
-    HoldAtCardList,
+    HoldAt(CommandTag),
     Holding,
 }
 
@@ -434,8 +434,8 @@ impl State {
         }
     }
 
-    pub(super) fn hold_at_card_list(&mut self) {
-        self.replies = Replies::HoldAtCardList;
+    pub(super) fn hold_at_reply(&mut self, tag: CommandTag) {
+        self.replies = Replies::HoldAt(tag);
     }
 
     pub(super) fn request_sink_refresh_and_hold_replies(&mut self) {
@@ -553,6 +553,9 @@ impl State {
             self.send(id, wire::error(seq, PulseError::AccessDenied));
             return Ok(());
         };
+        if matches!(self.replies, Replies::HoldAt(tag) if command == u32::from(tag as u8)) {
+            self.replies = Replies::Holding;
+        }
         let bytes = match parsed {
             Command::SetClientName(_) => {
                 wire::reply(seq, &SetClientNameReply { client_id: id }, version)
@@ -585,12 +588,7 @@ impl State {
                 None => wire::error(seq, PulseError::NoEntity),
             },
             Command::GetClientInfoList => wire::reply(seq, &self.listed_clients.known, version),
-            Command::GetCardInfoList => {
-                if self.replies == Replies::HoldAtCardList {
-                    self.replies = Replies::Holding;
-                }
-                wire::reply(seq, &self.cards.list(), version)
-            }
+            Command::GetCardInfoList => wire::reply(seq, &self.cards.list(), version),
             Command::SetCardProfile(SetCardProfileParams {
                 card_index: None,
                 card_name: Some(card),

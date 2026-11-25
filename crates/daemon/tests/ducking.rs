@@ -15,7 +15,7 @@ mod tests {
     use pods_fake::Profile;
     use pods_pwrig::Server;
     use pods_samples::MODEL_NUMBER;
-    use pulseaudio::protocol::SinkState;
+    use pulseaudio::protocol::{CommandTag, SinkState};
 
     use super::support::audio::wire::sink_named;
     use super::support::audio::{Asked, FakeAudio, Recorder, Volumes};
@@ -100,6 +100,18 @@ mod tests {
     fn duck(rig: &Rig, device: &Device, audio: &FakeAudio) {
         speak(rig, device, STARTED);
         wait_volume(audio, device, LOWERED);
+    }
+
+    fn hold_duck_server_info(rig: &Rig, device: &Device, audio: &FakeAudio) -> usize {
+        let before = audio.requests().len();
+        audio.hold_at_reply(CommandTag::GetServerInfo);
+        speak(rig, device, STARTED);
+        wait_for("the held server info reply before lowering", || {
+            audio.requests()[before..]
+                .contains(&Asked::ServerInfo)
+                .then_some(())
+        });
+        before
     }
 
     fn hold_sink_refresh(audio: &FakeAudio) {
@@ -387,6 +399,61 @@ mod tests {
     }
 
     #[test]
+    fn the_duck_refresh_rechecks_the_default_sink() {
+        let (rig, device, audio) = ready(SAVED);
+        audio.silence_events();
+        audio.add_sink(SPEAKERS, SAVED);
+        audio.set_default_sink(SPEAKERS);
+        let before = audio.requests().len();
+        speak(&rig, &device, STARTED);
+        wait_for("the duck's pre-write sink refresh", || {
+            audio.requests()[before..]
+                .contains(&Asked::SinkList)
+                .then_some(())
+        });
+        refresh_sink_with_events_silenced(&rig, &audio);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[]);
+    }
+
+    #[test]
+    fn a_default_sink_switch_during_the_duck_refresh_lowers_nothing() {
+        let (rig, device, audio) = ready(SAVED);
+        audio.add_sink(SPEAKERS, SAVED);
+        rig.wait_sink_told();
+        let before = hold_duck_server_info(&rig, &device, &audio);
+        audio.set_default_sink(SPEAKERS);
+        audio.hold_replies(false);
+        wait_for(
+            "a second server query after the default sink changed",
+            || {
+                (audio.requests()[before..]
+                    .iter()
+                    .filter(|asked| **asked == Asked::ServerInfo)
+                    .count()
+                    >= 2)
+                    .then_some(())
+            },
+        );
+        rig.wait_sink_told();
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[]);
+    }
+
+    #[test]
+    fn an_existing_duck_restores_after_the_default_sink_switches() {
+        let (rig, device, audio) = ready(SAVED);
+        audio.add_sink(SPEAKERS, SAVED);
+        rig.wait_sink_told();
+        duck(&rig, &device, &audio);
+        audio.set_default_sink(SPEAKERS);
+        speak(&rig, &device, ENDED);
+        wait_volume(&audio, &device, SAVED);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[LOWERED, SAVED]);
+    }
+
+    #[test]
     fn a_link_lost_while_lowered_restores_on_the_next_connect() {
         let (rig, device, audio) = ready(SAVED);
         duck(&rig, &device, &audio);
@@ -592,6 +659,24 @@ mod tests {
         duck(&rig, &device, &audio);
         finish(rig, &audio);
         assert_writes(&audio, &device, &[LOWERED, SAVED]);
+    }
+
+    #[test]
+    fn recording_starting_during_the_duck_refresh_lowers_nothing() {
+        let (rig, device, audio) = ready(SAVED);
+        let before = hold_duck_server_info(&rig, &device, &audio);
+        // The capture events follow the held server reply and precede the sink-list reply.
+        audio.add_source(LAPTOP_MIC);
+        audio.add_recorder(LAPTOP_MIC, Recorder::Program);
+        audio.hold_replies(false);
+        wait_for("the recorder list after capture starts", || {
+            audio.requests()[before..]
+                .contains(&Asked::RecorderList)
+                .then_some(())
+        });
+        rig.wait_sink_told();
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[]);
     }
 
     #[test]
