@@ -310,15 +310,16 @@ mod tests {
         assert!(!effects.contains(&mode));
 
         let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
-        let mut effects = policy.step(&state, stopped, window);
-        if let Some(Effect::Audio(AudioRequest::Restore(id))) = effects
+        let effects = policy.step(&state, stopped, window);
+        let Some(Effect::Audio(AudioRequest::Restore(id))) = effects
             .iter()
             .find(|effect| matches!(effect, Effect::Audio(AudioRequest::Restore(_))))
             .cloned()
-        {
-            assert!(!effects.contains(&mode));
-            effects = policy.step(&state, Fact::Audio(AudioFact::Restored(id)), window);
-        }
+        else {
+            panic!("an unknown sink counts as playing and is owed a restore: {effects:?}");
+        };
+        assert!(!effects.contains(&mode));
+        let effects = policy.step(&state, Fact::Audio(AudioFact::Restored(id)), window);
         assert!(
             effects.contains(&mode),
             "mode must follow STOP: {effects:?}"
