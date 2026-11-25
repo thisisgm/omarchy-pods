@@ -49,6 +49,7 @@ pub struct Advert {
     pub ear: EarReport,
     pub case: Option<Charge>,
     pub lid: Lid,
+    pub connection: ConnectionState,
     pub sealed: [u8; SEALED_LEN],
 }
 
@@ -60,7 +61,19 @@ pub enum Lid {
     Unknown,
 }
 
-/// Sample input: `07 19 01 27 20 21 88 8F 11 00 04` then 16 sealed bytes, the manufacturer data after Apple's company identifier.
+/// The advertising pods' connection state, including connections to other hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionState {
+    Disconnected,
+    Idle,
+    Music,
+    Call,
+    Ringing,
+    HangingUp,
+    Unknown(u8),
+}
+
+/// Sample input: `07 19 01 27 20 21 88 8F 11 00 04` then 16 sealed bytes, with `04` meaning connected and idle.
 pub fn parse(data: &[u8]) -> Result<Advert, ParseError> {
     let Some((advert, _)) = data.split_first_chunk::<ADVERT_LEN>() else {
         return Err(ParseError::TooShort {
@@ -80,7 +93,7 @@ pub fn parse(data: &[u8]) -> Result<Advert, ParseError> {
         case,
         lid,
         _color,
-        _connection,
+        connection,
         sealed @ ..,
     ] = *advert;
     let refused = |field, value| ParseError::UnknownValue {
@@ -105,6 +118,15 @@ pub fn parse(data: &[u8]) -> Result<Advert, ParseError> {
         (true, false) => Lid::Open,
         (true, true) => Lid::Closed,
     };
+    let connection = match connection {
+        0x00 => ConnectionState::Disconnected,
+        0x04 => ConnectionState::Idle,
+        0x05 => ConnectionState::Music,
+        0x06 => ConnectionState::Call,
+        0x07 => ConnectionState::Ringing,
+        0x09 => ConnectionState::HangingUp,
+        other => ConnectionState::Unknown(other),
+    };
     Ok(Advert {
         product: u16::from_le_bytes([product_low, product_high]),
         primary_left: status & STATUS_PRIMARY_LEFT != 0,
@@ -112,6 +134,7 @@ pub fn parse(data: &[u8]) -> Result<Advert, ParseError> {
         ear: EarReport::from_in_ear(status & primary_bit != 0, status & secondary_bit != 0),
         case: case_charge(case),
         lid,
+        connection,
         sealed,
     })
 }

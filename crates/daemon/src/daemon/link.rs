@@ -428,13 +428,12 @@ impl Driver {
     fn step(&mut self, event: Event<'_>) {
         let before = self.machine.phase();
         let last = self.hub.state();
+        let external_disconnect = matches!(event, Event::DeviceDown(device)
+            if self.machine.unrequested_down_while_worn(device, &last));
         let mut next = last.clone();
         let now = self.started.elapsed();
         let actions = self.machine.step(&mut next, event, now);
-        if (matches!(event, Event::DeviceDown(_))
-            && last.connected
-            && !next.connected
-            && last.ear.any_in_ear())
+        if external_disconnect
             || actions.iter().any(|action| {
                 matches!(action, Action::Call { call, .. } if call.action == DeviceAction::Disconnect)
             })

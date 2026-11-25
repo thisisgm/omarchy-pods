@@ -100,10 +100,11 @@ action `connect`, `disconnect` or `forget`: they act on the same AirPods and
 return `NoDevice` when there are none to act on.
 
 While advert intake is listening, a transition from both buds out to a bud worn
-can connect the tracked paired device, with at least 30 seconds between attempts.
-A `Disconnect` command or a BlueZ disconnect while linked and worn suppresses
-this until the adverts show the buds back in the case or both buds out for at
-least 10 seconds.
+can connect the tracked paired device if the advert reports the pods disconnected.
+Attempts are at least 30 seconds apart. A `Disconnect` command suppresses this,
+as does a BlueZ disconnect if a bud was worn when the control link went down.
+The hold clears when a new link comes up or the adverts show the buds back in
+the case or both buds out for at least 10 seconds.
 
 ## Errors
 

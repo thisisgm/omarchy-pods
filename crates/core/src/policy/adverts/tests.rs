@@ -18,7 +18,7 @@ use crate::state::{AdvertIntake, LidState, State};
 
 /// Paired AirPods Pro 3, the left bud primary and in the case, the right one in an ear, the case at 70 percent and charging, the lid open.
 const HEADER: [u8; HEADER_LEN] = [
-    0x07, 0x19, 0x01, 0x27, 0x20, 0x62, 0x88, 0x47, 0x00, 0x00, 0x04,
+    0x07, 0x19, 0x01, 0x27, 0x20, 0x62, 0x88, 0x47, 0x00, 0x00, 0x00,
 ];
 /// The same advert from an AirPods Max on the Lightning port.
 const MAX_HEADER: [u8; HEADER_LEN] = [
@@ -28,6 +28,7 @@ const MAX_HEADER: [u8; HEADER_LEN] = [
 const PAYLOAD: [u8; SEALED_LEN] = [0x00, 0xd0, 0x3c, 0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 const RANDOM: [u8; 3] = [0x40, 0x00, 0x01];
 const OTHER_IDENTITY: [u8; 16] = [0x11; 16];
+const CONNECTION_AT: usize = 10;
 
 fn sighting_from(header: [u8; HEADER_LEN], identity: [u8; 16]) -> Sighting {
     let made = Keys {
@@ -43,6 +44,12 @@ fn sighting_from(header: [u8; HEADER_LEN], identity: [u8; 16]) -> Sighting {
 
 fn ours() -> Sighting {
     sighting_from(HEADER, IDENTITY_KEY)
+}
+
+fn worn_with_connection(connection: u8) -> Sighting {
+    let mut header = HEADER;
+    header[CONNECTION_AT] = connection;
+    sighting_from(header, IDENTITY_KEY)
 }
 
 fn out_of_ear(in_case: bool) -> Sighting {
@@ -62,6 +69,21 @@ fn a_wear_edge_asks_once_and_steady_wear_never_repeats() {
     assert!(!see(out_of_ear(false), 1));
     assert!(see(ours(), 2), "the wear edge asks to connect");
     assert!(!see(ours(), 30_002), "steady wear is not a new edge");
+}
+
+#[test]
+fn only_a_disconnected_wear_edge_asks_to_connect() {
+    let (mut policy, mut state) = listening();
+    let now = Duration::ZERO;
+    for connection in [0x04, 0x05, 0x06, 0x07, 0x09, 0xff, 0x00] {
+        assert!(!policy.advert(&mut state, &out_of_ear(false), now));
+        assert_eq!(
+            policy.advert(&mut state, &worn_with_connection(connection), now),
+            connection == 0x00,
+            "wear edge with connection byte {connection:#04x}"
+        );
+        assert!(state.ear.any_in_ear());
+    }
 }
 
 #[test]
@@ -119,6 +141,26 @@ fn the_link_pauses_auto_connect_until_intake_is_listening_again() {
     policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
     assert!(!policy.advert(&mut state, &out_of_ear(false), start));
     assert!(policy.advert(&mut state, &ours(), start), "listening again");
+}
+
+#[test]
+fn a_new_link_clears_the_previous_manual_disconnect_hold() {
+    let (mut policy, mut state) = listening();
+    let now = Duration::ZERO;
+    let worn = worn_with_connection(0x00);
+    policy.manual_disconnect();
+    assert!(!policy.advert(&mut state, &out_of_ear(false), now));
+    assert!(!policy.advert(&mut state, &worn, now));
+    let link = Fact::Link(up());
+    policy.apply(&mut state, &link);
+    drop(policy.step(&state, link, now));
+    drop(policy.step(&state, Fact::Link(link_down()), now));
+    policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
+    assert!(!policy.advert(&mut state, &out_of_ear(false), now));
+    assert!(
+        policy.advert(&mut state, &worn, now),
+        "a new link clears the previous disconnect hold"
+    );
 }
 
 fn listening() -> (Policy, State) {

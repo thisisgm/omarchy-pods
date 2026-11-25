@@ -42,6 +42,7 @@ mod tests {
     const IN_CASE_HEADER: [u8; HEADER_LEN] = [
         0x07, 0x19, 0x01, 0x27, 0x20, 0x60, 0x88, 0x47, 0x08, 0x00, 0x04,
     ];
+    const CONNECTION_AT: usize = 10;
     /// The primary byte of 75 percent and charging.
     const PRIMARY_75_CHARGING: u8 = 0xcb;
     const PRIMARY_AT: usize = 1;
@@ -427,7 +428,7 @@ mod tests {
         let device = rig.add_pods(Profile::default());
         rig.start();
         wait_intake(&rig, "listening");
-        let advert = ours(HEADER, PAYLOAD);
+        let advert = ours(disconnected_worn_header(), PAYLOAD);
         let advertiser = rig.bluez().advertise(&advert.address, &advert.data);
         rig.wait_status("the advert in the status", |status| {
             picked(status) == filled()
@@ -444,6 +445,12 @@ mod tests {
         rig.wait_filled();
         assert_eq!(logged(&mut rig, "link: connect when worn"), 1);
         rig.finish();
+    }
+
+    fn disconnected_worn_header() -> [u8; HEADER_LEN] {
+        let mut header = HEADER;
+        header[CONNECTION_AT] = 0x00;
+        header
     }
 
     fn wear_call(rig: &Rig) -> Option<Call> {
@@ -466,7 +473,7 @@ mod tests {
         rig.wait_status("both buds out of ear", |status| {
             status["right"]["available"] == true && status["right"]["in_ear"] == false
         });
-        advertiser.update(&ours(HEADER, PAYLOAD).data);
+        advertiser.update(&ours(disconnected_worn_header(), PAYLOAD).data);
         rig.wait_logged("bluez: Connect failed: BlueZ did not confirm pairing");
         assert!(wear_call(&rig).is_none());
         assert_eq!(logged(&mut rig, "link: connect when worn"), 0);
@@ -475,7 +482,15 @@ mod tests {
 
     #[test]
     fn disconnect_sources_hold_auto_connect_until_the_case() {
-        for from_command in [true, false] {
+        use DisconnectSource::{BluezFirst, ChannelFirst, Command};
+        #[derive(Clone, Copy, Debug)]
+        enum DisconnectSource {
+            Command,
+            BluezFirst,
+            ChannelFirst,
+        }
+
+        for source in [Command, BluezFirst, ChannelFirst] {
             let mut rig = keyed();
             let device = rig.add_pods(Profile::default());
             rig.start();
@@ -484,11 +499,18 @@ mod tests {
             assert!(
                 rig.status()["left"]["in_ear"] == true || rig.status()["right"]["in_ear"] == true
             );
-            if from_command {
+            if matches!(source, Command) {
                 rig.disconnect();
             } else {
+                if matches!(source, ChannelFirst) {
+                    rig.close_channel(&device);
+                    rig.wait_logged("link: up to backoff");
+                }
                 rig.bluez()
                     .set(&device.path, "Connected", OwnedVariant::from(false));
+                if matches!(source, ChannelFirst) {
+                    rig.wait_logged("link: backoff to grace");
+                }
             }
             wait_intake(&rig, "listening");
             let out = ours(BOTH_OUT_HEADER, PAYLOAD);
@@ -496,15 +518,19 @@ mod tests {
             rig.wait_status("the out-of-ear advert", |status| {
                 picked(status)["case"]["level"] == 70 && status["right"]["in_ear"] == false
             });
-            advertiser.update(&ours(HEADER, PAYLOAD).data);
+            let worn = ours(disconnected_worn_header(), PAYLOAD);
+            advertiser.update(&worn.data);
             rig.wait_status("the worn advert", |status| {
                 status["right"]["in_ear"] == true
             });
-            rig.no_dial_for(QUIET);
-            assert!(wear_call(&rig).is_none());
+            pause(QUIET);
+            assert!(
+                wear_call(&rig).is_none(),
+                "{source:?} disconnect must hold the wear edge"
+            );
             advertiser.update(&ours(IN_CASE_HEADER, PAYLOAD).data);
             rig.wait_status("the case advert", |status| status["lid_state"] == 1);
-            advertiser.update(&ours(HEADER, PAYLOAD).data);
+            advertiser.update(&worn.data);
             wait_for("the wear edge after the case", || wear_call(&rig));
             rig.finish();
         }
