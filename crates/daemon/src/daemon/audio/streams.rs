@@ -1,11 +1,13 @@
 //! Capture activity and the profile-routing counts from the native audio server.
 
+use std::ffi::CString;
+
 use pods_core::policy::audio::{AudioFact, Recorders, SinkFact};
 use pods_core::policy::route::DICTATION_RECORDERS;
 use pulseaudio::protocol::{Command, SubscriptionMask};
 
 use super::wire::{self, Malformed, Tags};
-use super::{Connection, Ended, Follower};
+use super::{Connection, Ended, Follower, Lost, log};
 
 /// Only routing counts are refused when the record stream list exceeds this cap.
 pub(super) const MAX_RECORD_STREAMS: usize = 256;
@@ -48,6 +50,20 @@ impl Follower<'_> {
             });
             capture.sources = self.requests.watched(listed).await?;
             self.restore(connection, sink, stale).await?;
+            if capture.sources.microphone.is_some() && !self.default_source_attempted {
+                self.default_source_attempted = true;
+                let name = CString::new(capture.name.as_str())
+                    .map_err(|error| Lost::Io(error.into()))?;
+                let command = Command::SetDefaultSource(name);
+                let setting = connection.call(&command, stale, |_| Ok(()));
+                match self.requests.watched(setting).await {
+                    Ok(()) => log("mic: default source set"),
+                    Err(Ended::Lost(lost @ Lost::Refused { .. })) => {
+                        log(&format!("mic: could not set default source: {lost}"));
+                    }
+                    Err(ended) => return Err(ended),
+                }
+            }
         }
         if reread_source || refresh.contains(SubscriptionMask::SOURCE_OUTPUT) {
             let recording = if capture.sources.has_targets() {

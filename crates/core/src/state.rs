@@ -1,6 +1,6 @@
 use pods_proto::battery::{Batteries, Component};
 use pods_proto::ear::EarReport;
-use pods_proto::model::{Capabilities, Model};
+use pods_proto::model::{Capabilities, Model, canonical_model_number};
 use pods_proto::noise::NoiseMode;
 
 use crate::command::AdaptiveLevel;
@@ -92,10 +92,11 @@ impl State {
             .unwrap_or_else(|| self.model.capabilities().noise_off)
     }
 
-    /// The source node's name, the model number in lower case so each model keeps its own.
+    /// The source node's name, using the same lower-case number for either bud of a model.
     #[must_use]
     pub fn mic_node_name(&self) -> String {
-        format!("{MIC_NODE_PREFIX}{}", self.model_number.to_lowercase())
+        let number = canonical_model_number(&self.model_number);
+        format!("{MIC_NODE_PREFIX}{}", number.to_lowercase())
     }
 
     /// The node's name while it is on the server, which `mic_source` shows; empty otherwise.

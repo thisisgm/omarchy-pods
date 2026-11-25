@@ -87,6 +87,16 @@ pub const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A3441", Model::AirPods5WirelessCase),
 ];
 
+/// Returns the first number for the reported model, or the report itself for an unknown model.
+#[must_use]
+pub fn canonical_model_number(number: &str) -> &str {
+    let model = Model::from_number(number);
+    MODEL_NUMBERS
+        .iter()
+        .find(|&&(_, known)| known == model)
+        .map_or(number, |&(canonical, _)| canonical)
+}
+
 /// What a product identifier names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Product {

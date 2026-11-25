@@ -210,10 +210,13 @@ A reply carries the request's `id` and `ok`.
   It reads `starting` during mode settle and the START exchange, `streaming` after the
   START confirmation (a score event with value -1) or first audio, and
   `stopping` while STOP or an owed STOP is pending.
-  `mic_source` is the name of the daemon's microphone source,
-  `omarchypods_input.` and the model number in lower case, while the source is
-  on the audio server, and empty otherwise. The source is wanted while the
-  link is up, the model has answered an uplink START or armed for dictation,
+  `mic_source` is empty while the daemon's microphone source is down and
+  otherwise gives its name, `omarchypods_input.` followed by the first number
+  for that model in the model table (or the reported number for an unknown
+  model), in lower case. Once per AirPods link, the daemon asks to make it the
+  default microphone when the audio server first lists it. The source is
+  wanted while the link is up, the model has answered an uplink START or armed
+  for dictation,
   the setting is enabled, no headset profile is active, and a bud is worn or
   was taken out less than a few seconds ago. It stays while a program records
   from it, even if the bud is taken out, unless a headset profile is active. It

@@ -87,10 +87,14 @@ impl AudioServer {
             CommandTag::Auth,
             CommandTag::SetClientName,
             CommandTag::Subscribe,
-        ]
-        .into_iter()
-        .chain(ALL_READS)
-        {
+            CommandTag::GetServerInfo,
+            CommandTag::GetSinkInfoList,
+            CommandTag::GetCardInfoList,
+            CommandTag::GetClientInfoList,
+            CommandTag::GetSourceInfoList,
+            CommandTag::SetDefaultSource,
+            CommandTag::GetSourceOutputInfoList,
+        ] {
             let (seq, command) = read_request(&mut server.stream, &mut server.pending).await;
             server.answer(seq, &command).await;
             assert_eq!(server.answered.last(), Some(&expected));

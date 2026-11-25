@@ -29,6 +29,23 @@ fn the_pods_report_of_the_off_option_wins_over_the_model_table() {
 }
 
 #[test]
+fn either_primary_bud_keeps_the_same_mic_node_name() {
+    for (reported, node) in [
+        ("A3063", "omarchypods_input.a3063"),
+        ("A3064", "omarchypods_input.a3063"),
+        ("Z0000", "omarchypods_input.z0000"),
+    ] {
+        let state = State {
+            model: Model::from_number(reported),
+            model_number: reported.to_owned(),
+            ..State::default()
+        };
+        assert_eq!(state.mic_node_name(), node, "reported {reported}");
+        assert_eq!(state.model_number, reported);
+    }
+}
+
+#[test]
 fn ear_detection_behavior_numbers_match_the_cpp_enum() {
     let rust: Vec<(&str, u8)> = [
         (

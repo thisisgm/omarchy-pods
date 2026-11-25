@@ -131,7 +131,7 @@ fn populated_state_lands_every_field_on_its_key() {
     // Past the json macro's recursion limit.
     expected["mic_dictation"] = json!("armed");
     expected["mic_start_failures"] = json!(14);
-    expected["mic_source"] = json!("omarchypods_input.a3048");
+    expected["mic_source"] = json!("omarchypods_input.a3047");
     expected["mic_underruns"] = json!(15);
     expected["mic_concealed"] = json!(16);
     expected["mic_decode_errors"] = json!(17);
