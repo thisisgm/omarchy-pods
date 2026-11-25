@@ -58,6 +58,7 @@ pub(super) fn disconnected(signal: &Signal, suspend: Suspend) -> Option<Notice> 
         | Signal::Up { .. }
         | Signal::Down
         | Signal::Keys(_)
+        | Signal::Awareness(_)
         | Signal::Uplink(_) => None,
     }
 }

@@ -7,7 +7,9 @@ use std::fs;
 use std::time::Duration;
 
 use pods_core::link::Signal;
-use pods_core::policy::audio::{AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RestoreId};
+use pods_core::policy::audio::{
+    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RestoreId, SinkFact,
+};
 use pods_core::policy::mic::{RESTORE_WAIT_MS, UplinkRequest};
 use pods_core::policy::{Effect, Fact, Policy};
 use pods_core::prefs::MicPref;
@@ -136,7 +138,9 @@ fn restore_ids(requests: &[AudioRequest]) -> Vec<RestoreId> {
         .iter()
         .filter_map(|request| match request {
             AudioRequest::Restore(id) => Some(*id),
-            AudioRequest::Follow(_) | AudioRequest::CancelRestore => None,
+            AudioRequest::Follow(_) | AudioRequest::SetVolume(..) | AudioRequest::CancelRestore => {
+                None
+            }
         })
         .collect()
 }
@@ -192,7 +196,12 @@ fn serve(listener: UnixListener, held: CommandTag, lists: Option<CString>) -> Se
     clippy::wildcard_enum_match_arm,
     reason = "the server answers what the driver sends and refuses every other command alike"
 )]
-fn answer(seq: u32, command: &Command, state: SinkState, lists: Option<&CStr>) -> Vec<u8> {
+pub(super) fn answer(
+    seq: u32,
+    command: &Command,
+    state: SinkState,
+    lists: Option<&CStr>,
+) -> Vec<u8> {
     match command {
         Command::Auth(params) => reply(
             seq,
@@ -218,7 +227,7 @@ fn answer(seq: u32, command: &Command, state: SinkState, lists: Option<&CStr>) -
 }
 
 /// A frame as the driver writes it, sample: a 20 byte descriptor declaring 10 bytes, then a tagged command and sequence.
-async fn read_command(stream: &mut UnixStream) -> Option<(u32, Command)> {
+pub(super) async fn read_command(stream: &mut UnixStream) -> Option<(u32, Command)> {
     let mut descriptor = [0; DESCRIPTOR_SIZE];
     // The driver closing the connection ends the server.
     stream.read_exact(&mut descriptor).await.ok()?;
@@ -228,13 +237,13 @@ async fn read_command(stream: &mut UnixStream) -> Option<(u32, Command)> {
     Some(Command::read_tag_prefixed(&mut payload.as_slice(), PROTOCOL_VERSION).unwrap())
 }
 
-fn reply(seq: u32, reply: &impl pulseaudio::protocol::CommandReply) -> Vec<u8> {
+pub(super) fn reply(seq: u32, reply: &impl pulseaudio::protocol::CommandReply) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_reply_message(&mut bytes, seq, reply, PROTOCOL_VERSION).unwrap();
     bytes
 }
 
-fn ack(seq: u32) -> Vec<u8> {
+pub(super) fn ack(seq: u32) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_ack_message(&mut bytes, seq).unwrap();
     bytes
@@ -620,7 +629,13 @@ fn a_follow_of_the_device_already_followed_keeps_its_restore() {
     else {
         panic!("{told:?}");
     };
-    assert_eq!((second, answered), (first, id));
+    assert_eq!(second.volume_stamp.epoch, 1);
+    assert_eq!(second.volume_stamp.writes, 0);
+    let same_sink = SinkFact {
+        volume_stamp: first.volume_stamp,
+        ..second
+    };
+    assert_eq!((same_sink, answered), (first, id));
     assert_eq!(suspends, [true, false]);
 }
 

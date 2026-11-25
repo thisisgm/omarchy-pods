@@ -4,6 +4,7 @@ mod adverts;
 pub mod audio;
 mod battery;
 pub mod dictation;
+mod ducking;
 mod ear;
 pub mod mic;
 pub mod notices;
@@ -23,6 +24,7 @@ use audio::{AudioFact, AudioRequest, Recorders};
 use battery::Latches;
 use dictation::Dictation;
 pub use dictation::{DictationFact, DictationRequest};
+use ducking::Ducking;
 use ear::Ear;
 pub use ear::{BOTH_OUT_SETTLE_MS, Era, MediaRequest, PAUSED_MAX, PlayerOwner};
 use mic::Mic;
@@ -82,6 +84,7 @@ pub struct Policy {
     suspend: Suspend,
     ear: Ear,
     adverts: Adverts,
+    ducking: Ducking,
     mic: Mic,
     dictation: Dictation,
     recorders: Recorders,
@@ -131,6 +134,7 @@ impl Policy {
                 Signal::Down
                 | Signal::Lost { .. }
                 | Signal::Keys(_)
+                | Signal::Awareness(_)
                 | Signal::Uplink(UplinkState::Stopped),
             )
             | Fact::Monitor(_)
@@ -150,6 +154,7 @@ impl Policy {
     #[must_use]
     pub fn step(&mut self, state: &State, fact: Fact, now: Duration) -> Vec<Effect> {
         let mic = self.step_mic(state, &fact, now);
+        let ducking = self.ducking.step(state, &fact);
         let monitor = if let Fact::Link(signal) = &fact {
             self.adverts.follow(signal)
         } else {
@@ -190,6 +195,7 @@ impl Policy {
             }
         };
         effects.extend(monitor);
+        effects.extend(ducking);
         effects.extend(mic);
         // After the fact, so a window that closes with the link up is forgotten in the same step.
         if state.connected {

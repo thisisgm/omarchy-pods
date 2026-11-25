@@ -223,7 +223,7 @@ impl Mic {
             Fact::Exit => self.exiting = true,
             Fact::Mic(MicFact::FirstAudio) => self.first_audio(now, effects),
             Fact::Mic(MicFact::Heard { packets }) => self.heard(state, *packets, now, effects),
-            Fact::Link(Signal::Up { .. } | Signal::Keys(_))
+            Fact::Link(Signal::Up { .. } | Signal::Keys(_) | Signal::Awareness(_))
             | Fact::Changed
             | Fact::Paused(..)
             | Fact::PauseCut(_)

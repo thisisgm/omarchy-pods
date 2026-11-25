@@ -155,7 +155,7 @@ impl Ear {
                     self.settle = Settle::Cut;
                 }
             }
-            Signal::Keys(_) | Signal::Uplink(_) => {}
+            Signal::Keys(_) | Signal::Uplink(_) | Signal::Awareness(_) => {}
             Signal::Lost { .. } => {
                 self.sink = Sink::Unlinked;
                 self.settle = Settle::Idle;

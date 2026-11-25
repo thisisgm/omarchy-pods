@@ -433,6 +433,17 @@ impl State {
         self.replies = Replies::HoldAtCardList;
     }
 
+    pub(super) fn request_sink_refresh_and_hold_replies(&mut self) {
+        let silent_events = mem::replace(&mut self.silent_events, false);
+        self.announce(
+            SubscriptionEventFacility::Sink,
+            SubscriptionEventType::Changed,
+            self.default,
+        );
+        self.silent_events = silent_events;
+        self.hold(true);
+    }
+
     /// Writes the head of a sink change event to every client and holds its tail, and every later message, for the release of `hold`.
     pub(super) fn send_split_event(&mut self) {
         self.replies = Replies::Holding;
@@ -553,12 +564,8 @@ impl State {
                 let sinks: Vec<SinkInfo> = self.sinks.iter().map(Sink::info).collect();
                 wire::reply(seq, &sinks, version)
             }
-            Command::SetSinkVolume(SetDeviceVolumeParams {
-                device_index: None,
-                device_name: Some(name),
-                volume,
-            }) => {
-                self.write_volume(id, seq, &name, &volume);
+            Command::SetSinkVolume(params) => {
+                self.write_volume(id, seq, &params);
                 return Ok(());
             }
             Command::Subscribe(mask) => {
@@ -628,18 +635,23 @@ impl State {
     }
 
     /// The ack goes out before the change event, as a real server sends them.
-    fn write_volume(&mut self, id: u32, seq: u32, name: &CStr, volume: &ChannelVolume) {
-        let channels = volume.channels();
+    fn write_volume(&mut self, id: u32, seq: u32, params: &SetDeviceVolumeParams) {
+        let channels = params.volume.channels();
         if channels.len() != 1 && channels.len() != SINK_CHANNELS {
             self.send(id, wire::error(seq, PulseError::Invalid));
             return;
         }
-        let Some(position) = self.position(name) else {
+        let position = match (params.device_index, params.device_name.as_deref()) {
+            (Some(index), None) => self.sinks.iter().position(|sink| sink.index == index),
+            (None, Some(name)) => self.position(name),
+            _ => None,
+        };
+        let Some(position) = position else {
             self.send(id, wire::error(seq, PulseError::NoEntity));
             return;
         };
         self.send(id, wire::ack(seq));
-        self.change_volume(position, loudest(volume));
+        self.change_volume(position, loudest(&params.volume));
     }
 
     /// The ack goes out before the change event, as for a volume.
@@ -656,7 +668,7 @@ impl State {
     }
 }
 
-/// What the test sees of a command the fake understands; only a suspend is addressed by index, and `named` gives that sink's name.
+/// `named` resolves a sink index before the fake records its command.
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "the fake records unrecognized commands by number"
@@ -677,13 +689,21 @@ fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<Strin
         },
         Command::GetSinkInfoList => Asked::SinkList,
         Command::SetSinkVolume(SetDeviceVolumeParams {
-            device_index: None,
-            device_name: Some(name),
+            device_index,
+            device_name,
             volume,
-        }) => Asked::Volume {
-            name: name.to_string_lossy().into_owned(),
-            percent: percent_of(loudest(volume)),
-        },
+        }) => {
+            let name = match (device_index, device_name) {
+                (Some(index), None) => named(*index),
+                (None, Some(name)) => Some(name.to_string_lossy().into_owned()),
+                _ => None,
+            };
+            name.map_or(Asked::Unknown { command }, |name| Asked::Volume {
+                name,
+                index: *device_index,
+                percent: percent_of(loudest(volume)),
+            })
+        }
         Command::Subscribe(mask) => Asked::Subscribe { mask: *mask },
         Command::GetCardInfo(GetCardInfo {
             index: None,

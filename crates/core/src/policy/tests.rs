@@ -9,7 +9,7 @@ use pods_proto::ear::EarReport;
 use pods_proto::keys::{Key, ProximityKeys};
 use pods_samples::{IDENTITY_KEY, MODEL_NUMBER, PAYLOAD_KEY};
 
-use super::audio::{AudioFact, AudioRequest, Percent, SinkFact, SinkState};
+use super::audio::{AudioFact, AudioRequest, Percent, SinkFact, SinkState, VolumeStamp};
 use super::battery::{LOW_BATTERY_RESET, LOW_BATTERY_TRIGGER, Latch};
 use super::ear::{BOTH_OUT_SETTLE_MS, BUS_NAME_MAX};
 use super::mic::START_ANSWER_MS;
@@ -535,9 +535,11 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
 pub(super) fn sink_in(is_default: bool, state: SinkState) -> Fact {
     let volume = Percent::FULL;
     Fact::Audio(AudioFact::Sink(Some(SinkFact {
+        index: 0,
         is_default,
         volume,
         state,
+        volume_stamp: VolumeStamp::default(),
     })))
 }
 
