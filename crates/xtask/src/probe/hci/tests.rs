@@ -9,8 +9,8 @@ use proptest::prelude::*;
 use super::export::render;
 use super::fixture::{
     CONFIGURATION_REQUEST, EVENT_CONNECTION_COMPLETE, EVENT_DISCONNECTION_COMPLETE, EVENT_LINK_KEY,
-    EVENT_REMOTE_NAME, EVENT_SYNCHRONOUS_CONNECTION, KEYBOARD_HANDLE, START_UNIX_MICROS, Trace,
-    receiver_cid, session,
+    EVENT_REMOTE_NAME, EVENT_SYNCHRONOUS_CONNECTION, KEYBOARD_HANDLE, REMOTE_USER_ENDED,
+    START_UNIX_MICROS, Trace, receiver_cid, session,
 };
 use super::*;
 use crate::probe::a2dp;
@@ -264,6 +264,7 @@ fn only_the_records_the_tables_need_are_kept() {
     trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x00, 0x0c, 0xf0, 0x13]);
     trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x04, 0x0c, 0x00, 0x13]);
     trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x00, 0x0c]);
+    trace.event(EVENT_DISCONNECTION_COMPLETE, &[0x00, 0x0c, 0x00]);
     let kept = records(&trace.bytes()).unwrap().kept;
     let kinds: Vec<Kind> = kept.iter().map(|record| record.kind).collect();
     assert_eq!(
@@ -272,7 +273,12 @@ fn only_the_records_the_tables_need_are_kept() {
             Kind::SynchronousConnection { opened: true },
             Kind::SynchronousConnection { opened: false },
             Kind::Disconnection {
-                handle: KEYBOARD_HANDLE
+                handle: KEYBOARD_HANDLE,
+                reason: Some(REMOTE_USER_ENDED),
+            },
+            Kind::Disconnection {
+                handle: KEYBOARD_HANDLE,
+                reason: None,
             },
         ]
     );

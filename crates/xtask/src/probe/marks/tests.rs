@@ -6,15 +6,17 @@ use pods_proto::packets::CONTROL_PSM;
 use pods_proto::sdulog::Direction;
 use proptest::prelude::*;
 
-use super::connect::{Began, Connection, connection};
+use super::connect::{Began, Connection, Disconnect, connection};
+use super::fixture::{
+    Carried, NO_RESOURCES, OTHER_APPLE_ADVERT, OTHER_COMPANY_ADVERT, OTHER_PODS_ADDRESS,
+    PAGE_TIMEOUT, PROXIMITY_ADVERT, RANDOM_ADVERT_ADDRESS, two_devices, whole_connection,
+};
 use super::journal::line_us;
 use super::sinks::first_bluez_sink_us;
 use super::*;
 use crate::probe::hci::fixture::{
-    Carried, NO_RESOURCES, OTHER_APPLE_ADVERT, OTHER_COMPANY_ADVERT, OTHER_PODS_ADDRESS,
-    PAGE_TIMEOUT, PODS_ADDRESS, PODS_HANDLE, PROXIMITY_ADVERT, RANDOM_ADVERT_ADDRESS,
-    REMOTE_USER_ENDED, RESULT_SUCCESS as OPENED, START_UNIX_MICROS, Trace, two_devices,
-    whole_connection,
+    PODS_ADDRESS, PODS_HANDLE, REMOTE_USER_ENDED, RESULT_SUCCESS as OPENED, START_UNIX_MICROS,
+    Trace,
 };
 
 /// A made up, locally administered address that no synthetic trace holds.
@@ -97,7 +99,10 @@ fn first_trial() -> Connection {
         start_us: Some(at_us(1_600)),
         control_dials: vec![(at_us(1_300), OPENED)],
         media_us: Some(at_us(1_700)),
-        ended: Some(REMOTE_USER_ENDED),
+        ended: Some(Disconnect {
+            at_us: at_us(9_000),
+            reason: REMOTE_USER_ENDED,
+        }),
     }
 }
 
@@ -223,7 +228,10 @@ fn a_trace_of_two_devices_marks_only_the_named_one() {
             start_us: Some(at_us(1_220)),
             control_dials: other_dials.map(|(ms, result)| (at_us(ms), result)).to_vec(),
             media_us: Some(at_us(1_245)),
-            ended: Some(REMOTE_USER_ENDED),
+            ended: Some(Disconnect {
+                at_us: at_us(9_500),
+                reason: REMOTE_USER_ENDED,
+            }),
         })
     );
     // The second trial is the other pods' alone.
@@ -250,7 +258,13 @@ fn a_handle_given_out_again_does_not_reach_the_link_that_ended() {
     let read_first = read(&trace, PODS_ADDRESS, &always()).unwrap();
     assert_eq!(read_first.control_dials, [(at_us(1_300), OPENED)]);
     assert_eq!(read_first.set_configurations, 1);
-    assert_eq!(read_first.ended, Some(REMOTE_USER_ENDED));
+    assert_eq!(
+        read_first.ended,
+        Some(Disconnect {
+            at_us: at_us(3_000),
+            reason: REMOTE_USER_ENDED,
+        })
+    );
 }
 
 #[test]

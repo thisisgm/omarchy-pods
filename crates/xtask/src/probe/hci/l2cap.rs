@@ -546,7 +546,7 @@ impl Reader {
         for (position, record) in records.iter().enumerate() {
             if let Some(direction) = sender(record.kind) {
                 self.acl(position, record, direction);
-            } else if let Kind::Disconnection { handle } = record.kind {
+            } else if let Kind::Disconnection { handle, .. } = record.kind {
                 self.end_link(position, handle);
             }
         }
