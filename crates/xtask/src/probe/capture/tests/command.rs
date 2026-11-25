@@ -340,6 +340,45 @@ fn the_knock_command_records_a_run_and_exits_zero() {
 }
 
 #[test]
+fn capture_records_a_control_mtu_read_error() {
+    const READ_ERROR: ChannelError = ChannelError::Option {
+        call: "getsockopt",
+        imtu: None,
+        errno: Errno::IO,
+    };
+    let home = home_with_device();
+    let (near, far) = pods::pair();
+    far.send(&EAR_PACKET).unwrap();
+    let run_name = "control-mtu-error";
+    let args = CaptureArgs {
+        imtu: None,
+        stamp: STAMP.to_owned(),
+        run: run_name.to_owned(),
+        route: Route::Uplink,
+        script: Some(ScriptName::Knock),
+        steps: None,
+        allow_control: false,
+        minutes: None,
+        no_marker: false,
+        unchecked: false,
+    };
+    let ran = run_command(home.path(), near, move |host| {
+        host.control_mtus = |_| Err(READ_ERROR);
+        capture(&args, host, &AtomicBool::new(false))
+    });
+
+    assert_eq!(ran.code, format!("{:?}", ExitCode::FAILURE));
+    assert_eq!(ran.stderr, format!("xtask probe: {READ_ERROR}\n"));
+    let run = home.path().join(ROOT_NAME).join(STAMP).join(run_name);
+    let marks = fs::read_to_string(run.join("marks.tsv")).unwrap();
+    assert!(
+        marks.ends_with(&format!("\tend\t{READ_ERROR}\n")),
+        "{marks}"
+    );
+    assert!(!marks.contains("\tcontrol-mtu\t"), "{marks}");
+}
+
+#[test]
 fn an_interrupted_soak_shows_its_cue_on_stdout_and_says_stop_was_sent() {
     let home = home_with_device();
     let (near, far) = pods::pair();
