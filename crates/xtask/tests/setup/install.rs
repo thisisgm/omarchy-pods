@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::bench::{ADAPTER_OBJECT, ASSET, Bench, Node, Ran, Tree, VERSION, repo, script_constant};
 
@@ -222,6 +222,57 @@ fn the_service_is_restarted_and_not_only_enabled() {
 }
 
 #[test]
+fn the_production_service_wait_is_ten_seconds() {
+    assert_eq!(script_constant("service_wait_s"), "10");
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_types,
+    reason = "the installer clock needs an independent wall clock for comparison"
+)]
+fn the_production_service_clock_reports_epoch_microseconds() {
+    let script = fs::read_to_string(repo().join("packaging/setup")).expect("read packaging/setup");
+    // Sample input: `now_us() {\n    printf '%s' "${EPOCHREALTIME//[!0-9]/}"\n}\n`.
+    let (_, function) = script
+        .split_once("\nnow_us() {\n")
+        .expect("packaging/setup defines now_us");
+    let (body, _) = function
+        .split_once("\n}\n")
+        .expect("packaging/setup closes the now_us function");
+    let mut bash = std::process::Command::new("/bin/bash");
+    bash.env_clear()
+        .args(["-euc", &format!("now_us() {{\n{body}\n}}\nnow_us")]);
+    let wall_time_us = || {
+        std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock follows the Unix epoch")
+            .as_micros()
+    };
+    let before = wall_time_us();
+    let output = bash.output().expect("run packaging/setup now_us");
+    let after = wall_time_us();
+
+    assert!(
+        output.status.success(),
+        "packaging/setup now_us failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = std::str::from_utf8(&output.stdout).expect("now_us prints UTF-8");
+    // Sample input: `1763880000123456`.
+    let clock_us = stdout
+        .trim()
+        .parse::<u128>()
+        .unwrap_or_else(|_| panic!("packaging/setup now_us printed {stdout:?}"));
+    // Both clocks read the realtime clock, so no slack: a seconds value padded to microseconds lands before `before`.
+    let expected = before..=after;
+    assert!(
+        expected.contains(&clock_us),
+        "packaging/setup now_us printed {clock_us}, outside {expected:?} microseconds since the Unix epoch"
+    );
+}
+
+#[test]
 #[expect(clippy::print_stderr, reason = "a timing test prints how long it took")]
 fn a_service_that_never_answers_fails_loud_inside_the_bound() {
     let wait_s: u64 = script_constant("service_wait_s").parse().unwrap();
@@ -231,15 +282,21 @@ fn a_service_that_never_answers_fails_loud_inside_the_bound() {
             thread::spawn(|| {
                 let bench = Bench::new();
                 bench.set("silent", "");
+                bench.use_service_clock();
                 let ran = bench.run(&[]);
-                (ran, bench.calls_of("librepods"), bench.runtime_entries())
+                (
+                    ran,
+                    bench.calls_of("librepods"),
+                    bench.runtime_entries(),
+                    bench.service_elapsed(),
+                )
             })
         })
         .collect();
     let ended: Vec<_> = runs.into_iter().map(thread::JoinHandle::join).collect();
     let mut took = Vec::new();
     for run in ended {
-        let (ran, asked, left) = run.unwrap();
+        let (ran, asked, left, elapsed) = run.unwrap();
         assert_eq!(ran.code, Some(1), "{}", ran.stderr);
         assert_eq!(ran.stderr, NOT_STARTED);
         assert_eq!(ran.stdout, "");
@@ -249,17 +306,14 @@ fn a_service_that_never_answers_fails_loud_inside_the_bound() {
             asked.iter().all(|call| call == "librepods status"),
             "{asked:?}"
         );
-        assert!(
-            ran.took >= wait,
-            "ended after {:?}, before its wait",
-            ran.took
-        );
-        assert!(ran.took <= wait + WAIT_SLACK, "ended after {:?}", ran.took);
+        assert!(elapsed >= wait, "ended after {elapsed:?}, before its wait");
+        assert!(elapsed <= wait + WAIT_SLACK, "ended after {elapsed:?}");
+        assert!(ran.took < WAIT_SLACK, "the installer took {:?}", ran.took);
         took.push(ran.took);
     }
     took.sort();
     eprintln!(
-        "a daemon that never answers fails after {:.2} s to {:.2} s over {SILENT_RUNS} runs",
+        "a daemon that never answers fails after {:.2} s to {:.2} s wall time over {SILENT_RUNS} runs with the test clock",
         took[0].as_secs_f64(),
         took[SILENT_RUNS - 1].as_secs_f64()
     );
@@ -270,10 +324,14 @@ fn a_service_that_answers_slowly_fails_inside_the_same_bound() {
     let wait = Duration::from_secs(script_constant("service_wait_s").parse().unwrap());
     let bench = Bench::new();
     bench.set("slow", "");
+    bench.use_service_clock();
     let ran = bench.run(&[]);
     assert_eq!(ran.code, Some(1), "{}", ran.stderr);
     assert_eq!(ran.stderr, NOT_STARTED);
-    assert!(ran.took <= wait + WAIT_SLACK, "ended after {:?}", ran.took);
+    let elapsed = bench.service_elapsed();
+    assert!(elapsed >= wait, "ended after {elapsed:?}, before its wait");
+    assert!(elapsed <= wait + WAIT_SLACK, "ended after {elapsed:?}");
+    assert!(ran.took < WAIT_SLACK, "the installer took {:?}", ran.took);
 }
 
 #[test]

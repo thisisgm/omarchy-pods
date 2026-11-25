@@ -151,12 +151,13 @@ pub(crate) fn idle(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     Ok(check)
 }
 
-/// Waits out `window`, reading the wakeups every `WAKEUP_SAMPLE_EVERY` and once at its end; a failed read keeps its error.
+/// Waits out `window`, reading the wakeups every `sample_every` and once at its end; a failed read keeps its error.
 fn sample_through(
     window: Duration,
+    sample_every: Duration,
     wakeups: &mut Result<Wakeups, String>,
 ) -> Result<(), Interrupted> {
-    sample_through_on(&SystemClock, window, || {
+    sample_through_on(&SystemClock, window, sample_every, || {
         if let Ok(counter) = wakeups.as_mut()
             && let Err(error) = counter.sample()
         {
@@ -168,14 +169,15 @@ fn sample_through(
 fn sample_through_on(
     clock: &dyn Clock,
     window: Duration,
+    sample_every: Duration,
     mut sample: impl FnMut(),
 ) -> Result<(), Interrupted> {
     let end = clock.deadline(window);
     loop {
         let left = clock.remaining(end);
-        wait_until_on(clock, left.min(WAKEUP_SAMPLE_EVERY), || false)?;
+        wait_until_on(clock, left.min(sample_every), || false)?;
         sample();
-        if left <= WAKEUP_SAMPLE_EVERY {
+        if left <= sample_every {
             return Ok(());
         }
     }
@@ -205,7 +207,7 @@ fn idle_window(
         return Ok(());
     }
     let mut wakeups = Wakeups::start(pid);
-    sample_through(lab.waits.idle, &mut wakeups)?;
+    sample_through(lab.waits.idle, WAKEUP_SAMPLE_EVERY, &mut wakeups)?;
     let lines = match watch.finish() {
         Ok(lines) => lines,
         Err(error) => {
@@ -274,6 +276,7 @@ mod tests {
     use std::time::Duration;
     use std::{process, thread};
 
+    use super::super::IDLE_WINDOW_SECONDS;
     use super::super::system::current_thread_id;
     use super::super::unit::pause;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -289,6 +292,16 @@ mod tests {
     const SLEEPS: u64 = 200;
     /// Long enough that the thread under count ends inside it.
     const WINDOW: Duration = Duration::from_secs(4);
+
+    #[test]
+    fn the_production_wakeup_sample_interval_is_one_second() {
+        assert_eq!(WAKEUP_SAMPLE_EVERY, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn the_production_idle_window_is_ten_minutes() {
+        assert_eq!(IDLE_WINDOW_SECONDS, 600);
+    }
 
     #[test]
     fn a_subsecond_idle_window_can_miss_g3() {
@@ -323,7 +336,7 @@ mod tests {
             );
         });
         let sleeper_id = sleeper_id.recv().unwrap();
-        sample_through(WINDOW, &mut wakeups).unwrap();
+        sample_through(WINDOW, WAKEUP_SAMPLE_EVERY, &mut wakeups).unwrap();
         assert!(sleeper.is_finished(), "the thread outlived the window");
         sleeper.join().unwrap();
         let woke = wakeups.unwrap().woke_by(sleeper_id);
@@ -349,13 +362,13 @@ mod clock_tests {
 
     use super::super::Waits;
     use super::super::clock::PausedClock;
-    use super::sample_through_on;
+    use super::{WAKEUP_SAMPLE_EVERY, sample_through_on};
 
     #[test]
     fn each_idle_window_samples_every_second_and_at_the_end() {
         let clock = PausedClock::default();
         let mut samples = Vec::new();
-        sample_through_on(&clock, Waits::default().idle, || {
+        sample_through_on(&clock, Waits::default().idle, WAKEUP_SAMPLE_EVERY, || {
             samples.push(clock.elapsed());
         })
         .unwrap();
@@ -365,7 +378,10 @@ mod clock_tests {
         let clock = PausedClock::default();
         let window = Duration::from_millis(1250);
         let mut samples = Vec::new();
-        sample_through_on(&clock, window, || samples.push(clock.elapsed())).unwrap();
+        sample_through_on(&clock, window, WAKEUP_SAMPLE_EVERY, || {
+            samples.push(clock.elapsed());
+        })
+        .unwrap();
         assert_eq!(
             samples,
             [Duration::from_secs(1), Duration::from_millis(1300)]

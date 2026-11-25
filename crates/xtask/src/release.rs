@@ -65,7 +65,12 @@ pub(crate) fn run(file: &Path, version: &OsStr) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let checks = [
-        version_check(file, &version.to_string_lossy()),
+        version_check(
+            file,
+            &version.to_string_lossy(),
+            VERSION_DEADLINE,
+            STOP_GRACE,
+        ),
         needed_check(&needed(&dynamic)),
         glibc_check(glibc_versions(&versions)),
         line_tables_check(&debug_info, &line_programs),
@@ -141,10 +146,15 @@ fn readelf(flag: &str, file: &Path) -> Option<String> {
 }
 
 /// Whether the last word `file --version` prints is `version`.
-fn version_check(file: &Path, version: &str) -> Result<String, String> {
+fn version_check(
+    file: &Path,
+    version: &str,
+    deadline: &str,
+    grace: &str,
+) -> Result<String, String> {
     // A bare name would be looked up on the PATH instead of read from this directory.
     let output = Command::new("timeout")
-        .args(["--kill-after", STOP_GRACE, VERSION_DEADLINE])
+        .args(["--kill-after", grace, deadline])
         .arg(Path::new(".").join(file))
         .arg("--version")
         .output()
@@ -154,14 +164,14 @@ fn version_check(file: &Path, version: &str) -> Result<String, String> {
     // Standard error is shown only for a non-zero exit, the one path where it holds the reason.
     if output.status.code() == Some(TIMED_OUT) {
         return Err(format!(
-            "version: `{} --version` did not exit within {VERSION_DEADLINE}",
+            "version: `{} --version` did not exit within {deadline}",
             file.display()
         ));
     }
     // A command killed by anyone else before the deadline ends `timeout` the same way, so the line names both causes.
     if output.status.signal() == Some(KILLED) {
         return Err(format!(
-            "version: `{} --version` ended on SIGKILL, which timeout sends {STOP_GRACE} after a missed {VERSION_DEADLINE} deadline",
+            "version: `{} --version` ended on SIGKILL, which timeout sends {grace} after a missed {deadline} deadline",
             file.display()
         ));
     }
@@ -280,9 +290,56 @@ fn line_tables_check(debug_info: &str, line_programs: &str) -> Result<String, St
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
     use super::{
-        crate_line_offset, crate_source, glibc_check, glibc_versions, line_program_offsets, needed,
+        STOP_GRACE, VERSION_DEADLINE, crate_line_offset, crate_source, glibc_check, glibc_versions,
+        line_program_offsets, needed, version_check,
     };
+
+    const TEST_VERSION_DEADLINE: &str = "0.3s";
+    const TEST_STOP_GRACE: &str = "0.1s";
+
+    #[test]
+    fn the_production_version_deadline_is_ten_seconds() {
+        assert_eq!(VERSION_DEADLINE, "10s");
+    }
+
+    #[test]
+    fn the_production_stop_grace_is_two_seconds() {
+        assert_eq!(STOP_GRACE, "2s");
+    }
+
+    #[test]
+    fn the_production_version_check_uses_the_supplied_deadline_and_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("waiting");
+        let cases = [
+            (
+                "exec sleep infinity",
+                format!("did not exit within {TEST_VERSION_DEADLINE}"),
+            ),
+            (
+                "trap '' TERM\nexec sleep infinity",
+                format!(
+                    "ended on SIGKILL, which timeout sends {TEST_STOP_GRACE} after a missed {TEST_VERSION_DEADLINE} deadline"
+                ),
+            ),
+        ];
+        for (body, expected) in cases {
+            fs::write(&file, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+            let result = version_check(&file, "9.8.7", TEST_VERSION_DEADLINE, TEST_STOP_GRACE);
+            assert_eq!(
+                result,
+                Err(format!(
+                    "version: `{} --version` {expected}",
+                    file.display()
+                ))
+            );
+        }
+    }
 
     #[test]
     fn needed_reads_each_library_and_nothing_else() {

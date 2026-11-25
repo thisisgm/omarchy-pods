@@ -132,6 +132,29 @@ mkdir -p target/release
 cat "$bench/stub/payload" > target/release/librepods
 "#;
 
+/// Bash reads this only in the installer; its clock reads use the same elapsed time as the sleep stub.
+const SERVICE_CLOCK: &str = r#"
+setup_test_clock=${BASH_ENV%/*}/service-time-us
+unset BASH_ENV
+printf() {
+    if [[ ${FUNCNAME[1]:-} == now_us ]]; then
+        local elapsed
+        IFS= read -r elapsed < "$setup_test_clock" || return
+        builtin printf '%s' "$elapsed"
+    else
+        builtin printf "$@"
+    fi
+}
+"#;
+
+// Sample input: `sleep 1` for a retry, or `sleep 2` for the slow status stub.
+const ADVANCE_SERVICE_CLOCK: &str = r#"
+us_per_s=1000000
+clock="$bench/stub/service-time-us"
+IFS= read -r elapsed < "$clock" || exit 1
+printf '%s\n' "$((elapsed + $1 * us_per_s))" > "$clock"
+"#;
+
 /// The binary the release serves and cargo builds: it answers `--version`, `status` unless silenced or slowed, and `state-dir` through the built daemon.
 /// A slowed `status` spends the client's 2 s worst case (connect, write and reply timeouts) before it fails.
 const PAYLOAD: &str = r#"
@@ -261,6 +284,22 @@ impl Bench {
         self.write_stub("bin/cargo", CARGO);
     }
 
+    /// Advances the installer's startup clock and the status stub's delays without sleeping.
+    pub(crate) fn use_service_clock(&self) {
+        let sleep = self.path("bin/sleep");
+        assert!(sleep.is_absolute() && sleep.starts_with(self.root()));
+        fs::remove_file(&sleep).unwrap();
+        self.write_stub("bin/sleep", ADVANCE_SERVICE_CLOCK);
+        self.set("service-clock", SERVICE_CLOCK);
+        self.set("service-time-us", "0\n");
+    }
+
+    pub(crate) fn service_elapsed(&self) -> Duration {
+        let elapsed = fs::read_to_string(self.path("stub/service-time-us")).unwrap();
+        // Sample input: `10000000\n` after ten one-second sleeps.
+        Duration::from_micros(elapsed.trim_end().parse().unwrap())
+    }
+
     pub(crate) fn payload(&self) -> Vec<u8> {
         fs::read(self.path("stub/payload")).unwrap()
     }
@@ -330,6 +369,10 @@ impl Bench {
             .process_group(0);
         if let Some(state_home) = state_home {
             command.env("XDG_STATE_HOME", state_home);
+        }
+        let clock = self.path("stub/service-clock");
+        if clock.is_file() {
+            command.env("BASH_ENV", clock);
         }
         let started = Instant::now();
         let mut running = Running {

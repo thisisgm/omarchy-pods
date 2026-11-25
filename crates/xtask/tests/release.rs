@@ -7,6 +7,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
+    use std::time::{Duration, Instant};
 
     /// The version the program prints, as the daemon prints its own.
     const VERSION: &str = "9.8.7";
@@ -26,6 +27,20 @@ mod tests {
 
     /// Longer than the check's own 10s deadline and 2s grace; `timeout` exits 124 when it passes.
     const TEST_DEADLINE: &str = "60s";
+
+    const FAST_CHECK_LIMIT: Duration = Duration::from_secs(5);
+
+    /// Checks args like `--kill-after 2s 10s ./librepods --version`, then shortens the real wait.
+    const SHORT_TIMEOUT: &str = r#"#!/bin/sh
+if [ "$1" != --kill-after ] || [ "$2" != 2s ] || [ "$3" != 10s ]; then
+    echo "unexpected release timeout arguments: $*" >&2
+    exit 1
+fi
+shift 3
+grace=0.1s
+deadline=0.3s
+exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
+"#;
 
     const INPUT_DEADLINE: &str = "30s";
 
@@ -66,12 +81,25 @@ mod tests {
 
     /// Runs the check under its own deadline, so a check that hangs fails its test instead of hanging it.
     fn release_check(file: &Path, version: &str) -> Output {
-        Command::new("timeout")
-            .arg(TEST_DEADLINE)
-            .arg(env!("CARGO_BIN_EXE_xtask"))
-            .arg("release-check")
+        release_check_command(file, version).output().unwrap()
+    }
+
+    fn release_check_command(file: &Path, version: &str) -> Command {
+        let mut command = Command::new("/usr/bin/timeout");
+        command
+            .args([TEST_DEADLINE, env!("CARGO_BIN_EXE_xtask"), "release-check"])
             .arg(file)
-            .arg(version)
+            .arg(version);
+        command
+    }
+
+    fn release_check_with_short_timeout(file: &Path) -> Output {
+        let timeout = file.with_file_name("timeout");
+        fs::write(&timeout, SHORT_TIMEOUT).unwrap();
+        fs::set_permissions(&timeout, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([file.parent().unwrap(), Path::new("/usr/bin")]).unwrap();
+        release_check_command(file, VERSION)
+            .env("PATH", path)
             .output()
             .unwrap()
     }
@@ -235,7 +263,8 @@ mod tests {
     fn a_version_that_never_exits_fails_at_the_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let file = build(dir.path(), HANGING, &[]);
-        let output = release_check(&file, VERSION);
+        let started = Instant::now();
+        let output = release_check_with_short_timeout(&file);
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(
             checks(&output)[0],
@@ -244,13 +273,16 @@ mod tests {
                 file.display()
             )
         );
+        let elapsed = started.elapsed();
+        assert!(elapsed < FAST_CHECK_LIMIT, "the check took {elapsed:?}");
     }
 
     #[test]
     fn a_version_that_ignores_the_stop_signal_fails_at_the_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let file = build(dir.path(), IGNORING_TERM, &[]);
-        let output = release_check(&file, VERSION);
+        let started = Instant::now();
+        let output = release_check_with_short_timeout(&file);
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(
             checks(&output)[0],
@@ -259,6 +291,8 @@ mod tests {
                 file.display()
             )
         );
+        let elapsed = started.elapsed();
+        assert!(elapsed < FAST_CHECK_LIMIT, "the check took {elapsed:?}");
     }
 
     #[test]
