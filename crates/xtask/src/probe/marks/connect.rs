@@ -31,7 +31,7 @@ const EXTENDED_REPORT: (usize, usize) = (23, 0);
 const LINK_TYPE_ACL: u8 = 0x01;
 const STATUS_SUCCESS: u8 = 0x00;
 /// The number `channels` gives the only link it is shown.
-const ONLY_LINK: usize = 0;
+pub(super) const ONLY_LINK: usize = 0;
 
 /// A device address in the order a packet carries it, the reverse of how people read it.
 type Wire = [u8; 6];
@@ -177,10 +177,10 @@ struct Link {
 }
 
 /// The walk over the records of a trace.
-#[derive(Debug)]
 struct Reader<'a> {
     address: Wire,
     window: &'a Window,
+    include_active_link: bool,
     /// Who last asked for a link with the device, until a connection complete answers.
     asked: Option<Dial>,
     /// The first Apple proximity pairing advertisement heard in the window.
@@ -237,14 +237,19 @@ impl Reader<'_> {
         });
     }
 
-    /// The first link with the device that comes up inside the window is the window's connection.
+    fn before_takeover(&self, at_us: u64) -> bool {
+        self.include_active_link && at_us < self.window.from_us
+    }
+
+    /// A takeover may begin on an ACL that was opened before the trial.
     fn completed(&mut self, at_us: u64, parameters: &[u8]) {
         let Some((up, handle, _)) = completed(parameters).filter(|page| page.2 == self.address)
         else {
             return;
         };
         let dial = self.asked.take();
-        if up && self.link.is_none() && self.window.holds(at_us) {
+        let eligible = self.window.holds(at_us) || self.before_takeover(at_us);
+        if up && self.link.is_none() && eligible {
             self.link = Some(Link {
                 handle,
                 acl_us: at_us,
@@ -256,11 +261,16 @@ impl Reader<'_> {
     }
 
     fn disconnected(&mut self, handle: u16, end: Disconnect) {
+        let before_takeover = self.before_takeover(end.at_us);
         let up = self.link.as_mut().filter(|link| link.ended.is_none());
         if let Some(link) = up
             && link.handle == handle
         {
-            link.ended = Some(end);
+            if before_takeover {
+                self.link = None;
+            } else {
+                link.ended = Some(end);
+            }
         }
     }
 
@@ -313,24 +323,63 @@ fn stream(channels: &Channels, marks: &mut Connection) {
     }
 }
 
+fn read_link(
+    trace: &[u8],
+    device: BdAddr,
+    window: &Window,
+    include_active_link: bool,
+) -> Result<Option<Link>, MarksError> {
+    let mut address = device.octets();
+    address.reverse();
+    let mut reader = Reader {
+        address,
+        window,
+        include_active_link,
+        asked: None,
+        advert_us: None,
+        link: None,
+    };
+    // A trace cut short is read up to the cut, which the command names once for the whole table.
+    let _cut = hci::walk(trace, |raw| {
+        if !include_active_link || raw.at_ns / NANOS_PER_MICRO < window.to_us {
+            reader.record(&raw);
+        }
+    })?;
+    Ok(reader.link)
+}
+
+pub(super) struct TakeoverLink {
+    pub(super) channels: Channels,
+    pub(super) lifetime: Window,
+    pub(super) ended: Option<u8>,
+}
+
+/// Channels from the named link active at the start of the window or first opened during it.
+pub(super) fn takeover_channels(
+    trace: &[u8],
+    device: BdAddr,
+    window: &Window,
+) -> Result<Option<TakeoverLink>, MarksError> {
+    Ok(
+        read_link(trace, device, window, true)?.map(|link| TakeoverLink {
+            channels: channels(&link.packets),
+            lifetime: Window {
+                from_us: window.from_us.max(link.acl_us),
+                to_us: link.ended.map_or(window.to_us, |end| end.at_us),
+                ..*window
+            },
+            ended: link.ended.map(|end| end.reason),
+        }),
+    )
+}
+
 /// The first connection of `device` that comes up inside `window`, or `None` when the trace holds none.
 pub(crate) fn connection(
     trace: &[u8],
     device: BdAddr,
     window: &Window,
 ) -> Result<Option<Connection>, MarksError> {
-    let mut address = device.octets();
-    address.reverse();
-    let mut reader = Reader {
-        address,
-        window,
-        asked: None,
-        advert_us: None,
-        link: None,
-    };
-    // A trace cut short is read up to the cut, which the command names once for the whole table.
-    let _cut = hci::walk(trace, |raw| reader.record(&raw))?;
-    let Some(link) = reader.link else {
+    let Some(link) = read_link(trace, device, window, false)? else {
         return Ok(None);
     };
     let dial = link.dial.ok_or(MarksError::NoBeginning {

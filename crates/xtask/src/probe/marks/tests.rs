@@ -4,19 +4,22 @@ use pods_core::policy::audio::sink_prefix;
 use pods_proto::addr::BdAddr;
 use pods_proto::packets::CONTROL_PSM;
 use pods_proto::sdulog::Direction;
+use pods_proto::uplink::state::STATE_OPCODE;
 use proptest::prelude::*;
 
 use super::connect::{Began, Connection, Disconnect, connection};
 use super::fixture::{
     Carried, NO_RESOURCES, OTHER_APPLE_ADVERT, OTHER_COMPANY_ADVERT, OTHER_PODS_ADDRESS,
-    PAGE_TIMEOUT, PROXIMITY_ADVERT, RANDOM_ADVERT_ADDRESS, two_devices, whole_connection,
+    PAGE_TIMEOUT, PROXIMITY_ADVERT, RANDOM_ADVERT_ADDRESS, accessory_sdu, source_sdu, two_devices,
+    whole_connection,
 };
 use super::journal::line_us;
 use super::sinks::first_bluez_sink_us;
+use super::takeover::{Order, PeerClass, SourceRow, connected_devices, sources};
 use super::*;
 use crate::probe::hci::fixture::{
-    PODS_ADDRESS, PODS_HANDLE, REMOTE_USER_ENDED, RESULT_SUCCESS as OPENED, START_UNIX_MICROS,
-    Trace,
+    HOST_ADDRESS, PODS_ADDRESS, PODS_HANDLE, REMOTE_USER_ENDED, RESULT_SUCCESS as OPENED,
+    START_UNIX_MICROS, Trace,
 };
 
 /// A made up, locally administered address that no synthetic trace holds.
@@ -474,6 +477,25 @@ fn the_trials_log_is_read_whole_or_refused() {
 
 #[test]
 fn no_row_holds_an_address() {
+    let sdu = source_sdu(HOST_ADDRESS, MEDIA);
+    let rows = sources(&[(at_us(10), &sdu)], BdAddr::from(HOST_ADDRESS));
+    assert_eq!(rows.len(), 1);
+    let [
+        SourceRow {
+            at_us: stamp,
+            class,
+            order,
+            kind,
+        },
+    ] = rows.as_slice()
+    else {
+        panic!("expected one source row");
+    };
+    assert_eq!(
+        (*stamp, *class, *order, *kind),
+        (at_us(10), PeerClass::Host, Order::Reversed, MEDIA)
+    );
+
     let trace = two_devices().bytes();
     let (read_table, _) = table(&trace, pods(), TRIALS, &journal(), &sinks()).unwrap();
     for address in [PODS_ADDRESS, OTHER_PODS_ADDRESS] {
@@ -482,6 +504,106 @@ fn no_row_holds_an_address() {
         }
     }
     assert!(!read_table.contains("bluez_output"), "{read_table}");
+}
+
+const MEDIA: u8 = 0x02;
+const MEDIA_WITH_UPLINK: u8 = 0x22;
+const NO_SOURCE: u8 = 0;
+const CONNECTED_DEVICES_OPCODE: u16 = 0x002e;
+const EMPTY_DEVICE_COUNT: u8 = 0;
+
+fn source_row(peer: [u8; 6], host: [u8; 6], kind: u8) -> SourceRow {
+    let sdu = source_sdu(peer, kind);
+    let mut rows = sources(&[(at_us(20), &sdu)], BdAddr::from(host));
+    assert_eq!(rows.len(), 1);
+    rows.pop().unwrap()
+}
+
+#[test]
+fn a_report_with_the_hosts_address_reads_host_in_its_order() {
+    let mut wire = HOST_ADDRESS;
+    wire.reverse();
+    let row = source_row(wire, HOST_ADDRESS, MEDIA_WITH_UPLINK);
+    assert_eq!((row.class, row.order), (PeerClass::Host, Order::Wire));
+    assert_eq!((row.at_us, row.kind), (at_us(20), MEDIA_WITH_UPLINK));
+}
+
+#[test]
+fn the_reversed_order_is_told_apart() {
+    let row = source_row(HOST_ADDRESS, HOST_ADDRESS, MEDIA);
+    assert_eq!((row.class, row.order), (PeerClass::Host, Order::Reversed));
+}
+
+#[test]
+fn another_address_reads_other_and_prints_no_byte() {
+    let row = source_row(OTHER_PODS_ADDRESS, HOST_ADDRESS, MEDIA);
+    assert_eq!((row.class, row.order), (PeerClass::Other, Order::Neither));
+    let expected = format!(
+        "SourceRow {{ at_us: {}, class: Other, order: Neither, kind: {MEDIA} }}",
+        at_us(20)
+    );
+    assert!(
+        format!("{row:?}") == expected,
+        "debug output includes an unexpected field"
+    );
+}
+
+#[test]
+fn six_zero_bytes_read_zero() {
+    for host in [HOST_ADDRESS, [0; 6]] {
+        let row = source_row([0; 6], host, NO_SOURCE);
+        assert_eq!((row.class, row.order), (PeerClass::Zero, Order::Neither));
+    }
+}
+
+#[test]
+fn connected_devices_keeps_only_time_length_and_count() {
+    let missing = accessory_sdu(CONNECTED_DEVICES_OPCODE, &[]);
+    let empty = accessory_sdu(CONNECTED_DEVICES_OPCODE, &[EMPTY_DEVICE_COUNT]);
+    let source = source_sdu(HOST_ADDRESS, MEDIA);
+    let rows = connected_devices(&[
+        (at_us(10), &missing),
+        (at_us(20), &empty),
+        (at_us(30), &source),
+    ]);
+    assert_eq!(
+        rows,
+        [
+            (at_us(10), missing.len(), None),
+            (at_us(20), empty.len(), Some(EMPTY_DEVICE_COUNT)),
+        ],
+    );
+}
+
+struct OpaqueSdu(Vec<u8>);
+
+impl std::fmt::Debug for OpaqueSdu {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("OpaqueSdu")
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::default() })]
+
+    #[test]
+    fn any_sdu_never_panics(
+        arbitrary in proptest::collection::vec(any::<u8>(), 0..512).prop_map(OpaqueSdu),
+        stamp in any::<u64>(),
+        kind in any::<u8>(),
+    ) {
+        let host = BdAddr::from(HOST_ADDRESS);
+        let _sources = sources(&[(stamp, &arbitrary.0)], host);
+        let _devices = connected_devices(&[(stamp, &arbitrary.0)]);
+        for opcode in [STATE_OPCODE, CONNECTED_DEVICES_OPCODE] {
+            let sdu = accessory_sdu(opcode, &arbitrary.0);
+            let _sources = sources(&[(stamp, &sdu)], host);
+            let _devices = connected_devices(&[(stamp, &sdu)]);
+        }
+        let valid = source_sdu(HOST_ADDRESS, kind);
+        let rows = sources(&[(stamp, &valid)], host);
+        prop_assert_eq!(rows.len(), 1);
+    }
 }
 
 /// A trace of whole records with any opcode and any bytes, so the readers past the record header are reached.

@@ -1,7 +1,9 @@
 //! Synthetic traces for the connection marks tests.
 
+use pods_proto::packet::ACCESSORY_HEADER;
 use pods_proto::packets::CONTROL_PSM;
 use pods_proto::sdulog::Direction;
+use pods_proto::uplink::state::STATE_OPCODE;
 
 use super::hci_fixture::{
     ACCEPT, AVDTP_PSM, AVDTP_START, COMMAND, FIRST_SEID, MEDIA_CIDS, PODS_ADDRESS, PODS_HANDLE,
@@ -220,5 +222,39 @@ pub(crate) fn two_devices() -> Trace {
         set_configurations: vec![21_600, 21_900],
         ..Carried::default()
     });
+    trace
+}
+
+pub(crate) const TAKEOVER_TRANSACTION: u8 = 1;
+
+pub(crate) fn accessory_sdu(opcode: u16, body: &[u8]) -> Vec<u8> {
+    let mut sdu = ACCESSORY_HEADER.to_vec();
+    sdu.extend(opcode.to_le_bytes());
+    sdu.extend_from_slice(body);
+    sdu
+}
+
+pub(crate) fn source_sdu(peer: [u8; 6], kind: u8) -> Vec<u8> {
+    let mut body = peer.to_vec();
+    body.push(kind);
+    accessory_sdu(STATE_OPCODE, &body)
+}
+
+pub(crate) fn playing_link() -> Trace {
+    let mut trace = Trace::new();
+    trace.connection_request(PODS_ADDRESS);
+    trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+    trace.open(Direction::ToPods, AVDTP_PSM, SIGNALLING_CIDS);
+    trace.at_ms(10);
+    trace.send(
+        Direction::ToPods,
+        SIGNALLING_CIDS,
+        &avdtp(TAKEOVER_TRANSACTION, COMMAND, AVDTP_START, &[FIRST_SEID]),
+    );
+    trace.send(
+        Direction::FromPods,
+        SIGNALLING_CIDS,
+        &avdtp(TAKEOVER_TRANSACTION, ACCEPT, AVDTP_START, &[]),
+    );
     trace
 }
