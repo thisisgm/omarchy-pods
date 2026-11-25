@@ -322,6 +322,7 @@ mod marks {
     const NANOS_PER_MS: u64 = 1_000_000;
     const NANOS_PER_MICRO: u64 = 1_000;
     const CONNECTED_DEVICES_OPCODE: u16 = 0x002e;
+    const CLOSE: u8 = 0x08;
     const MEDIA: u8 = 0x02;
     const MEDIA_WITH_UPLINK: u8 = 0x22;
 
@@ -473,6 +474,56 @@ mod marks {
     }
 
     #[test]
+    fn takeover_ignores_suspend_and_close_on_the_reconnected_link() {
+        const DISCONNECT_MS: u64 = 15;
+        const RECONNECT_MS: u64 = 25;
+        const SUSPEND_MS: u64 = 30;
+        const CLOSE_MS: u64 = 35;
+        const START_MS: u64 = 40;
+        const RESTART_MS: u64 = 45;
+
+        let mut trace = playing_link();
+        trace.at_ms(DISCONNECT_MS);
+        trace.end_link(PODS_HANDLE);
+        trace.at_ms(RECONNECT_MS);
+        trace.link_up(RECONNECTED_PODS_HANDLE, PODS_ADDRESS);
+        trace.on(RECONNECTED_PODS_HANDLE);
+        trace.open(Direction::ToPods, AVDTP_PSM, SIGNALLING_CIDS);
+        trace.at_ms(SUSPEND_MS);
+        trace.send(
+            Direction::FromPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, COMMAND, AVDTP_SUSPEND, &[FIRST_SEID]),
+        );
+        trace.at_ms(CLOSE_MS);
+        trace.send(
+            Direction::FromPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, COMMAND, CLOSE, &[FIRST_SEID]),
+        );
+        trace.at_ms(START_MS);
+        trace.send(
+            Direction::ToPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, COMMAND, AVDTP_START, &[FIRST_SEID]),
+        );
+        trace.at_ms(RESTART_MS);
+        trace.send(
+            Direction::FromPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, ACCEPT, AVDTP_START, &[]),
+        );
+        let dir = sitting(&trace.bytes());
+        put(&dir, "trials.log", TRIAL_AT_TRACE_START, OWNER_FILE);
+        let rows = takeover_rows(&takeover(dir.path(), &TRACE_FILES));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["suspend_us"], "", "Suspend on the reconnected link");
+        assert_eq!(rows[0]["close_us"], "", "Close on the reconnected link");
+        assert_eq!(rows[0]["restart_us"], at_us(RESTART_MS).to_string());
+    }
+
+    #[test]
     fn takeover_marks_a_disconnect_without_a_reason_as_reasonless() {
         const DISCONNECT_MS: u64 = 15;
         const STATUS_SUCCESS: u8 = 0x00;
@@ -590,7 +641,6 @@ mod marks {
 
     #[test]
     fn takeover_joins_source_stream_journal_and_sink_times() {
-        const CLOSE: u8 = 0x08;
         const REJECT: u8 = 0b11;
         const BAD_STATE: u8 = 0x31;
 
