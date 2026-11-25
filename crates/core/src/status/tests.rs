@@ -11,7 +11,7 @@ use crate::command::tests::level;
 use crate::prefs::{MicModels, MicPref};
 use crate::state::{
     AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, MicCode, MicCounts,
-    MicDictation, Microphone,
+    MicDictation, MicSpan, Microphone,
 };
 
 fn status(state: &State) -> Value {
@@ -35,6 +35,7 @@ fn populated_state() -> State {
     let mut microphone = Microphone::new(MicPref::Off);
     microphone.show(MicCode::Off, 14, true);
     microphone.fold(FOLDED);
+    microphone.fold_span(MicSpan::new(20, 21, 22, 0.5));
     State {
         connected: true,
         device_name: "Desk pods".to_owned(),
@@ -136,6 +137,10 @@ fn populated_state_lands_every_field_on_its_key() {
     expected["mic_decode_errors"] = json!(17);
     expected["mic_limited"] = json!(18);
     expected["mic_nonfinite"] = json!(19);
+    expected["mic_span_sdus"] = json!(20);
+    expected["mic_span_restarts"] = json!(21);
+    expected["mic_span_gone_frames"] = json!(22);
+    expected["mic_span_peak_dbfs"] = json!(-6.0);
     assert_eq!(status(&populated_state()), expected);
 }
 

@@ -29,6 +29,10 @@ pub const ADDITIVE_KEYS: &[&str] = &[
     "mic_decode_errors",
     "mic_limited",
     "mic_nonfinite",
+    "mic_span_sdus",
+    "mic_span_restarts",
+    "mic_span_gone_frames",
+    "mic_span_peak_dbfs",
 ];
 
 /// Keys in ascending byte order, as the C++ `QJsonObject` writes them.
@@ -43,6 +47,7 @@ pub fn to_status_object(state: &State) -> Value {
     let capabilities = state.capabilities();
     let batteries = &state.batteries;
     let counts = state.microphone.counts();
+    let span = state.microphone.span();
     let mut fields = BTreeMap::from([
         ("schema_version", Value::from(SCHEMA_VERSION)),
         ("connected", Value::from(state.connected)),
@@ -110,6 +115,10 @@ pub fn to_status_object(state: &State) -> Value {
         ("mic_decode_errors", Value::from(counts.decode_errors)),
         ("mic_limited", Value::from(counts.limited)),
         ("mic_nonfinite", Value::from(counts.nonfinite)),
+        ("mic_span_sdus", Value::from(span.sdus)),
+        ("mic_span_restarts", Value::from(span.restarts)),
+        ("mic_span_gone_frames", Value::from(span.gone_frames)),
+        ("mic_span_peak_dbfs", Value::from(span.peak_dbfs())),
     ]);
     fields.extend(counter_fields(&state.counters));
     object(fields)

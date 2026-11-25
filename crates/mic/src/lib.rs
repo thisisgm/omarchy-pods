@@ -10,7 +10,7 @@ mod ring;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use conceal::{Tail, UNIT_FRAMES, fade_in};
@@ -87,6 +87,40 @@ pub struct Counters {
     pub limited: AtomicU32,
     /// Samples the reader was about to hand out that were not finite and became zero.
     pub nonfinite: AtomicU32,
+    /// Nonempty uplink SDUs taken by the chain in this span.
+    pub span_sdus: AtomicU64,
+    /// Uplink runs restarted by an unexpected unit stamp in this span.
+    pub span_restarts: AtomicU64,
+    /// Output frames read as Gone in this span.
+    pub span_gone_frames: AtomicU64,
+    /// The positive float bits sort in amplitude order.
+    span_peak: AtomicU32,
+}
+
+impl Counters {
+    pub fn reset_span(&self) {
+        self.span_sdus.store(0, Ordering::Relaxed);
+        self.span_restarts.store(0, Ordering::Relaxed);
+        self.span_gone_frames.store(0, Ordering::Relaxed);
+        self.span_peak.store(0, Ordering::Relaxed);
+    }
+
+    /// The raw decoded peak as a positive fraction of full scale.
+    #[must_use]
+    pub fn decoded_peak(&self) -> f32 {
+        f32::from_bits(self.span_peak.load(Ordering::Relaxed))
+    }
+
+    fn measure_peak<'a>(&self, decoded: Decoded<'a>) -> Decoded<'a> {
+        if let Decoded::Samples(samples) = decoded {
+            let peak = samples
+                .iter()
+                .filter(|sample| sample.is_finite())
+                .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+            self.span_peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        }
+        decoded
+    }
 }
 
 /// The writer's half, the real time half and the handle that restarts the real time half at its target; none when a decoder will not open.
@@ -211,6 +245,7 @@ impl Chain {
             .decode_errors
             .fetch_add(dropped, Ordering::Relaxed);
         if wrote {
+            self.counters.span_sdus.fetch_add(1, Ordering::Relaxed);
             self.arrived(now);
         }
     }
@@ -240,12 +275,14 @@ impl Chain {
 
     /// Writes what the stamp says was lost before this unit, then the unit or what stands for it.
     fn unit(&mut self, stamp: u32, decode: impl FnOnce(&mut Decoder) -> Decoded<'_>) {
-        match lost_before(self.expected, stamp) {
-            Some(lost) => (0..lost).for_each(|_| self.conceal(UNIT_FRAMES)),
-            None => self.reset(),
+        if let Some(lost) = lost_before(self.expected, stamp) {
+            (0..lost).for_each(|_| self.conceal(UNIT_FRAMES));
+        } else {
+            self.counters.span_restarts.fetch_add(1, Ordering::Relaxed);
+            self.reset();
         }
         self.expected = Some(stamp.wrapping_add(STAMP_STEP));
-        match decode(&mut self.decoder) {
+        match self.counters.measure_peak(decode(&mut self.decoder)) {
             Decoded::Samples(samples) => {
                 let samples = match &mut self.resampler {
                     Some(resampler) => {

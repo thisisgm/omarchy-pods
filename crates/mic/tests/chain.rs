@@ -10,6 +10,7 @@ mod support;
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use pods_mic::decode::{Decoded, Decoder};
@@ -76,6 +77,65 @@ mod tests {
         assert!(largest_step(&tape) > 0.01, "the run is close to silence");
         let untouched = [&rig.counters.underruns, &rig.counters.concealed];
         assert_eq!(untouched.map(Rig::count), [0, 0]);
+    }
+
+    #[test]
+    fn discontinuous_sdus_restart_the_run_and_lose_frames_that_a_clean_run_keeps() {
+        const SDUS: u32 = 5;
+        const REPEATED_FIRST_STAMP: u32 = 0;
+        let playout_delay = ms(NODE_LATENCY_MS).checked_sub(period()).unwrap();
+        for broken in [false, true] {
+            let mut rig = Rig::new();
+            // Prime the expected stamp before the span, so its first SDU can restart the run too.
+            rig.land(FIRST);
+            rig.counters.reset_span();
+            for step in 1..=SDUS {
+                if broken {
+                    rig.stamp = REPEATED_FIRST_STAMP;
+                }
+                let now = landing(step);
+                rig.land(now);
+                let (heard, _) = rig.read(now + playout_delay, PACKET_FRAMES);
+                assert_eq!(silent(&heard), broken);
+            }
+            let count = |counter: &std::sync::atomic::AtomicU64| counter.load(Ordering::Relaxed);
+            assert_eq!(count(&rig.counters.span_sdus), u64::from(SDUS));
+            assert_eq!(
+                count(&rig.counters.span_restarts),
+                if broken { u64::from(SDUS) } else { 0 }
+            );
+            let gone = if broken {
+                u64::from(SDUS) * u64::try_from(PACKET_FRAMES).unwrap()
+            } else {
+                0
+            };
+            assert_eq!(count(&rig.counters.span_gone_frames), gone);
+        }
+    }
+
+    #[test]
+    fn the_span_peak_distinguishes_decoded_silence_from_the_ungained_tone() {
+        let mut rig = Rig::new();
+        rig.send(FIRST, &[]);
+        assert_eq!(rig.counters.span_sdus.load(Ordering::Relaxed), 0);
+        rig.send(FIRST, &[silent_unit()]);
+        assert_eq!(rig.counters.decoded_peak().to_bits(), 0);
+        assert_eq!(rig.counters.span_sdus.load(Ordering::Relaxed), 1);
+        rig.land(landing(1));
+        rig.land(landing(2));
+        let raw_peak = rig
+            .decoded
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let peak = rig.counters.decoded_peak();
+        assert!(peak > 0.0);
+        assert!((20.0 * f64::from(peak / raw_peak).log10()).abs() < DB_SLACK);
+        rig.counters.reset_span();
+        rig.chain.reset();
+        rig.send(landing(3), &[silent_unit()]);
+        assert_eq!(rig.counters.decoded_peak().to_bits(), 0);
+        assert_eq!(rig.counters.span_sdus.load(Ordering::Relaxed), 1);
+        assert_eq!(rig.counters.span_restarts.load(Ordering::Relaxed), 0);
     }
 
     #[test]

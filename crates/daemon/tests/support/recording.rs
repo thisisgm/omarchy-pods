@@ -83,32 +83,33 @@ pub(crate) fn counts(status: &Value) -> Counts {
 }
 
 /// How the line a leaving recorder is logged with starts.
-pub(crate) const LEFT: &str = "mic: recorder left (underruns ";
-
-/// The underruns, the concealed units and the limited samples of the recorder left line.
-// Sample input: `mic: recorder left (underruns 0, concealed 4, limited 12)`.
-fn left_counts(line: &str) -> [u64; 3] {
-    let inside = line.strip_prefix(LEFT).unwrap().strip_suffix(')').unwrap();
-    let (underruns, rest) = inside.split_once(", concealed ").unwrap();
-    let (concealed, limited) = rest.split_once(", limited ").unwrap();
-    [underruns, concealed, limited].map(|count| count.parse().unwrap())
-}
+pub(crate) const LEFT: &str = "mic: recorder left (this span: underruns ";
 
 /// Waits for the recorder's departure log and checks its counters against status.
-pub(crate) fn assert_left_counts(daemon: &Daemon, counted: Counts) -> String {
+pub(crate) fn assert_left_counts(
+    daemon: &Daemon,
+    status: &Value,
+    index: usize,
+    [underruns, concealed, limited]: [u64; 3],
+) {
     let line = wait_for("the recorder left line", || {
         daemon
             .log()
             .lines()
-            .find(|line| line.starts_with(LEFT))
+            .filter(|line| line.starts_with(LEFT))
+            .nth(index)
             .map(str::to_owned)
     });
+    let peak = status["mic_span_peak_dbfs"]
+        .as_f64()
+        .map_or_else(|| "silence".to_owned(), |peak| format!("{peak:.1} dBFS"));
     assert_eq!(
-        left_counts(&line),
-        [counted.underruns, counted.concealed, counted.limited],
-        "{line}"
+        line,
+        format!(
+            "{LEFT}{underruns}, concealed {concealed}, limited {limited}, accepted SDUs {}, run restarts {}, Gone frames {}, decoded peak {peak})",
+            status["mic_span_sdus"], status["mic_span_restarts"], status["mic_span_gone_frames"]
+        )
     );
-    line
 }
 
 /// The counts once the last recorder has left and the status folded them, printed for the run's record.

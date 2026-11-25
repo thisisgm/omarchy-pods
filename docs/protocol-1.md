@@ -265,6 +265,16 @@ A reply carries the request's `id` and `ok`.
   samples bent by the limiter. `mic_nonfinite` counts samples that were
   not finite (NaN or infinite) and went out as silence. Both counters follow
   the same rules as the other three.
+  `mic_span_sdus` counts nonempty uplink packets taken by the decoder chain.
+  `mic_span_restarts` counts new uplink runs caused by unit stamp gaps.
+  `mic_span_gone_frames` counts output frames the reader asked for that were
+  before the current run, before the ring began, or already overwritten.
+  `mic_span_peak_dbfs` is the peak of the audio decoded for playout on either
+  route before gain, rounded to one decimal place, or `null` if there were no
+  nonzero decoded samples. The four fields reset when the recording span
+  begins, refresh at mic phase changes and link ticks, and keep the final
+  values when the span ends. The recorder departure log reports those
+  values and the underruns, concealed units and limited samples for that span.
   A unit is one frame of the AirPods' microphone codec, 480 samples at 64 kHz,
   7.5 ms of audio. Its `audio_server` is `idle` while no AirPods
   link is up, `up` while the daemon reads the desktop's audio server, and

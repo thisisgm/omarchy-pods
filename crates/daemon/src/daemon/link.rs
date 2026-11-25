@@ -23,7 +23,8 @@ use pods_core::policy::{
     PlayerOwner, Policy, Sighting, SleepEdge, UplinkRequest,
 };
 use pods_core::prefs::Prefs;
-use pods_core::state::{MicCounts, State};
+use pods_core::state::{MicCounts, MicSpan, State};
+use pods_mic::Counters;
 use pods_proto::addr::BdAddr;
 use pods_proto::doap::{doap_mode_off, doap_mode_on};
 use pods_proto::keys::ProximityKeys;
@@ -215,6 +216,8 @@ struct Driver {
     dictation_inhibitor: Option<sleep::Inhibitor>,
     /// The decoder resets counted at the last tick.
     resets: u32,
+    /// The lifetime counters at the open edge of the current recorder span.
+    mic_span_start: Option<MicCounts>,
 }
 
 /// A shutdown held until the uplink's exit is done or `by` passes, on the clock of `started`.
@@ -251,6 +254,7 @@ impl Driver {
             exit: None,
             dictation_inhibitor: None,
             resets: 0,
+            mic_span_start: None,
         }
     }
 
@@ -371,29 +375,30 @@ impl Driver {
         self.observe(heard(&self.outlets.tap));
     }
 
-    /// The tap's counters go into the state when `mic` changes or a recorder leaves, never for a packet; `recorder` is the edge of the node the policy holds open.
-    fn fold(&self, last: &State, next: &mut State, recorder: Option<bool>) {
-        if recorder == Some(true) {
-            log(RECORDER_LINKED_LINE);
-        }
-        let left = recorder == Some(false);
-        if !left && next.microphone.code() == last.microphone.code() {
-            return;
-        }
+    /// The policy's recorder edges bound the span, whose status is refreshed at phase changes and existing ticks.
+    fn fold(&mut self, last: &State, next: &mut State, tick: bool) {
         let counters = self.outlets.tap.counters();
-        let counts = MicCounts {
-            underruns: counters.underruns.load(Ordering::Relaxed),
-            concealed: counters.concealed.load(Ordering::Relaxed),
-            decode_errors: counters.decode_errors.load(Ordering::Relaxed),
-            limited: counters.limited.load(Ordering::Relaxed),
-            nonfinite: counters.nonfinite.load(Ordering::Relaxed),
-        };
-        next.microphone.fold(counts);
-        if left {
-            log(&format!(
-                "mic: recorder left (underruns {}, concealed {}, limited {})",
-                counts.underruns, counts.concealed, counts.limited
-            ));
+        let changed = next.microphone.code() != last.microphone.code();
+        let recording = self.policy.mic_recording();
+        let left = !recording && self.mic_span_start.is_some();
+        if left || changed {
+            next.microphone.fold(mic_counts(counters));
+        }
+        match (self.mic_span_start, recording) {
+            (None, true) => {
+                counters.reset_span();
+                self.mic_span_start = Some(mic_counts(counters));
+                next.microphone.fold_span(MicSpan::EMPTY);
+                log(RECORDER_LINKED_LINE);
+            }
+            (Some(start), false) => {
+                self.mic_span_start = None;
+                let span = mic_span(counters);
+                next.microphone.fold_span(span);
+                log_recorder_left(start, next.microphone.counts(), span);
+            }
+            (Some(_), true) if tick || changed => next.microphone.fold_span(mic_span(counters)),
+            _ => {}
         }
     }
 
@@ -447,7 +452,7 @@ impl Driver {
             .flat_map(|fact| self.policy.step(&next, fact, now))
             .collect();
         self.policy.show_mic(&mut next);
-        self.fold(&last, &mut next, None);
+        self.fold(&last, &mut next, event == Event::Tick);
         self.publish(next);
         for action in actions {
             self.execute(action);
@@ -462,16 +467,12 @@ impl Driver {
         next.audio_server = server_after(next.audio_server, &fact);
         self.policy.apply(&mut next, &fact);
         let now = self.started.elapsed();
-        let linked = self.policy.mic_recording();
         let mut effects = self.policy.step(&next, fact, now);
         if next != last {
             effects.extend(self.policy.step(&next, Fact::Changed, now));
         }
-        // The node's own view, so a fact of an earlier open is no edge.
-        let recording = self.policy.mic_recording();
-        let recorder = (recording != linked).then_some(recording);
         self.policy.show_mic(&mut next);
-        self.fold(&last, &mut next, recorder);
+        self.fold(&last, &mut next, false);
         self.publish(next);
         self.route_effects(effects);
     }
@@ -667,6 +668,38 @@ fn heard(tap: &mic::Tap) -> Fact {
     Fact::Dictation(DictationFact::Heard {
         packets: tap.dictation_packets(),
     })
+}
+
+fn mic_counts(counters: &Counters) -> MicCounts {
+    MicCounts {
+        underruns: counters.underruns.load(Ordering::Relaxed),
+        concealed: counters.concealed.load(Ordering::Relaxed),
+        decode_errors: counters.decode_errors.load(Ordering::Relaxed),
+        limited: counters.limited.load(Ordering::Relaxed),
+        nonfinite: counters.nonfinite.load(Ordering::Relaxed),
+    }
+}
+
+fn mic_span(counters: &Counters) -> MicSpan {
+    MicSpan::new(
+        counters.span_sdus.load(Ordering::Relaxed),
+        counters.span_restarts.load(Ordering::Relaxed),
+        counters.span_gone_frames.load(Ordering::Relaxed),
+        counters.decoded_peak(),
+    )
+}
+
+fn log_recorder_left(start: MicCounts, end: MicCounts, span: MicSpan) {
+    let underruns = end.underruns.wrapping_sub(start.underruns);
+    let concealed = end.concealed.wrapping_sub(start.concealed);
+    let limited = end.limited.wrapping_sub(start.limited);
+    let peak = span
+        .peak_dbfs()
+        .map_or_else(|| "silence".to_owned(), |dbfs| format!("{dbfs:.1} dBFS"));
+    log(&format!(
+        "mic: recorder left (this span: underruns {underruns}, concealed {concealed}, limited {limited}, accepted SDUs {}, run restarts {}, Gone frames {}, decoded peak {peak})",
+        span.sdus, span.restarts, span.gone_frames
+    ));
 }
 
 /// A name, a model and one battery reading: what the bar shows first.
