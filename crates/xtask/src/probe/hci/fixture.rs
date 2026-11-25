@@ -25,8 +25,11 @@ pub(crate) const LINK_KEY: [u8; 16] = [
 ];
 /// What a keyboard on a second link sends; no output may hold it.
 pub(crate) const KEYSTROKES: &[u8] = b"typed-on-a-keyboard";
+/// A made up, locally administered address for a second set of pods, which no mark of the first may come from.
+pub(crate) const OTHER_PODS_ADDRESS: [u8; 6] = [0x02, 0x17, 0x28, 0x39, 0x4a, 0x5b];
 pub(crate) const PODS_HANDLE: u16 = 0x000b;
 pub(crate) const KEYBOARD_HANDLE: u16 = 0x000c;
+pub(crate) const OTHER_PODS_HANDLE: u16 = 0x000d;
 const VOICE_HANDLE: u16 = 0x0101;
 /// 2026-11-20T12:00:00Z in microseconds since 1970, the moment every synthetic trace starts.
 pub(crate) const START_UNIX_MICROS: u64 = 1_795_176_000_000_000;
@@ -41,6 +44,8 @@ const BTSNOOP_VERSION: u32 = 1;
 pub(crate) const MONITOR_DATALINK: u32 = 2001;
 /// Monitor opcode of a new adapter, whose record holds the adapter's address and name.
 const OPCODE_NEW_INDEX: u16 = 0;
+/// Monitor opcode of an HCI command.
+const OPCODE_COMMAND: u16 = 2;
 /// Monitor opcode of an HCI event.
 const OPCODE_EVENT: u16 = 3;
 /// Monitor opcode of ACL data the host sent.
@@ -63,17 +68,42 @@ pub(crate) const CONFIGURATION_REQUEST: u8 = 0x04;
 /// The identifier every synthetic signalling command carries; any value but zero is valid (Core 6.1 Vol 3 Part A 4).
 const SIGNAL_IDENTIFIER: u8 = 0x01;
 /// The result of a connection response that opens the channel (Core 6.1 Vol 3 Part A 4.3).
-const RESULT_SUCCESS: u16 = 0x0000;
+pub(crate) const RESULT_SUCCESS: u16 = 0x0000;
 /// The type and the data length of the MTU option (Core 6.1 Vol 3 Part A 5.1).
 const OPTION_MTU: [u8; 2] = [0x01, 0x02];
 /// The type and the data length of the retransmission and flow control option (Core 6.1 Vol 3 Part A 5.4).
 const OPTION_MODE: [u8; 2] = [0x04, 0x09];
 /// HCI event codes.
 pub(crate) const EVENT_CONNECTION_COMPLETE: u8 = 0x03;
+const EVENT_CONNECTION_REQUEST: u8 = 0x04;
 pub(crate) const EVENT_DISCONNECTION_COMPLETE: u8 = 0x05;
 pub(crate) const EVENT_REMOTE_NAME: u8 = 0x07;
 pub(crate) const EVENT_LINK_KEY: u8 = 0x18;
 pub(crate) const EVENT_SYNCHRONOUS_CONNECTION: u8 = 0x2c;
+const EVENT_LE_META: u8 = 0x3e;
+/// The two LE Meta subevents that report an advertisement (Core 6.1 Vol 4 Part E 7.7.65.2 and 7.7.65.13).
+const LE_ADVERTISING_REPORT: u8 = 0x02;
+const LE_EXTENDED_ADVERTISING_REPORT: u8 = 0x0d;
+/// The event types of connectable reports and the address type of a random address.
+const ONE_LEGACY_REPORT: [u8; 3] = [0x01, 0x00, 0x01];
+const ONE_EXTENDED_REPORT: [u8; 4] = [0x01, 0x13, 0x00, 0x01];
+/// What follows the address of an extended report: both PHYs, no set, no power, a made up RSSI, no period, no directed address.
+const EXTENDED_REPORT_REST: [u8; 14] = [
+    0x01, 0x00, 0xff, 0x7f, 0xc4, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+/// Synthetic advertising data: flags followed by Apple manufacturer data with proximity pairing or a different type.
+pub(crate) const PROXIMITY_ADVERT: [u8; 10] =
+    [0x02, 0x01, 0x1a, 0x06, 0xff, 0x4c, 0x00, 0x07, 0x01, 0x00];
+pub(crate) const OTHER_APPLE_ADVERT: [u8; 7] = [0x06, 0xff, 0x4c, 0x00, 0x10, 0x01, 0x00];
+pub(crate) const OTHER_COMPANY_ADVERT: [u8; 7] = [0x06, 0xff, 0x00, 0x00, 0x07, 0x01, 0x00];
+/// A synthetic random address, distinct from either device's ACL address.
+pub(crate) const RANDOM_ADVERT_ADDRESS: [u8; 6] = [0x42, 0x00, 0x00, 0x00, 0x00, 0x01];
+/// The RSSI a legacy report ends with, made up.
+const REPORT_RSSI: u8 = 0xc4;
+/// What a connection request ends with: a made up class of device, then an ACL link (Core 6.1 Vol 4 Part E 7.7.4).
+const AUDIO_CLASS_ON_ACL: [u8; 4] = [0x18, 0x04, 0x24, 0x01];
+/// The status of a connection that never came up: the page timed out (Core 6.1 Vol 1 Part F 2.4).
+pub(crate) const PAGE_TIMEOUT: u8 = 0x04;
 const STATUS_SUCCESS: u8 = 0x00;
 /// The type and the bus of a new adapter record: a primary controller on USB (`BlueZ` src/shared/btsnoop.h, `btsnoop_opcode_new_index`).
 const PRIMARY_ON_USB: [u8; 2] = [0x00, 0x01];
@@ -86,7 +116,7 @@ const KEY_TYPE: u8 = 0x04;
 /// What a synchronous connection event ends with: eSCO, made up interval, window and packet lengths, transparent air mode (Core 6.1 Vol 4 Part E 7.7.35).
 const VOICE_LINK: [u8; 8] = [0x02, 0x0c, 0x04, 0x3c, 0x00, 0x3c, 0x00, 0x03];
 /// The reason a disconnection event ends with: the remote user ended the connection (Core 6.1 Vol 1 Part F 2.19).
-const REMOTE_USER_ENDED: u8 = 0x13;
+pub(crate) const REMOTE_USER_ENDED: u8 = 0x13;
 /// The PSM of AVDTP and the PSM of a keyboard's interrupt channel.
 pub(crate) const AVDTP_PSM: u16 = 0x0019;
 pub(crate) const HID_INTERRUPT_PSM: u16 = 0x0013;
@@ -95,6 +125,7 @@ pub(crate) const COMMAND: u8 = 0b00;
 pub(crate) const ACCEPT: u8 = 0b10;
 pub(crate) const GET_CAPABILITIES: u8 = 0x02;
 pub(crate) const SET_CONFIGURATION: u8 = 0x03;
+pub(crate) const AVDTP_OPEN: u8 = 0x06;
 pub(crate) const AVDTP_START: u8 = 0x07;
 pub(crate) const AVDTP_SUSPEND: u8 = 0x09;
 pub(crate) const GET_ALL_CAPABILITIES: u8 = 0x0c;
@@ -119,6 +150,10 @@ pub(crate) const CONTROL_CIDS: (u16, u16) = (0x0040, 0x0050);
 pub(crate) const ATT_CIDS: (u16, u16) = (0x0041, 0x0051);
 pub(crate) const SIGNALLING_CIDS: (u16, u16) = (0x0042, 0x0052);
 pub(crate) const MEDIA_CIDS: (u16, u16) = (0x0043, 0x0053);
+/// The identifiers of the first control dial `Trace::carry` makes; each later dial takes the next of both.
+const DIAL_CIDS: (u16, u16) = (0x0060, 0x0070);
+/// How long before its first signal `Trace::carry` opens the signalling channel, and before its first packet the media channel.
+const CHANNEL_LEAD_MS: u64 = 20;
 /// The MTU options the session trace sends for the control channel and the ATT channel.
 pub(crate) const HOST_MTU: u16 = 672;
 pub(crate) const PODS_MTU: u16 = 1024;
@@ -171,6 +206,7 @@ enum Layout {
 pub(crate) struct Trace {
     bytes: Vec<u8>,
     micros: u64,
+    last_record_micros: u64,
     handle: u16,
     layout: Layout,
 }
@@ -184,6 +220,7 @@ impl Trace {
         Self {
             bytes,
             micros: START_UNIX_MICROS,
+            last_record_micros: START_UNIX_MICROS,
             handle: PODS_HANDLE,
             layout: Layout::Btsnoop,
         }
@@ -194,15 +231,28 @@ impl Trace {
         Self {
             bytes: Vec::new(),
             micros: START_UNIX_MICROS,
+            last_record_micros: START_UNIX_MICROS,
             handle: PODS_HANDLE,
             layout: Layout::PacketLogger,
         }
     }
 
     pub(crate) fn at_ms(&mut self, ms: u64) {
+        self.at_ms_unchecked(ms);
+        assert!(
+            self.micros >= self.last_record_micros,
+            "trace timestamp went backwards at {ms} ms (requested {} us, last record {} us)",
+            self.micros,
+            self.last_record_micros
+        );
+    }
+
+    /// Clock tests need to write backwards stamps, which `at_ms` rejects.
+    pub(crate) fn at_ms_unchecked(&mut self, ms: u64) {
         self.at_micros(ms.saturating_mul(MICROS_PER_MILLI));
     }
 
+    /// Sets an exact stamp, including intentional backwards steps in clock tests.
     pub(crate) fn at_micros(&mut self, micros: u64) {
         self.micros = START_UNIX_MICROS.saturating_add(micros);
     }
@@ -222,6 +272,7 @@ impl Trace {
         self.bytes.extend(micros.to_le_bytes());
         self.bytes.push(kind);
         self.bytes.extend(payload);
+        self.last_record_micros = self.micros;
         self.micros = self.micros.saturating_add(STEP_MICROS);
     }
 
@@ -229,6 +280,7 @@ impl Trace {
     pub(crate) fn record(&mut self, opcode: u16, data: &[u8]) {
         if let Layout::PacketLogger = self.layout {
             let kind = match opcode {
+                OPCODE_COMMAND => PKLG_COMMAND,
                 OPCODE_EVENT => PKLG_EVENT,
                 OPCODE_ACL_TX => PKLG_ACL_SENT,
                 OPCODE_ACL_RX => PKLG_ACL_RECEIVED,
@@ -248,6 +300,7 @@ impl Trace {
                 .to_be_bytes(),
         );
         self.bytes.extend(data);
+        self.last_record_micros = self.micros;
         self.micros = self.micros.saturating_add(STEP_MICROS);
     }
 
@@ -256,6 +309,126 @@ impl Trace {
         let mut packet = vec![code, u8::try_from(parameters.len()).unwrap()];
         packet.extend(parameters);
         self.record(OPCODE_EVENT, &packet);
+    }
+
+    /// One HCI command: opcode, parameter length, parameters.
+    pub(crate) fn command(&mut self, opcode: u16, parameters: &[u8]) {
+        let mut packet = opcode.to_le_bytes().to_vec();
+        packet.push(u8::try_from(parameters.len()).unwrap());
+        packet.extend(parameters);
+        self.record(OPCODE_COMMAND, &packet);
+    }
+
+    /// The host asks for a link to the device at `address`.
+    pub(crate) fn create_connection(&mut self, address: [u8; 6]) {
+        let mut parameters = wire(address);
+        parameters.extend(CONNECTION_PARAMETERS);
+        self.command(CREATE_CONNECTION, &parameters);
+    }
+
+    /// The device at `address` asks the host for an ACL link.
+    pub(crate) fn connection_request(&mut self, address: [u8; 6]) {
+        let mut parameters = wire(address);
+        parameters.extend(AUDIO_CLASS_ON_ACL);
+        self.event(EVENT_CONNECTION_REQUEST, &parameters);
+    }
+
+    /// The answer to either: an ACL link to `address` on `handle`, or with a `status` other than success none.
+    pub(crate) fn connection_complete(&mut self, status: u8, handle: u16, address: [u8; 6]) {
+        let mut parameters = vec![status];
+        parameters.extend(handle.to_le_bytes());
+        parameters.extend(wire(address));
+        parameters.extend(ACL_NOT_ENCRYPTED);
+        self.event(EVENT_CONNECTION_COMPLETE, &parameters);
+    }
+
+    pub(crate) fn link_up(&mut self, handle: u16, address: [u8; 6]) {
+        self.connection_complete(STATUS_SUCCESS, handle, address);
+    }
+
+    /// The host hears `address` advertise, as a controller that scans with the extended commands reports it.
+    pub(crate) fn advert(&mut self, address: [u8; 6], data: &[u8]) {
+        let mut parameters = vec![LE_EXTENDED_ADVERTISING_REPORT];
+        parameters.extend(ONE_EXTENDED_REPORT);
+        parameters.extend(wire(address));
+        parameters.extend(EXTENDED_REPORT_REST);
+        parameters.push(u8::try_from(data.len()).unwrap());
+        parameters.extend(data);
+        self.event(EVENT_LE_META, &parameters);
+    }
+
+    /// The same, as a controller that scans with the first LE commands reports it.
+    pub(crate) fn legacy_advert(&mut self, address: [u8; 6], data: &[u8]) {
+        let mut parameters = vec![LE_ADVERTISING_REPORT];
+        parameters.extend(ONE_LEGACY_REPORT);
+        parameters.extend(wire(address));
+        parameters.push(u8::try_from(data.len()).unwrap());
+        parameters.extend(data);
+        parameters.push(REPORT_RSSI);
+        self.event(EVENT_LE_META, &parameters);
+    }
+
+    /// What `carried` lists, on the current handle, each part at its own time.
+    pub(crate) fn carry(&mut self, carried: &Carried) {
+        enum Part {
+            Dial(u16),
+            Channel((u16, u16)),
+            Signal(u8),
+            Media,
+        }
+
+        let mut parts: Vec<_> = carried
+            .set_configurations
+            .iter()
+            .map(|ms| (*ms, Part::Signal(SET_CONFIGURATION)))
+            .chain(carried.open_ms.map(|ms| (ms, Part::Signal(AVDTP_OPEN))))
+            .chain(carried.start_ms.map(|ms| (ms, Part::Signal(AVDTP_START))))
+            .collect();
+        if let Some(ms) = parts.iter().map(|(ms, _)| *ms).min() {
+            parts.push((
+                ms.saturating_sub(CHANNEL_LEAD_MS),
+                Part::Channel(SIGNALLING_CIDS),
+            ));
+        }
+        parts.extend(
+            carried
+                .control_dials
+                .iter()
+                .map(|&(ms, result)| (ms, Part::Dial(result))),
+        );
+        if let Some(ms) = carried.media_ms {
+            parts.push((
+                ms.saturating_sub(CHANNEL_LEAD_MS),
+                Part::Channel(MEDIA_CIDS),
+            ));
+            parts.push((ms, Part::Media));
+        }
+        parts.sort_by_key(|(ms, _)| *ms);
+
+        let (host, pods) = (Direction::ToPods, Direction::FromPods);
+        let mut cids = DIAL_CIDS;
+        let mut label = 1_u8;
+        for (ms, part) in parts {
+            self.at_ms(ms);
+            match part {
+                Part::Dial(result) => {
+                    self.connect(host, CONTROL_PSM, cids, result);
+                    cids = (cids.0.saturating_add(1), cids.1.saturating_add(1));
+                }
+                Part::Channel(cids) => self.open(host, AVDTP_PSM, cids),
+                Part::Signal(signal) => {
+                    let command = avdtp(label, COMMAND, signal, &[FIRST_SEID]);
+                    self.send(host, SIGNALLING_CIDS, &command);
+                    let accepted = avdtp(label, ACCEPT, signal, &[]);
+                    self.send(pods, SIGNALLING_CIDS, &accepted);
+                    label = label.saturating_add(1);
+                }
+                Part::Media => {
+                    self.send(host, MEDIA_CIDS, &rtp(0));
+                    self.send(host, MEDIA_CIDS, &rtp(1));
+                }
+            }
+        }
     }
 
     pub(crate) fn end_link(&mut self, handle: u16) {
@@ -359,6 +532,19 @@ impl Trace {
     pub(crate) fn bytes(&self) -> Vec<u8> {
         self.bytes.clone()
     }
+}
+
+/// What one link carries once it is up; every time is in milliseconds after the trace starts, and a media packet needs a signal before it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Carried {
+    /// When the host dials the control channel, and the result the pods answer each dial with.
+    pub(crate) control_dials: Vec<(u64, u16)>,
+    /// When the host sends each Set Configuration command.
+    pub(crate) set_configurations: Vec<u64>,
+    pub(crate) open_ms: Option<u64>,
+    pub(crate) start_ms: Option<u64>,
+    /// When the host sends the first of two media packets.
+    pub(crate) media_ms: Option<u64>,
 }
 
 /// A retransmission and flow control option: the mode first, then made up windows and timeouts.
@@ -474,11 +660,7 @@ fn identify(trace: &mut Trace) {
 }
 
 fn paired(trace: &mut Trace) {
-    let mut connected = vec![STATUS_SUCCESS];
-    connected.extend(PODS_HANDLE.to_le_bytes());
-    connected.extend(wire(PODS_ADDRESS));
-    connected.extend(ACL_NOT_ENCRYPTED);
-    trace.event(EVENT_CONNECTION_COMPLETE, &connected);
+    trace.link_up(PODS_HANDLE, PODS_ADDRESS);
     let mut named = vec![STATUS_SUCCESS];
     named.extend(wire(PODS_ADDRESS));
     named.extend(DEVICE_NAME.as_bytes());
@@ -648,18 +830,7 @@ pub(crate) fn mac_att_packets() -> Vec<(Direction, Vec<u8>)> {
 /// How a trace macOS wrote opens when recording starts after the accessory exchange: the events that name the pods and a keyboard that types.
 pub(crate) fn mac_naming() -> Trace {
     let mut trace = Trace::packet_logger();
-    let mut connect = CREATE_CONNECTION.to_le_bytes().to_vec();
-    connect.push(
-        u8::try_from(
-            PODS_ADDRESS
-                .len()
-                .saturating_add(CONNECTION_PARAMETERS.len()),
-        )
-        .unwrap(),
-    );
-    connect.extend(wire(PODS_ADDRESS));
-    connect.extend(CONNECTION_PARAMETERS);
-    trace.logged(PKLG_COMMAND, &connect);
+    trace.create_connection(PODS_ADDRESS);
     paired(&mut trace);
     keystrokes(&mut trace);
     trace
@@ -695,5 +866,79 @@ pub(crate) fn mac_session() -> Trace {
         trace.send(Direction::ToPods, MEDIA_CIDS, &rtp(sequence));
     }
     trace.end_link(PODS_HANDLE);
+    trace
+}
+
+/// What the pods' link carries in the first trial of `two_devices`: one dial that opens, one configuration, then the stream.
+pub(crate) fn whole_connection() -> Carried {
+    Carried {
+        control_dials: vec![(1_300, RESULT_SUCCESS)],
+        set_configurations: vec![1_400],
+        open_ms: Some(1_500),
+        start_ms: Some(1_600),
+        media_ms: Some(1_700),
+    }
+}
+
+/// The result of a connection response that refuses a dial for want of resources (Core 6.1 Vol 3 Part A 4.3).
+pub(crate) const NO_RESOURCES: u16 = 0x0004;
+
+/// Three trials with a second set of pods near, whose link carries the same identifiers: the pods begin a whole connection that ends, the other pods connect alone, then the host begins a connection whose first dial is refused and that is configured twice and never streams.
+pub(crate) fn two_devices() -> Trace {
+    let mut trace = Trace::new();
+    trace.at_ms(900);
+    trace.advert(OTHER_PODS_ADDRESS, &OTHER_APPLE_ADVERT);
+    trace.at_ms(1_000);
+    trace.advert(RANDOM_ADVERT_ADDRESS, &PROXIMITY_ADVERT);
+    trace.at_ms(1_100);
+    trace.create_connection(OTHER_PODS_ADDRESS);
+    trace.at_ms(1_150);
+    trace.link_up(OTHER_PODS_HANDLE, OTHER_PODS_ADDRESS);
+    trace.on(OTHER_PODS_HANDLE);
+    trace.carry(&Carried {
+        control_dials: vec![(1_160, NO_RESOURCES), (1_165, RESULT_SUCCESS)],
+        set_configurations: vec![1_190, 1_200, 1_210],
+        open_ms: Some(1_215),
+        start_ms: Some(1_220),
+        media_ms: Some(1_245),
+    });
+    trace.at_ms(1_250);
+    trace.connection_request(PODS_ADDRESS);
+    trace.at_ms(1_280);
+    trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+    trace.on(PODS_HANDLE);
+    trace.carry(&whole_connection());
+    trace.on(OTHER_PODS_HANDLE);
+    trace.carry(&Carried {
+        control_dials: vec![(2_000, NO_RESOURCES)],
+        ..Carried::default()
+    });
+    trace.at_ms(9_000);
+    trace.end_link(PODS_HANDLE);
+    trace.at_ms(9_500);
+    trace.end_link(OTHER_PODS_HANDLE);
+    trace.at_ms(11_000);
+    trace.advert(OTHER_PODS_ADDRESS, &OTHER_APPLE_ADVERT);
+    trace.at_ms(11_200);
+    trace.connection_request(OTHER_PODS_ADDRESS);
+    trace.at_ms(11_250);
+    trace.link_up(OTHER_PODS_HANDLE, OTHER_PODS_ADDRESS);
+    trace.on(OTHER_PODS_HANDLE);
+    trace.carry(&Carried {
+        control_dials: vec![(11_300, RESULT_SUCCESS)],
+        ..Carried::default()
+    });
+    trace.at_ms(19_000);
+    trace.end_link(OTHER_PODS_HANDLE);
+    trace.at_ms(21_000);
+    trace.create_connection(PODS_ADDRESS);
+    trace.at_ms(21_400);
+    trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+    trace.on(PODS_HANDLE);
+    trace.carry(&Carried {
+        control_dials: vec![(21_500, NO_RESOURCES), (22_300, RESULT_SUCCESS)],
+        set_configurations: vec![21_600, 21_900],
+        ..Carried::default()
+    });
     trace
 }

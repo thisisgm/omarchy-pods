@@ -1,5 +1,12 @@
 //! Parsers and encoders for the packets the pods and a host exchange, with no I/O.
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    test,
+    expect(
+        dead_code_pub_in_binary,
+        reason = "the daemon and xtask consume the proximity advertising identifiers"
+    )
+)]
 
 pub mod addr;
 pub mod att;

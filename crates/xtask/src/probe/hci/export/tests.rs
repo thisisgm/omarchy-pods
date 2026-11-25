@@ -238,11 +238,11 @@ fn stamps_count_from_the_earliest_record_kept_and_steps_back_are_counted() {
     assert!(text(&outputs, "links.txt").starts_with(clock));
     assert!(text(&outputs, "psm.tsv").contains("\n0\thost\t0x1001\t"));
 
-    trace.at_ms(100);
+    trace.at_ms_unchecked(100);
     trace.send(PODS, CONTROL_CIDS, &[2]);
     trace.at_ms(1_800);
     trace.send(PODS, CONTROL_CIDS, &[3]);
-    trace.at_ms(1_700);
+    trace.at_ms_unchecked(1_700);
     trace.send(PODS, CONTROL_CIDS, &[4]);
     let outputs = rendered(&trace);
     assert_eq!(

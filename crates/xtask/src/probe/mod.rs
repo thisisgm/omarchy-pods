@@ -12,6 +12,7 @@ mod eldfile;
 #[cfg(test)]
 mod fixture;
 mod hci;
+mod marks;
 pub(crate) mod oggfile;
 mod script;
 mod service;
@@ -95,6 +96,8 @@ enum ProbeCommand {
         #[arg(long)]
         run: String,
     },
+    /// Reads the marks of each trial's connection with the pods from a trace, the daemon's journal and a log of the sinks, and prints one row a trial: who began it, then each mark in milliseconds after the ACL link came up. A cut trace prints every trial, marks missing connections beyond its coverage incomplete, and exits with failure.
+    Marks(marks::MarksArgs),
     /// Measures the shape of the audio streams in one run and writes analysis.tsv and units.tsv into it, and analysis-att.tsv, frames.tsv and att-handles.tsv when the run holds att.log.
     Analyse {
         /// The run directory, a session directory of the store then the run name.
@@ -260,6 +263,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             stop(host, args.route, interrupted)
         }),
         ProbeCommand::Hci { file, stamp, run } => hci(&file, &stamp, &run, &home),
+        ProbeCommand::Marks(args) => marks(&args),
         ProbeCommand::Analyse { run_dir } => print_table(analyse::analyse_run(&run_dir)),
         ProbeCommand::Decode { run_dir } => print_table(decode::decode_run(&run_dir)),
         ProbeCommand::DecodeOpus { run_dir } => print_table(decode_opus::decode_run(&run_dir)),
@@ -652,4 +656,16 @@ fn hci(file: &Path, stamp: &str, run: &str, home: &str) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Prints the table of one sitting and fails if the trace was cut, with the reason on stderr.
+fn marks(args: &marks::MarksArgs) -> ExitCode {
+    let marked = marks::marks(args);
+    let cut = marked.as_ref().ok().and_then(|(_, cut)| *cut);
+    let printed = print_table(marked.map(|(table, _)| table));
+    if let Some(cut) = cut {
+        report(&format!("xtask probe: {cut}"));
+        return ExitCode::FAILURE;
+    }
+    printed
 }

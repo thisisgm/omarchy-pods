@@ -402,9 +402,9 @@ fn a_start_counts_from_just_after_one_packet_up_to_the_next() {
         let mut trace = streaming();
         trace.at_ms(5_000);
         trace.send(HOST, MEDIA_CIDS, &rtp(100));
-        trace.at_ms(start_ms);
+        trace.at_ms_unchecked(start_ms);
         signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
-        trace.at_ms(5_020);
+        trace.at_ms_unchecked(5_020);
         trace.send(HOST, MEDIA_CIDS, &rtp(0));
         read(&trace).seconds.iter().map(|row| row.gaps).sum()
     };
@@ -420,9 +420,9 @@ fn a_clock_that_steps_back_between_two_packets_hides_no_gap() {
     let mut trace = streaming();
     trace.at_ms(5_000);
     trace.send(HOST, MEDIA_CIDS, &rtp(100));
-    trace.at_ms(4_000);
+    trace.at_ms_unchecked(4_000);
     signal(&mut trace, HOST, 2, COMMAND, AVDTP_START, &[FIRST_SEID]);
-    trace.at_ms(3_000);
+    trace.at_ms_unchecked(3_000);
     trace.send(HOST, MEDIA_CIDS, &rtp(0));
     let rows: Vec<_> = read(&trace)
         .seconds

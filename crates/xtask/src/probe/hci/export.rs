@@ -41,7 +41,7 @@ const SECONDS_HEADER: &str =
 /// What a column holds when the trace has no value for it.
 const ABSENT: &str = "-";
 /// A trace is refused above 512 MiB; it holds the music stream of a whole session, which the store's capture bound is too small for.
-const MAX_TRACE_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const MAX_TRACE_BYTES: u64 = 512 * 1024 * 1024;
 /// The smallest attribute MTU that fits a 438 byte notification behind its 3 byte header (Core 6.1 Vol 3 Part F 3.4.7.1).
 const ATT_MTU_NEEDED: u16 = 441;
 

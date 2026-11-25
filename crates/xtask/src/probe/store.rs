@@ -359,6 +359,13 @@ pub(crate) fn read_device(root: &Path) -> Result<BdAddr, StoreError> {
     parse_device(&path, &contents)
 }
 
+/// Reads the device address from a file outside the store, by the rules of the store's own: the caller's, mode 0600, one address.
+pub(crate) fn read_device_file(path: &Path) -> Result<BdAddr, StoreError> {
+    let rule = ModeRule::Exact(FILE_MODE);
+    let contents = read_bounded(CWD, path, path, rule, MAX_DEVICE_BYTES)?;
+    parse_device(path, &contents)
+}
+
 /// Reads a file from outside the store by the same rules as a capture, with its own bound: a regular file of the caller's, owner only, at most `limit` bytes.
 pub(crate) fn read_trace(path: &Path, limit: u64) -> Result<Vec<u8>, StoreError> {
     read_bounded(CWD, path, path, ModeRule::OwnerOnly, limit)
