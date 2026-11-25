@@ -17,9 +17,9 @@ mod tests {
     use pods_mic::level::MIC_GAIN_DB;
     use pods_mic::opus::{Decoder, MAX_OPUS_FRAME_BYTES};
     use pods_mic::{
-        ARRIVAL_WINDOW, Chain, Counters, FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES,
-        MAX_UNITS_PER_SDU, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, STAMP_STEP, STEADY_FRAMES,
-        chain,
+        ARRIVAL_WINDOW, Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, MAX_FRAMES_PER_NOTIFICATION,
+        MAX_GAP_FRAMES, MAX_UNITS_PER_SDU, NODE_LATENCY_MS, RATE_HZ, Reader, Resync, STAMP_STEP,
+        STEADY_FRAMES, chain,
     };
     use pods_samples::opus::{TONE_DBFS, TONE_HZ, tone};
     use pods_samples::uplink::tone_unit;
@@ -40,7 +40,7 @@ mod tests {
 
     /// The frame of the run that the first sample of a tape holds, when its first read was at `from`, the frames landed on time and nothing jumped since.
     fn base_of(from: Duration) -> usize {
-        let before = FIRST.saturating_add(ms(NODE_LATENCY_MS));
+        let before = FIRST.saturating_add(ms(DOAP_LATENCY_MS));
         let played = from.saturating_add(ms(FRAME_MS)).checked_sub(before);
         frames_in(played.unwrap()).checked_sub(QUANTUM).unwrap()
     }
@@ -145,7 +145,7 @@ mod tests {
             assert!(samples <= HELD, "more than one read can be handed");
             self.resync.request();
             let last = at(self.step.checked_sub(1).unwrap());
-            self.read(last.saturating_add(ms(NODE_LATENCY_MS)), samples)
+            self.read(last.saturating_add(ms(DOAP_LATENCY_MS)), samples)
                 .0
         }
 

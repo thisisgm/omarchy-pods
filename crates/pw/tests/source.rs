@@ -85,11 +85,14 @@ mod tests {
         cycle: u64,
         frames: [Arc<AtomicU64>; 2],
         done: SyncSender<()>,
+        ratio: f64,
+        tone: Tone,
     }
 
     impl Fill for Counted {
         fn fill(&mut self, out: &mut [f32]) -> f64 {
-            out.fill(0.0);
+            const RAMP_CYCLES: u32 = 4;
+            self.tone.fill(out);
             let half = SETTLE_CYCLES + COUNTED_CYCLES;
             let asked = u64::try_from(out.len()).unwrap();
             if (SETTLE_CYCLES..half).contains(&self.cycle) {
@@ -100,7 +103,17 @@ mod tests {
                 self.done.try_send(()).unwrap_or(());
             }
             self.cycle = self.cycle.saturating_add(1);
-            if self.cycle > half { RATIO } else { 1.0 }
+            if self.cycle <= half {
+                return 1.0;
+            }
+            let remaining = half
+                .saturating_mul(2)
+                .saturating_add(u64::from(RAMP_CYCLES))
+                .saturating_sub(self.cycle);
+            let remaining = u32::try_from(remaining)
+                .unwrap_or(RAMP_CYCLES)
+                .min(RAMP_CYCLES);
+            1.0 + (self.ratio - 1.0) * f64::from(remaining) / f64::from(RAMP_CYCLES)
         }
     }
 
@@ -224,25 +237,76 @@ mod tests {
 
     #[test]
     fn a_rate_ratio_is_followed_by_the_server() {
+        assert_server_ratio(RATIO, RATIO_TOLERANCE, false);
+    }
+
+    #[test]
+    fn a_ten_percent_opening_ratio_is_followed_without_clipping_or_unsteered_cycles() {
+        const OPENING_RATIO: f64 = 1.10;
+        // Use the 1.001 test's absolute rise tolerance of (1.001 - 1.0) / 4 = 0.00025.
+        assert_server_ratio(OPENING_RATIO, RATIO_TOLERANCE, true);
+    }
+
+    fn assert_server_ratio(ratio: f64, tolerance: f64, record_capture: bool) {
+        const HZ: f64 = 1_000.0;
+        const RESAMPLER_STEP_SLACK: f64 = 1.25;
         let dir = tempfile::tempdir().unwrap();
         let server = Server::start(dir.path());
-        let frames = [Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0))];
+        let counts = [Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0))];
         let (done, finished) = mpsc::sync_channel(1);
         let counted = Counted {
             cycle: 0,
-            frames: frames.clone(),
+            frames: counts.clone(),
             done,
+            ratio,
+            tone: tone(HZ),
         };
         let (source, _events) = open(&server.socket(), counted).unwrap();
         let recorder = Recorder::history(&server, NAME, &dir.path().join("history.wav"));
+        let capture = record_capture.then(|| {
+            let capture = Recorder::superwhisper(&server, NAME, &dir.path().join("capture.wav"));
+            server.link(NAME, capture.node());
+            capture
+        });
         server.link(NAME, recorder.node());
-        finished.recv_timeout(4 * WITHIN).unwrap();
+        finished.recv_timeout(WITHIN.saturating_mul(4)).unwrap();
+        let recorders: Vec<_> = std::iter::once(recorder).chain(capture).collect();
+        let ramp_starts: Vec<_> = recorders.iter().map(Recorder::frames_on_disk).collect();
+        let recorder = &recorders[0];
+        let remaining =
+            ramp_starts[0].saturating_add(u64::try_from(frames(LEAD, recorder.rate())).unwrap());
+        recorder.wait_frames(usize::try_from(remaining).unwrap(), WITHIN);
         assert_eq!(
             source.unsteered(),
             0,
             "cycles with no area to steer through"
         );
-        let [plain, steered] = frames.map(|count| count.load(Ordering::Relaxed));
+        for (recorder, ramp_start) in recorders.into_iter().zip(ramp_starts) {
+            let rate = recorder.rate();
+            let from = usize::try_from(ramp_start)
+                .unwrap()
+                .saturating_sub(frames(LEAD, rate));
+            let samples = recorder.finish();
+            let rate = f64::from(rate);
+            let full_scale = f64::from(i16::MAX);
+            let highest = samples
+                .iter()
+                .map(|sample| sample.unsigned_abs())
+                .max()
+                .unwrap();
+            assert!(f64::from(highest) < full_scale, "the waveform clipped");
+            let largest_step = samples[from..]
+                .array_windows::<2>()
+                .map(|[before, after]| before.abs_diff(*after))
+                .max()
+                .unwrap();
+            let sine_step = 2.0 * AMPLITUDE * (TAU * HZ * ratio / (2.0 * rate)).sin();
+            assert!(
+                f64::from(largest_step) <= sine_step * full_scale * RESAMPLER_STEP_SLACK,
+                "step {largest_step} at {rate} Hz"
+            );
+        }
+        let [plain, steered] = counts.map(|count| count.load(Ordering::Relaxed));
         #[expect(
             clippy::as_conversions,
             clippy::cast_precision_loss,
@@ -250,8 +314,8 @@ mod tests {
         )]
         let rise = (steered as f64 - plain as f64) / plain as f64;
         assert!(
-            (rise - (RATIO - 1.0)).abs() <= RATIO_TOLERANCE,
-            "{plain} frames at 1.0 and {steered} at {RATIO}: a rise of {rise:.6}"
+            (rise - (ratio - 1.0)).abs() <= tolerance,
+            "{plain} frames at 1.0 and {steered} at {ratio}: a rise of {rise:.6}"
         );
     }
 

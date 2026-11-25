@@ -10,16 +10,157 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::dictation::DOAP_STOP_ANSWER_MS;
+    use pods_fake::doap::FRAME;
     use pods_proto::doap::{STOP_REASON_UNSOLICITED, doap_mode_off};
     use pods_samples::NAME;
 
     use super::support::audio::Recorder as Listed;
     use super::support::dictation::{
-        CAPTURE, Fixture, HOST_STOP, NO_RECORDER, ready_to_read, status, uplink,
+        CAPTURE, Fixture, HOST_STOP, NO_RECORDER, opening, ready_to_read, status, uplink,
     };
     use super::support::pipewire::record;
     use super::support::uplink::assert_no_sink_call;
     use super::support::{HANG_LIMIT, pause, wait_for};
+
+    const MAX_TAIL: Duration = Duration::from_millis(100);
+    const MARK_FRAMES: u32 = 3;
+    const MARK_LENGTH: Duration = FRAME.saturating_mul(MARK_FRAMES);
+
+    fn assert_marks(samples: &[i16], count: usize, opening: (u32, Option<u32>)) {
+        use super::support::recording::{dictation_marks, frames};
+
+        const ANALYSIS_SLACK: Duration = Duration::from_millis(5);
+        const MAX_RATIO: f64 = 1.10;
+        let marks = dictation_marks(samples);
+        assert_eq!(
+            marks.len(),
+            count,
+            "detected marks: {marks:?}, {} samples, opening {opening:?}",
+            samples.len()
+        );
+        let minimum = frames(
+            MARK_LENGTH
+                .div_f64(MAX_RATIO)
+                .saturating_sub(ANALYSIS_SLACK),
+        );
+        for mark in marks {
+            assert!(
+                mark.len() >= minimum,
+                "mark was cut: {mark:?}, opening {opening:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn short_dictation_with_leading_silence_keeps_first_and_last_word() {
+        use super::support::recording::counts_after_leaving;
+
+        const SILENT_FRAMES: u32 = 10;
+        const SPOKEN_FRAMES: u32 = 25;
+        const ONSET_IN_BURST: u32 = 1;
+        const HELD_START: Duration = FRAME.saturating_mul(SILENT_FRAMES + ONSET_IN_BURST);
+        const TRIMMED_OPENING_LIMIT: Duration = FRAME.saturating_mul(SILENT_FRAMES - MARK_FRAMES);
+        let mut fixture = Fixture::with_recorder_quantum();
+        let doap = fixture.device.pods.doap();
+        doap.hold_start(true);
+        doap.silent(SILENT_FRAMES);
+        doap.mark(MARK_FRAMES);
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        wait_for("dictation mode set", || doap.mode_seen().then_some(()));
+        let mode = Instant::now();
+        fixture.start(1);
+        pause(HELD_START.saturating_sub(mode.elapsed()));
+        doap.release_start();
+        fixture.streaming(1);
+
+        let last_mark = FRAME.saturating_mul(SILENT_FRAMES + SPOKEN_FRAMES - MARK_FRAMES);
+        pause(last_mark.saturating_sub(mode.elapsed()));
+        doap.mark(MARK_FRAMES);
+        pause(MARK_LENGTH.saturating_add(MAX_TAIL));
+        let samples = recorder.finish();
+        fixture.stopped(1);
+        assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
+        let timing = opening(&mut fixture);
+        assert_marks(&samples, 2, timing);
+        let (behind, _) = timing;
+        assert!(
+            Duration::from_millis(u64::from(behind)) <= TRIMMED_OPENING_LIMIT,
+            "{behind} ms"
+        );
+        fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
+    fn continuous_speech_short_dictation_catches_up_and_keeps_tail_mark() {
+        use super::support::recording::counts_after_leaving;
+
+        const SPEECH: Duration = Duration::from_secs(2);
+        const MS_TO_CLOSE_ONE_MS: u32 = 10;
+        const CATCH_UP_SLACK: Duration = FRAME.saturating_mul(6);
+        let mut fixture = Fixture::with_recorder_quantum();
+        let doap = fixture.device.pods.doap();
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        wait_for("dictation mode set", || doap.mode_seen().then_some(()));
+        let mode = Instant::now();
+        fixture.streaming(1);
+        pause(
+            SPEECH
+                .saturating_sub(MARK_LENGTH)
+                .saturating_sub(mode.elapsed()),
+        );
+        doap.mark(MARK_FRAMES);
+        pause(MARK_LENGTH.saturating_add(MAX_TAIL));
+        let samples = recorder.finish();
+        fixture.stopped(1);
+        assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
+        let timing = opening(&mut fixture);
+        assert_marks(&samples, 1, timing);
+        let (behind, caught_up) = timing;
+        assert!(behind > 0, "continuous dictation did not start behind");
+        let limit = Duration::from_millis(u64::from(behind.saturating_mul(MS_TO_CLOSE_ONE_MS)))
+            .saturating_add(CATCH_UP_SLACK);
+        let caught_up = caught_up.expect("the reader was still catching up at the tail");
+        assert!(
+            Duration::from_millis(u64::from(caught_up)) <= limit,
+            "{behind} ms in {caught_up} ms"
+        );
+        fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
+    fn burst_only_short_dictation_plays_the_burst_when_flushed_at_stop() {
+        use super::support::sleep::sleep;
+
+        const BURST_FRAMES: u32 = 4;
+        const NO_STEADY: Duration = Duration::from_secs(2);
+        const FLUSH_SPAN: Duration = FRAME.saturating_mul(BURST_FRAMES).saturating_add(MAX_TAIL);
+        let mut fixture = Fixture::new();
+        let doap = fixture.device.pods.doap();
+        doap.burst(BURST_FRAMES, BURST_FRAMES);
+        doap.mark(u32::MAX);
+        doap.stall(NO_STEADY);
+        fixture.list(CAPTURE);
+        let recorder = record(&fixture.rig, &fixture.server, "burst.wav");
+        fixture.streaming(1);
+        wait_for("the burst notification", || {
+            fixture
+                .rig
+                .daemon()
+                .log()
+                .contains("dictation: first audio after ")
+                .then_some(())
+        });
+        sleep(&mut fixture.rig);
+        fixture.stopped(1);
+        pause(FLUSH_SPAN);
+        assert_marks(&recorder.finish(), 1, (0, None));
+        fixture.no_uplink();
+        fixture.finish();
+    }
 
     #[test]
     fn a_dictation_recorder_starts_doap_and_never_the_uplink() {

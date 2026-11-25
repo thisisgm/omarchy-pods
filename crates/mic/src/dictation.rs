@@ -19,6 +19,10 @@ pub const MAX_GAP_FRAMES: u16 = 4;
 pub const STEADY_FRAMES: usize = 1;
 /// 1.6 s of the burst that opens a stream, which was measured at 63 frames; a longer one is placed when the stage is full.
 pub const PREROLL_STAGE_FRAMES: usize = 80;
+/// Keep this much leading silence for the recorder's voice activity detector.
+const SILENCE_COLLAR_FRAMES: usize = 3;
+const SILENCE_RMS_DBFS: f64 = -58.0;
+const DB_PER_POWER_DECADE: f64 = 10.0;
 /// A counter this far past the expected one, the range wrapped, is one the run has passed.
 const BEHIND: u16 = 1 << 15;
 /// One frame at the node's rate.
@@ -123,9 +127,11 @@ impl Chain {
         let mut frames = frames;
         let staging = self.dictation.stage.is_some();
         let (mut met, mut took) = (0_usize, 0_usize);
-        for (counter, data) in frames.by_ref().take(MAX_FRAMES_PER_NOTIFICATION) {
+        let mut held = frames.by_ref().take(MAX_FRAMES_PER_NOTIFICATION).peekable();
+        while let Some((counter, data)) = held.next() {
             met = met.saturating_add(1);
-            if self.take(now, counter, data) {
+            let steady = met == STEADY_FRAMES && held.peek().is_none();
+            if self.take(now, counter, data, steady) {
                 took = took.saturating_add(1);
             }
         }
@@ -137,7 +143,7 @@ impl Chain {
         // A burst stands ahead of the cadence and a repeat behind it; only a steady notification whose frame the run took tells its time, and the first one places the opening.
         if (met, took) == (STEADY_FRAMES, STEADY_FRAMES) {
             if staging {
-                self.place(now);
+                self.place(now, true);
             } else {
                 self.arrived(now);
             }
@@ -145,7 +151,7 @@ impl Chain {
     }
 
     /// One frame of a notification: staged while the run's opening is, else written; false when the run has passed its counter.
-    fn take(&mut self, now: Duration, counter: u16, data: &[u8]) -> bool {
+    fn take(&mut self, now: Duration, counter: u16, data: &[u8], steady: bool) -> bool {
         let Some(stage) = &mut self.dictation.stage else {
             return self.frame(counter, |decoder| decoder.frame(data));
         };
@@ -164,13 +170,21 @@ impl Chain {
         let held = data.get(..=MAX_OPUS_FRAME_BYTES).unwrap_or(data);
         stage.push((counter, held.to_vec()));
         if stage.len() == PREROLL_STAGE_FRAMES {
-            self.place(now);
+            self.place(now, steady);
         }
         true
     }
 
-    /// Ends the staging: the last staged frame landed at `now`, a frame `n` counters before it stands `n` frames earlier, and those that end inside the opening's reach and the stage's own length are written in order; the rest are dropped and never meet the decoder.
-    fn place(&mut self, now: Duration) {
+    /// Places a burst that ended before the first steady notification.
+    pub fn flush_dictation(&mut self, now: Duration) {
+        if self.ring.path() == Path::Dictation {
+            self.ring.finish();
+            self.place(now, false);
+        }
+    }
+
+    /// Anchors the last staged frame at `now` and places those inside the opening's reach.
+    fn place(&mut self, now: Duration, steady_last: bool) {
         let Some(staged) = self.dictation.stage.take() else {
             return;
         };
@@ -179,13 +193,27 @@ impl Chain {
         };
         let reach = self.ring.open(now);
         self.dictation.expected = None;
-        for (counter, data) in &staged {
+        let first = staged.iter().position(|(counter, _)| {
             let back = last.wrapping_sub(*counter);
-            // Losses spread the staged frames over more counters than the stage's length, which is all the ring is sized to keep.
-            let in_stage = usize::from(back) < PREROLL_STAGE_FRAMES;
-            if in_stage && FRAME_TIME.saturating_mul(u32::from(back)) < reach {
-                self.frame(*counter, |decoder| decoder.frame(data));
-            }
+            usize::from(back) < PREROLL_STAGE_FRAMES
+                && FRAME_TIME.saturating_mul(u32::from(back)) < reach
+        });
+        let Some(kept) = first.and_then(|first| staged.get(first..)) else {
+            return;
+        };
+        let burst_frames = kept.len().saturating_sub(usize::from(steady_last));
+        let removed = if burst_frames > SILENCE_COLLAR_FRAMES {
+            leading_silence(kept.iter().take(burst_frames)).saturating_sub(SILENCE_COLLAR_FRAMES)
+        } else {
+            0
+        };
+        let (silent, kept) = kept.split_at_checked(removed).unwrap_or((&[], kept));
+        // Warm both filters on the omitted prefix so the collar and speech decode as before.
+        for (_, data) in silent {
+            self.dictation.at_node_rate(|decoder| decoder.frame(data));
+        }
+        for (counter, data) in kept {
+            self.frame(*counter, |decoder| decoder.frame(data));
         }
         self.arrived(now);
     }
@@ -236,6 +264,35 @@ impl Chain {
         self.dictation.renew_decoder(&self.counters);
         self.conceal(FRAME_FRAMES);
     }
+}
+
+/// Counts the decodable, consecutive quiet frames at the front, using the raw decoder level.
+fn leading_silence<'a>(frames: impl Iterator<Item = &'a (u16, Vec<u8>)>) -> usize {
+    let Some(mut decoder) = Decoder::new() else {
+        return 0;
+    };
+    let power_limit = 10_f64.powf(SILENCE_RMS_DBFS / DB_PER_POWER_DECADE)
+        * f64::from(u32::try_from(FRAME_SAMPLES).unwrap_or(u32::MAX));
+    let mut previous = None;
+    let mut quiet = 0_usize;
+    for (counter, data) in frames {
+        if previous.is_some_and(|last: u16| last.wrapping_add(1) != *counter) {
+            break;
+        }
+        let Decoded::Samples(samples) = decoder.frame(data) else {
+            break;
+        };
+        let power: f64 = samples
+            .iter()
+            .map(|&sample| f64::from(sample).powi(2))
+            .sum();
+        if !power.is_finite() || power >= power_limit {
+            break;
+        }
+        previous = Some(*counter);
+        quiet = quiet.saturating_add(1);
+    }
+    quiet
 }
 
 #[cfg(test)]

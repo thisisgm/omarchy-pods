@@ -60,18 +60,24 @@ impl Server {
     /// Writes the configuration into `runtime_dir`, starts `pipewire` there and waits until its socket takes a connection.
     #[must_use]
     pub fn start(runtime_dir: &Path) -> Self {
-        Self::start_with(runtime_dir, CLIENT_NODE_MODULE)
+        Self::start_with(runtime_dir, CLIENT_NODE_MODULE, MIN_QUANTUM)
     }
 
     /// As `start`, without the module that makes a client's node: a client connects and its node is refused, across `restart` too.
     #[must_use]
     pub fn start_without_client_nodes(runtime_dir: &Path) -> Self {
-        Self::start_with(runtime_dir, "")
+        Self::start_with(runtime_dir, "", MIN_QUANTUM)
     }
 
-    fn start_with(runtime_dir: &Path, client_node_module: &str) -> Self {
+    /// As `start`, with the smallest graph cycle set to the recorder's frame budget.
+    #[must_use]
+    pub fn start_with_quantum(runtime_dir: &Path, minimum_quantum: u32) -> Self {
+        Self::start_with(runtime_dir, CLIENT_NODE_MODULE, minimum_quantum)
+    }
+
+    fn start_with(runtime_dir: &Path, client_node_module: &str, minimum_quantum: u32) -> Self {
         let config = runtime_dir.join(CONFIG_FILE);
-        fs::write(&config, config_text(client_node_module))
+        fs::write(&config, config_text(client_node_module, minimum_quantum))
             .unwrap_or_else(|error| panic!("{}: {error}", config.display()));
         let server = Self {
             dir: runtime_dir.to_owned(),
@@ -399,13 +405,13 @@ fn channels(node: &Value) -> usize {
 }
 
 /// The modules one by one: no ALSA, Bluetooth or session manager module is loaded.
-fn config_text(client_node_module: &str) -> String {
+fn config_text(client_node_module: &str, minimum_quantum: u32) -> String {
     format!(
         "context.properties = {{
     core.daemon = true
     core.name = {SOCKET}
     # The server has no real-time priority, so a long cycle keeps a late client from missing its turn.
-    default.clock.min-quantum = {MIN_QUANTUM}
+    default.clock.min-quantum = {minimum_quantum}
 }}
 context.spa-libs = {{
     audio.convert.* = audioconvert/libspa-audioconvert

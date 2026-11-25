@@ -30,6 +30,18 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new() -> Self {
+        Self::with_server(start)
+    }
+
+    pub(crate) fn with_recorder_quantum() -> Self {
+        const GRAPH_RATE: u32 = 48_000;
+        const RECORDER_QUANTUM: u32 = GRAPH_RATE / (1_000 / pods_mic::FRAME_MS);
+        Self::with_server(|rig| {
+            Server::start_with_quantum(&rig.session().runtime_dir(), RECORDER_QUANTUM)
+        })
+    }
+
+    fn with_server(start: impl FnOnce(&Rig) -> Server) -> Self {
         let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Running);
         device.pods.doap().table(Table::Observed);
         audio.add_source(&node_name());
@@ -108,6 +120,22 @@ impl Fixture {
     pub(crate) fn finish(self) {
         self.rig.finish();
     }
+}
+
+// Sample input: `dictation: opening 115 ms behind, caught up after 1180 ms`.
+pub(crate) fn opening(fixture: &mut Fixture) -> (u32, Option<u32>) {
+    let log = fixture.rig.daemon().log();
+    let Some(line) = log
+        .lines()
+        .find_map(|line| line.strip_prefix("dictation: opening "))
+    else {
+        return (0, None);
+    };
+    let (behind, caught_up) = line.split_once(" ms behind").unwrap();
+    let elapsed = caught_up
+        .strip_prefix(", caught up after ")
+        .map(|after| after.strip_suffix(" ms").unwrap().parse().unwrap());
+    (behind.parse().unwrap(), elapsed)
 }
 
 pub(crate) fn status(rig: &Rig, word: &str) {

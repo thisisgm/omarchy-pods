@@ -11,7 +11,7 @@ mod tests {
     use pods_core::policy::dictation::{DOAP_STOP_ANSWER_MS, INHIBIT_WAIT_MS, MODE_SETTLE_MS};
     use pods_proto::doap::{doap_mode_off, doap_mode_on};
 
-    use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, ready_to_read, status};
+    use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, opening, ready_to_read, status};
     use super::support::logind::INHIBIT;
     use super::support::pipewire::{record, wait_no_node};
     use super::support::recording::{assert_sounds, first_sound, frames, longest_zero_run};
@@ -48,6 +48,61 @@ mod tests {
 
     fn past_mode_settle(mode_at: Instant) {
         pause(AFTER_SETTLE.saturating_sub(mode_at.elapsed()));
+    }
+
+    #[test]
+    fn history_recorder_stays_click_free_across_opening_catchup_exit() {
+        use pods_fake::doap::FRAME;
+        use pods_pwrig::Recorder;
+        use pods_samples::opus::TONE_HZ;
+
+        use super::support::pipewire::node_name;
+        use super::support::recording::{counts_after_leaving, frames_at as at_rate, largest_step};
+
+        const SPEECH: Duration = Duration::from_secs(3);
+        const DECODER_SETTLE: Duration = FRAME.saturating_mul(2);
+        const STEP_TOLERANCE: f64 = 1.30;
+        let mut fixture = Fixture::new();
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        let node = node_name();
+        let wave = fixture.rig.session().dir.path().join("history.wav");
+        let history = Recorder::history(&fixture.server, &node, &wave);
+        fixture.server.link(&node, history.node());
+        fixture.streaming(1);
+        pause(SPEECH);
+        let rate = history.rate();
+        let samples = history.finish();
+        let capture = recorder.finish();
+        fixture.stopped(1);
+        let (behind, caught_up) = opening(&mut fixture);
+        assert!(
+            behind > 0,
+            "history recorder did not exercise dictation opening"
+        );
+        let caught_up = caught_up.expect("the reader never caught up");
+        assert_sounds(&capture, "");
+        let zeroes = longest_zero_run(&samples);
+        assert!(
+            zeroes < usize::try_from(rate / TONE_HZ).unwrap(),
+            "a gap of {zeroes} zero samples"
+        );
+        let first = first_sound(&samples);
+        let steady_start = samples.len() - at_rate(AUDIO, rate);
+        let catch_up = Duration::from_millis(u64::from(caught_up));
+        // Use the first sound as the opening's start on the recorder clock.
+        assert!(
+            first + at_rate(catch_up, rate) < steady_start,
+            "catch-up after {caught_up} ms overlaps the steady window"
+        );
+        let start = first + at_rate(DECODER_SETTLE, rate);
+        let steady = &samples[steady_start..];
+        let bound = f64::from(largest_step(steady)) * STEP_TOLERANCE;
+        let step = largest_step(&samples[start..]);
+        assert!(f64::from(step) <= bound, "step {step} exceeds {bound}");
+        assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
+        fixture.no_uplink();
+        fixture.finish();
     }
 
     #[test]

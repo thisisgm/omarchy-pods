@@ -18,7 +18,7 @@ mod tests {
     use pods_mic::decode::Decoded;
     use pods_mic::opus::{Decoder, FRAME_SAMPLES, MAX_OPUS_FRAME_BYTES};
     use pods_samples::doap::{self, Handles, REASON_HOST, REASON_UNASKED, host};
-    use pods_samples::opus::{mark, tone};
+    use pods_samples::opus::{mark, mark_onset, tone};
     use pods_samples::{DOAP_MODE, setting};
     use pods_sys::l2cap::Channel;
     use proptest::prelude::*;
@@ -246,9 +246,8 @@ mod tests {
         served.hear_for(FRAME * MARKED + MARK_LEAD);
         served.start();
 
-        let marks: Vec<&[u8]> = mark().collect();
         let marked: Vec<(u16, &[u8])> = (0..u16::try_from(MARKED).unwrap())
-            .map(|counter| (counter, coded(&marks, counter)))
+            .map(|counter| (counter, mark_onset()))
             .collect();
         assert_eq!(MARKED, BURST_PER_NOTIFICATION);
         assert_eq!(recv(&served.att), doap::audio(&TABLE, 0, &marked));

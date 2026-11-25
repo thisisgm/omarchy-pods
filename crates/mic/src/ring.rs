@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::conceal::{FADE_FRAMES, Tail, UNIT_FRAMES, fade_in};
 use super::dictation::{FRAME_MS, PREROLL_STAGE_FRAMES};
-use super::{Counters, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ, level};
+use super::{Counters, DOAP_LATENCY_MS, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ, level};
 
 /// A power of two, 2 s at 64 kHz and more at 48: the frames an opening may keep, and twice the latency a steady reader stands behind the writer.
 const RING_SAMPLES: u64 = 131_072;
@@ -23,8 +23,12 @@ const REALIGN_MS: u16 = 15;
 const STEER_PPM_PER_MS: f64 = 200.0;
 /// Inaudible as pitch, and more than ten times the drift measured.
 const STEER_MAX_PPM: f64 = 2000.0;
-/// 5 percent, inside the speeds a speech recogniser is trained on: how much faster than real time the consumer of a dictation runs while the reader catches up.
-pub const OPENING_MAX_PPM: f64 = 50_000.0;
+/// The most lag an opening can leave to steady steering.
+pub const OPENING_EXIT_MS: u16 = 2;
+/// The number of quanta over which the opening rate returns to nominal.
+pub const OPENING_RAMP_QUANTA: u32 = 4;
+/// Ten percent, inside the speeds a speech recogniser is trained on.
+pub const OPENING_MAX_PPM: f64 = 100_000.0;
 /// One late packet does not move the pitch.
 const STEER_SMOOTH_MS: u16 = 2000;
 const PARTS_PER_MILLION: f64 = 1e6;
@@ -104,6 +108,7 @@ pub(crate) struct Ring {
     floor: AtomicU64,
     /// Whether the run is of the dictation stream.
     dictation: AtomicBool,
+    finished: AtomicBool,
     /// The earliest `now` less the time `written` stood for, over the last packets of the run, in ns; none while no packet of the run has landed.
     arrival: Moment,
     /// The reader's clock at its first read after a recorder linked; only the reader writes it.
@@ -119,6 +124,7 @@ impl Ring {
             written: AtomicU64::new(0),
             floor: AtomicU64::new(0),
             dictation: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
             arrival: Moment::none(),
             edge: Moment::none(),
             opened: Moment::none(),
@@ -158,7 +164,7 @@ impl Ring {
 
     /// The stream the run is of.
     pub(crate) fn path(&self) -> Path {
-        if self.dictation.load(Ordering::Relaxed) {
+        if self.dictation.load(Ordering::Acquire) {
             Path::Dictation
         } else {
             Path::Uplink
@@ -169,10 +175,16 @@ impl Ring {
         // The time and the edge go before the floor moves, so a reader that sees this run never sees those of the one before.
         self.arrival.store(None);
         self.opened.store(None);
+        self.finished.store(false, Ordering::Relaxed);
         self.dictation
             .store(path == Path::Dictation, Ordering::Release);
         self.floor
             .store(self.written.load(Ordering::Relaxed), Ordering::Release);
+    }
+
+    /// Running out of audio after the stream ended is the normal tail.
+    pub(crate) fn finish(&self) {
+        self.finished.store(true, Ordering::Release);
     }
 
     /// Notes the recorder's open edge, and gives it in ns.
@@ -207,8 +219,12 @@ impl Ring {
 
     /// The frame that should follow the last of a read at `now`: the sample whose time is the stated latency before; none while no packet of the run has landed.
     fn target(&self, now: Duration) -> Option<i64> {
+        let latency = match self.path() {
+            Path::Uplink => NODE_LATENCY_MS,
+            Path::Dictation => DOAP_LATENCY_MS,
+        };
         let arrival = self.arrival.load()?;
-        let latency = i64::from(NODE_LATENCY_MS).saturating_mul(NS_PER_MS);
+        let latency = i64::from(latency).saturating_mul(NS_PER_MS);
         let played = ns_of(now).saturating_sub(arrival).saturating_sub(latency);
         Some(scaled(played, RATE_HZ, NS_PER_SECOND))
     }
@@ -273,9 +289,8 @@ struct Aim {
 #[derive(Debug, Clone, Copy)]
 struct Opening {
     run: u64,
-    /// When it began, in ns, and how far behind the reader then stood, in frames.
+    /// When it began, in ns.
     began: i64,
-    behind: i64,
 }
 
 /// What the reader's last frame was.
@@ -311,6 +326,29 @@ pub struct Reader {
     edge: Option<i64>,
     /// The run the reader is catching up on.
     opening: Option<Opening>,
+}
+
+/// The catch-up rate falls by a quarter of its excess per quantum as it spends its remaining lag budget.
+fn opening_ratio(behind: i64, frames: i64) -> f64 {
+    let exit = i64::from(OPENING_EXIT_MS.saturating_mul(FRAMES_PER_MS));
+    let distance = float_of(behind.saturating_sub(exit)) / float_of(frames.max(1));
+    if distance <= 0.0 {
+        return 1.0;
+    }
+    let max_excess = OPENING_MAX_PPM / PARTS_PER_MILLION;
+    let step = max_excess / f64::from(OPENING_RAMP_QUANTA);
+    let mut budget = 0.0;
+    for quantum in 1..=OPENING_RAMP_QUANTA {
+        let excess = step * f64::from(quantum);
+        // A quantum at ratio r closes 1 - 1/r quanta of lag.
+        let closure = excess / (1.0 + excess);
+        if distance <= budget + closure {
+            let share = (distance - budget) / closure;
+            return 1.0 + step * (f64::from(quantum.saturating_sub(1)) + share);
+        }
+        budget += closure;
+    }
+    1.0 + max_excess
 }
 
 impl Reader {
@@ -381,7 +419,7 @@ impl Reader {
         }
         match (aim, self.opening) {
             (None, _) => 1.0,
-            (Some(_), Some(_)) => 1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION,
+            (Some(aim), Some(_)) => opening_ratio(aim.target.saturating_sub(self.next), frames),
             (Some(aim), None) => self.steer(aim.target, frames),
         }
     }
@@ -394,15 +432,20 @@ impl Reader {
         // Only a recorder that has heard nothing since it linked still waits for what came before its edge.
         if self.heard.is_none() && first < place && self.ring.opened_against(self.edge) {
             self.jump(first);
+            let behind = scaled(place.saturating_sub(first), 1, u32::from(FRAMES_PER_MS));
+            self.counters.opening_ms.store(0, Ordering::Relaxed);
+            self.counters
+                .opening_behind_ms
+                .store(u32::try_from(behind).unwrap_or(u32::MAX), Ordering::Relaxed);
             self.opening = Some(Opening {
                 run,
                 began: ns_of(now),
-                behind: place.saturating_sub(first),
             });
         }
         if let Some(opening) = self.opening {
             let same_run = run == opening.run;
-            if same_run && place.saturating_sub(self.next) > bound {
+            let exit = i64::from(OPENING_EXIT_MS.saturating_mul(FRAMES_PER_MS));
+            if same_run && place.saturating_sub(self.next) > exit {
                 return;
             }
             if same_run {
@@ -417,16 +460,13 @@ impl Reader {
         }
     }
 
-    /// The opening reached the target: how far behind it began and how long it took are kept.
+    /// Records the time to reach the opening's exit bound.
     fn caught_up(&self, opening: Opening, now: Duration) {
-        let behind_ms = scaled(opening.behind, 1, u32::from(FRAMES_PER_MS));
         let took_ms = ns_of(now).saturating_sub(opening.began) / NS_PER_MS;
-        for (counter, ms) in [
-            (&self.counters.opening_behind_ms, behind_ms),
-            (&self.counters.opening_ms, took_ms),
-        ] {
-            counter.store(u32::try_from(ms).unwrap_or(u32::MAX), Ordering::Relaxed);
-        }
+        self.counters.opening_ms.store(
+            u32::try_from(took_ms).unwrap_or(u32::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     /// How far the last read stood from its target, smoothed, in ms; above zero the reader is ahead.
@@ -478,7 +518,10 @@ impl Reader {
                 sample * gain
             }
             Frame::Dry { run } => {
-                if self.was != Was::Dry && self.heard == Some(run) {
+                if self.was != Was::Dry
+                    && self.heard == Some(run)
+                    && !self.ring.finished.load(Ordering::Acquire)
+                {
                     self.counters.underruns.fetch_add(1, Ordering::Relaxed);
                 }
                 self.end_audio(at);
