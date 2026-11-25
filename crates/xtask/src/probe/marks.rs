@@ -2,15 +2,20 @@
 
 mod connect;
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the takeover command tests also build a playing link"
+)]
 mod fixture;
 mod journal;
 mod sinks;
+mod takeover;
 
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::Args;
+use clap::{Args, Subcommand};
 use pods_core::link::ladder::Attempt;
 use pods_core::link::{Phase, STATE_POPULATED_LINE, phase_change_line};
 use pods_proto::addr::BdAddr;
@@ -22,6 +27,7 @@ use super::store::{self, MAX_READ_BYTES, StoreError};
 use connect::{Began, Connection, connection};
 use journal::line_us;
 use sinks::first_bluez_sink_us;
+use takeover::TakeoverArgs;
 
 const MICROS_PER_SECOND: u64 = 1_000_000;
 const MICROS_PER_MILLI: i128 = 1_000;
@@ -35,9 +41,18 @@ const TRIAL_WORD: &str = "trial";
 /// The header: the trial, what `row` gives of its connection, then the marks of the journal and of the sinks log.
 const HEADER: &str = "trial\tbegan\tadvert_ms\tset_configurations\topen_ms\tstart_ms\tcontrol_dials\tmedia_ms\tended\tup_ms\tpopulated_ms\tsink_ms";
 
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+pub(crate) struct MarksArgs {
+    #[command(flatten)]
+    connection: Option<ConnectionArgs>,
+    #[command(subcommand)]
+    command: Option<MarksCommand>,
+}
+
 /// The files of one sitting.
 #[derive(Debug, Args)]
-pub(crate) struct MarksArgs {
+struct ConnectionArgs {
     /// The trace btmon -w wrote: the caller's own, with no access for group or others, as every file below.
     trace: PathBuf,
     /// A file of mode 0600 that holds the address of the pods and nothing else; the address is never printed.
@@ -52,6 +67,12 @@ pub(crate) struct MarksArgs {
     /// The sinks: lines of pactl list short sinks, each after the output of date +%s.%N and a space.
     #[arg(long)]
     sinks: PathBuf,
+}
+
+#[derive(Debug, Subcommand)]
+enum MarksCommand {
+    /// Prints audio source reports and, with a trace, each trial's suspend, close and restart marks.
+    Takeover(TakeoverArgs),
 }
 
 /// The stretch of a sitting that belongs to one trial: from its line in the trials log to the next trial's.
@@ -73,6 +94,8 @@ impl Window {
 /// Why no table was printed; none holds the device's address or a byte of a file.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MarksError {
+    #[error("provide the connection files or choose the takeover subcommand")]
+    NoMarksInput,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -87,6 +110,12 @@ pub(crate) enum MarksError {
     TrialsOrder { line: usize },
     #[error("trials log holds no trial")]
     NoTrial,
+    #[error(transparent)]
+    SduLog(#[from] super::analyse::input::InputError),
+    #[error("meta.txt has no realtime_at_zero_ns for the SDU log")]
+    NoSduClock,
+    #[error("sdu.log stamp falls outside the supported clock range")]
+    SduClockOverflow,
     #[error(
         "trial {trial}: the trace holds the connection of the named device and neither the request nor the command that began it"
     )]
@@ -204,6 +233,14 @@ fn up_line() -> String {
     phase_change_line(features, Phase::Up { rerequest: None })
 }
 
+fn trace_extent(trace: &[u8]) -> Result<(Option<Cut>, Option<u64>), TraceError> {
+    let mut last_record_us = None;
+    let cut = hci::walk(trace, |raw| {
+        last_record_us = Some(raw.at_ns / NANOS_PER_MICRO);
+    })?;
+    Ok((cut, last_record_us))
+}
+
 /// The table and any trace damage. A cut before a window ends leaves its trial incomplete. An uncut trace is the whole capture.
 pub(crate) fn table(
     trace: &[u8],
@@ -212,10 +249,7 @@ pub(crate) fn table(
     journal: &str,
     sinks_log: &str,
 ) -> Result<(String, Option<Cut>), MarksError> {
-    let mut last_record_us = None;
-    let cut = hci::walk(trace, |raw| {
-        last_record_us = Some(raw.at_ns / NANOS_PER_MICRO);
-    })?;
+    let (cut, last_record_us) = trace_extent(trace)?;
     let up = up_line();
     // A trial with no connection keeps the tabs between the fields after its number.
     let no_marks = "\t".repeat(HEADER.matches('\t').count().saturating_sub(1));
@@ -260,6 +294,10 @@ fn text(path: &Path) -> Result<String, MarksError> {
 
 /// Reads the files of one sitting and gives the table of its trials, with the damaged record its trace was read up to.
 pub(crate) fn marks(args: &MarksArgs) -> Result<(String, Option<Cut>), MarksError> {
+    if let Some(MarksCommand::Takeover(args)) = &args.command {
+        return takeover::table(args);
+    }
+    let args = args.connection.as_ref().ok_or(MarksError::NoMarksInput)?;
     let device = store::read_device_file(&args.device_file)?;
     let trace = store::read_trace(&args.trace, MAX_TRACE_BYTES)?;
     let (trials, journal, sinks) = (
