@@ -38,7 +38,7 @@ impl VolumeWrite {
         })
     }
 
-    pub(super) fn is_lowering(&self) -> bool {
+    pub(super) fn is_lowering(self) -> bool {
         matches!(self.target, Target::Lower(_))
     }
 
@@ -95,7 +95,9 @@ impl Volumes {
     ) -> Result<Observed, Lost> {
         let mut observed = Observed::Unchanged;
         let position = self.saved.iter().position(|saved| saved.device == device);
-        let write = pending.take();
+        let write = pending.take().filter(|write| {
+            !write.is_lowering() || reading.is_none_or(|reading| reading.fact.is_default)
+        });
         if let Some(reading) = reading {
             let channels = reading.channels;
             let percent = reading.fact.volume;

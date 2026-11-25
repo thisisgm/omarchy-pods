@@ -16,7 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pods_core::policy::audio::AUDIO_CALL_TIMEOUT_MS;
-use pulseaudio::protocol::{ChannelVolume, SinkState, SubscriptionMask, Volume};
+use pulseaudio::protocol::{ChannelVolume, CommandTag, SinkState, SubscriptionMask, Volume};
 use rustix::net::{self, Shutdown};
 
 pub(crate) use capture::{Recorder, RecorderId};
@@ -361,7 +361,12 @@ impl FakeAudio {
 
     /// Starts holding messages at the next card-list reply.
     pub(crate) fn hold_at_card_list(&self) {
-        self.change(State::hold_at_card_list);
+        self.hold_at_reply(CommandTag::GetCardInfoList);
+    }
+
+    /// Starts holding messages at the next reply to `tag`.
+    pub(crate) fn hold_at_reply(&self, tag: CommandTag) {
+        self.change(|state| state.hold_at_reply(tag));
     }
 
     /// Sends one sink event even when silenced, holding every reply it prompts until released.

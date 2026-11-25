@@ -439,21 +439,14 @@ impl<'a> Follower<'a> {
                     volume_stamp: self.volume.stamp,
                     ..reading.fact
                 });
-                if self.recording.active && !refresh.intersects(CAPTURE_EVENTS) {
-                    self.requests.volume = self
-                        .requests
-                        .volume
-                        .take()
-                        .filter(|write| !write.is_lowering());
-                }
-                // A new duck waits for any capture reading already due in this refresh.
-                if !self
-                    .requests
-                    .volume
-                    .as_ref()
-                    .is_some_and(VolumeWrite::is_lowering)
-                    || !refresh.intersects(CAPTURE_EVENTS)
-                {
+                let capture_current = !(refresh | stale).intersects(CAPTURE_EVENTS);
+                let default_current = !stale.contains(SubscriptionMask::SERVER);
+                let lowering = self.requests.volume.is_some_and(VolumeWrite::is_lowering);
+                // A new duck waits for fresh capture activity and a current default sink.
+                if !lowering || (capture_current && default_current) {
+                    if lowering && self.recording.active {
+                        self.requests.volume = None;
+                    }
                     observed = self
                         .volume
                         .apply(
