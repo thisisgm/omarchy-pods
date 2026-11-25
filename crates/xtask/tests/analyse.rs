@@ -17,6 +17,7 @@ mod tests {
     use std::path::Path;
     use std::process::{Command, Output};
 
+    use pods_mic::{STAMP_STEP, UPLINK_STAMP_HZ};
     use pods_proto::sdulog::{Direction, Record};
     use pods_proto::uplink::encode_audio;
     use tempfile::TempDir;
@@ -55,12 +56,12 @@ mod tests {
     const LATE_SDU: usize = 500;
     /// How long it is held back: over one interval, so the SDU due meanwhile lands with it, 10 ms late.
     const HELD_BACK_MS: u64 = 40;
-    /// A peer 312 parts per million slow: the nearest whole rate past 300.
-    const SLOW_HZ: u32 = 63_980;
+    /// The stamp clock of a peer about 333 parts per million slow.
+    const SLOW_STAMP_HZ: u32 = 23_992;
     /// Arrivals with no delay at all, so every lateness in the table is one the test planted.
     const NO_JITTER_MS: u32 = 0;
     const SEED: u64 = 1;
-    /// A clock 312 parts per million slow drifts about 0.3 ms over one window of about a second, so a lateness of 1 ms is past it.
+    /// The slow clock drifts about 0.3 ms over one window of about a second, so a lateness of 1 ms is past it.
     const WINDOW_DRIFT_LIMIT_MS: f64 = 1.0;
 
     /// With the signal ignored a write past the cap fails as it does on a full disk; `$0` is the command, `$1` the run, `$2` the cap.
@@ -341,8 +342,8 @@ mod tests {
     #[test]
     fn the_lateness_table_finds_one_planted_late_packet() {
         let mut records = synth(
-            RATE_HZ,
-            SAMPLES_PER_UNIT,
+            UPLINK_STAMP_HZ,
+            STAMP_STEP,
             UNITS_PER_SDU,
             SHORT_RUN_S,
             NO_JITTER_MS,
@@ -371,8 +372,8 @@ mod tests {
     fn stamps_that_skip_a_packet_or_start_again_mid_start_add_no_lateness() {
         let generate = || {
             synth(
-                RATE_HZ,
-                SAMPLES_PER_UNIT,
+                UPLINK_STAMP_HZ,
+                STAMP_STEP,
                 UNITS_PER_SDU,
                 SHORT_RUN_S,
                 NO_JITTER_MS,
@@ -397,8 +398,8 @@ mod tests {
     #[test]
     fn a_slow_clock_alone_is_no_lateness() {
         let records = synth(
-            SLOW_HZ,
-            SAMPLES_PER_UNIT,
+            SLOW_STAMP_HZ,
+            STAMP_STEP,
             UNITS_PER_SDU,
             TEN_MINUTES_S,
             NO_JITTER_MS,

@@ -284,7 +284,7 @@ fn stamp_delta_survives_the_wrap_of_the_stamp() {
         .collect();
     let loaded = load(&records);
     let report = stamps(&loaded);
-    assert_eq!(report.per_unit.unwrap().delta, 480);
+    assert_eq!(report.per_unit.unwrap().delta, 180);
     assert!(close(report.per_unit.unwrap().share, 1.0, 1e-12));
     assert_eq!(gaps(&loaded), []);
 }
@@ -407,7 +407,7 @@ fn length_agrees_counts_the_sdus_whose_header_holds_their_length() {
 fn a_stamp_delta_that_is_no_whole_step_is_named_irregular() {
     let mut records = stream(SDUS, |_| OPAQUE);
     let at_ns = records[40].at_ns;
-    let stamps: Vec<(u32, &[u8])> = [76_800, 77_280, 77_380, 77_860]
+    let stamps: Vec<(u32, &[u8])> = [28_800, 28_980, 29_080, 29_260]
         .into_iter()
         .map(|stamp| (stamp, &SILENT_UNIT[..]))
         .collect();
@@ -423,7 +423,7 @@ fn a_stamp_delta_that_is_no_whole_step_is_named_irregular() {
         sdu: 41,
         at_ns: records[41].at_ns,
         late_ns: None,
-        stamps: Some(StampBreak::Irregular { delta: 860 }),
+        stamps: Some(StampBreak::Irregular { delta: 260 }),
     };
     assert_eq!(found, [inside, after]);
 }

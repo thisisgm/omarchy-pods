@@ -14,7 +14,7 @@ mod tests {
     };
     use pods_fake::{Fault, Pods, Profile};
     use pods_mic::decode::{Decoded, Decoder};
-    use pods_mic::{UPLINK_DECODE_HZ, UPLINK_PERIOD_MS};
+    use pods_mic::{UPLINK_PERIOD_MS, UPLINK_STAMP_HZ};
     use pods_samples::Placed;
     use pods_samples::uplink::{
         STAMP_STEP, START, STOP, audio_sdu, session_marker, state_marker, tone_unit,
@@ -25,12 +25,12 @@ mod tests {
         REAL_TIME_SLACK, RECV_TIMEOUT, ask, assert_quiet, open, opening, recv, recv_many,
     };
 
-    /// The fake's cadence is the one the decode chain counts on: a packet's units hold one period of samples.
+    /// The fake's cadence is the one the decode chain counts on: a packet's stamps span one packet period.
     #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
     const _: () = assert!(
         PERIOD.as_millis() == UPLINK_PERIOD_MS as u128
             && (UNITS_PER_PACKET * STAMP_STEP) as u128 * 1000
-                == UPLINK_DECODE_HZ as u128 * PERIOD.as_millis()
+                == UPLINK_STAMP_HZ as u128 * PERIOD.as_millis()
     );
 
     /// The accessory header and the opcode, which the state marker shares with no other packet of the burst.
