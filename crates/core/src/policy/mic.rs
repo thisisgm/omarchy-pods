@@ -223,8 +223,9 @@ impl Mic {
         fact: &Fact,
         now: Duration,
         effects: &mut Vec<Effect>,
-    ) {
+    ) -> (Recorders, bool) {
         self.node.step(state, fact, now, effects);
+        self.node.recorders()
     }
 
     /// `state` is the state after the step the fact comes from.

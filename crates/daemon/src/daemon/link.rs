@@ -24,7 +24,7 @@ use pods_core::policy::{
 };
 use pods_core::prefs::Prefs;
 use pods_core::state::{MicCounts, MicSpan, State};
-use pods_mic::Counters;
+use pods_mic::{Counters, Resync};
 use pods_proto::addr::BdAddr;
 use pods_proto::doap::{doap_mode_off, doap_mode_on};
 use pods_proto::keys::ProximityKeys;
@@ -114,6 +114,8 @@ pub(super) struct Outlets {
     pub(super) monitor: watch::Sender<bool>,
     /// The latest source request; a watch, so turns of the setting while an open hangs never drop the last.
     pub(super) mic: watch::Sender<mic::Request>,
+    /// The resync handle of the source the adapter has open.
+    pub(super) mic_reader: watch::Receiver<Option<Resync>>,
     /// The adapter of the link's attribute channel, started and ended with the control channel.
     pub(super) dictation: dictation::Outlet,
     pub(super) sleep_bus: sleep::Bus,
@@ -516,6 +518,11 @@ impl Driver {
             }
             Effect::Mic(request) => {
                 mic::offer(&self.outlets.mic, request, self.machine.connected_device());
+            }
+            Effect::ResyncMic => {
+                if let Some(reader) = self.outlets.mic_reader.borrow().as_ref() {
+                    reader.request();
+                }
             }
             Effect::Dictation(DictationRequest::Mode) => {
                 self.send(&doap_mode_on());

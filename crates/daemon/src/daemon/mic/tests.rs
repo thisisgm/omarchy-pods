@@ -22,6 +22,7 @@ fn adapter() -> Adapter {
     Adapter {
         socket: PathBuf::new(),
         tap: Tap::new(),
+        reader: watch::channel(None).0,
         wake,
         wanted: None,
         opened: None,

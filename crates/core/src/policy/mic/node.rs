@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::BUD_GRACE_MS;
 use crate::link::Signal;
-use crate::policy::audio::AudioFact;
+use crate::policy::audio::{AudioFact, Recorders};
 use crate::policy::{Effect, Fact};
 use crate::prefs::MicPref;
 use crate::state::{AudioServer, MicCode, State};
@@ -33,7 +33,7 @@ pub enum MicFact {
     Down(OpenId),
     /// The library failed before any contact with a server; nothing tries again until the daemon restarts.
     Broken,
-    /// Whether a recorder is linked to the node and the graph runs it.
+    /// Whether the `PipeWire` graph runs the source.
     Recording(OpenId, bool),
     /// The first audio packet since the last START.
     FirstAudio,
@@ -62,11 +62,19 @@ enum Source {
     Opening(OpenId),
     Up {
         id: OpenId,
-        recording: bool,
+        capture: Capture,
     },
     Down(OpenId),
     /// The library failed, so nothing opens again.
     Broken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Capture {
+    Paused,
+    Recording,
+    /// The graph runs the source while the recorder list is empty.
+    ListEnded,
 }
 
 impl Source {
@@ -103,6 +111,8 @@ pub(super) struct Node {
     exiting: bool,
     card_profile: CardProfile,
     buds: Buds,
+    recorders: Recorders,
+    recorders_fresh: bool,
 }
 
 impl Node {
@@ -114,9 +124,11 @@ impl Node {
         now: Duration,
         effects: &mut Vec<Effect>,
     ) {
+        let was_recording = self.recording();
         match fact {
             Fact::Mic(fact) => self.heard(*fact, effects),
             Fact::Exit => self.exiting = true,
+            Fact::Audio(AudioFact::Recorders(recorders)) => self.listed(*recorders),
             Fact::Audio(AudioFact::Headset(headset)) => {
                 self.card_profile = match (state.audio_server, *headset) {
                     (AudioServer::Idle, _) => CardProfile::Unread,
@@ -155,6 +167,33 @@ impl Node {
             }
             (true, _) | (false, Source::Closed | Source::Broken) => {}
         }
+        if matches!(
+            fact,
+            Fact::Audio(AudioFact::Down) | Fact::Link(Signal::Down | Signal::Lost { .. })
+        ) {
+            self.recorders = Recorders::default();
+            self.recorders_fresh = false;
+        } else if was_recording && !self.recording() {
+            // The audio adapter only reports a change, so keep the counts for the next deadline.
+            self.recorders_fresh = false;
+        }
+    }
+
+    fn listed(&mut self, recorders: Recorders) {
+        let fresh = recorders != Recorders::default();
+        if let Source::Up { capture, .. } = &mut self.source {
+            *capture = match (*capture, fresh) {
+                (Capture::Recording, false) if self.recorders_fresh => Capture::ListEnded,
+                (Capture::ListEnded, true) => Capture::Recording,
+                (capture, _) => capture,
+            };
+        }
+        self.recorders = recorders;
+        self.recorders_fresh = fresh;
+    }
+
+    pub(super) fn recorders(&self) -> (Recorders, bool) {
+        (self.recorders, self.recorders_fresh)
     }
 
     /// A fact of an earlier open is dropped, except the library's failure, which outlives it.
@@ -177,7 +216,7 @@ impl Node {
                 }
                 self.source = Source::Up {
                     id,
-                    recording: false,
+                    capture: Capture::Paused,
                 };
             }
             MicFact::Down(id) => {
@@ -186,9 +225,13 @@ impl Node {
                 }
                 self.source = Source::Down(id);
             }
-            MicFact::Recording(id, recording) => {
-                if up {
-                    self.source = Source::Up { id, recording };
+            MicFact::Recording(_, recording) => {
+                if let Source::Up { capture, .. } = &mut self.source {
+                    *capture = match (recording, *capture) {
+                        (false, _) => Capture::Paused,
+                        (true, Capture::Paused) => Capture::Recording,
+                        (true, capture) => capture,
+                    };
                 }
             }
         }
@@ -243,7 +286,7 @@ impl Node {
         matches!(
             self.source,
             Source::Up {
-                recording: true,
+                capture: Capture::Recording,
                 ..
             }
         )

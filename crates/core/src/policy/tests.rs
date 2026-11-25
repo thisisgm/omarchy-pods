@@ -524,6 +524,7 @@ fn asks(effects: Vec<Effect>) -> Vec<Asks> {
             | Effect::Monitor(_)
             | Effect::Uplink(_)
             | Effect::Mic(_)
+            | Effect::ResyncMic
             | Effect::Dictation(_)
             | Effect::Log(_)
             | Effect::Exited => {}

@@ -20,7 +20,7 @@ use crate::link::Signal;
 use crate::state::{AdvertIntake, State};
 use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
-use audio::{AudioFact, AudioRequest, Recorders};
+use audio::{AudioFact, AudioRequest};
 use battery::Latches;
 use dictation::Dictation;
 pub use dictation::{DictationFact, DictationRequest};
@@ -70,6 +70,8 @@ pub enum Effect {
     /// Written on the open channel; a closed channel drops it.
     Uplink(UplinkRequest),
     Mic(MicRequest),
+    /// Open the reader against a new dictation span when its source never paused.
+    ResyncMic,
     Dictation(DictationRequest),
     /// A line for the daemon's log.
     Log(String),
@@ -87,8 +89,6 @@ pub struct Policy {
     ducking: Ducking,
     mic: Mic,
     dictation: Dictation,
-    recorders: Recorders,
-    recorders_fresh: bool,
     edge: Edge,
 }
 
@@ -208,36 +208,23 @@ impl Policy {
         let arm = self.dictation.step(state, fact, now);
         let mut effects = Vec::new();
         let was_recording = self.mic.recording();
-        self.mic.step_node(state, fact, now, &mut effects);
+        let (recorders, fresh) = self.mic.step_node(state, fact, now, &mut effects);
         let recording = self.mic.recording();
-        if matches!(
-            fact,
-            Fact::Audio(AudioFact::Down) | Fact::Link(Signal::Down | Signal::Lost { .. })
-        ) {
-            self.recorders = Recorders::default();
-            self.recorders_fresh = false;
-        } else if was_recording && !recording {
-            // The audio adapter only reports a change, so keep the counts for the next deadline.
-            self.recorders_fresh = false;
-        } else if let Fact::Audio(AudioFact::Recorders(recorders)) = fact {
-            self.recorders = *recorders;
-            // An attached recorder is a stream, so an empty list is behind it and never fresh.
-            self.recorders_fresh = *recorders != Recorders::default();
-        }
         let before = self.edge.route();
         let waited_until = self.edge.deadline();
-        let route = self.edge.step(
-            recording,
-            self.recorders,
-            self.recorders_fresh,
-            self.dictation.armed(),
-            now,
-        );
+        let route = self
+            .edge
+            .step(recording, recorders, fresh, self.dictation.armed(), now);
         if let Some(route) = route.filter(|route| Some(*route) != before) {
-            let count =
-                u16::from(self.recorders.dictation).saturating_add(u16::from(self.recorders.other));
+            if route == Route::Dictation
+                && !was_recording
+                && matches!(fact, Fact::Audio(AudioFact::Recorders(_)))
+            {
+                effects.push(Effect::ResyncMic);
+            }
+            let count = u16::from(recorders.dictation).saturating_add(u16::from(recorders.other));
             let line = match route {
-                Route::Dictation if count == 0 && !self.recorders_fresh => {
+                Route::Dictation if count == 0 && !fresh => {
                     let waited = waited_until.map_or(u128::from(ROUTE_WAIT_MS), |at| {
                         now.saturating_sub(at)
                             .as_millis()
@@ -294,7 +281,7 @@ impl Policy {
             .min()
     }
 
-    /// Whether a recorder is linked to the node the policy holds open; a fact of an earlier open never sets it.
+    /// Whether a recording span is active on the node the policy holds open.
     #[must_use]
     pub fn mic_recording(&self) -> bool {
         self.mic.recording()
