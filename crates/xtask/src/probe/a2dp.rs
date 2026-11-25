@@ -19,7 +19,7 @@ const SINGLE_PACKET: u8 = 0b00;
 /// Message type of a command (AVDTP 1.3 section 8.4.3, Table 8.5).
 pub(crate) const COMMAND: u8 = 0b00;
 /// Message type of an accepted response (AVDTP 1.3 section 8.4.3, Table 8.5).
-const RESPONSE_ACCEPT: u8 = 0b10;
+pub(crate) const RESPONSE_ACCEPT: u8 = 0b10;
 /// Message type of a rejected response (AVDTP 1.3 section 8.4.3, Table 8.5).
 const RESPONSE_REJECT: u8 = 0b11;
 /// The signal identifier is the low six bits of a single packet's second byte (AVDTP 1.3 section 8.4, Table 8.1).
@@ -32,8 +32,10 @@ pub(crate) const SET_CONFIGURATION: u8 = 0x03;
 pub(crate) const OPEN: u8 = 0x06;
 /// `AVDTP_START` (AVDTP 1.3 section 8.5, Table 8.6).
 pub(crate) const START: u8 = 0x07;
+/// AVDTP Close (AVDTP 1.3 section 8.5, Table 8.6).
+pub(crate) const CLOSE: u8 = 0x08;
 /// `AVDTP_SUSPEND` (AVDTP 1.3 section 8.5, Table 8.6).
-const SUSPEND: u8 = 0x09;
+pub(crate) const SUSPEND: u8 = 0x09;
 /// `AVDTP_GET_ALL_CAPABILITIES` (AVDTP 1.3 section 8.5, Table 8.6).
 const GET_ALL_CAPABILITIES: u8 = 0x0c;
 /// The Media Codec service category (AVDTP 1.3 section 8.21.1, Table 8.47).

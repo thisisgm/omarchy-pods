@@ -180,12 +180,12 @@ struct Link {
 struct Reader<'a> {
     address: Wire,
     window: &'a Window,
-    include_active_link: bool,
+    takeover: bool,
     /// Who last asked for a link with the device, until a connection complete answers.
     asked: Option<Dial>,
     /// The first Apple proximity pairing advertisement heard in the window.
     advert_us: Option<u64>,
-    link: Option<Link>,
+    links: Vec<Link>,
 }
 
 impl Reader<'_> {
@@ -238,7 +238,7 @@ impl Reader<'_> {
     }
 
     fn before_takeover(&self, at_us: u64) -> bool {
-        self.include_active_link && at_us < self.window.from_us
+        self.takeover && at_us < self.window.from_us
     }
 
     /// A takeover may begin on an ACL that was opened before the trial.
@@ -249,8 +249,12 @@ impl Reader<'_> {
         };
         let dial = self.asked.take();
         let eligible = self.window.holds(at_us) || self.before_takeover(at_us);
-        if up && self.link.is_none() && eligible {
-            self.link = Some(Link {
+        let can_open = self
+            .links
+            .last()
+            .is_none_or(|link| self.takeover && link.ended.is_some());
+        if up && can_open && eligible {
+            self.links.push(Link {
                 handle,
                 acl_us: at_us,
                 dial,
@@ -262,12 +266,12 @@ impl Reader<'_> {
 
     fn disconnected(&mut self, handle: u16, end: Disconnect) {
         let before_takeover = self.before_takeover(end.at_us);
-        let up = self.link.as_mut().filter(|link| link.ended.is_none());
+        let up = self.links.last_mut().filter(|link| link.ended.is_none());
         if let Some(link) = up
             && link.handle == handle
         {
             if before_takeover {
-                self.link = None;
+                drop(self.links.pop());
             } else {
                 link.ended = Some(end);
             }
@@ -276,7 +280,7 @@ impl Reader<'_> {
 
     /// Only a packet on the link's own handle, while the link is up, is the connection's.
     fn acl(&mut self, raw: &Raw<'_>, kind: Kind) {
-        let up = self.link.as_mut().filter(|link| link.ended.is_none());
+        let up = self.links.last_mut().filter(|link| link.ended.is_none());
         if let Some(link) = up
             && acl_handle(raw.data) == Some(link.handle)
         {
@@ -323,29 +327,29 @@ fn stream(channels: &Channels, marks: &mut Connection) {
     }
 }
 
-fn read_link(
+fn read_links(
     trace: &[u8],
     device: BdAddr,
     window: &Window,
-    include_active_link: bool,
-) -> Result<Option<Link>, MarksError> {
+    takeover: bool,
+) -> Result<Vec<Link>, MarksError> {
     let mut address = device.octets();
     address.reverse();
     let mut reader = Reader {
         address,
         window,
-        include_active_link,
+        takeover,
         asked: None,
         advert_us: None,
-        link: None,
+        links: Vec::new(),
     };
     // A trace cut short is read up to the cut, which the command names once for the whole table.
     let _cut = hci::walk(trace, |raw| {
-        if !include_active_link || raw.at_ns / NANOS_PER_MICRO < window.to_us {
+        if !takeover || raw.at_ns / NANOS_PER_MICRO < window.to_us {
             reader.record(&raw);
         }
     })?;
-    Ok(reader.link)
+    Ok(reader.links)
 }
 
 pub(super) struct TakeoverLink {
@@ -355,23 +359,24 @@ pub(super) struct TakeoverLink {
     pub(super) ended: Option<Disconnect>,
 }
 
-/// Channels from the named link active at the start of the window or first opened during it.
+/// Channels from the named link active at the start of the window and all links opened during it.
 pub(super) fn takeover_channels(
     trace: &[u8],
     device: BdAddr,
     window: &Window,
-) -> Result<Option<TakeoverLink>, MarksError> {
-    Ok(
-        read_link(trace, device, window, true)?.map(|link| TakeoverLink {
+) -> Result<impl Iterator<Item = TakeoverLink>, MarksError> {
+    let window = *window;
+    Ok(read_links(trace, device, &window, true)?
+        .into_iter()
+        .map(move |link| TakeoverLink {
             channels: channels(&link.packets),
             lifetime: Window {
                 from_us: window.from_us.max(link.acl_us),
                 to_us: link.ended.map_or(window.to_us, |end| end.at_us),
-                ..*window
+                ..window
             },
             ended: link.ended,
-        }),
-    )
+        }))
 }
 
 /// The first connection of `device` that comes up inside `window`, or `None` when the trace holds none.
@@ -380,7 +385,7 @@ pub(crate) fn connection(
     device: BdAddr,
     window: &Window,
 ) -> Result<Option<Connection>, MarksError> {
-    let Some(link) = read_link(trace, device, window, false)? else {
+    let Some(link) = read_links(trace, device, window, false)?.into_iter().next() else {
         return Ok(None);
     };
     let dial = link.dial.ok_or(MarksError::NoBeginning {
