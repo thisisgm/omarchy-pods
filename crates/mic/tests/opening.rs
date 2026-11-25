@@ -20,10 +20,10 @@ mod tests {
     use pods_mic::opus::{DICTATION_DECODE_HZ, Decoder, FRAME_SAMPLES};
     use pods_mic::resample::{RESAMPLE_TAPS, Resampler};
     use pods_mic::{
-        Chain, Counters, FRAME_MS, NODE_LATENCY_MS, OPENING_MAX_PPM, PREROLL_STAGE_FRAMES, RATE_HZ,
-        Reader, Resync, chain,
+        Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, OPENING_EXIT_MS,
+        OPENING_MAX_PPM, OPENING_RAMP_QUANTA, PREROLL_STAGE_FRAMES, RATE_HZ, Reader, Resync, chain,
     };
-    use pods_samples::opus::tone;
+    use pods_samples::opus::{quiet, silence, tone, tone_onset};
 
     use super::support::{
         FADE, MAX_STEER, QUANTUM, QUANTUM_TIME, Rig, Twin, after, assert_live, assert_same,
@@ -39,13 +39,9 @@ mod tests {
     const BURST_EVERY: Duration = Duration::from_millis(5);
     /// The frame of the tone whose bytes no other frame of it carries.
     const MARK_BYTES: usize = 3;
-    /// How far from its target a reader may stand before it realigns, which the crate keeps to itself; the catch-up fails its bounds when the two part.
-    const REALIGN_MS: u32 = 15;
     const PER_MILLION: f64 = 1e6;
-    /// What a consumer that runs `OPENING_MAX_PPM` fast needs to close one ms of distance, in ms.
-    const MS_PER_MS_CLOSED: f64 = PER_MILLION / OPENING_MAX_PPM;
     const MS_PER_S: f64 = 1000.0;
-    /// A recorder that links this long before the first steady notification opens 195 ms behind its target.
+    /// The lead used by the tests of what the opening keeps.
     const LEAD_MS: u32 = 200;
 
     /// A notification: when it lands, and the frames of the script it holds.
@@ -148,7 +144,7 @@ mod tests {
 
     /// Asserts the tape fades in from nothing on the audio due at `now`, its first read, as a reader moved to its target has it, and goes on from there bit for bit; the twin's first sample landed at `start`.
     fn assert_at_target(tape: &[f32], now: Duration, start: Duration, twin: &[f32]) {
-        let played = now.checked_sub(start.saturating_add(ms(NODE_LATENCY_MS)));
+        let played = now.checked_sub(start.saturating_add(ms(DOAP_LATENCY_MS)));
         let due = frames_in(played.unwrap());
         let live = &twin[due.checked_sub(QUANTUM).unwrap()..][..tape.len()];
         let risen = live.iter().zip(0..).map(|(&sample, at)| sample * rise(at));
@@ -418,7 +414,7 @@ mod tests {
         for (reads, more) in [(50, 340), (300, 100)] {
             let mut take = opened(0, LEAD_MS, reads);
             let first = take.opening();
-            assert_eq!(first == [0, 0], reads == 50);
+            assert_eq!(first[1] == 0, reads == 50);
             take.start_again(AGAIN, LAST);
             take.go_on(more);
             // Its edge is long past, so the run holds the whole burst, and the recorder is moved to its target as any reader off it is.
@@ -479,7 +475,7 @@ mod tests {
         assert_opens(first, head(LEAD_MS), &twin);
         assert_at_target(second, take.times[READS], run_start_of(kept), &twin);
         assert!(take.ratios[READS..].iter().all(|&ratio| steady(ratio)));
-        assert_eq!(take.opening(), [0, 0]);
+        assert_eq!(take.opening()[1], 0);
         assert_eq!(Rig::count(&take.counters.underruns), 0);
     }
 
@@ -491,7 +487,7 @@ mod tests {
         take.play(cadence(READS), linked(STEADY, EARLY_MS), READS);
         // The one frame the edge could keep landed after it: the recorder waits out the stated latency and hears the run from its first sample.
         let twin = twin(STEADY_FRAME..STEADY_FRAME + READS, None, &[]);
-        assert_opens(&take.tape, frames_in(ms(EARLY_MS + NODE_LATENCY_MS)), &twin);
+        assert_opens(&take.tape, frames_in(ms(EARLY_MS + DOAP_LATENCY_MS)), &twin);
         assert!(take.ratios.iter().all(|&ratio| steady(ratio)));
         assert_eq!(take.opening(), [0, 0]);
         assert_eq!(Rig::count(&take.counters.underruns), 0);
@@ -520,54 +516,217 @@ mod tests {
     fn no_realign_happens_inside_an_opening() {
         // Five seconds: the reader is behind by far more than a realign allows for most of them, and a jump to the target would leave out what the tape is asserted to hold.
         let take = opened(0, LEAD_MS, 260);
-        assert_eq!(take.opening()[0], 195);
+        // At the 200 ms lead, lag is 15 kept frames minus the 65 ms hold and one 20 ms read.
+        let expected = LEAD_MS + FRAME_MS - DOAP_LATENCY_MS % FRAME_MS;
+        assert_eq!(take.opening()[0], expected);
         assert_eq!(take.allocations, 0);
     }
 
-    #[test]
-    fn the_ratio_never_passes_the_opening_clamp_and_returns_to_the_steady_clamp() {
-        let take = opened(0, LEAD_MS, 400);
-        let clamp = 1.0 + OPENING_MAX_PPM / PER_MILLION;
-        let head = head(LEAD_MS) / QUANTUM;
-        let hurried = take.ratios[head..]
-            .iter()
-            .take_while(|&&ratio| !steady(ratio));
-        let end = head + hurried.count();
-        // Its own rate while nothing has come, the clamp itself from the read that opens to the one that reaches the target, and the steady clamp from there on.
-        assert!(take.ratios[..head].iter().all(|&ratio| unsteered(ratio)));
-        assert!(end > head && end < take.ratios.len(), "{head} to {end}");
-        for ratio in &take.ratios[head..end] {
-            assert_eq!(ratio.to_bits(), clamp.to_bits(), "{ratio}");
+    const SHORT_LEAD_MS: u32 = 300;
+    const SILENT_BURST_FRAMES: usize = 12;
+    const ACTIVE_BURST_FRAMES: usize = 4;
+    const COLLAR_FRAMES: usize = 3;
+    const FAST_RATIO: f64 = 1.10;
+
+    fn short_burst(burst: &[&[u8]], steady: usize) -> Take {
+        let mut take = Take::new(0, None);
+        take.play(
+            Vec::new(),
+            linked(STEADY, SHORT_LEAD_MS),
+            head(SHORT_LEAD_MS) / QUANTUM,
+        );
+        for (index, frames) in burst.chunks(ACTIVE_BURST_FRAMES).enumerate() {
+            let offset = index.saturating_mul(ACTIVE_BURST_FRAMES);
+            let counters = (offset..).map(|counter| u16::try_from(counter).unwrap());
+            take.chain.frames(
+                STEADY.saturating_sub(BURST_EVERY),
+                counters.zip(frames.iter().copied()),
+            );
         }
-        assert!(take.ratios[end..].iter().all(|&ratio| steady(ratio)));
+        take.lands = (0..steady)
+            .map(|index| {
+                let at = after(STEADY, ms(FRAME_MS), u32::try_from(index).unwrap());
+                (at, vec![burst.len().saturating_add(index)])
+            })
+            .collect();
+        take
+    }
+
+    fn decoded(frames: &[&[u8]]) -> Vec<f32> {
+        let mut twin = Twin::new();
+        for frame in frames {
+            twin.call(|decoder| decoder.frame(frame));
+        }
+        twin.decoded
     }
 
     #[test]
-    fn the_opening_catches_up_200_ms_in_at_most_4_5_s() {
-        const CATCH_UP_LIMIT_MS: u32 = 4500;
-        /// The read that finds the target reached, and the one before it.
-        const SLACK_READS: u32 = 2;
-        let mut ranges = [[u32::MAX, 0]; 2];
-        // The leads at which the reader opens 145, 200 and 265 ms behind.
-        for lead_ms in [150, 215, 270] {
-            let take = opened(0, lead_ms, 400);
-            let [behind_ms, took_ms] = take.opening();
-            // Not before the arithmetic of the clamp, and not after it by more than the slack's reads, each no longer than a quantum.
-            let least = ms(behind_ms - REALIGN_MS).mul_f64(MS_PER_MS_CLOSED);
-            let most = least + QUANTUM_TIME * SLACK_READS;
-            assert!(ms(took_ms) >= least, "{took_ms} ms for {behind_ms}");
-            assert!(ms(took_ms) <= most, "{took_ms} ms for {behind_ms}");
-            if lead_ms == 215 {
-                assert_eq!(behind_ms, 200);
-                assert!(took_ms <= CATCH_UP_LIMIT_MS, "{took_ms} ms");
-            }
-            for (range, value) in ranges.iter_mut().zip([behind_ms, took_ms]) {
-                *range = [range[0].min(value), range[1].max(value)];
-            }
+    fn the_opening_catches_up_200_ms_at_ten_percent_within_exit_bound() {
+        const OPENINGS: [(u32, u32); 3] = [(130, 145), (195, 200), (250, 265)];
+        const READS: usize = 400;
+        // Allow one read at each boundary because the opening and exit are observed on quantum boundaries.
+        const SLACK_QUANTA: u32 = 2;
+        // The target position is rounded to a whole sample before the exit check.
+        let sample_time = Duration::from_secs(1) / RATE_HZ;
+        // The ratio is computed from a whole-sample lag, so allow one sample per quantum.
+        let ratio_slack = 1.0 / f64::from(u32::try_from(QUANTUM).unwrap());
+        for (lead, behind) in OPENINGS {
+            let take = opened(0, lead, READS);
+            let first = head(lead) / QUANTUM;
+            let ratios = &take.ratios[first..];
+            let clamp = 1.0 + OPENING_MAX_PPM / PER_MILLION;
+            assert_eq!(ratios[0].to_bits(), FAST_RATIO.to_bits(), "opening ratio");
+            assert_eq!(clamp.to_bits(), FAST_RATIO.to_bits());
+            assert!(take.ratios[..first].iter().all(|&ratio| unsteered(ratio)));
+            assert!(ratios.iter().all(|&ratio| ratio <= FAST_RATIO));
+            let [measured, took] = take.opening();
+            assert_eq!(measured, behind);
+            let fastest = ms(behind).div_f64(FAST_RATIO - 1.0);
+            let slack = QUANTUM_TIME * (OPENING_RAMP_QUANTA + SLACK_QUANTA);
+            assert!(
+                (fastest..=fastest + slack).contains(&ms(took)),
+                "{behind} ms caught up in {took} ms"
+            );
+            let ended = take.times[first..]
+                .partition_point(|&at| at.saturating_sub(take.times[first]) < ms(took));
+            let elapsed = take.times[first + ended].saturating_sub(take.times[first]);
+            let read = QUANTUM_TIME * u32::try_from(ended).unwrap();
+            assert!(ms(behind) + elapsed <= read + ms(u32::from(OPENING_EXIT_MS)) + sample_time);
+            let max_step = (FAST_RATIO - 1.0) / f64::from(OPENING_RAMP_QUANTA);
+            assert!(
+                ratios[..=ended]
+                    .array_windows::<2>()
+                    .all(|[before, after]| before - after <= max_step + ratio_slack)
+            );
+            assert!(ratios[ended..].iter().all(|&ratio| steady(ratio)));
+            assert_eq!(take.allocations, 0);
         }
-        let [[near, far], [soon, late]] = ranges;
-        let caught = format!("caught up in {soon} to {late} ms");
-        writeln!(io::stderr(), "openings {near} to {far} ms behind {caught}").unwrap();
+    }
+
+    #[test]
+    fn leading_silence_in_burst_is_trimmed_with_60_ms_collar() {
+        const READS: usize = 200;
+        let sound: Vec<_> = iter::once(tone_onset())
+            .chain(tone())
+            .take(ACTIVE_BURST_FRAMES)
+            .collect();
+        let mut quiet = vec![silence(); SILENT_BURST_FRAMES];
+        quiet.extend(&sound);
+        let sounding: Vec<_> = tone().take(quiet.len()).collect();
+        let mut reference = short_burst(&sounding, READS);
+        let mut take = short_burst(&quiet, READS);
+        reference.go_on(READS);
+        take.go_on(READS);
+        let removed = SILENT_BURST_FRAMES - COLLAR_FRAMES;
+        assert_eq!(
+            reference.opening()[0].saturating_sub(take.opening()[0]),
+            u32::try_from(removed).unwrap() * FRAME_MS,
+            "opening lag removed by the silence trim"
+        );
+        let first = head(SHORT_LEAD_MS);
+        let tone_start = first + COLLAR_FRAMES * frame_frames();
+        assert!(silent(&take.tape[first..tone_start]));
+        let twin = decoded(&quiet);
+        let tone_end = tone_start + sound.len() * frame_frames();
+        assert_same(
+            &take.tape[tone_start..tone_end],
+            &twin[SILENT_BURST_FRAMES * frame_frames()..],
+        );
+        assert_eq!(Rig::count(&take.counters.underruns), 0);
+    }
+
+    #[test]
+    fn quiet_speech_above_floor_in_burst_is_not_trimmed() {
+        const QUIET_FRAMES: usize = SILENT_BURST_FRAMES;
+        const READS: usize = QUIET_FRAMES + ACTIVE_BURST_FRAMES;
+        let mut burst = vec![quiet(); QUIET_FRAMES];
+        burst.extend(
+            iter::once(tone_onset())
+                .chain(tone())
+                .take(ACTIVE_BURST_FRAMES),
+        );
+        let mut take = short_burst(&burst, READS);
+        take.go_on(READS);
+        let first = head(SHORT_LEAD_MS);
+        let end = first + burst.len() * frame_frames();
+        assert_opens(&take.tape[..end], first, &decoded(&burst));
+    }
+
+    #[test]
+    fn all_silent_burst_keeps_collar_for_vad_and_has_no_underrun() {
+        const READS: usize = 20;
+        let mut take = short_burst(&[silence(); SILENT_BURST_FRAMES], READS);
+        take.go_on(READS);
+        let start = head(SHORT_LEAD_MS);
+        let staged = frame_frames() * (COLLAR_FRAMES + 1);
+        let waiting = (frames_in(ms(DOAP_LATENCY_MS)) + QUANTUM).saturating_sub(staged);
+        let tone_start = start + waiting + COLLAR_FRAMES * frame_frames();
+        assert!(silent(&take.tape[start..tone_start]));
+        let mut warmed = vec![silence(); SILENT_BURST_FRAMES];
+        warmed.push(bytes(0, None));
+        let twin = decoded(&warmed);
+        assert_same(
+            &take.tape[tone_start..tone_start + frame_frames()],
+            &twin[SILENT_BURST_FRAMES * frame_frames()..],
+        );
+        assert_eq!(Rig::count(&take.counters.underruns), 0);
+    }
+
+    #[test]
+    fn burst_only_dictation_flushes_on_end_instead_of_dropping() {
+        const NOTIFICATIONS: usize = 2;
+        const READS: usize = 12;
+        let burst: Vec<_> = tone().take(NOTIFICATIONS * ACTIVE_BURST_FRAMES).collect();
+        let mut take = short_burst(&burst, 0);
+        take.chain.flush_dictation(STEADY);
+        // A second flush must leave the already placed burst intact and play it only once.
+        take.chain.flush_dictation(STEADY);
+        take.go_on(READS);
+        let first = head(SHORT_LEAD_MS);
+        let end = first + burst.len() * frame_frames();
+        let twin = decoded(&burst);
+        assert_opens(&take.tape[..end], first, &twin);
+        assert_eq!(places(&take.tape, &twin[FADE..]), [first + FADE]);
+        assert_eq!(Rig::count(&take.counters.underruns), 0);
+    }
+
+    #[test]
+    fn dictation_holds_doap_latency_while_uplink_holds_uplink_latency() {
+        const _: () = assert!(DOAP_LATENCY_MS == 65 && NODE_LATENCY_MS == 85);
+        const STEADY_READS: usize = 3;
+        const UPLINK_PACKETS: u32 = 10;
+        let mut take = Take::new(0, None);
+        let count = STEADY_FRAME + STEADY_READS;
+        for (now, indices) in dictation(STEADY_READS) {
+            take.notify(now, &indices);
+        }
+        let last = after(
+            STEADY,
+            ms(FRAME_MS),
+            u32::try_from(STEADY_READS - 1).unwrap(),
+        );
+        let now = last + ms(DOAP_LATENCY_MS);
+        let mut tail = [0.0; 2 * QUANTUM];
+        take.reader.read(now, &mut tail);
+        let first = first_kept(STEADY_FRAME, 0);
+        let expected = twin(first..count, None, &[]);
+        assert_same(
+            &tail[FADE..],
+            &expected[expected.len() - tail.len() + FADE..],
+        );
+        assert!(take.reader.read_all());
+
+        let mut uplink = Rig::new();
+        for now in on_time(0..UPLINK_PACKETS) {
+            uplink.land(now);
+        }
+        let last = landing(UPLINK_PACKETS - 1);
+        let (tail, _) = uplink.read(last + ms(NODE_LATENCY_MS), 2 * QUANTUM);
+        assert_same(
+            &tail[FADE..],
+            &uplink.decoded[uplink.decoded.len() - tail.len() + FADE..],
+        );
+        assert!(uplink.reader.read_all());
     }
 
     #[test]

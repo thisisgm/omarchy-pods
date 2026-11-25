@@ -212,13 +212,37 @@ pub(crate) fn largest_step(samples: &[i16]) -> u16 {
 
 /// The windows, as ranges of samples, where the marked line is louder than the tone's and than a quarter of the tone's own amplitude, so a gap's quiet counts as neither.
 pub(crate) fn marked(samples: &[i16]) -> Vec<Range<usize>> {
+    marked_at(samples, own_amplitude(), |chunk| {
+        (
+            power_at(chunk, line_hz(MARK_LINE)),
+            power_at(chunk, line_hz(TONE_LINE)),
+        )
+    })
+}
+
+pub(crate) fn dictation_marks(samples: &[i16]) -> Vec<Range<usize>> {
+    use pods_samples::opus::{MARK_HZ, TONE_DBFS, TONE_HZ};
+
+    const MAX_OPENING_RATIO: f64 = 1.10;
+    let peak = 10_f64.powf(f64::from(TONE_DBFS) / 20.0) * gain();
+    marked_at(samples, peak, |chunk| {
+        let power = |pitch| power_at(chunk, pitch).max(power_at(chunk, pitch * MAX_OPENING_RATIO));
+        (power(f64::from(MARK_HZ)), power(f64::from(TONE_HZ)))
+    })
+}
+
+fn marked_at(
+    samples: &[i16],
+    peak: f64,
+    powers: impl Fn(&[i16]) -> (f64, f64),
+) -> Vec<Range<usize>> {
     let window = frames(WINDOW);
     let width = f64::from(u32::try_from(window).unwrap());
-    let floor = (own_amplitude() * f64::from(i16::MAX) * width / 8.0).powi(2);
+    let floor = (peak * f64::from(i16::MAX) * width / 8.0).powi(2);
     let mut runs: Vec<Range<usize>> = Vec::new();
     for (index, chunk) in samples.chunks_exact(window).enumerate() {
-        let mark = power_at(chunk, line_hz(MARK_LINE));
-        if mark <= floor || mark <= power_at(chunk, line_hz(TONE_LINE)) {
+        let (mark, tone) = powers(chunk);
+        if mark <= floor || mark <= tone {
             continue;
         }
         let start = index.saturating_mul(window);

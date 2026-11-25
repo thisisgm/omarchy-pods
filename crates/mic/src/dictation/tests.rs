@@ -7,7 +7,7 @@ use pods_samples::opus::tone;
 
 use super::*;
 use crate::conceal::UNIT_FRAMES;
-use crate::{Counters, NODE_LATENCY_MS, chain, level};
+use crate::{Counters, DOAP_LATENCY_MS, chain, level};
 
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const FRAME: usize = FRAME_FRAMES as usize;
@@ -38,7 +38,7 @@ fn around(broken: Broken, stood_for: u16) -> (Vec<f32>, [u32; 3]) {
     resync.request();
     let mut heard = vec![0.0; usize::from(after).saturating_add(1).saturating_mul(FRAME)];
     reader.read(
-        Duration::from_millis(u64::from(NODE_LATENCY_MS)),
+        Duration::from_millis(u64::from(DOAP_LATENCY_MS)),
         &mut heard,
     );
     let counted = [

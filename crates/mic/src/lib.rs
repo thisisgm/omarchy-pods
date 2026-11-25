@@ -20,7 +20,7 @@ pub use dictation::{
     FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES, PREROLL_STAGE_FRAMES, STEADY_FRAMES,
 };
 use resample::Resampler;
-pub use ring::{OPENING_MAX_PPM, Reader, Resync};
+pub use ring::{OPENING_EXIT_MS, OPENING_MAX_PPM, OPENING_RAMP_QUANTA, Reader, Resync};
 use ring::{Path, Ring};
 
 /// The node's rate, the only one a reader or a source sees.
@@ -37,8 +37,12 @@ pub const STAMP_STEP: u32 = 480;
 pub const UPLINK_PERIOD_MS: u32 = 30;
 /// How late a packet may land and still be played whole.
 pub const JITTER_COVER_MS: u32 = 55;
-/// The delay the reader holds, which is the latency a source states for it.
+/// The latency the node states on both paths. The ring holds it on uplink and holds [`DOAP_LATENCY_MS`] on dictation.
 pub const NODE_LATENCY_MS: u32 = UPLINK_PERIOD_MS + JITTER_COVER_MS;
+/// The jitter the shorter dictation cadence can cover.
+const DOAP_JITTER_COVER_MS: u32 = 45;
+/// The delay the reader holds on the dictation path.
+pub const DOAP_LATENCY_MS: u32 = FRAME_MS + DOAP_JITTER_COVER_MS;
 /// The most the stated latency may be: a recorder caps the wait after its stop at 100 ms, and this limit stands 10 ms inside it.
 pub const NODE_LATENCY_LIMIT_MS: u32 = 90;
 const _: () = assert!(NODE_LATENCY_MS <= NODE_LATENCY_LIMIT_MS);
@@ -75,9 +79,9 @@ pub struct Counters {
     pub decoder_renew_refused: AtomicU32,
     /// Dictation frames whose counter the run had passed, of which nothing is written.
     pub dictation_repeats: AtomicU32,
-    /// How far behind its target the reader stood when the last opening it caught up began, in ms.
+    /// How far behind its target the reader stood when the last opening began, in ms.
     pub opening_behind_ms: AtomicU32,
-    /// How long the last opening the reader caught up took to reach the target, in ms.
+    /// How long the last opening took to catch up, in ms. Zero until catch-up and for an opening dropped by a run change.
     pub opening_ms: AtomicU32,
     /// Samples the reader handed out whose magnitude after the gain was over the limiter's knee.
     pub limited: AtomicU32,

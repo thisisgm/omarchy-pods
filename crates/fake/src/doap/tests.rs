@@ -334,24 +334,19 @@ fn a_held_start_waits_for_its_release() {
 #[test]
 fn a_mark_is_heard_streaming_or_not_and_the_counter_starts_where_a_test_sets_it() {
     let (mut machine, since) = armed();
-    let marks: Vec<&[u8]> = opus::mark().collect();
+    let mark = opus::mark_onset();
     let tones: Vec<&[u8]> = opus::tone().collect();
     machine.hear(since + ms(40));
     (machine.marked, machine.next_counter) = (2, u16::MAX);
     machine.burst = (4, 4);
     let sent = start(&mut machine, since + ms(100));
     // The frames at places 2 and 3 are the mark, and they carry the counters set after place 1.
-    let burst = [
-        (1, tones[1]),
-        (u16::MAX, marks[2]),
-        (0, marks[3]),
-        (1, tones[4]),
-    ];
+    let burst = [(1, tones[1]), (u16::MAX, mark), (0, mark), (1, tones[4])];
     assert_eq!(sent[1..], [sample::audio(&TABLE, 0, &burst)]);
     machine.marked = 1;
     assert_eq!(
         machine.due(ATT, since + ms(120)),
-        [audio(&marks, 1, &[(2, 5)])]
+        [sample::audio(&TABLE, 1, &[(2, mark)])]
     );
     assert_eq!(
         machine.due(ATT, since + ms(140)),

@@ -117,7 +117,21 @@ impl Tap {
     /// Once the end is in, the ring can play what it already has while further `DoAP` audio is refused.
     pub(in crate::daemon) fn end_dictation(&self) {
         let mut state = self.lock();
-        state.armed |= matches!(state.stream, Stream::Dictation { .. });
+        if matches!(state.stream, Stream::Dictation { .. }) {
+            state.armed = true;
+            if let Some(chain) = state.chain.as_mut() {
+                chain.flush_dictation(self.epoch.elapsed());
+            }
+            let behind = self.counters.opening_behind_ms.swap(0, Ordering::Relaxed);
+            let elapsed = self.counters.opening_ms.swap(0, Ordering::Relaxed);
+            if behind > 0 && elapsed > 0 {
+                super::super::log(&format!(
+                    "dictation: opening {behind} ms behind, caught up after {elapsed} ms"
+                ));
+            } else if behind > 0 {
+                super::super::log(&format!("dictation: opening {behind} ms behind"));
+            }
+        }
         state.dictation_armed = false;
         state.stream = Stream::Uplink;
     }

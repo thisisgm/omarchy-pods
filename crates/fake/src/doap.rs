@@ -130,6 +130,14 @@ impl Doap {
             .doap(|doap| doap.burst = (frames, per_notification));
     }
 
+    /// The next `frames` frames the microphone hears are silent, before any queued mark.
+    pub fn silent(&self, frames: u32) {
+        self.shared.doap(|doap| {
+            doap.hear(Instant::now());
+            doap.silent = frames;
+        });
+    }
+
     /// The next `frames` frames the microphone hears hold the second tone, streaming or not.
     pub fn mark(&self, frames: u32) {
         self.shared.doap(|doap| {
@@ -248,6 +256,7 @@ pub(crate) struct Machine {
     held: Option<usize>,
     burst: (u32, u32),
     repeat: Option<u16>,
+    silent: u32,
     marked: u32,
     lost: u32,
     garbled: u32,
@@ -266,7 +275,6 @@ pub(crate) struct Machine {
     confirmed: u32,
     largest_gap: Option<Duration>,
     tone: Vec<&'static [u8]>,
-    mark: Vec<&'static [u8]>,
 }
 
 /// The microphone, which hears a frame every `FRAME` from the moment the mode is set on `control`.
@@ -285,6 +293,7 @@ struct Heard {
     /// Counts from the moment the mode was set and picks the frame of the fixture.
     place: u32,
     counter: u16,
+    silent: bool,
     marked: bool,
 }
 
@@ -312,6 +321,7 @@ impl Machine {
             held: None,
             burst: (BURST_FRAMES, BURST_PER_NOTIFICATION),
             repeat: None,
+            silent: 0,
             marked: 0,
             lost: 0,
             garbled: 0,
@@ -328,7 +338,6 @@ impl Machine {
             confirmed: 0,
             largest_gap: None,
             tone: opus::tone().collect(),
-            mark: opus::mark().collect(),
         }
     }
 
@@ -579,6 +588,7 @@ impl Machine {
             mic.kept.push_back(Heard {
                 place: mic.heard,
                 counter: self.next_counter,
+                silent: self.silent > 0,
                 marked: self.marked > 0,
             });
             while mic.kept.len() > KEPT_FRAMES
@@ -589,7 +599,10 @@ impl Machine {
             {
                 mic.kept.pop_front();
             }
-            self.marked = self.marked.saturating_sub(1);
+            if self.silent == 0 {
+                self.marked = self.marked.saturating_sub(1);
+            }
+            self.silent = self.silent.saturating_sub(1);
             self.next_counter = self.next_counter.wrapping_add(1);
             mic.heard = mic.heard.saturating_add(1);
         }
@@ -626,7 +639,13 @@ impl Machine {
 
     /// The bytes of the fixture the microphone coded `heard` to.
     fn coded(&self, heard: Heard) -> &'static [u8] {
-        let fixture = if heard.marked { &self.mark } else { &self.tone };
+        if heard.silent {
+            return opus::silence();
+        }
+        if heard.marked {
+            return opus::mark_onset();
+        }
+        let fixture = &self.tone;
         let place = usize::try_from(heard.place).unwrap_or(usize::MAX);
         let at = place.checked_rem(fixture.len()).unwrap_or(0);
         fixture.get(at).copied().unwrap_or_default()

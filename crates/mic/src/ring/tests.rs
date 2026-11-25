@@ -10,7 +10,7 @@ use super::{
     Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Reader, Ring, UNIT_FRAMES,
     fade_in, scaled,
 };
-use crate::{Chain, Counters, FRAME_MS, NODE_LATENCY_MS, chain, level};
+use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, chain, level};
 
 /// One read, 20 ms at the node's rate.
 const QUANTUM: usize = 1280;
@@ -18,7 +18,7 @@ const PERIOD: Duration = Duration::from_millis(20);
 /// The frames of the stream's burst; the steady frame after them has this counter and places them.
 const BURST: u16 = 5;
 /// A frame that landed at zero is read out the stated latency later, so a read one frame after that finds the run dry.
-const LINKED_MS: u32 = NODE_LATENCY_MS + FRAME_MS;
+const LINKED_MS: u32 = DOAP_LATENCY_MS + FRAME_MS;
 
 fn silent(heard: &[f32]) -> bool {
     heard.iter().all(|sample| sample.to_bits() == 0)
