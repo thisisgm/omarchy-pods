@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use pods_proto::battery::{Batteries, Charge};
 use pods_proto::ear::EarReport;
-use pods_proto::keys::ProximityKeys;
+use pods_proto::keys::{Key, ProximityKeys};
 use pods_proto::model::Model;
 use pods_samples::advert::{HEADER_LEN, Keys, SEALED_LEN, advert_of};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
@@ -29,6 +29,8 @@ const PAYLOAD: [u8; SEALED_LEN] = [0x00, 0xd0, 0x3c, 0x28, 0, 0, 0, 0, 0, 0, 0, 
 const RANDOM: [u8; 3] = [0x40, 0x00, 0x01];
 const OTHER_IDENTITY: [u8; 16] = [0x11; 16];
 const CONNECTION_AT: usize = 10;
+/// Primary left, this bud in the case, and neither bud worn.
+const IN_CASE_STATUS: u8 = 0x60;
 
 fn sighting_from(header: [u8; HEADER_LEN], identity: [u8; 16]) -> Sighting {
     let made = Keys {
@@ -54,7 +56,7 @@ fn worn_with_connection(connection: u8) -> Sighting {
 
 fn out_of_ear(in_case: bool) -> Sighting {
     let mut header = HEADER;
-    header[5] = if in_case { 0x60 } else { 0x20 };
+    header[5] = if in_case { IN_CASE_STATUS } else { 0x20 };
     if in_case {
         header[8] = 0x08;
     }
@@ -145,7 +147,7 @@ fn the_link_pauses_auto_connect_until_intake_is_listening_again() {
 
 fn in_open_case(both_charging: bool) -> Sighting {
     let mut header = HEADER;
-    header[5] = 0x60;
+    header[5] = IN_CASE_STATUS;
     let mut payload = PAYLOAD;
     if both_charging {
         payload[2] |= 0x80;
@@ -184,6 +186,45 @@ fn a_monitor_gap_forgets_the_wear_seen_before_it() {
     assert!(
         !policy.advert(&mut state, &ours(), Duration::from_millis(1)),
         "no edge across the gap"
+    );
+}
+
+#[test]
+fn a_link_between_out_and_worn_adverts_is_not_a_wear_edge() {
+    let (mut policy, mut state) = listening();
+    let now = Duration::ZERO;
+    assert!(!policy.advert(&mut state, &out_of_ear(false), now));
+    let link = Fact::Link(up());
+    policy.apply(&mut state, &link);
+    drop(policy.step(&state, link, now));
+    drop(policy.step(&state, Fact::Link(link_down()), now));
+    policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
+    assert!(
+        !policy.advert(&mut state, &ours(), now),
+        "no edge across a link"
+    );
+}
+
+#[test]
+fn a_payload_key_change_between_adverts_is_not_a_wear_edge() {
+    let (mut policy, mut state) = listening();
+    let now = Duration::ZERO;
+    assert!(!policy.advert(&mut state, &out_of_ear(false), now));
+    let renewed = Keys {
+        identity: IDENTITY_KEY,
+        payload: [0x22; 16],
+    };
+    let mut proximity_keys = keys();
+    proximity_keys.payload = Key::from_bytes(renewed.payload);
+    drop(policy.step(&state, Fact::Link(Signal::Keys(proximity_keys)), now));
+    let worn = advert_of(HEADER, PAYLOAD, &renewed, RANDOM);
+    let sighting = Sighting {
+        address: worn.address.parse().unwrap(),
+        data: worn.data,
+    };
+    assert!(
+        !policy.advert(&mut state, &sighting, now),
+        "no edge across a key change"
     );
 }
 
