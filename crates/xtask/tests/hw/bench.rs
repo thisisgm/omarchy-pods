@@ -47,6 +47,10 @@ fn daemon_lines() -> String {
     )
 }
 
+const QUICK_IDLE_MS: &str = "250";
+pub(crate) const QUICK_BURST_MS: &str = "400";
+pub(crate) const QUICK_CONNECT_MS: &str = "800";
+
 /// How long a half typed line sits at the prompt before the stop signal follows it.
 const HALF_LINE_LEAD: Duration = Duration::from_millis(500);
 
@@ -364,12 +368,17 @@ impl Bench {
         fs::read_to_string(self.path(name)).unwrap_or_default()
     }
 
-    pub(crate) fn command(&self, idle_seconds: &str, extra: &[&str]) -> Command {
+    pub(crate) fn command(&self, idle_seconds: Option<&str>, extra: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
         command
             .args(["hw", "link", "--binary"])
-            .arg(self.path("bin/librepods"))
-            .args(["--idle-window-seconds", idle_seconds])
+            .arg(self.path("bin/librepods"));
+        if let Some(seconds) = idle_seconds {
+            command.args(["--idle-window-seconds", seconds]);
+        } else {
+            command.args(["--idle-window-ms", QUICK_IDLE_MS]);
+        }
+        command
             .args(extra)
             .env(
                 "PATH",
@@ -389,7 +398,19 @@ impl Bench {
     }
 
     pub(crate) fn run(&self, extra: &[&str]) -> Output {
-        let mut command = self.command("1", extra);
+        self.run_with_windows(None, Some(QUICK_BURST_MS), extra)
+    }
+
+    pub(crate) fn run_with_windows(
+        &self,
+        idle_seconds: Option<&str>,
+        burst_ms: Option<&str>,
+        extra: &[&str],
+    ) -> Output {
+        let mut command = self.command(idle_seconds, extra);
+        if let Some(milliseconds) = burst_ms {
+            command.args(["--burst-window-ms", milliseconds]);
+        }
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         finish(self.spawn(command), RUN_DEADLINE)
     }
@@ -540,7 +561,8 @@ impl Bench {
         let buds_out = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicBool::new(false));
         let server = self.serve_sets(Arc::clone(&buds_out), Arc::clone(&done));
-        let mut command = self.command("1", flags);
+        let mut command = self.command(None, flags);
+        command.args(["--burst-window-ms", QUICK_BURST_MS]);
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -784,7 +806,7 @@ pub(crate) fn signalled_once(
     signal: &str,
     wait: impl FnOnce(),
 ) -> Output {
-    let mut command = bench.command(idle_seconds, &[]);
+    let mut command = bench.command(Some(idle_seconds), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = bench.spawn(command);
     wait();

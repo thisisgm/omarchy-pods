@@ -10,6 +10,7 @@ use rustix::io::Errno;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use serde_json::{Map, Value, json};
 
+use super::clock::{Clock, SystemClock};
 use super::lab::{Lab, millis};
 use super::report::{Check, Gate};
 use super::unit::pause;
@@ -112,7 +113,7 @@ fn set_over_socket(
     value: &str,
     reply_timeout: Duration,
 ) -> Result<String, NoWord> {
-    let deadline = Instant::now().checked_add(reply_timeout);
+    let deadline = SystemClock.deadline(reply_timeout);
     let unanswered = |error: io::Error| {
         NoWord::Unanswered(if error.kind() == ErrorKind::TimedOut {
             format!("no reply within {} ms", millis(reply_timeout))
@@ -156,10 +157,10 @@ fn connect_by(socket: &Path, deadline: Option<Instant>) -> io::Result<UnixStream
         match rustix::net::connect(&fd, &address) {
             Ok(()) => return Ok(UnixStream::from(fd)),
             Err(Errno::AGAIN | Errno::INTR) => {
-                if left(deadline).is_zero() {
+                if SystemClock.remaining(deadline).is_zero() {
                     return Err(ErrorKind::TimedOut.into());
                 }
-                pause(CONNECT_RETRY.min(left(deadline)));
+                pause(CONNECT_RETRY.min(SystemClock.remaining(deadline)));
             }
             Err(error) => return Err(error.into()),
         }
@@ -214,26 +215,29 @@ fn read_reply(stream: &mut UnixStream, deadline: Option<Instant>) -> io::Result<
     }
 }
 
-/// The time left before `deadline`; none is left when the deadline could not be computed.
-fn left(deadline: Option<Instant>) -> Duration {
-    deadline.map_or(Duration::ZERO, |deadline| {
-        deadline.saturating_duration_since(Instant::now())
-    })
-}
-
 /// Waits until `stream` is ready for `flags`, or fails with `TimedOut` at `deadline`.
 fn wait_ready(stream: &UnixStream, flags: PollFlags, deadline: Option<Instant>) -> io::Result<()> {
-    loop {
-        let left = left(deadline);
-        if left.is_zero() {
-            return Err(ErrorKind::TimedOut.into());
-        }
+    wait_ready_on(&SystemClock, deadline, |left| {
         let timeout = Timespec {
             tv_sec: i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
             tv_nsec: i64::from(left.subsec_nanos()),
         };
         let mut fds = [PollFd::new(stream, flags)];
-        match poll(&mut fds, Some(&timeout)) {
+        poll(&mut fds, Some(&timeout))
+    })
+}
+
+fn wait_ready_on(
+    clock: &dyn Clock,
+    deadline: Option<Instant>,
+    mut poll_ready: impl FnMut(Duration) -> Result<usize, Errno>,
+) -> io::Result<()> {
+    loop {
+        let left = clock.remaining(deadline);
+        if left.is_zero() {
+            return Err(ErrorKind::TimedOut.into());
+        }
+        match poll_ready(left) {
             Ok(0) | Err(Errno::INTR) => {}
             Ok(_) => return Ok(()),
             Err(error) => return Err(error.into()),

@@ -6,10 +6,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::Interrupted;
-use super::lab::{DISCONNECT_WAIT, Lab, RECONNECT_WAIT, STATUS_TIMEOUT, wait_out, wait_until};
+use super::clock::{Clock, SystemClock};
+use super::lab::{DISCONNECT_WAIT, Lab, RECONNECT_WAIT, STATUS_TIMEOUT, wait_until, wait_until_on};
 use super::report::Check;
 use super::system::Wakeups;
 use super::unit;
@@ -20,9 +21,9 @@ const WATCH_CHUNK_BYTES: usize = 4096;
 const IDLE_LINK_UP_PER_MINUTE: u64 = 12;
 /// G3 with nothing connected: wakeups a minute.
 const IDLE_DISCONNECTED_PER_MINUTE: u64 = 2;
-const SECONDS_PER_MINUTE: u64 = 60;
+const MILLIS_PER_MINUTE: u128 = Duration::from_secs(60).as_millis();
 /// The rate is printed to one decimal place.
-const TENTHS_PER_ONE: u64 = 10;
+const TENTHS_PER_ONE: u128 = 10;
 /// How often C5 reads the wakeups; tokio keeps an idle blocking thread 10 s, so each is read at least once before it ends.
 const WAKEUP_SAMPLE_EVERY: Duration = Duration::from_secs(1);
 
@@ -72,8 +73,8 @@ impl WatchLines {
     }
 
     /// Waits until the watch has printed its first line, which is the daemon's answer to its subscribe; false on a timeout.
-    fn wait_first_line(&self) -> Result<bool, Interrupted> {
-        wait_until(STATUS_TIMEOUT, || self.lines.load(Ordering::Relaxed) > 0)
+    fn wait_first_line(&self, timeout: Duration) -> Result<bool, Interrupted> {
+        wait_until(timeout, || self.lines.load(Ordering::Relaxed) > 0)
     }
 
     /// Ends the watch and returns the lines it printed after its first; a watch that had already ended is an error.
@@ -155,17 +156,25 @@ fn sample_through(
     window: Duration,
     wakeups: &mut Result<Wakeups, String>,
 ) -> Result<(), Interrupted> {
-    let end = Instant::now().checked_add(window);
-    loop {
-        let left = end.map_or(Duration::ZERO, |end| {
-            end.saturating_duration_since(Instant::now())
-        });
-        wait_out(left.min(WAKEUP_SAMPLE_EVERY))?;
+    sample_through_on(&SystemClock, window, || {
         if let Ok(counter) = wakeups.as_mut()
             && let Err(error) = counter.sample()
         {
             *wakeups = Err(error);
         }
+    })
+}
+
+fn sample_through_on(
+    clock: &dyn Clock,
+    window: Duration,
+    mut sample: impl FnMut(),
+) -> Result<(), Interrupted> {
+    let end = clock.deadline(window);
+    loop {
+        let left = clock.remaining(end);
+        wait_until_on(clock, left.min(WAKEUP_SAMPLE_EVERY), || false)?;
+        sample();
         if left <= WAKEUP_SAMPLE_EVERY {
             return Ok(());
         }
@@ -188,7 +197,7 @@ fn idle_window(
         }
     };
     // The daemon's accept and first write for the watch are not idle wakeups, so counting starts after them.
-    if !watch.wait_first_line()? {
+    if !watch.wait_first_line(STATUS_TIMEOUT)? {
         check.fail(format!(
             "{name}: librepods watch printed nothing within {} s",
             STATUS_TIMEOUT.as_secs()
@@ -196,7 +205,7 @@ fn idle_window(
         return Ok(());
     }
     let mut wakeups = Wakeups::start(pid);
-    sample_through(lab.idle_window, &mut wakeups)?;
+    sample_through(lab.waits.idle, &mut wakeups)?;
     let lines = match watch.finish() {
         Ok(lines) => lines,
         Err(error) => {
@@ -205,26 +214,15 @@ fn idle_window(
         }
     };
     let discovering_after = lab.adapter_state().map(|(_, discovering)| discovering);
-    let seconds = lab.idle_window.as_secs().max(1);
     match wakeups {
-        Ok(wakeups) => {
-            let woke = wakeups.woke();
-            let tenths = woke
-                .saturating_mul(SECONDS_PER_MINUTE)
-                .saturating_mul(TENTHS_PER_ONE)
-                .checked_div(seconds)
-                .unwrap_or(0);
-            check.note(format!(
-                "G3 {name}: {woke} wakeups in {seconds} s, {}.{} a minute, bound at most {bound_per_minute}, watch lines {lines}",
-                tenths.checked_div(TENTHS_PER_ONE).unwrap_or(0),
-                tenths.checked_rem(TENTHS_PER_ONE).unwrap_or(0)
-            ));
-            if woke.saturating_mul(SECONDS_PER_MINUTE) > bound_per_minute.saturating_mul(seconds) {
-                check.fail(format!(
-                    "G3 {name}: over {bound_per_minute} wakeups a minute"
-                ));
-            }
-        }
+        Ok(wakeups) => report_wakeups(
+            check,
+            name,
+            wakeups.woke(),
+            lab.waits.idle,
+            bound_per_minute,
+            lines,
+        ),
         Err(error) => check.fail(error),
     }
     for (end, discovering) in [("start", discovering_before), ("end", discovering_after)] {
@@ -235,6 +233,39 @@ fn idle_window(
         }
     }
     Ok(())
+}
+
+fn report_wakeups(
+    check: &mut Check,
+    name: &str,
+    woke: u64,
+    window: Duration,
+    bound_per_minute: u64,
+    lines: usize,
+) {
+    let window_ms = window.as_millis();
+    let rate_numerator = u128::from(woke).saturating_mul(MILLIS_PER_MINUTE);
+    let rate = rate_numerator
+        .saturating_mul(TENTHS_PER_ONE)
+        .checked_div(window_ms)
+        .map_or_else(
+            || "rate unavailable".to_owned(),
+            |tenths| {
+                format!(
+                    "{}.{} a minute",
+                    tenths.checked_div(TENTHS_PER_ONE).unwrap_or(0),
+                    tenths.checked_rem(TENTHS_PER_ONE).unwrap_or(0)
+                )
+            },
+        );
+    check.note(format!(
+        "G3 {name}: {woke} wakeups in {window_ms} ms, {rate}, bound at most {bound_per_minute}, watch lines {lines}"
+    ));
+    if rate_numerator > u128::from(bound_per_minute).saturating_mul(window_ms) {
+        check.fail(format!(
+            "G3 {name}: over {bound_per_minute} wakeups a minute"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -249,12 +280,31 @@ mod tests {
 
     use proptest::prelude::*;
 
-    use super::{WAKEUP_SAMPLE_EVERY, WATCH_CHUNK_BYTES, Wakeups, count_lines, sample_through};
+    use super::{
+        Check, WAKEUP_SAMPLE_EVERY, WATCH_CHUNK_BYTES, Wakeups, count_lines, report_wakeups,
+        sample_through,
+    };
 
     /// How many times the thread under count sleeps, so wakes, before it idles.
     const SLEEPS: u64 = 200;
     /// Long enough that the thread under count ends inside it.
     const WINDOW: Duration = Duration::from_secs(4);
+
+    #[test]
+    fn a_subsecond_idle_window_can_miss_g3() {
+        const WINDOW: Duration = Duration::from_millis(250);
+        const BOUND_PER_MINUTE: u64 = 120;
+        let mut check = Check::new("C5 idle");
+        report_wakeups(&mut check, "link up", 1, WINDOW, BOUND_PER_MINUTE, 0);
+        assert!(check.failed(), "{:?}", check.lines);
+        assert_eq!(
+            check.lines,
+            [
+                "G3 link up: 1 wakeups in 250 ms, 240.0 a minute, bound at most 120, watch lines 0",
+                "G3 link up: over 120 wakeups a minute",
+            ]
+        );
+    }
 
     #[test]
     pub(super) fn the_window_is_read_often_enough_to_count_a_thread_that_ends() {
@@ -290,5 +340,35 @@ mod tests {
             let newlines = bytes.split(|&byte| byte == b'\n').count().saturating_sub(1);
             prop_assert_eq!(lines.load(Ordering::Relaxed), newlines);
         }
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use std::time::Duration;
+
+    use super::super::Waits;
+    use super::super::clock::PausedClock;
+    use super::sample_through_on;
+
+    #[test]
+    fn each_idle_window_samples_every_second_and_at_the_end() {
+        let clock = PausedClock::default();
+        let mut samples = Vec::new();
+        sample_through_on(&clock, Waits::default().idle, || {
+            samples.push(clock.elapsed());
+        })
+        .unwrap();
+        assert!(samples.into_iter().eq((1..=600).map(Duration::from_secs)));
+        assert_eq!(clock.elapsed(), Duration::from_secs(600));
+
+        let clock = PausedClock::default();
+        let window = Duration::from_millis(1250);
+        let mut samples = Vec::new();
+        sample_through_on(&clock, window, || samples.push(clock.elapsed())).unwrap();
+        assert_eq!(
+            samples,
+            [Duration::from_secs(1), Duration::from_millis(1300)]
+        );
     }
 }

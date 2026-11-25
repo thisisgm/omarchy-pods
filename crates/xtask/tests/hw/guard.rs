@@ -5,8 +5,9 @@ use std::path::Path;
 use std::process::Stdio;
 
 use super::bench::{
-    Bench, RUN_DEADLINE, assert_restarted_after_the_run, finish, index_of, interrupted_by,
-    last_line, processes_in, signalled, text, wait_for_call, wait_for_file, waiting_bench,
+    Bench, QUICK_CONNECT_MS, RUN_DEADLINE, assert_restarted_after_the_run, finish, index_of,
+    interrupted_by, last_line, processes_in, signalled, text, wait_for_call, wait_for_file,
+    waiting_bench,
 };
 
 #[test]
@@ -114,7 +115,7 @@ fn a_daemon_that_stops_answering_is_a_failure_not_absent_airpods() {
     let bench = Bench::new();
     bench.set("pods-absent", "");
     bench.set("status-once", "");
-    let output = bench.run(&[]);
+    let output = bench.run(&["--connect-wait-ms", QUICK_CONNECT_MS]);
     assert_eq!(output.status.code(), Some(1));
     let stderr = text(&output.stderr);
     assert!(
@@ -144,7 +145,7 @@ fn a_service_that_was_inactive_is_left_inactive() {
 fn absent_airpods_exit_77_after_restoring() {
     let bench = Bench::new();
     bench.set("pods-absent", "");
-    let output = bench.run(&[]);
+    let output = bench.run(&["--connect-wait-ms", QUICK_CONNECT_MS]);
     assert_eq!(output.status.code(), Some(77));
     assert!(text(&output.stderr).contains("nothing was measured"));
     assert!(
@@ -372,7 +373,7 @@ fn a_run_killed_outright_leaves_no_process_once_its_bench_is_gone() {
     let bench = Bench::new();
     bench.set("hang-status", "");
     let root = bench.path("");
-    let mut command = bench.command("1", &[]);
+    let mut command = bench.command(Some("1"), &[]);
     command.stdout(Stdio::null()).stderr(Stdio::null());
     let mut run = bench.spawn(command);
     let status: i32 = wait_for_file(&bench.path("status-pid"))
@@ -393,11 +394,11 @@ fn a_run_killed_outright_leaves_no_process_once_its_bench_is_gone() {
 fn a_second_run_during_a_run_stops_and_starts_nothing() {
     let bench = Bench::new();
     bench.set("hang-stop", "");
-    let mut command = bench.command("1", &[]);
+    let mut command = bench.command(Some("1"), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let first = bench.spawn(command);
     wait_for_call(&bench, "systemctl --user stop librepods.service");
-    let mut command = bench.command("1", &[]);
+    let mut command = bench.command(Some("1"), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let second = bench.spawn(command);
     let second = finish(second, RUN_DEADLINE);

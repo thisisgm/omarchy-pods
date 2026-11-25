@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use pods_core::link::STATE_POPULATED_LINE;
 
 use super::Interrupted;
-use super::lab::{CONNECT_WAIT, DISCONNECT_WAIT, Lab, millis, settle, wait_until};
+use super::lab::{DISCONNECT_WAIT, Lab, millis, settle, wait_until};
 use super::report::{Check, Gate};
 use super::system::{Waited, find, journal_cursor, wait_for_entries};
 use super::unit::run;
@@ -67,7 +67,7 @@ fn adapter_cycle(
     if let Err(error) = lab.act("connect") {
         check.fail(error);
     }
-    match wait_for_entries(cursor.as_deref(), CONNECT_WAIT, |entries| {
+    match wait_for_entries(cursor.as_deref(), lab.waits.connect, |entries| {
         find(entries, STATE_POPULATED_LINE, 0).is_some()
     })? {
         Waited::Found(_) => check.gates.push(Gate {
@@ -77,7 +77,7 @@ fn adapter_cycle(
         }),
         Waited::TimedOut => check.fail(format!(
             "not populated {} s after power on",
-            CONNECT_WAIT.as_secs()
+            lab.waits.connect.as_secs()
         )),
         Waited::ReadFailed(error) => check.fail(error),
     }

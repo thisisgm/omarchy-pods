@@ -2,12 +2,14 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use super::clock::{Clock, SystemClock};
 
 /// The installed daemon's unit, stopped for the run and restored after it.
 pub(crate) const INSTALLED: &str = "librepods.service";
@@ -68,7 +70,7 @@ pub(crate) fn installed_ctl(home: &OsStr) -> String {
         .into_owned()
 }
 
-/// Waits `duration` on the calling thread; xtask has no clock to inject.
+/// Waits `duration` on the calling thread.
 #[expect(
     clippy::disallowed_methods,
     reason = "the hardware run waits on real time, which is what it measures"
@@ -104,30 +106,41 @@ pub(crate) fn run(
     let mut child = command
         .spawn()
         .map_err(|error| format!("{program} could not start: {error}"))?;
-    let deadline = Instant::now().checked_add(timeout);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if deadline.is_some_and(|deadline| Instant::now() < deadline) => {
-                pause(EXIT_POLL_INTERVAL);
-            }
-            Ok(None) => {
-                let killed = child.kill();
-                let reaped = child.wait();
-                drop((killed, reaped));
-                return Err(format!(
-                    "{program} {} did not finish within {} s and was killed",
-                    first_word(args),
-                    timeout.as_secs()
-                ));
-            }
-            Err(error) => return Err(format!("{program}: could not wait: {error}")),
+    let status = match wait_for_exit(&SystemClock, timeout, || child.try_wait()) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let killed = child.kill();
+            let reaped = child.wait();
+            drop((killed, reaped));
+            return Err(format!(
+                "{program} {} did not finish within {} s and was killed",
+                first_word(args),
+                timeout.as_secs()
+            ));
         }
+        Err(error) => return Err(format!("{program}: could not wait: {error}")),
     };
     Ok(Ran {
         status,
         stdout: read_output(output, program)?,
     })
+}
+
+/// The exit status, or none when the deadline passes while the command is still running.
+pub(super) fn wait_for_exit<T>(
+    clock: &dyn Clock,
+    timeout: Duration,
+    mut try_wait: impl FnMut() -> io::Result<Option<T>>,
+) -> io::Result<Option<T>> {
+    let deadline = clock.deadline(timeout);
+    loop {
+        match try_wait()? {
+            None if deadline.is_some_and(|deadline| clock.now() < deadline) => {
+                clock.pause(EXIT_POLL_INTERVAL);
+            }
+            ended => return Ok(ended),
+        }
+    }
 }
 
 /// The first argument that is neither an option nor a `-p` value: what the program acts on.

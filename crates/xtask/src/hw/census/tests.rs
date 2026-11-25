@@ -20,8 +20,9 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 use serde_json::{Map, Value, json};
 
 use super::{
-    CENSUS, CENSUS_TRIALS, MAX_REPLY_BYTES, NOISE_WORDS, NoWord, Rounds, WordError, census,
-    missing_features, read_back, read_word, reply_word, set_over_socket, settings,
+    CENSUS, CENSUS_TRIALS, MAX_REPLY_BYTES, NOISE_WORDS, NoWord, Rounds, SET_REPLY_TIMEOUT,
+    WordError, census, missing_features, read_back, read_word, reply_word, set_over_socket,
+    settings,
 };
 use crate::hw::report::Check;
 use crate::hw::unit::pause;
@@ -420,4 +421,28 @@ proptest! {
         prop_assert!(began.elapsed() < BOUNDED);
         prop_assert!(word.len() <= MAX_REPLY_BYTES);
     }
+}
+
+#[test]
+fn wait_ready_on_keeps_one_deadline_across_an_interrupted_poll() {
+    use super::wait_ready_on;
+    use crate::hw::clock::{Clock, PausedClock};
+
+    let clock = PausedClock::default();
+    let deadline = clock.deadline(SET_REPLY_TIMEOUT);
+    clock.pause(Duration::from_secs(2));
+    let mut budgets = Vec::new();
+    let error = wait_ready_on(&clock, deadline, |left| {
+        budgets.push(left);
+        if budgets.len() == 1 {
+            clock.pause(Duration::from_secs(1));
+            return Err(Errno::INTR);
+        }
+        clock.pause(left);
+        Ok(0)
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(budgets, [Duration::from_secs(8), Duration::from_secs(7)]);
+    assert_eq!(clock.elapsed(), Duration::from_secs(10));
 }

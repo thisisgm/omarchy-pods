@@ -4,6 +4,7 @@ mod adapter;
 mod burst;
 mod census;
 mod checks;
+mod clock;
 mod idle;
 mod lab;
 mod old_line;
@@ -47,6 +48,8 @@ const RUN_LOCK: &str = "librepods-hw.lock";
 /// The length of each idle window of C5 unless a test shortens it.
 const IDLE_WINDOW_SECONDS: u64 = 600;
 
+const STUB_WAIT_MS: std::ops::Range<u64> = 1..1000;
+
 /// Set by SIGINT, SIGTERM or SIGHUP; every wait looks at it, and the restore still runs.
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -84,14 +87,57 @@ struct LinkArgs {
     #[arg(long, requires = "attended")]
     adapter_cycle: bool,
     /// Seconds in each idle window of the idle check.
-    #[arg(long, hide = true, default_value_t = IDLE_WINDOW_SECONDS)]
-    idle_window_seconds: u64,
+    #[arg(long, hide = true)]
+    idle_window_seconds: Option<u64>,
+    /// Short idle windows for the CLI stubs.
+    #[arg(long, hide = true, conflicts_with = "idle_window_seconds", value_parser = clap::value_parser!(u64).range(STUB_WAIT_MS))]
+    idle_window_ms: Option<u64>,
+    /// Short burst windows for the CLI stubs.
+    #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(STUB_WAIT_MS))]
+    burst_window_ms: Option<u64>,
+    /// Short startup waits for the CLI stubs.
+    #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(STUB_WAIT_MS))]
+    connect_wait_ms: Option<u64>,
+}
+
+struct Waits {
+    idle: Duration,
+    burst: Duration,
+    connect: Duration,
+}
+
+impl Default for Waits {
+    fn default() -> Self {
+        Self {
+            idle: Duration::from_secs(IDLE_WINDOW_SECONDS),
+            burst: burst::BURST_WINDOW,
+            connect: CONNECT_WAIT,
+        }
+    }
+}
+
+impl LinkArgs {
+    fn waits(&self) -> Waits {
+        let defaults = Waits::default();
+        let idle = self
+            .idle_window_seconds
+            .map_or(defaults.idle, Duration::from_secs);
+        Waits {
+            idle: self.idle_window_ms.map_or(idle, Duration::from_millis),
+            burst: self
+                .burst_window_ms
+                .map_or(defaults.burst, Duration::from_millis),
+            connect: self
+                .connect_wait_ms
+                .map_or(defaults.connect, Duration::from_millis),
+        }
+    }
 }
 
 /// How the part of the run after the installed service stopped ended.
 enum Outcome {
     Checked(Vec<Check>),
-    Absent,
+    Absent(Duration),
     Interrupted,
     Failed(String),
 }
@@ -178,7 +224,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         dir.path(),
         rustix::process::getuid().as_raw(),
         &home,
-        Duration::from_secs(link.idle_window_seconds),
+        link.waits(),
         installed,
     );
     let outcome = stop_then_check(lab, &link);
@@ -243,7 +289,7 @@ fn stop_then_check(mut lab: Lab<'_>, link: &LinkArgs) -> Outcome {
     }
     match lab.wait_present() {
         Ok(Presence::Connected) => {}
-        Ok(Presence::Absent) => return Outcome::Absent,
+        Ok(Presence::Absent) => return Outcome::Absent(lab.waits.connect),
         Ok(Presence::Silent(cause)) => {
             return Outcome::Failed(format!(
                 "the daemon under test did not answer status: {cause}"
@@ -316,10 +362,14 @@ fn finish(outcome: Outcome, restored: &Result<(), String>) -> ExitCode {
             print_line("result: FAILED");
             EXIT_FAILED
         }
-        Outcome::Absent => {
+        Outcome::Absent(wait) => {
+            let bound = if wait < Duration::from_secs(1) {
+                format!("{} ms", wait.as_millis())
+            } else {
+                format!("{} s", wait.as_secs())
+            };
             report(&format!(
-                "xtask hw: the AirPods did not connect within {} s; nothing was measured",
-                CONNECT_WAIT.as_secs()
+                "xtask hw: the AirPods did not connect within {bound}; nothing was measured"
             ));
             EXIT_ABSENT
         }
@@ -373,3 +423,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod clock_tests;

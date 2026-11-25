@@ -3,15 +3,16 @@
 use std::cell::Cell;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pods_core::link::STATE_POPULATED_LINE;
 use serde_json::{Map, Value};
 
+use super::clock::{Clock, SystemClock};
 use super::old_line::Installed;
 use super::system::{Waited, bluez, find, journal_cursor, wait_for_entries};
-use super::unit::{self, POLL_INTERVAL, pause, run};
-use super::{Interrupted, stopped};
+use super::unit::{self, POLL_INTERVAL, run};
+use super::{Interrupted, Waits, stopped};
 
 /// How long the daemon under test has to report `connected` after it starts.
 pub(crate) const CONNECT_WAIT: Duration = Duration::from_secs(20);
@@ -32,7 +33,7 @@ pub(crate) struct Lab<'a> {
     pub(crate) dir: &'a Path,
     pub(crate) uid: u32,
     pub(crate) home: &'a OsStr,
-    pub(crate) idle_window: Duration,
+    pub(super) waits: Waits,
     /// What the installed daemon showed before the run stopped it, for C9.
     pub(crate) installed: Installed,
     device: String,
@@ -51,12 +52,12 @@ pub(crate) enum Presence {
 }
 
 impl<'a> Lab<'a> {
-    pub(crate) fn new(
+    pub(super) fn new(
         binary: &'a Path,
         dir: &'a Path,
         uid: u32,
         home: &'a OsStr,
-        idle_window: Duration,
+        waits: Waits,
         installed: Installed,
     ) -> Self {
         Self {
@@ -64,7 +65,7 @@ impl<'a> Lab<'a> {
             dir,
             uid,
             home,
-            idle_window,
+            waits,
             installed,
             device: String::new(),
             adapter: String::new(),
@@ -133,7 +134,7 @@ impl<'a> Lab<'a> {
     /// Waits for the daemon under test to report `connected`; a miss is judged by the last answer, so a daemon that dies is not taken for absent `AirPods`.
     pub(crate) fn wait_present(&self) -> Result<Presence, Interrupted> {
         let mut last = Err(String::new());
-        let found = wait_until(CONNECT_WAIT, || {
+        let found = wait_until(self.waits.connect, || {
             last = self.status().and_then(|state| {
                 state
                     .get("connected")
@@ -183,26 +184,38 @@ impl<'a> Lab<'a> {
 }
 
 /// Ignores stop signals: the clean up after a stop uses it.
-pub(super) fn settle(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now().checked_add(timeout);
+pub(super) fn settle(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    settle_on(&SystemClock, timeout, ready)
+}
+
+fn settle_on(clock: &dyn Clock, timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
+    let deadline = clock.deadline(timeout);
     loop {
         if ready() {
             return true;
         }
-        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+        if deadline.is_none_or(|deadline| clock.now() >= deadline) {
             return false;
         }
-        pause(POLL_INTERVAL);
+        clock.pause(POLL_INTERVAL);
     }
 }
 
 /// A stop signal ends the wait.
 pub(super) fn wait_until(
     timeout: Duration,
+    ready: impl FnMut() -> bool,
+) -> Result<bool, Interrupted> {
+    wait_until_on(&SystemClock, timeout, ready)
+}
+
+pub(super) fn wait_until_on(
+    clock: &dyn Clock,
+    timeout: Duration,
     mut ready: impl FnMut() -> bool,
 ) -> Result<bool, Interrupted> {
     let mut interrupted = false;
-    let ready = settle(timeout, || {
+    let ready = settle_on(clock, timeout, || {
         interrupted = stopped();
         interrupted || ready()
     });
@@ -211,11 +224,6 @@ pub(super) fn wait_until(
     } else {
         Ok(ready)
     }
-}
-
-/// Wakes to notice a stop signal.
-pub(super) fn wait_out(duration: Duration) -> Result<(), Interrupted> {
-    wait_until(duration, || false).map(drop)
 }
 
 pub(super) fn millis(duration: Duration) -> u64 {
