@@ -114,8 +114,11 @@ mod tests {
         let timing = opening(&mut fixture);
         assert_marks(&samples, 1, MARK_LENGTH, timing);
         let (behind, caught_up) = timing;
-        assert!(behind > 0, "continuous dictation did not start behind");
         let fastest = Duration::from_millis(u64::from(behind)).div_f64(FAST_RATIO - 1.0);
+        assert!(
+            fastest > CATCH_UP_SLACK,
+            "{behind} ms behind is too close to measure a catch-up"
+        );
         let floor = fastest.saturating_sub(CATCH_UP_SLACK);
         let limit = fastest.saturating_add(CATCH_UP_SLACK);
         let caught_up = caught_up.expect("the reader was still catching up at the tail");
