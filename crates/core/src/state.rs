@@ -208,6 +208,7 @@ pub struct Microphone {
     /// Whether the source node is on the audio server.
     source_up: bool,
     counts: MicCounts,
+    span: MicSpan,
 }
 
 /// What the microphone's chain counted since the daemon started, as last folded into the state.
@@ -218,6 +219,53 @@ pub struct MicCounts {
     pub decode_errors: u32,
     pub limited: u32,
     pub nonfinite: u32,
+}
+
+/// Diagnostics for the current or last recorder span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MicSpan {
+    pub sdus: u64,
+    pub restarts: u64,
+    pub gone_frames: u64,
+    peak_tenths_dbfs: Option<i16>,
+}
+
+impl MicSpan {
+    pub const EMPTY: Self = Self {
+        sdus: 0,
+        restarts: 0,
+        gone_frames: 0,
+        peak_tenths_dbfs: None,
+    };
+
+    const TENTHS_PER_DB: f64 = 10.0;
+    const DB_PER_AMPLITUDE_DECADE: f64 = 20.0;
+
+    #[must_use]
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "the rounded log of any positive finite f32 fits in i16 tenths of a dB"
+    )]
+    pub fn new(sdus: u64, restarts: u64, gone_frames: u64, peak: f32) -> Self {
+        let peak_tenths_dbfs = (peak > 0.0 && peak.is_finite()).then(|| {
+            let dbfs = Self::DB_PER_AMPLITUDE_DECADE * f64::from(peak).log10();
+            (dbfs * Self::TENTHS_PER_DB).round() as i16
+        });
+        Self {
+            sdus,
+            restarts,
+            gone_frames,
+            peak_tenths_dbfs,
+        }
+    }
+
+    /// None until a decoder gives nonzero audio in this span.
+    #[must_use]
+    pub fn peak_dbfs(self) -> Option<f64> {
+        self.peak_tenths_dbfs
+            .map(|tenths| f64::from(tenths) / Self::TENTHS_PER_DB)
+    }
 }
 
 impl Microphone {
@@ -235,6 +283,7 @@ impl Microphone {
                 limited: 0,
                 nonfinite: 0,
             },
+            span: MicSpan::EMPTY,
         }
     }
 
@@ -265,6 +314,15 @@ impl Microphone {
 
     pub fn fold(&mut self, counts: MicCounts) {
         self.counts = counts;
+    }
+
+    #[must_use]
+    pub const fn span(self) -> MicSpan {
+        self.span
+    }
+
+    pub fn fold_span(&mut self, span: MicSpan) {
+        self.span = span;
     }
 
     pub fn set_preference(&mut self, preference: MicPref) {

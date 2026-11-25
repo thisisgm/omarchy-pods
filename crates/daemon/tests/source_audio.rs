@@ -175,9 +175,15 @@ mod tests {
         read_up_to_now(&rig, &device);
         drop(recorder.finish());
         let counted = counts_after_leaving(&rig);
+        let status = rig.status();
         let daemon = rig.daemon();
-        let line = assert_left_counts(daemon, counted);
-        assert_eq!(counted.concealed, u64::from(UNITS_PER_PACKET), "{line}");
+        assert_left_counts(
+            daemon,
+            &status,
+            0,
+            [counted.underruns, counted.concealed, counted.limited],
+        );
+        assert_eq!(counted.concealed, u64::from(UNITS_PER_PACKET));
         let log = daemon.log();
         let linked = log.lines().position(|line| line == LINKED);
         let left = log.lines().position(|line| line.starts_with(LEFT));

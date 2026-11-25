@@ -57,10 +57,11 @@ impl Tap {
         self.count_uplink();
         let now = self.epoch.elapsed();
         let mut state = self.lock();
+        if !matches!(state.stream, Stream::Uplink) {
+            return false;
+        }
         let first = mem::take(&mut state.armed);
-        if matches!(state.stream, Stream::Uplink)
-            && let Some(chain) = state.chain.as_mut()
-        {
+        if let Some(chain) = state.chain.as_mut() {
             if first {
                 chain.reset();
             }

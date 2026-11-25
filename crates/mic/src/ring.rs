@@ -414,8 +414,14 @@ impl Reader {
     /// Hands out the frames from where the reader stands, those of the run it stood by and none of a run that started since, and gives the ratio.
     fn fill(&mut self, aim: Option<Aim>, frames: i64, out: &mut [f32]) -> f64 {
         let told = aim.map(|aim| aim.run);
+        let mut gone = 0_u64;
         for sample in &mut *out {
-            *sample = self.frame(told);
+            *sample = self.frame(told, &mut gone);
+        }
+        if gone > 0 {
+            self.counters
+                .span_gone_frames
+                .fetch_add(gone, Ordering::Relaxed);
         }
         match (aim, self.opening) {
             (None, _) => 1.0,
@@ -504,7 +510,7 @@ impl Reader {
     }
 
     /// The next frame; only a sample of `told`, the run whose time the read stood by, has a place and is handed out.
-    fn frame(&mut self, told: Option<u64>) -> f32 {
+    fn frame(&mut self, told: Option<u64>, gone: &mut u64) -> f32 {
         let at = self.next;
         self.next = at.saturating_add(1);
         let mut out = match self.ring.frame(at) {
@@ -528,7 +534,10 @@ impl Reader {
                 self.was = Was::Dry;
                 0.0
             }
-            Frame::Sample { .. } | Frame::Gone => {
+            frame @ (Frame::Sample { .. } | Frame::Gone) => {
+                if matches!(frame, Frame::Gone) {
+                    *gone = gone.saturating_add(1);
+                }
                 self.end_audio(at);
                 self.was = Was::Gone;
                 0.0

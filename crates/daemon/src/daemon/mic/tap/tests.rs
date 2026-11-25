@@ -77,6 +77,7 @@ fn audio_with_no_chain_is_counted_and_dropped() {
         assert!(!tap.audio(&audio(&packet(place))));
     }
     assert_eq!(tap.packets(), 2);
+    assert_eq!(tap.counters().span_sdus.load(Ordering::Relaxed), 0);
     assert_eq!(concealed(&tap), 0);
 }
 
@@ -180,7 +181,7 @@ fn a_reopened_node_keeps_dictation_until_the_session_ends() {
     );
 
     tap.arm();
-    assert!(tap.audio(&audio(&packet(0))));
+    assert!(!tap.audio(&audio(&packet(0))));
     assert_eq!(tap.dictation(&dictated(&notification(3))), Some(false));
     tap.end_dictation();
     assert!(tap.audio(&audio(&packet(0))));
@@ -205,12 +206,22 @@ fn dictation_audio_is_counted_apart_from_the_uplink() {
 }
 
 #[test]
-fn an_uplink_start_and_a_dictation_start_each_wait_for_their_own_audio() {
+fn audio_from_the_wrong_stream_leaves_the_uplink_reset_armed() {
     let tap = Tap::new();
+    let (_feed, _resync) = open(&tap);
     tap.arm();
     tap.arm_dictation();
     assert_eq!(tap.dictation(&dictated(&notification(0))), Some(true));
-    assert!(tap.audio(&audio(&packet(0))));
+    assert!(
+        !tap.audio(&audio(&packet(0))),
+        "uplink audio reported first audio while dictation was selected"
+    );
+    assert!(tap.lock().armed, "the uplink reset was consumed off route");
+    assert_eq!(tap.counters().span_sdus.load(Ordering::Relaxed), 0);
+    tap.end_dictation();
+    assert!(tap.audio(&audio(&packet(2))));
+    assert!(!tap.audio(&audio(&packet(3))));
+    assert_eq!(concealed(&tap), 0);
 }
 
 #[test]

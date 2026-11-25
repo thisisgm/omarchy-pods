@@ -277,12 +277,61 @@ mod tests {
     }
 
     #[test]
-    fn a_recorder_that_leaves_logs_the_limited_count() {
+    fn recorder_departures_log_each_spans_own_counters() {
         let (mut rig, device, pipewire) = ready();
         drop(recorded(&rig, &device, &pipewire, TAP_LEVEL));
-        let counted = counts_after_leaving(&rig);
-        let line = assert_left_counts(rig.daemon(), counted);
-        assert!(counted.limited > 0, "{line}");
+        let first = wait_mic(&rig, "live");
+        let total = counts(&first);
+        let peak = first["mic_span_peak_dbfs"].as_f64().unwrap();
+        let (_, decoded_peak) = decoded_dbfs(TAP_LEVEL);
+        assert!((peak - decoded_peak).abs() <= GAIN_SLACK_DB, "{first}");
+        assert!(first["mic_span_sdus"].as_u64().unwrap() > 0, "{first}");
+        assert_eq!(first["mic_span_restarts"], 0);
+        assert!(total.limited > 0, "{first}");
+        assert_left_counts(
+            rig.daemon(),
+            &first,
+            0,
+            [total.underruns, total.concealed, total.limited],
+        );
+
+        let uplink = device.pods.uplink();
+        uplink.set_level(KNOWN_LEVEL);
+        // The uplink lingers between recorders, so let the loud samples pass the playout delay.
+        let lead_packets = u64::try_from(LEAD.as_millis() / PERIOD.as_millis()).unwrap();
+        wait_packets(&uplink, uplink.sent_packets().saturating_add(lead_packets));
+        read_up_to_now(&rig, &device);
+        let watch = rig.watch();
+        assert_eq!(watch.next(HANG_LIMIT).unwrap().state["mic"], "live");
+        let second = record(&rig, &pipewire, "second.wav");
+        let start = watch.next(HANG_LIMIT).unwrap().state;
+        drop(watch);
+        assert_eq!(start["mic"], "recording", "{start}");
+        for key in ["mic_span_sdus", "mic_span_restarts", "mic_span_gone_frames"] {
+            assert_eq!(start[key], 0, "{start}");
+        }
+        assert!(start["mic_span_peak_dbfs"].is_null(), "{start}");
+        assert_eq!(counts(&start).limited, total.limited);
+        let during = rig.wait_status("the second span's audio", |status| {
+            status["mic"] == "recording" && status["mic_span_sdus"].as_u64().unwrap() > 0
+        });
+        let peak = during["mic_span_peak_dbfs"].as_f64().unwrap();
+        let (_, decoded_peak) = decoded_dbfs(KNOWN_LEVEL);
+        assert!((peak - decoded_peak).abs() <= GAIN_SLACK_DB, "{during}");
+        drop(second.finish());
+        let end = wait_mic(&rig, "live");
+        let lifetime = counts(&end);
+        assert_eq!(lifetime.limited, total.limited, "{end}");
+        assert_left_counts(
+            rig.daemon(),
+            &end,
+            1,
+            [
+                lifetime.underruns - total.underruns,
+                lifetime.concealed - total.concealed,
+                0,
+            ],
+        );
         rig.finish();
     }
 }

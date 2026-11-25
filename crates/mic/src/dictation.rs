@@ -231,7 +231,11 @@ impl Chain {
             Place::NewRun => self.new_run(),
         }
         self.dictation.expected = Some(counter.wrapping_add(1));
-        match self.dictation.at_node_rate(decode) {
+        let counters = &self.counters;
+        let decoded = self
+            .dictation
+            .at_node_rate(|decoder| counters.measure_peak(decode(decoder)));
+        match decoded {
             Decoded::Samples(samples) => Self::write_audio(&self.ring, &mut self.faded, samples),
             Decoded::Error => {
                 self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
