@@ -18,6 +18,7 @@ mod tests {
         unanswered_line,
     };
     use pods_fake::Profile;
+    use pods_samples::uplink::{session_marker, state_marker};
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
@@ -125,6 +126,69 @@ mod tests {
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
         audio.assert_only_reads();
         rig.finish();
+    }
+
+    #[test]
+    fn the_first_start_answered_after_timeout_still_owns_the_restore() {
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        let uplink = device.pods.uplink();
+        uplink.hold_starts(true);
+        link_heard(&rig, &device);
+        wait_starts(&device, 1);
+        set(rig.session(), "microphone", "auto");
+        rig.wait_logged(&unanswered_line(1));
+        uplink.release_start();
+        wait_mic(&rig, "live");
+        uplink.stop_unasked();
+        read_up_to_now(&rig, &device);
+        wait_mic(&rig, "no_audio_server");
+        assert_eq!(starts(&device).len(), 1, "STARTs sent by the daemon");
+        assert_eq!(stops(&device).len(), 0, "STOPs sent by the daemon");
+        rig.finish();
+
+        assert_eq!(
+            audio.writes().len(),
+            2,
+            "sink writes after the late START answer"
+        );
+        wait_restore(&audio, &device);
+    }
+
+    #[test]
+    fn unsolicited_uplink_markers_leave_a_playing_sink_alone() {
+        const MARKER_PAIRS: usize = 3;
+
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "no_audio_server");
+        for _ in 0..MARKER_PAIRS {
+            device.pods.send(&state_marker(true));
+            device.pods.send(&session_marker(true));
+            wait_mic(&rig, "live");
+            device.pods.send(&state_marker(false));
+            device.pods.send(&session_marker(false));
+            read_up_to_now(&rig, &device);
+            wait_mic(&rig, "no_audio_server");
+        }
+        assert_eq!(starts(&device).len(), 0, "STARTs sent by the daemon");
+        assert_eq!(stops(&device).len(), 0, "STOPs sent by the daemon");
+        rig.finish();
+
+        let writes = audio.writes();
+        let suspends = writes
+            .iter()
+            .filter(|write| matches!(write, Asked::Suspend { suspend: true, .. }))
+            .count();
+        let resumes = writes
+            .iter()
+            .filter(|write| matches!(write, Asked::Suspend { suspend: false, .. }))
+            .count();
+        assert_eq!(
+            (suspends, resumes),
+            (0, 0),
+            "sink suspends and resumes after unsolicited marker pairs"
+        );
     }
 
     /// The pods live with `always` over a playing sink, then stopped by the pods and the sink restored for it.

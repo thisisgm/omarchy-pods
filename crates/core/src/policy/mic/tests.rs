@@ -129,16 +129,19 @@ const KINDS: [Kind; 15] = [
 
 fn phase(kind: Kind) -> Phase {
     match kind {
-        Kind::Stopped | Kind::Asleep => Phase::Stopped { spent: None },
-        Kind::Failed => Phase::Stopped {
+        Kind::Stopped | Kind::Asleep => Phase::Stopped(Stopped::default()),
+        Kind::Failed => Phase::Stopped(Stopped {
             spent: Some(Spent::Failed),
-        },
-        Kind::Unsupported => Phase::Stopped {
+            pending: PendingMarker::None,
+        }),
+        Kind::Unsupported => Phase::Stopped(Stopped {
             spent: Some(Spent::Unsupported),
-        },
-        Kind::Unasked => Phase::Stopped {
+            pending: PendingMarker::None,
+        }),
+        Kind::Unasked => Phase::Stopped(Stopped {
             spent: Some(Spent::Unasked),
-        },
+            pending: PendingMarker::None,
+        }),
         Kind::Starting => Phase::Starting {
             since: SENT,
             tried: Try::FIRST,
@@ -154,34 +157,40 @@ fn phase(kind: Kind) -> Phase {
             tried: Try::FIRST,
             owed: true,
         },
-        Kind::Running => Phase::Running(Hold::Wanted, watch()),
+        Kind::Running => Phase::Running(Hold::Wanted, watch(), Ownership::Owned),
         Kind::Lingering => Phase::Running(
             Hold::Lingering {
                 since: SENT,
                 unworn: None,
             },
             watch(),
+            Ownership::Owned,
         ),
-        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }, watch()),
+        Kind::Waiting => Phase::Running(Hold::Waiting { unworn: None }, watch(), Ownership::Owned),
         Kind::Stopping => Phase::Stopping {
             since: SENT,
             restore: true,
+            ownership: Ownership::Owned,
             spent: None,
         },
         Kind::StoppingQuiet => Phase::Stopping {
             since: SENT,
             restore: false,
+            ownership: Ownership::Owned,
             spent: None,
         },
         Kind::Restoring => Phase::Restoring {
             since: SENT,
             id: RestoreId(0),
-            spent: None,
+            stopped: Stopped::default(),
         },
         Kind::RestoringUnasked => Phase::Restoring {
             since: SENT,
             id: RestoreId(0),
-            spent: Some(Spent::Unasked),
+            stopped: Stopped {
+                spent: Some(Spent::Unasked),
+                pending: PendingMarker::None,
+            },
         },
     }
 }
@@ -201,28 +210,35 @@ fn last_try() -> Try {
 
 fn kind(phase: Phase) -> Kind {
     match phase {
-        Phase::Stopped { spent: None } => Kind::Stopped,
-        Phase::Stopped {
+        Phase::Stopped(Stopped { spent: None, .. }) => Kind::Stopped,
+        Phase::Stopped(Stopped {
             spent: Some(Spent::Failed),
-        } => Kind::Failed,
-        Phase::Stopped {
+            ..
+        }) => Kind::Failed,
+        Phase::Stopped(Stopped {
             spent: Some(Spent::Unsupported),
-        } => Kind::Unsupported,
-        Phase::Stopped {
+            ..
+        }) => Kind::Unsupported,
+        Phase::Stopped(Stopped {
             spent: Some(Spent::Unasked),
-        } => Kind::Unasked,
+            ..
+        }) => Kind::Unasked,
         Phase::Starting {
             owed: false, tried, ..
         } if tried.next().is_none() => Kind::LastTry,
         Phase::Starting { owed: false, .. } => Kind::Starting,
         Phase::Starting { owed: true, .. } => Kind::Owed,
-        Phase::Running(Hold::Wanted | Hold::Late, _) => Kind::Running,
-        Phase::Running(Hold::Lingering { .. }, _) => Kind::Lingering,
-        Phase::Running(Hold::Waiting { .. }, _) => Kind::Waiting,
+        Phase::Running(Hold::Wanted | Hold::Late, ..) => Kind::Running,
+        Phase::Running(Hold::Lingering { .. }, ..) => Kind::Lingering,
+        Phase::Running(Hold::Waiting { .. }, ..) => Kind::Waiting,
         Phase::Stopping { restore: true, .. } => Kind::Stopping,
         Phase::Stopping { restore: false, .. } => Kind::StoppingQuiet,
         Phase::Restoring {
-            spent: Some(Spent::Unasked),
+            stopped:
+                Stopped {
+                    spent: Some(Spent::Unasked),
+                    ..
+                },
             ..
         } => Kind::RestoringUnasked,
         Phase::Restoring { .. } => Kind::Restoring,
@@ -332,7 +348,7 @@ pub(in crate::policy::mic) fn lines(effects: &[Effect]) -> Vec<&str> {
 
 /// The hold of a running uplink, apart from its stall check.
 pub(in crate::policy::mic) fn hold(mic: &Mic) -> Hold {
-    let Phase::Running(hold, _) = mic.phase else {
+    let Phase::Running(hold, ..) = mic.phase else {
         panic!("not running: {:?}", mic.phase);
     };
     hold
@@ -341,14 +357,6 @@ pub(in crate::policy::mic) fn hold(mic: &Mic) -> Hold {
 fn mic(phase: Phase) -> Mic {
     Mic {
         phase,
-        ownership: match phase {
-            Phase::Stopped { .. } | Phase::Restoring { .. } | Phase::Running(Hold::Late, _) => {
-                Ownership::Unowned
-            }
-            Phase::Starting { .. } | Phase::Running(..) | Phase::Stopping { .. } => {
-                Ownership::Owned
-            }
-        },
         ..Mic::default()
     }
 }
@@ -623,5 +631,6 @@ fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
 
 mod faults;
 mod linger;
+mod ownership;
 mod stall;
 pub(super) mod table;

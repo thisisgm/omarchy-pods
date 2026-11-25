@@ -183,7 +183,8 @@ A reply carries the request's `id` and `ok`.
   unless the want or the link is gone or the daemon is stopping, and no STOP
   is sent while one waits for its answer. An uplink the AirPods say
   runs while nothing wants it, such as a late answer, is stopped as one whose
-  linger has passed. A STOP the AirPods do not confirm in time is taken as
+  linger has passed. A reply within the late START window still belongs to the
+  daemon's START. A STOP the AirPods do not confirm in time is taken as
   done, and a later START still goes out. If the pods stop an uplink the daemon
   started, the daemon restores playback at once. After a stop from the pods,
   another START waits until the want has gone and come back. While a headset

@@ -20,7 +20,7 @@ fn quiet(effects: &[Effect]) -> bool {
 }
 
 fn watch_of(mic: &Mic) -> Watch {
-    let Phase::Running(_, watch) = mic.phase else {
+    let Phase::Running(_, watch, _) = mic.phase else {
         panic!("not running: {:?}", mic.phase);
     };
     watch
@@ -130,7 +130,7 @@ fn retried() -> (State, Mic) {
 }
 
 #[test]
-fn a_stall_start_answered_during_restore_tracks_the_next_unasked_stop() {
+fn a_stall_start_answered_in_its_window_tracks_the_next_unasked_stop() {
     let (state, mut mic) = retried();
     let at = after(1).saturating_add(SOON);
     let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
@@ -139,16 +139,40 @@ fn a_stall_start_answered_during_restore_tracks_the_next_unasked_stop() {
     assert!(first.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0)))));
     assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
     let mut expired = mic;
-    let answered = mic.step(&state, &running, at);
-    assert_eq!(kind(mic.phase), Kind::Running);
-    assert!(answered.contains(&Effect::Audio(AudioRequest::CancelRestore)));
-    let second = mic.step(&state, &stopped, at);
-    assert!(second.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(1)))));
-    assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    let mut restored = mic;
+    let restore_done = Fact::Audio(AudioFact::Restored(RestoreId(0)));
+    assert_eq!(restored.step(&state, &restore_done, at), []);
+    assert_eq!(kind(restored.phase), Kind::Unasked);
+    for (mut mic, restoring) in [(mic, true), (restored, false)] {
+        let answered = mic.step(&state, &running, at);
+        assert_eq!(kind(mic.phase), Kind::Running);
+        assert_eq!(
+            answered.contains(&Effect::Audio(AudioRequest::CancelRestore)),
+            restoring
+        );
+        let second = mic.step(&state, &stopped, at);
+        assert!(second.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(1)))));
+        assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    }
 
     drop(expired.step(&state, &running, after(2)));
     let after_window = expired.step(&state, &stopped, after(2).saturating_add(SOON));
     assert_eq!(restore_ids(&after_window), []);
+}
+
+#[test]
+fn sleep_discards_a_stall_start_that_could_still_own_the_next_span() {
+    let (state, mut mic) = retried();
+    let at = after(1).saturating_add(SOON);
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let first = mic.step(&state, &stopped, at);
+    assert_eq!(restore_ids(&first), [RestoreId(0)]);
+    drop(mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), at));
+    drop(mic.step(&state, &Fact::Sleep(SleepEdge::Woke), at));
+    drop(mic.step(&state, &running, at));
+    let ended = mic.step(&state, &stopped, at.saturating_add(SOON));
+    assert_eq!(restore_ids(&ended), []);
 }
 
 #[test]
