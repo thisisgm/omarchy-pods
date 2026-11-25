@@ -44,6 +44,8 @@ pub struct Dial {
     pub at: Instant,
     pub device: BdAddr,
     pub psm: u16,
+    /// The incoming MTU the child wrote before connecting, in bytes.
+    pub imtu: Option<u16>,
     pub outcome: Outcome,
 }
 
@@ -63,6 +65,7 @@ pub enum Violation {
     Unrouted { device: BdAddr, psm: u16 },
     BadAddress { cid: u16, address_type: u8 },
     Stranger { fd: u32 },
+    UnsupportedOption { call: &'static str, option: u32 },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -197,6 +200,7 @@ impl fmt::Display for Name {
             Errno::PROTONOSUPPORT => "EPROTONOSUPPORT",
             Errno::INVAL => "EINVAL",
             Errno::BADF => "EBADF",
+            Errno::NOPROTOOPT => "ENOPROTOOPT",
             Errno::CONNREFUSED => "ECONNREFUSED",
             Errno::TIMEDOUT => "ETIMEDOUT",
             Errno::HOSTUNREACH => "EHOSTUNREACH",
@@ -211,10 +215,15 @@ impl fmt::Display for Dial {
         let Self {
             device,
             psm,
+            imtu,
             outcome,
             ..
         } = self;
-        write!(f, "connect to {} PSM {psm:#06x}: ", Device(*device))?;
+        write!(f, "connect to {} PSM {psm:#06x}", Device(*device))?;
+        if let Some(imtu) = imtu {
+            write!(f, " with incoming MTU {imtu}")?;
+        }
+        f.write_str(": ")?;
         match outcome {
             Outcome::Pending => f.write_str("not answered yet"),
             Outcome::Accepted => f.write_str("accepted"),
@@ -248,6 +257,11 @@ impl fmt::Display for Violation {
                 f,
                 "connect on descriptor {fd} with an L2CAP address: the trap did not hand out that socket, answered {}",
                 Name(Errno::BADF)
+            ),
+            Self::UnsupportedOption { call, option } => write!(
+                f,
+                "{call}(SOL_L2CAP, option {option:#04x}): only L2CAP_OPTIONS is served, answered {}",
+                Name(Errno::NOPROTOOPT)
             ),
         }
     }
@@ -333,6 +347,7 @@ mod tests {
             at: spawned,
             device,
             psm: 0x1001,
+            imtu: None,
             outcome: Outcome::Refused(Errno::CONNREFUSED),
         };
         let error = TrapError::Violations {
@@ -359,6 +374,7 @@ mod tests {
             at: spawned + Duration::from_millis(40),
             device: fixture(0x01),
             psm: 0x001f,
+            imtu: None,
             outcome,
         };
         let error = TrapError::Violations {

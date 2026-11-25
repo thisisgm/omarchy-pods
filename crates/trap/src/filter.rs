@@ -1,4 +1,4 @@
-//! The classic BPF program that hands a child's Bluetooth `socket` and L2CAP sized `connect` calls to the trap.
+//! The classic BPF program that hands a child's Bluetooth socket, connect and L2CAP option calls to the trap.
 
 use libc::{SECCOMP_RET_ALLOW, SECCOMP_RET_USER_NOTIF, sock_filter};
 
@@ -16,6 +16,7 @@ const RETURN: u16 = 0x06;
 const NUMBER: u32 = 0;
 const ARCHITECTURE: u32 = 4;
 const ARGUMENT_0: u32 = 16;
+const ARGUMENT_1: u32 = 24;
 const ARGUMENT_2: u32 = 32;
 
 /// `#define AUDIT_ARCH_X86_64 (EM_X86_64|__AUDIT_ARCH_64BIT|__AUDIT_ARCH_LE)` in `linux/audit.h`.
@@ -24,6 +25,12 @@ const AUDIT_ARCH_X86_64: u32 = 0x3e | 0x8000_0000 | 0x4000_0000;
 const NR_SOCKET: u32 = 41;
 /// `#define __NR_connect 42` in `asm/unistd_64.h`.
 const NR_CONNECT: u32 = 42;
+/// `#define __NR_setsockopt 54` in `asm/unistd_64.h`.
+const NR_SETSOCKOPT: u32 = 54;
+/// `#define __NR_getsockopt 55` in `asm/unistd_64.h`.
+const NR_GETSOCKOPT: u32 = 55;
+/// The legacy L2CAP socket option level in include/net/bluetooth/bluetooth.h.
+pub(crate) const SOL_L2CAP: u32 = 6;
 /// The size of `struct sockaddr_l2` in `include/net/bluetooth/l2cap.h`.
 const SOCKADDR_L2_LEN: u32 = 14;
 const AF_BLUETOOTH: u32 = libc::AF_BLUETOOTH.cast_unsigned();
@@ -47,17 +54,21 @@ const fn jump_if_equal(k: u32, jt: u8, jf: u8) -> sock_filter {
     }
 }
 
-pub(crate) const PROGRAM: [sock_filter; 12] = [
+pub(crate) const PROGRAM: [sock_filter; 16] = [
     statement(LOAD_WORD, ARCHITECTURE),
     jump_if_equal(AUDIT_ARCH_X86_64, 1, 0),
     statement(RETURN, SECCOMP_RET_ALLOW),
     statement(LOAD_WORD, NUMBER),
     jump_if_equal(NR_CONNECT, 0, 2),
     statement(LOAD_WORD, ARGUMENT_2),
-    jump_if_equal(SOCKADDR_L2_LEN, 4, 3),
+    jump_if_equal(SOCKADDR_L2_LEN, 8, 7),
     jump_if_equal(NR_SOCKET, 0, 2),
     statement(LOAD_WORD, ARGUMENT_0),
-    jump_if_equal(AF_BLUETOOTH, 1, 0),
+    jump_if_equal(AF_BLUETOOTH, 5, 4),
+    jump_if_equal(NR_GETSOCKOPT, 1, 0),
+    jump_if_equal(NR_SETSOCKOPT, 0, 2),
+    statement(LOAD_WORD, ARGUMENT_1),
+    jump_if_equal(SOL_L2CAP, 1, 0),
     statement(RETURN, SECCOMP_RET_ALLOW),
     statement(RETURN, SECCOMP_RET_USER_NOTIF),
 ];
@@ -99,5 +110,7 @@ mod tests {
         assert_eq!(u32::from(RETURN), libc::BPF_RET | libc::BPF_K);
         assert_eq!(i64::from(NR_SOCKET), libc::SYS_socket);
         assert_eq!(i64::from(NR_CONNECT), libc::SYS_connect);
+        assert_eq!(i64::from(NR_SETSOCKOPT), libc::SYS_setsockopt);
+        assert_eq!(i64::from(NR_GETSOCKOPT), libc::SYS_getsockopt);
     }
 }

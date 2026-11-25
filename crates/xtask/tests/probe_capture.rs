@@ -48,9 +48,10 @@ mod tests {
         BURST_PACKETS, DECLARED, DICTATION_START, DICTATION_STOP, MADE_UP_TYPE, declared_at,
     };
     use super::capture::{
-        FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, assert_att_ran, assert_control_logged,
-        capture, far_end, files_of, hand_over, hand_over_after, home_with_device, kinds, logged,
-        probe, read, refuse, route, run_path, stamp_of, transcript,
+        FAILED, HANG_LIMIT, ROOT_NAME, Running, STAMP, after_default_control_mtus, assert_att_ran,
+        assert_control_logged, capture, far_end, files_of, hand_over, hand_over_after,
+        home_with_device, kinds, logged, probe, read, refusal_of, refuse, route, run_path,
+        stamp_of, transcript,
     };
     use super::pods::{self, Pods};
 
@@ -71,7 +72,11 @@ mod tests {
     fn a_signal_mid_uplink_stops_the_uplink_and_fails_the_run() {
         let home = home_with_device();
         let (answer, handed) = hand_over();
-        let command = capture(&home, "uplink", &["--script", "soak", "--minutes", "1"]);
+        let command = capture(
+            &home,
+            "uplink",
+            &["--script", "soak", "--minutes", "1", "--imtu", "2048"],
+        );
         let running = Running::start(command, vec![route(CONTROL_PSM, answer)]);
         let flag = Arc::new(AtomicBool::new(false));
         let part = Pods {
@@ -87,7 +92,13 @@ mod tests {
         assert_eq!(ran.stdout, SOAK_CUE);
         let said =
             "xtask probe: capture ended early: interrupted by a signal; STOP was sent (packets in ";
-        assert!(ran.stderr.starts_with(said), "{}", ran.stderr);
+        let stderr = ran
+            .stderr
+            .strip_prefix(
+                "xtask probe: control channel MTU incoming 2048 bytes, outgoing 672 bytes\n",
+            )
+            .expect("the capture must report its requested and default sizes");
+        assert!(stderr.starts_with(said), "{}", ran.stderr);
         assert!(
             ran.stderr.ends_with(", START sent 1, STOP sent 1)\n"),
             "{}",
@@ -131,7 +142,11 @@ mod tests {
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
         assert_eq!(ran.stdout, SOAK_CUE);
         let said = "xtask probe: capture ended early: interrupted by a signal; the dictation stop was sent (packets in ";
-        assert!(ran.stderr.starts_with(said), "{}", ran.stderr);
+        assert!(
+            after_default_control_mtus(&ran.stderr).starts_with(said),
+            "{}",
+            ran.stderr
+        );
         let counted = ", dictation start sent 1, dictation stop sent 1, requests refused 0)\n";
         assert!(ran.stderr.ends_with(counted), "{}", ran.stderr);
         let accepted = [
@@ -246,7 +261,11 @@ mod tests {
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
         assert_eq!(ran.stdout, "cue Count aloud to twenty\n");
         let said = "xtask probe: capture ended early: interrupted by a signal; STOP was sent; the dictation stop was sent (packets in ";
-        assert!(ran.stderr.starts_with(said), "{}", ran.stderr);
+        assert!(
+            after_default_control_mtus(&ran.stderr).starts_with(said),
+            "{}",
+            ran.stderr
+        );
         let accepted = [
             (CONTROL_PSM, Outcome::Accepted),
             (ATT_PSM, Outcome::Accepted),
@@ -291,7 +310,7 @@ mod tests {
         assert_eq!(
             ran.stderr,
             format!(
-                "xtask probe: capture complete: packets in 0, with audio 0, not logged 0, START sent 0, STOP sent 0, attribute packets in {pdus_in}, with audio 0, dictation start sent 0, dictation stop sent 0, requests refused 0\n"
+                "xtask probe: capture complete: packets in 0, with audio 0, not logged 0, largest SDU 0 bytes, START sent 0, STOP sent 0, attribute packets in {pdus_in}, with audio 0, dictation start sent 0, dictation stop sent 0, requests refused 0\n"
             )
         );
         assert_eq!(ran.dials, [(ATT_PSM, Outcome::Accepted)]);
@@ -319,6 +338,51 @@ mod tests {
         assert_eq!(read(&run, "sdu.log"), "");
         let marks = read(&run, "marks.tsv");
         assert!(marks.contains("\thandles\tpresent\n"), "{marks}");
+    }
+
+    #[test]
+    fn an_att_only_capture_refuses_an_incoming_mtu_before_dialling() {
+        let home = home_with_device();
+        let args = [
+            "--route",
+            "dictation",
+            "--script",
+            "att-map",
+            "--imtu",
+            "2048",
+        ];
+        assert_eq!(
+            refusal_of(&home, &args),
+            "xtask probe: --imtu requires a script that opens the control channel\n",
+        );
+    }
+
+    #[test]
+    fn a_truncated_control_sdu_sets_the_full_length_in_the_summary() {
+        const OVERSIZED_LEN: usize = 5000;
+        let home = home_with_device();
+        let (answer, handed) = hand_over();
+        let command = capture(&home, "oversized", &["--script", "knock"]);
+        let running = Running::start(command, vec![route(CONTROL_PSM, answer)]);
+        let far = far_end(&handed);
+        far.send(&[0x11; OVERSIZED_LEN]).unwrap();
+        let ran = running.finish();
+
+        assert_eq!(ran.code, Some(0), "{}", ran.stderr);
+        assert_eq!(ran.dials, [(CONTROL_PSM, Outcome::Accepted)]);
+        assert_eq!(
+            after_default_control_mtus(&ran.stderr),
+            format!(
+                "xtask probe: capture complete: packets in 0, with audio 0, not logged 1, largest SDU {OVERSIZED_LEN} bytes, START sent 0, STOP sent 0\n"
+            ),
+        );
+        let run = run_path(&home, "oversized");
+        let marks = read(&run, "marks.tsv");
+        let mark = format!(
+            "\ttruncated\t{OVERSIZED_LEN} bytes: longer than the 4096 byte receive buffer\n"
+        );
+        assert!(marks.contains(&mark), "{marks}");
+        assert_eq!(read(&run, "sdu.log"), "");
     }
 
     #[test]
@@ -405,8 +469,12 @@ mod tests {
         let pods = transcript(&played);
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
         let said = "xtask probe: capture ended early: the attribute channel on PSM 0x001f did not open: could not connect the L2CAP channel: Connection refused (os error 111) (packets in ";
-        assert!(ran.stderr.starts_with(said), "{}", ran.stderr);
-        assert_eq!(ran.stderr.lines().count(), 1, "{}", ran.stderr);
+        assert!(
+            after_default_control_mtus(&ran.stderr).starts_with(said),
+            "{}",
+            ran.stderr
+        );
+        assert_eq!(ran.stderr.lines().count(), 2, "{}", ran.stderr);
         assert_eq!(ran.stdout, "");
         let dials = [
             (CONTROL_PSM, Outcome::Accepted),

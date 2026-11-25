@@ -178,6 +178,7 @@ pub(super) struct Recorder<'o> {
     marks: &'o mut dyn Write,
     cues: &'o mut dyn Write,
     pub(super) sdus_in: u64,
+    pub(super) largest_sdu: usize,
     pub(super) audio_sdus: u64,
     pub(super) starts: u32,
     pub(super) stops: u32,
@@ -211,6 +212,7 @@ impl<'o> Recorder<'o> {
             marks: &mut *out.marks,
             cues: &mut *out.cues,
             sdus_in: 0,
+            largest_sdu: 0,
             audio_sdus: 0,
             starts: 0,
             stops: 0,
@@ -277,6 +279,7 @@ impl<'o> Recorder<'o> {
 
     /// Counted only once its line is in the log.
     pub(super) fn received(&mut self, at_ns: u64, sdu: &[u8]) -> Result<(), IoFailure> {
+        self.largest_sdu = self.largest_sdu.max(sdu.len());
         if !self.packet(at_ns, Bearer::Accessory, Direction::FromPods, sdu)? {
             return Ok(());
         }

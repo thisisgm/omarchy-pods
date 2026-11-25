@@ -196,6 +196,7 @@ fn the_address_scan_finds_every_form_a_leak_could_take() {
 fn the_summary_says_whether_stop_followed_start() {
     let outcome = |starts, stops, end| Outcome {
         sdus_in: 9,
+        largest_sdu: 180,
         audio_sdus: 4,
         starts,
         stops,
@@ -209,12 +210,12 @@ fn the_summary_says_whether_stop_followed_start() {
     let done = summary(&outcome(3, 5, EndReason::ScriptDone));
     assert_eq!(
         done,
-        "capture complete: packets in 9, with audio 4, not logged 7, START sent 3, STOP sent 5"
+        "capture complete: packets in 9, with audio 4, not logged 7, largest SDU 180 bytes, START sent 3, STOP sent 5"
     );
     let stopped = summary(&outcome(1, 1, EndReason::Interrupted));
     assert_eq!(
         stopped,
-        "capture ended early: interrupted by a signal; STOP was sent (packets in 9, with audio 4, not logged 7, START sent 1, STOP sent 1)"
+        "capture ended early: interrupted by a signal; STOP was sent (packets in 9, with audio 4, not logged 7, largest SDU 180 bytes, START sent 1, STOP sent 1)"
     );
     let running = summary(&outcome(2, 1, EndReason::PeerClosed));
     assert!(running.contains("STOP was NOT sent"), "{running}");
@@ -283,6 +284,7 @@ fn the_knock_command_records_a_run_and_exits_zero() {
     let (near, far) = pods::pair();
     far.send(&EAR_PACKET).unwrap();
     let args = CaptureArgs {
+        imtu: None,
         stamp: STAMP.to_owned(),
         run: "knock-1".to_owned(),
         route: Route::Uplink,
@@ -305,7 +307,10 @@ fn the_knock_command_records_a_run_and_exits_zero() {
     );
     assert_eq!(
         ran.stderr,
-        "xtask probe: capture complete: packets in 1, with audio 0, not logged 0, START sent 0, STOP sent 0\n"
+        format!(
+            "xtask probe: capture complete: packets in 1, with audio 0, not logged 0, largest SDU {} bytes, START sent 0, STOP sent 0\n",
+            EAR_PACKET.len()
+        )
     );
     assert_eq!(ran.stdout, "");
     assert_eq!(ran.dialled, [CONTROL_PSM]);
@@ -345,6 +350,7 @@ fn an_interrupted_soak_shows_its_cue_on_stdout_and_says_stop_was_sent() {
     };
     let transcript = pods::spawn(far, part, Arc::clone(&interrupted));
     let args = CaptureArgs {
+        imtu: None,
         stamp: STAMP.to_owned(),
         run: "soak-1".to_owned(),
         route: Route::Uplink,
@@ -461,6 +467,7 @@ fn output_never_contains_the_device_address() {
     let home = home_with_device();
     let root = home.path().join(ROOT_NAME);
     let args = CaptureArgs {
+        imtu: None,
         stamp: STAMP.to_owned(),
         run: "page".to_owned(),
         route: Route::Uplink,

@@ -12,13 +12,14 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use pods_proto::addr::BdAddr;
 use pods_proto::control::{ControlCommand, ControlId};
 use pods_proto::dictation;
 use pods_proto::ear::EarReport;
 use pods_proto::handshake::{Handshake, Step};
-use pods_proto::packets::ATT_PSM;
+use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_proto::uplink::{self, MicSide};
-use pods_sys::l2cap::{Channel, ChannelError};
+use pods_sys::l2cap::{self, Channel, ChannelError};
 
 use super::dictate::{self, HANDLE_WALK_TIMEOUT_MS, HandleCheck};
 use super::script::{Action, Opening, Script, StepPacket};
@@ -134,6 +135,8 @@ impl From<IoFailure> for EndReason {
 pub(crate) struct Outcome {
     /// Packets from the pods that went into the log.
     pub(crate) sdus_in: u64,
+    /// The largest incoming control SDU, including any truncated read.
+    pub(crate) largest_sdu: usize,
     /// Those of them that carry coded audio.
     pub(crate) audio_sdus: u64,
     /// START packets that left.
@@ -539,6 +542,9 @@ fn too_long(
     bearer: Bearer,
     full_len: usize,
 ) -> Result<(), IoFailure> {
+    if bearer == Bearer::Accessory {
+        recorder.largest_sdu = recorder.largest_sdu.max(full_len);
+    }
     let on = bearer.suffix();
     let why = format_args!("longer than the {RECV_BUFFER_LEN} byte receive buffer{on}");
     recorder.unlogged(at_ns, full_len, &why)
@@ -614,6 +620,24 @@ fn first_failure(end: EndReason, later: Result<(), IoFailure>) -> EndReason {
     }
 }
 
+/// Opens the control channel and reports the kernel's MTUs for the capture.
+pub(super) fn connect_control(
+    peer: BdAddr,
+    timeout: Duration,
+    imtu: Option<u16>,
+) -> Result<Channel, ChannelError> {
+    let channel = match imtu {
+        Some(imtu) => l2cap::connect_with_imtu(peer, CONTROL_PSM, timeout, imtu),
+        None => l2cap::connect(peer, CONTROL_PSM, timeout),
+    }?;
+    let mtus = channel.mtus()?;
+    crate::report(&format!(
+        "xtask probe: control channel MTU incoming {} bytes, outgoing {} bytes",
+        mtus.incoming, mtus.outgoing
+    ));
+    Ok(channel)
+}
+
 pub(crate) fn run(
     links: &Links<'_>,
     script: &Script,
@@ -687,6 +711,7 @@ fn run_with(
     let end = first_failure(end, marked);
     Outcome {
         sdus_in: recorder.sdus_in,
+        largest_sdu: recorder.largest_sdu,
         audio_sdus: recorder.audio_sdus,
         starts: recorder.starts,
         stops: recorder.stops,

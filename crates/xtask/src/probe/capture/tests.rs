@@ -51,6 +51,7 @@ const fn at(at_ms: u32, action: Action) -> Event {
 fn counted_nothing(end: EndReason) -> Outcome {
     Outcome {
         sdus_in: 0,
+        largest_sdu: 0,
         audio_sdus: 0,
         starts: 0,
         stops: 0,

@@ -20,6 +20,31 @@ const NO_FIXED_CHANNEL: u8 = 0x00;
 const BDADDR_BREDR: u8 = 0x00;
 /// The byte the compiler adds after `l2_bdaddr_type` to keep the struct two byte aligned.
 const PADDING: u8 = 0x00;
+/// The legacy L2CAP socket option level in include/net/bluetooth/bluetooth.h.
+const SOL_L2CAP: libc::c_int = 6;
+/// The BR/EDR channel options in include/net/bluetooth/l2cap.h.
+const L2CAP_OPTIONS: libc::c_int = 0x01;
+/// The size of `struct l2cap_options` in that header, including its padding.
+const L2CAP_OPTIONS_LEN: libc::socklen_t = 12;
+
+#[repr(C)]
+#[derive(Default)]
+struct L2capOptions {
+    omtu: u16,
+    imtu: u16,
+    flush_to: u16,
+    mode: u8,
+    fcs: u8,
+    max_tx: u8,
+    padding: u8,
+    txwin_size: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mtus {
+    pub incoming: u16,
+    pub outgoing: u16,
+}
 
 #[derive(Debug)]
 pub struct Channel {
@@ -46,8 +71,17 @@ pub enum ChannelError {
     /// The peer did not answer or refused; a connect that outlasts the timeout is `EINPROGRESS` (`bt_sock_wait_state` in `net/bluetooth/af_bluetooth.c`).
     #[error("could not connect the L2CAP channel: {0}")]
     Connect(Errno),
-    #[error("could not set a timeout on the L2CAP socket: {0}")]
-    Option(Errno),
+    #[error("could not set the L2CAP socket timeout: {0}")]
+    Timeout(Errno),
+    #[error(
+        "{call}(L2CAP_OPTIONS) failed{request}: {errno}",
+        request = .imtu.map_or_default(|imtu| format!(" for incoming MTU {imtu}"))
+    )]
+    Option {
+        call: &'static str,
+        imtu: Option<u16>,
+        errno: Errno,
+    },
     #[error("could not receive from the L2CAP channel: {0}")]
     Recv(Errno),
     #[error("could not send on the L2CAP channel: {0}")]
@@ -107,19 +141,94 @@ unsafe impl SocketAddrArg for SockaddrL2 {
 
 /// Opens the channel `psm` names on `peer`; `timeout` bounds the connect and every later send.
 pub fn connect(peer: BdAddr, psm: u16, timeout: Duration) -> Result<Channel, ChannelError> {
+    connect_on(open_socket()?, peer, psm, timeout, None)
+}
+
+/// Opens the channel with a requested incoming MTU in bytes.
+pub fn connect_with_imtu(
+    peer: BdAddr,
+    psm: u16,
+    timeout: Duration,
+    imtu: u16,
+) -> Result<Channel, ChannelError> {
+    connect_on(open_socket()?, peer, psm, timeout, Some(imtu))
+}
+
+fn open_socket() -> Result<OwnedFd, ChannelError> {
     // Protocol `None` is 0, which is `BTPROTO_L2CAP` in include/net/bluetooth/bluetooth.h.
-    let fd = socket_with(
+    socket_with(
         AddressFamily::BLUETOOTH,
         SocketType::SEQPACKET,
         SocketFlags::CLOEXEC,
         None,
     )
-    .map_err(ChannelError::Socket)?;
+    .map_err(ChannelError::Socket)
+}
+
+fn connect_on(
+    fd: OwnedFd,
+    peer: BdAddr,
+    psm: u16,
+    timeout: Duration,
+    imtu: Option<u16>,
+) -> Result<Channel, ChannelError> {
     // A blocking L2CAP connect waits no longer than the send timeout (l2cap_sock_connect in net/bluetooth/l2cap_sock.c).
-    set_socket_timeout(&fd, Timeout::Send, Some(timeout)).map_err(ChannelError::Option)?;
+    set_socket_timeout(&fd, Timeout::Send, Some(timeout)).map_err(ChannelError::Timeout)?;
+    if imtu.is_some() {
+        l2cap_options(&fd, imtu)?;
+    }
     // No test sees which PSM this dials; only a connect to a second PSM on hardware proves it.
     rustix::net::connect(&fd, &SockaddrL2::new(peer, psm)).map_err(ChannelError::Connect)?;
     Ok(Channel { fd })
+}
+
+fn l2cap_options(fd: &OwnedFd, imtu: Option<u16>) -> Result<L2capOptions, ChannelError> {
+    let mut options = L2capOptions::default();
+    let mut len = L2CAP_OPTIONS_LEN;
+    #[expect(unsafe_code, reason = "rustix 1.1.6 has no L2CAP option binding")]
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "the two calls share the same kernel options layout"
+    )]
+    // SAFETY: the descriptor stays open and options is an initialized 12-byte C struct, checked by the layout test; getsockopt writes at most len bytes and updates len, and setsockopt reads those same 12 bytes.
+    unsafe {
+        if libc::getsockopt(
+            fd.as_raw_fd(),
+            SOL_L2CAP,
+            L2CAP_OPTIONS,
+            (&raw mut options).cast(),
+            &raw mut len,
+        ) < 0
+        {
+            return Err(option_error("getsockopt", imtu));
+        }
+        if len != L2CAP_OPTIONS_LEN {
+            return Err(ChannelError::Option {
+                call: "getsockopt",
+                imtu,
+                errno: Errno::INVAL,
+            });
+        }
+        if let Some(imtu) = imtu {
+            options.imtu = imtu;
+            if libc::setsockopt(
+                fd.as_raw_fd(),
+                SOL_L2CAP,
+                L2CAP_OPTIONS,
+                (&raw const options).cast(),
+                len,
+            ) < 0
+            {
+                return Err(option_error("setsockopt", Some(imtu)));
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn option_error(call: &'static str, imtu: Option<u16>) -> ChannelError {
+    let errno = Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::IO);
+    ChannelError::Option { call, imtu, errno }
 }
 
 /// Waits until one of `channels` has something to read or has hung up and returns its index, the lowest when several do; `None` is `timeout` passing first. A signal that runs a handler ends the wait as `Err(ChannelError::Wait(Errno::INTR))`, whatever its restart flag, and is never retried here, so the caller can check its stop flag.
@@ -151,9 +260,18 @@ impl AsRawFd for Channel {
 }
 
 impl Channel {
+    /// Reads the incoming and outgoing MTUs in bytes from the socket.
+    pub fn mtus(&self) -> Result<Mtus, ChannelError> {
+        let options = l2cap_options(&self.fd, None)?;
+        Ok(Mtus {
+            incoming: options.imtu,
+            outgoing: options.omtu,
+        })
+    }
+
     /// Makes `recv` return `TimedOut` after waiting this long; zero is refused.
     pub fn set_recv_timeout(&self, timeout: Duration) -> Result<(), ChannelError> {
-        set_socket_timeout(&self.fd, Timeout::Recv, Some(timeout)).map_err(ChannelError::Option)
+        set_socket_timeout(&self.fd, Timeout::Recv, Some(timeout)).map_err(ChannelError::Timeout)
     }
 
     /// Reads one SDU into `buf`; with a receive timeout set, a signal ends the wait as `Err(ChannelError::Recv(Errno::INTR))` and is never retried here, so the caller can check its stop flag (with none set, the kernel restarts the read for a handler installed with `SA_RESTART`).
@@ -269,6 +387,69 @@ mod tests {
     }
 
     #[test]
+    fn the_option_struct_is_the_kernel_layout() {
+        use std::mem::{align_of, offset_of, size_of};
+
+        // include/net/bluetooth/l2cap.h: u16 omtu, imtu, flush_to; u8 mode, fcs, max_tx; u16 txwin_size.
+        assert_eq!(size_of::<L2capOptions>(), 12);
+        assert_eq!(align_of::<L2capOptions>(), 2);
+        assert_eq!(
+            usize::try_from(L2CAP_OPTIONS_LEN),
+            Ok(size_of::<L2capOptions>())
+        );
+        assert_eq!(
+            [
+                offset_of!(L2capOptions, omtu),
+                offset_of!(L2capOptions, imtu),
+                offset_of!(L2capOptions, flush_to),
+                offset_of!(L2capOptions, mode),
+                offset_of!(L2capOptions, fcs),
+                offset_of!(L2capOptions, max_tx),
+                offset_of!(L2capOptions, txwin_size),
+            ],
+            [0, 2, 4, 6, 7, 8, 10],
+        );
+    }
+
+    #[test]
+    fn a_failed_getsockopt_ends_the_connect() {
+        const REQUESTED_IMTU: u16 = 2048;
+        let (near, _far) = channel_pair();
+        let peer = BdAddr::from([0x02, 0, 0, 0, 0, 1]);
+        let read_error = near.mtus().unwrap_err();
+        let error = connect_on(
+            near.fd,
+            peer,
+            CONTROL_PSM,
+            SEND_TIMEOUT,
+            Some(REQUESTED_IMTU),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ChannelError::Option {
+                    imtu: Some(REQUESTED_IMTU),
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        let request = format!("getsockopt(L2CAP_OPTIONS) failed for incoming MTU {REQUESTED_IMTU}");
+        assert!(error.to_string().contains(&request), "{error}");
+        assert!(
+            matches!(read_error, ChannelError::Option { imtu: None, .. }),
+            "{read_error}"
+        );
+        assert!(
+            read_error
+                .to_string()
+                .contains("getsockopt(L2CAP_OPTIONS) failed"),
+            "{read_error}"
+        );
+    }
+
+    #[test]
     fn message_boundaries_are_kept() {
         let (near, far) = channel_pair();
         let sizes = [1, MIDDLE_SDU_LEN, BUFFER_LEN];
@@ -317,10 +498,22 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_timeout_is_an_error_naming_the_timeout() {
-        let (_near, far) = channel_pair();
+    fn zero_timeouts_fail_before_io() {
+        const REQUESTED_IMTU: u16 = 2048;
+        let (near, far) = channel_pair();
+        let peer = BdAddr::from([0x02, 0, 0, 0, 0, 1]);
+        let error = connect_on(
+            near.fd,
+            peer,
+            CONTROL_PSM,
+            Duration::ZERO,
+            Some(REQUESTED_IMTU),
+        )
+        .unwrap_err();
+        assert_eq!(error, ChannelError::Timeout(Errno::INVAL));
+        assert!(error.to_string().contains("timeout"), "{error}");
         let error = far.set_recv_timeout(Duration::ZERO).unwrap_err();
-        assert_eq!(error, ChannelError::Option(Errno::INVAL));
+        assert_eq!(error, ChannelError::Timeout(Errno::INVAL));
         assert!(error.to_string().contains("timeout"), "{error}");
     }
 
@@ -533,8 +726,16 @@ mod tests {
                 "could not connect the L2CAP channel",
             ),
             (
-                ChannelError::Option(errno),
-                "could not set a timeout on the L2CAP socket",
+                ChannelError::Timeout(errno),
+                "could not set the L2CAP socket timeout",
+            ),
+            (
+                ChannelError::Option {
+                    call: "getsockopt",
+                    imtu: None,
+                    errno,
+                },
+                "getsockopt(L2CAP_OPTIONS) failed",
             ),
             (
                 ChannelError::Recv(errno),

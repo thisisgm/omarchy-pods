@@ -43,9 +43,10 @@ mod tests {
 
     use super::att_pods::AttPods;
     use super::capture::{
-        A_FEW, ASKED, Analysed, CALLS_NAME, FAILED, HANG_LIMIT, INSTALLED, LOCK_HELD, LOCKED_NAME,
-        RUN_LOCK, RUNTIME_NAME, Ran, Running, STAMP, STARTED, STOPPED, capture, expected, far_end,
-        home_with_device, kinds, probe, read, refuse, route, run_path, stubs_of, transcript,
+        A_FEW, ASKED, Analysed, CALLS_NAME, DEFAULT_CONTROL_MTUS, FAILED, HANG_LIMIT, INSTALLED,
+        LOCK_HELD, LOCKED_NAME, RUN_LOCK, RUNTIME_NAME, Ran, Running, STAMP, STARTED, STOPPED,
+        capture, expected, far_end, home_with_device, kinds, probe, read, refuse, route, run_path,
+        stubs_of, transcript,
     };
     use super::pods::{self, Pods};
 
@@ -242,10 +243,11 @@ mod tests {
         assert_eq!(calls(&home), expected(&[&STOPPED, &dialled, &STARTED]));
         assert_eq!(state(&home), "active\n");
         let said: Vec<&str> = ran.stderr.lines().collect();
-        let [first, summary, last] = said[..] else {
+        let [first, mtus, summary, last] = said[..] else {
             panic!("{}", ran.stderr);
         };
         assert_eq!((first, last), (SAID_STOPPED, SAID_STARTED));
+        assert_eq!(mtus, DEFAULT_CONTROL_MTUS.trim_end());
         let early = "xtask probe: capture ended early: interrupted by a signal; STOP was sent (";
         assert!(summary.starts_with(early), "{summary}");
     }

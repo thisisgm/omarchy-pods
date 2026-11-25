@@ -28,6 +28,8 @@ mod tests {
     const WAIT: Duration = Duration::from_secs(5);
     /// What a loaded host may add to a delay the trap keeps.
     const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
+    const REQUESTED_IMTU: u16 = 2048;
+    const DEFAULT_MTU: u16 = 672;
     const DEVICE: &str = "02:00:00:00:00:01";
 
     fn addr(text: &str) -> BdAddr {
@@ -158,6 +160,46 @@ mod tests {
         assert_eq!(dials[0].outcome, Outcome::Accepted);
         assert_eq!(trap.sockets(), 1);
         assert_eq!(trap.finish(), Ok(dials));
+    }
+
+    #[test]
+    fn a_dial_with_a_receive_size_is_recorded_with_it() {
+        let (answer, channels) = into_channel(Duration::ZERO);
+        let (mut child, trap) = start(
+            &[
+                "dial-imtu",
+                DEVICE,
+                &psm_arg(CONTROL_PSM),
+                &REQUESTED_IMTU.to_string(),
+            ],
+            vec![route(DEVICE, CONTROL_PSM, answer)],
+        );
+        let far = channels.recv_timeout(WAIT).unwrap();
+        let dials = trap.dials();
+        assert_eq!(dials.len(), 1);
+        assert_eq!(dials[0].imtu, Some(REQUESTED_IMTU));
+        let dial = dials[0].to_string();
+        assert!(
+            dial.contains(&format!("with incoming MTU {REQUESTED_IMTU}")),
+            "{dial}"
+        );
+        assert_eq!(
+            next_line(&mut child, "the connected socket sizes"),
+            format!("mtus {REQUESTED_IMTU} {DEFAULT_MTU}"),
+        );
+        echo(&far);
+        assert_eq!(first_line(child), "ok 706f6e67");
+        assert_eq!(trap.finish(), Ok(dials));
+    }
+
+    #[test]
+    fn a_plain_dial_records_none() {
+        let (child, trap, channels) = dial_routed(DEVICE, CONTROL_PSM);
+        echo(&channels.recv_timeout(WAIT).unwrap());
+        assert_eq!(first_line(child), "ok 706f6e67");
+        let dials = trap.finish().unwrap();
+        assert_eq!(dials.len(), 1);
+        assert_eq!(dials[0].imtu, None);
     }
 
     #[test]
@@ -357,6 +399,79 @@ mod tests {
         for wanted in ["socket", "type 3", "protocol 1"] {
             assert!(text.contains(wanted), "no `{wanted}` in {text}");
         }
+    }
+
+    #[test]
+    fn another_l2cap_option_is_a_violation() {
+        let (child, trap) = start(&["other-option"], Vec::new());
+        let line = first_line(child);
+        let error = trap
+            .finish()
+            .expect_err("the trap must record the unknown option");
+        assert!(matches!(error, TrapError::Violations { .. }), "{error:?}");
+        assert!(error.to_string().contains("setsockopt"), "{error}");
+        assert_eq!(
+            line,
+            format!("error option {}", Errno::NOPROTOOPT.raw_os_error()),
+        );
+    }
+
+    #[test]
+    fn a_tcp_option_on_a_reused_descriptor_reaches_the_kernel() {
+        let (child, trap) = start(&["reused-tcp-socket"], Vec::new());
+        assert_eq!(first_line(child), "ok");
+        assert_eq!(trap.sockets(), 1);
+        assert_eq!(trap.finish(), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_refused_l2cap_option_write_reports_the_requested_mtu() {
+        let (mut child, trap) = start(
+            &[
+                "late",
+                DEVICE,
+                &psm_arg(CONTROL_PSM),
+                &REQUESTED_IMTU.to_string(),
+            ],
+            Vec::new(),
+        );
+        trap.refuse_l2cap_option_writes();
+        child.0.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
+        assert_eq!(
+            next_line(&mut child, "the refused L2CAP option write"),
+            format!(
+                "error option setsockopt(L2CAP_OPTIONS) failed for incoming MTU {REQUESTED_IMTU}: {}",
+                Errno::ACCESS
+            )
+        );
+        assert_eq!(trap.finish(), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn setting_l2cap_options_after_connect_returns_einval() {
+        let (answer, channels) = into_channel(Duration::ZERO);
+        let (child, trap) = start(
+            &["option-after-connect", DEVICE, &psm_arg(CONTROL_PSM)],
+            vec![route(DEVICE, CONTROL_PSM, answer)],
+        );
+        let _far = channels.recv_timeout(WAIT).unwrap();
+        assert_eq!(
+            first_line(child),
+            format!("error option {}", Errno::INVAL.raw_os_error())
+        );
+        let dials = trap.finish().unwrap();
+        assert_eq!(dials.len(), 1);
+        assert_eq!(dials[0].outcome, Outcome::Accepted);
+    }
+
+    #[test]
+    fn setting_short_l2cap_options_returns_einval() {
+        let (child, trap) = start(&["short-option"], Vec::new());
+        assert_eq!(
+            first_line(child),
+            format!("error option {}", Errno::INVAL.raw_os_error())
+        );
+        assert_eq!(trap.finish(), Ok(Vec::new()));
     }
 
     #[test]
