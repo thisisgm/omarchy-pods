@@ -308,7 +308,6 @@ struct Follower<'a> {
     suspended: bool,
     state: watch::Receiver<State>,
     recording: streams::Recording,
-    default_source_attempted: bool,
     hint: bool,
     headset: Option<bool>,
 }
@@ -339,7 +338,6 @@ impl<'a> Follower<'a> {
             suspended: false,
             state,
             recording: streams::Recording::default(),
-            default_source_attempted: false,
             hint: false,
             headset: None,
         }
@@ -348,8 +346,9 @@ impl<'a> Follower<'a> {
     /// Ends at a request for another device or for none; one for this device again, which every link up sends, keeps the restore and the suspend and only dials again.
     async fn follow(&mut self, socket: &Path) -> Left {
         let again = Some(AudioRequest::Follow(Some(self.device)));
+        let mut default_source_attempted = false;
         loop {
-            let left = match self.serve(socket).await {
+            let left = match self.serve(socket, &mut default_source_attempted).await {
                 Err(Ended::Left(left)) => left,
                 Err(Ended::Lost(lost)) => match self.retry(lost).await {
                     Ok(()) => continue,
@@ -362,7 +361,7 @@ impl<'a> Follower<'a> {
                 Left::Request(request) if request == again => {
                     self.told = Told::Nothing;
                     self.volume.reset_stamp();
-                    self.default_source_attempted = false;
+                    default_source_attempted = false;
                 }
                 Left::Request(_) => return left,
             }
@@ -407,7 +406,11 @@ impl<'a> Follower<'a> {
     }
 
     /// One connection from its connect to its loss; events arriving during a refresh mark what the next refresh needs.
-    async fn serve(&mut self, socket: &Path) -> Result<Infallible, Ended> {
+    async fn serve(
+        &mut self,
+        socket: &Path,
+        default_source_attempted: &mut bool,
+    ) -> Result<Infallible, Ended> {
         let mut connection = self.requests.watched(Connection::open(socket)).await?;
         self.headset = None;
         let mut stale = EVENTS;
@@ -415,7 +418,7 @@ impl<'a> Follower<'a> {
         let mut default_sink = None;
         let mut sink: Option<SinkFact> = None;
 
-        let mut capture = streams::CaptureList::default();
+        let mut capture = streams::CaptureList::new(default_source_attempted);
         loop {
             let change = if stale.is_empty() {
                 let changed = connection.changed(&mut self.state, &capture.name);

@@ -26,10 +26,20 @@ const AFTER_CORKED: usize = 5;
 /// The protocol's invalid index means a source has no sink to monitor.
 const NO_MONITORED_SINK: u32 = u32::MAX;
 
-#[derive(Default)]
-pub(super) struct CaptureList {
+pub(super) struct CaptureList<'a> {
     pub(super) name: String,
     sources: Sources,
+    default_source_attempted: &'a mut bool,
+}
+
+impl<'a> CaptureList<'a> {
+    pub(super) fn new(default_source_attempted: &'a mut bool) -> Self {
+        Self {
+            name: String::new(),
+            sources: Sources::default(),
+            default_source_attempted,
+        }
+    }
 }
 
 impl Follower<'_> {
@@ -38,7 +48,7 @@ impl Follower<'_> {
         connection: &mut Connection,
         refresh: SubscriptionMask,
         stale: &mut SubscriptionMask,
-        capture: &mut CaptureList,
+        capture: &mut CaptureList<'_>,
         sink: Option<SinkFact>,
     ) -> Result<(), Ended> {
         let name = self.state.borrow().mic_source();
@@ -50,19 +60,10 @@ impl Follower<'_> {
             });
             capture.sources = self.requests.watched(listed).await?;
             self.restore(connection, sink, stale).await?;
-            if capture.sources.microphone.is_some() && !self.default_source_attempted {
-                self.default_source_attempted = true;
-                let name = CString::new(capture.name.as_str())
-                    .map_err(|error| Lost::Io(error.into()))?;
-                let command = Command::SetDefaultSource(name);
-                let setting = connection.call(&command, stale, |_| Ok(()));
-                match self.requests.watched(setting).await {
-                    Ok(()) => log("mic: default source set"),
-                    Err(Ended::Lost(lost @ Lost::Refused { .. })) => {
-                        log(&format!("mic: could not set default source: {lost}"));
-                    }
-                    Err(ended) => return Err(ended),
-                }
+            if capture.sources.microphone.is_some() && !*capture.default_source_attempted {
+                *capture.default_source_attempted = true;
+                self.set_default_source(connection, stale, &capture.name)
+                    .await?;
             }
         }
         if reread_source || refresh.contains(SubscriptionMask::SOURCE_OUTPUT) {
@@ -83,6 +84,25 @@ impl Follower<'_> {
                 self.tell(AudioFact::Recorders(recording.microphone)).await;
             }
             self.recording = recording;
+        }
+        Ok(())
+    }
+
+    async fn set_default_source(
+        &mut self,
+        connection: &mut Connection,
+        stale: &mut SubscriptionMask,
+        name: &str,
+    ) -> Result<(), Ended> {
+        let name = CString::new(name).map_err(|error| Lost::Io(error.into()))?;
+        let command = Command::SetDefaultSource(name);
+        let setting = connection.call(&command, stale, |_| Ok(()));
+        match self.requests.watched(setting).await {
+            Ok(()) => log("mic: default source set"),
+            Err(Ended::Lost(lost @ Lost::Refused { .. })) => {
+                log(&format!("mic: could not set default source: {lost}"));
+            }
+            Err(ended) => return Err(ended),
         }
         Ok(())
     }
