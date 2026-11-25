@@ -266,7 +266,10 @@ A reply carries the request's `id` and `ok`.
   not finite (NaN or infinite) and went out as silence. Both counters follow
   the same rules as the other three.
   `mic_span_sdus` counts nonempty uplink packets taken by the decoder chain.
-  `mic_span_restarts` counts new uplink runs caused by unit stamp gaps.
+  `mic_span_restarts` counts new uplink runs started by a unit stamp before the
+  expected stamp (including repeated or backward stamps), or by a forward gap
+  beyond `MAX_GAP_UNITS` (two packets' worth of missing units). Forward gaps
+  up to that limit are concealed and counted in `mic_concealed`.
   `mic_span_gone_frames` counts output frames the reader asked for that were
   before the current run, before the ring began, or already overwritten.
   `mic_span_peak_dbfs` is the peak of the audio decoded for playout on either
