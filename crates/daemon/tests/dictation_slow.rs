@@ -116,7 +116,8 @@ mod tests {
         );
         assert_eq!(fixture.rig.logind().inhibitors(), [None; 0]);
         grant.send(()).unwrap();
-        assert!(inhibitor_closed(&fixture.rig, 0) >= mode_off);
+        // The held reply grants only after mode off, so this waits for the late grant to close.
+        inhibitor_closed(&fixture.rig, 0);
         fixture
             .rig
             .holds_for(MODE_SETTLE, "DoAP stays armed after sleep", |status| {
