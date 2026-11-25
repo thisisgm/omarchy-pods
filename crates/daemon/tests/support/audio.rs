@@ -67,6 +67,9 @@ pub(crate) enum Asked {
         profile: String,
     },
     SourceList,
+    DefaultSource {
+        name: String,
+    },
     RecorderList,
     /// `name` is `None` for an index no sink has.
     Suspend {
@@ -95,6 +98,7 @@ impl Asked {
             | Self::RecorderList => true,
             Self::Volume { .. }
             | Self::Profile { .. }
+            | Self::DefaultSource { .. }
             | Self::Suspend { .. }
             | Self::Unknown { .. } => false,
         }

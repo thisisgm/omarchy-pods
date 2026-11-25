@@ -35,7 +35,7 @@ const WRITE_LIMIT: Duration = Duration::from_secs(2);
 /// Stereo, as `SinkInfo::new_dummy` describes every sink.
 const SINK_CHANNELS: usize = 2;
 /// The commands the fake answers; any other is refused with `PulseError::Command`.
-const UNDERSTOOD: [CommandTag; 14] = [
+const UNDERSTOOD: [CommandTag; 15] = [
     CommandTag::Auth,
     CommandTag::SetClientName,
     CommandTag::GetClientInfoList,
@@ -48,6 +48,7 @@ const UNDERSTOOD: [CommandTag; 14] = [
     CommandTag::GetCardInfoList,
     CommandTag::SetCardProfile,
     CommandTag::GetSourceInfoList,
+    CommandTag::SetDefaultSource,
     CommandTag::GetSourceOutputInfoList,
     CommandTag::SuspendSink,
 ];
@@ -598,6 +599,7 @@ impl State {
                 return Ok(());
             }
             Command::GetSourceInfoList => wire::reply(seq, &self.capture.sources(), version),
+            Command::SetDefaultSource(_) => wire::ack(seq),
             Command::GetSourceOutputInfoList => {
                 wire::reply(seq, &self.capture.recorders(), version)
             }
@@ -730,6 +732,9 @@ fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<Strin
             profile: profile_name.to_string_lossy().into_owned(),
         },
         Command::GetSourceInfoList => Asked::SourceList,
+        Command::SetDefaultSource(name) => Asked::DefaultSource {
+            name: name.to_string_lossy().into_owned(),
+        },
         Command::GetSourceOutputInfoList => Asked::RecorderList,
         Command::SuspendSink(SuspendParams {
             device_index: Some(index),

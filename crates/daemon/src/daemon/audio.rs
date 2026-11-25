@@ -1,4 +1,4 @@
-//! Reads the followed device's sink, capture clients and card profile, and applies sink requests.
+//! Reads the followed device's sink, capture clients and card profile, applies sink requests and selects the default source.
 
 mod streams;
 mod volume;
@@ -308,6 +308,7 @@ struct Follower<'a> {
     suspended: bool,
     state: watch::Receiver<State>,
     recording: streams::Recording,
+    default_source_attempted: bool,
     hint: bool,
     headset: Option<bool>,
 }
@@ -338,6 +339,7 @@ impl<'a> Follower<'a> {
             suspended: false,
             state,
             recording: streams::Recording::default(),
+            default_source_attempted: false,
             hint: false,
             headset: None,
         }
@@ -360,6 +362,7 @@ impl<'a> Follower<'a> {
                 Left::Request(request) if request == again => {
                     self.told = Told::Nothing;
                     self.volume.reset_stamp();
+                    self.default_source_attempted = false;
                 }
                 Left::Request(_) => return left,
             }

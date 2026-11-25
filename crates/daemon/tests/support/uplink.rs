@@ -97,10 +97,12 @@ pub(crate) fn move_sink(rig: &Rig, audio: &FakeAudio, device: &Device, state: Si
     rig.wait_sink_told();
 }
 
-/// No sink call so far: one the daemon sent on its last step is recorded before the refresh this waits for.
+/// No sink call so far, allowing the microphone's default-source write.
 pub(crate) fn assert_no_sink_call(rig: &Rig, audio: &FakeAudio) {
     rig.wait_sink_told();
-    audio.assert_only_reads();
+    let mut writes = audio.writes();
+    writes.retain(|asked| !matches!(asked, Asked::DefaultSource { .. }));
+    assert_eq!(writes, []);
 }
 
 /// Fails unless the resume came the whole restore hold after the suspend, and not `HOLD_SLACK` later.

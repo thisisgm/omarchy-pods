@@ -223,6 +223,7 @@ pub(super) fn answer(
         Command::SetClientName(_) => reply(seq, &SetClientNameReply { client_id: 0 }),
         Command::Subscribe(_)
         | Command::SuspendSink(_)
+        | Command::SetDefaultSource(_)
         | Command::GetCardInfoList
         | Command::GetClientInfoList => ack(seq),
         Command::GetServerInfo => reply(seq, &server_info()),

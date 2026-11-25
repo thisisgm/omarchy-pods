@@ -19,7 +19,7 @@ mod tests {
     use super::support::audio::{Asked, FakeAudio, Recorder, Volumes};
     use super::support::pipewire::{node_name, start, wait_node};
     use super::support::rig::{Device, Rig};
-    use super::support::uplink::{link, link_heard, rig_with_audio, wait_mic};
+    use super::support::uplink::{link, link_heard, lose, rig_with_audio, wait_mic};
     use super::support::{HANG_LIMIT, wait_for};
 
     /// The node names Superwhisper gives its two recorders.
@@ -73,6 +73,49 @@ mod tests {
                 .then_some(())
         });
         audio.remove_recorder(other);
+    }
+
+    fn wait_for_read(audio: &FakeAudio, after: usize, wanted: &Asked) {
+        wait_for(&format!("the audio worker to send {wanted:?}"), || {
+            audio.requests()[after..].contains(wanted).then_some(())
+        });
+    }
+
+    #[test]
+    fn the_default_source_is_set_once_per_pods_link() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
+        let pipewire = start(&rig);
+        link(&rig, &device);
+        wait_node(&pipewire);
+        wait_for_read(&audio, 0, &Asked::SourceList);
+        assert_eq!(audio.writes(), []);
+
+        let source = node_name();
+        let set = Asked::DefaultSource {
+            name: source.clone(),
+        };
+        let before = audio.requests().len();
+        audio.add_source(&source);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+        assert_eq!(audio.writes().as_slice(), std::slice::from_ref(&set));
+
+        let before = audio.requests().len();
+        audio.add_source(BUILT_IN);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+        assert_eq!(audio.writes().as_slice(), std::slice::from_ref(&set));
+
+        let before = audio.requests().len();
+        audio.restart(Volumes::Kept);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+        assert_eq!(audio.writes().as_slice(), std::slice::from_ref(&set));
+
+        lose(&rig, &device);
+        audio.wait_clients(0, HANG_LIMIT);
+        let before = audio.requests().len();
+        rig.relink(&device);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+        assert_eq!(audio.writes(), [set.clone(), set]);
+        rig.finish();
     }
 
     #[test]

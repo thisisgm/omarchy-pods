@@ -278,6 +278,28 @@ fn a_file_without_mic_models_reads_an_empty_list() {
 }
 
 #[test]
+fn either_primary_bud_uses_the_same_mic_model_confirmation() {
+    for (kept, reported) in [("A3064", "A3063"), ("A3063", "A3064")] {
+        let file = json!({
+            "version": 1,
+            "ear_detection": "one",
+            "notifications": true,
+            "mic_models": [kept],
+        });
+        let mut prefs = parse(&file.to_string()).unwrap();
+        assert!(
+            prefs.mic_models.contains(reported),
+            "kept {kept}, reported {reported}"
+        );
+        prefs.mic_models.confirm(reported);
+        assert_eq!(parse(&file.to_string()), Ok(prefs));
+    }
+    let mut models = MicModels::default();
+    models.confirm("A3064");
+    assert_eq!(models.0, ["A3063"]);
+}
+
+#[test]
 fn a_bad_model_list_is_refused_and_a_good_one_reads_back() {
     let full: Vec<String> = (0..MAX_CONFIRMED_MODELS)
         .map(|number| format!("B{number:04}"))
@@ -303,7 +325,12 @@ fn a_bad_model_list_is_refused_and_a_good_one_reads_back() {
     ] {
         assert_eq!(file(bad.clone()), Err(PrefsError::MicModels), "{bad}");
     }
-    for good in [json!([]), json!(full), json!([longest, "A3063"])] {
+    for good in [
+        json!([]),
+        json!(full),
+        json!([longest, "A3063"]),
+        json!(["A3063", "A3064"]),
+    ] {
         let prefs = file(good.clone()).unwrap();
         assert!(
             render(&prefs).contains(&format!(r#""mic_models":{good}"#)),

@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use pods_proto::model::canonical_model_number;
 use serde_json::{Value, json};
 
 use crate::state::{EarDetectionBehavior, Microphone, State};
@@ -68,7 +69,10 @@ pub struct MicModels(Vec<String>);
 impl MicModels {
     #[must_use]
     pub fn contains(&self, number: &str) -> bool {
-        self.0.iter().any(|kept| kept == number)
+        let number = canonical_model_number(number);
+        self.0
+            .iter()
+            .any(|kept| canonical_model_number(kept) == number)
     }
 
     /// Keeps `number` unless it is kept already or is no model number, dropping the oldest past `MAX_CONFIRMED_MODELS`.
@@ -79,7 +83,7 @@ impl MicModels {
         if self.0.len() == MAX_CONFIRMED_MODELS {
             self.0.remove(0);
         }
-        self.0.push(number.to_owned());
+        self.0.push(canonical_model_number(number).to_owned());
     }
 
     // Sample input: `["A3063","A2084"]`.
@@ -88,7 +92,9 @@ impl MicModels {
         let mut models = Self::default();
         for entry in entries {
             let number = entry.as_str().filter(|number| is_model_number(number))?;
-            if models.contains(number) || models.0.len() == MAX_CONFIRMED_MODELS {
+            // Older files can contain distinct numbers for the same model.
+            if models.0.iter().any(|kept| kept == number) || models.0.len() == MAX_CONFIRMED_MODELS
+            {
                 return None;
             }
             models.0.push(number.to_owned());
