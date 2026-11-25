@@ -7,6 +7,14 @@
     reason = "the traces of the other probe commands go unused here"
 )]
 #[path = "../src/probe/hci/fixture.rs"]
+mod hci_fixture;
+
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the marks unit tests also build legacy adverts and a failed page"
+)]
+#[path = "../src/probe/marks/fixture.rs"]
 mod fixture;
 
 #[cfg(test)]
@@ -20,7 +28,8 @@ mod marks {
     use pods_proto::addr::BdAddr;
     use tempfile::TempDir;
 
-    use super::fixture::{OTHER_PODS_ADDRESS, PODS_ADDRESS, PODS_HANDLE, Trace, two_devices};
+    use super::fixture::{OTHER_PODS_ADDRESS, two_devices};
+    use super::hci_fixture::{PODS_ADDRESS, PODS_HANDLE, Trace};
 
     /// The mode the bounded read demands of the trace and the logs, and exactly of the device file.
     const OWNER_FILE: u32 = 0o600;
@@ -129,6 +138,31 @@ mod marks {
         assert_eq!(text(&ran.stdout), table(""));
         assert_eq!(text(&ran.stderr), "");
         assert_no_address(&ran);
+    }
+
+    #[test]
+    fn marks_leaves_out_journal_and_sink_marks_from_a_reconnect() {
+        const FIRST_ACL_MS: u64 = 100;
+        const DISCONNECT_MS: u64 = 1_000;
+        const RECONNECTED_ACL_MS: u64 = 1_280;
+
+        let mut trace = Trace::new();
+        trace.create_connection(PODS_ADDRESS);
+        trace.at_ms(FIRST_ACL_MS);
+        trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+        trace.at_ms(DISCONNECT_MS);
+        trace.end_link(PODS_HANDLE);
+        trace.create_connection(PODS_ADDRESS);
+        trace.at_ms(RECONNECTED_ACL_MS);
+        trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+        let dir = sitting(&trace.bytes());
+        let ran = marks(dir.path());
+
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        assert_eq!(
+            text(&ran.stdout).lines().nth(1),
+            Some("1\thost\t\t0\t\t\t\t\t0x13\t\t\t")
+        );
     }
 
     #[test]

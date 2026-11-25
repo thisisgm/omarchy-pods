@@ -1,6 +1,8 @@
 //! A connection's timing marks, one row for each trial of a sitting: read from a trace, the daemon's journal and a log of the sinks.
 
 mod connect;
+#[cfg(test)]
+mod fixture;
 mod journal;
 mod sinks;
 
@@ -13,6 +15,8 @@ use pods_core::link::ladder::Attempt;
 use pods_core::link::{Phase, STATE_POPULATED_LINE, phase_change_line};
 use pods_proto::addr::BdAddr;
 
+#[cfg(test)]
+use super::hci::fixture as hci_fixture;
 use super::hci::{self, Cut, MAX_TRACE_BYTES, TraceError};
 use super::store::{self, MAX_READ_BYTES, StoreError};
 use connect::{Began, Connection, connection};
@@ -172,7 +176,7 @@ pub(crate) fn row(
     } else {
         connection
             .ended
-            .map_or_default(|reason| format!("{reason:#04x}"))
+            .map_or_default(|end| format!("{:#04x}", end.reason))
     };
     [
         began.to_owned(),
@@ -219,12 +223,17 @@ pub(crate) fn table(
     for window in windows(trials_log)? {
         let incomplete = cut.is_some() && last_record_us.is_none_or(|last| last < window.to_us);
         let marks = connection(trace, device, &window)?.map(|connection| {
+            let lifetime = Window {
+                from_us: connection.acl_us,
+                to_us: connection.ended.map_or(window.to_us, |end| end.at_us),
+                ..window
+            };
             row(
                 &connection,
                 incomplete,
-                line_us(journal, &up, &window),
-                line_us(journal, STATE_POPULATED_LINE, &window),
-                first_bluez_sink_us(sinks_log, device, &window),
+                line_us(journal, &up, &lifetime),
+                line_us(journal, STATE_POPULATED_LINE, &lifetime),
+                first_bluez_sink_us(sinks_log, device, &lifetime),
             )
         });
         let missing = if incomplete {

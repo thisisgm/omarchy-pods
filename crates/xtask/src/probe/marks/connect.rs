@@ -18,8 +18,6 @@ const CREATE_CONNECTION: u16 = 0x0405;
 const EVENT_CONNECTION_COMPLETE: u8 = 0x03;
 /// HCI Connection Request (Core 6.1 Vol 4 Part E 7.7.4).
 const EVENT_CONNECTION_REQUEST: u8 = 0x04;
-/// HCI Disconnection Complete (Core 6.1 Vol 4 Part E 7.7.5).
-const EVENT_DISCONNECTION_COMPLETE: u8 = 0x05;
 /// HCI LE Meta, whose first parameter says which LE event it is (Core 6.1 Vol 4 Part E 7.7.65).
 const EVENT_LE_META: u8 = 0x3e;
 /// HCI LE Advertising Report (Core 6.1 Vol 4 Part E 7.7.65.2).
@@ -65,16 +63,14 @@ pub(crate) struct Connection {
     pub(crate) control_dials: Vec<(u64, u16)>,
     /// The first media packet the host sent.
     pub(crate) media_us: Option<u64>,
-    /// The reason the link ended with; `None` while it is up at the end of the trace.
-    pub(crate) ended: Option<u8>,
+    /// The link's recorded end.
+    pub(crate) ended: Option<Disconnect>,
 }
 
-/// The code and the parameters of an HCI event.
-// Sample input: 05 04 00 0b 00 13, a Disconnection Complete: code, parameter length 4, then the parameters.
-fn event(packet: &[u8]) -> Option<(u8, &[u8])> {
-    let mut rest = packet;
-    let [code, len] = take(&mut rest)?;
-    Some((code, rest.get(..usize::from(len))?))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Disconnect {
+    pub(crate) at_us: u64,
+    pub(crate) reason: u8,
 }
 
 /// The address a Create Connection command asks for.
@@ -105,16 +101,6 @@ fn completed(parameters: &[u8]) -> Option<(bool, u16, Wire)> {
     let address = take(&mut rest)?;
     let [link_type, _encryption] = take(&mut rest)?;
     (link_type == LINK_TYPE_ACL).then_some((status == STATUS_SUCCESS, handle, address))
-}
-
-/// The handle of a link that ended, and the reason.
-// Sample input: 00 0b 00 13, status, handle 0x000b in little endian, reason.
-fn disconnected(parameters: &[u8]) -> Option<(u16, u8)> {
-    let mut rest = parameters;
-    let [status] = take(&mut rest)?;
-    let handle = u16::from_le_bytes(take(&mut rest)?) & HANDLE_MASK;
-    let [reason] = take(&mut rest)?;
-    (status == STATUS_SUCCESS).then_some((handle, reason))
 }
 
 /// Whether an LE Meta event reports an Apple proximity pairing advertisement.
@@ -187,7 +173,7 @@ struct Link {
     dial: Option<Dial>,
     /// Its ACL packets until it ended, after which the handle may be another link's.
     packets: Vec<HciRecord>,
-    ended: Option<u8>,
+    ended: Option<Disconnect>,
 }
 
 /// The walk over the records of a trace.
@@ -218,7 +204,7 @@ impl Reader<'_> {
     }
 
     fn event(&mut self, at_us: u64, packet: &[u8]) {
-        let Some((code, parameters)) = event(packet) else {
+        let Some((code, parameters)) = hci::event_parts(packet) else {
             return;
         };
         match code {
@@ -228,14 +214,21 @@ impl Reader<'_> {
                 }
             }
             EVENT_CONNECTION_COMPLETE => self.completed(at_us, parameters),
-            EVENT_DISCONNECTION_COMPLETE => self.disconnected(parameters),
             EVENT_LE_META => {
                 // corner: one pair of pods in range, so a matching advert is attributed to it despite its rotating address.
                 if self.advert_us.is_none() && self.window.holds(at_us) && advertised(parameters) {
                     self.advert_us = Some(at_us);
                 }
             }
-            _ => {}
+            _ => {
+                if let Some(Kind::Disconnection {
+                    handle,
+                    reason: Some(reason),
+                }) = hci::event_kind(code, parameters)
+                {
+                    self.disconnected(handle, Disconnect { at_us, reason });
+                }
+            }
         }
     }
 
@@ -264,12 +257,12 @@ impl Reader<'_> {
         }
     }
 
-    fn disconnected(&mut self, parameters: &[u8]) {
+    fn disconnected(&mut self, handle: u16, end: Disconnect) {
         let up = self.link.as_mut().filter(|link| link.ended.is_none());
-        if let (Some(link), Some((handle, reason))) = (up, disconnected(parameters))
+        if let Some(link) = up
             && link.handle == handle
         {
-            link.ended = Some(reason);
+            link.ended = Some(end);
         }
     }
 

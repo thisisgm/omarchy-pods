@@ -56,8 +56,8 @@ pub(crate) enum Kind {
     AclReceived,
     /// A synchronous (SCO or eSCO) connection completed; `opened` is false when the controller reported a failure.
     SynchronousConnection { opened: bool },
-    /// The link with this connection handle ended.
-    Disconnection { handle: u16 },
+    /// A complete handle closes the link even if the reason is missing.
+    Disconnection { handle: u16, reason: Option<u8> },
     /// A synchronous data packet from this side, which only a `PacketLogger` trace keeps; it is counted and none of its bytes is kept.
     SynchronousData(Direction),
 }
@@ -205,15 +205,25 @@ fn record_header(rest: &mut &[u8]) -> Option<RecordHeader> {
 }
 
 // Sample input: 05 04 00 0b 00 13, a Disconnection Complete: code, parameter length 4, status, handle 0x000b in little endian, reason.
-fn event(packet: &[u8]) -> Option<Kind> {
+pub(crate) fn event_parts(packet: &[u8]) -> Option<(u8, &[u8])> {
     let mut rest = packet;
     let [code, len] = take(&mut rest)?;
-    let mut parameters = rest.get(..usize::from(len))?;
+    Some((code, rest.get(..usize::from(len))?))
+}
+
+fn event(packet: &[u8]) -> Option<Kind> {
+    let (code, parameters) = event_parts(packet)?;
+    event_kind(code, parameters)
+}
+
+// Sample input: code 05 and parameters 00 0b 00 13, status, handle 0x000b in little endian, reason.
+pub(crate) fn event_kind(code: u8, mut parameters: &[u8]) -> Option<Kind> {
     let [status] = take(&mut parameters)?;
     match code {
         EVENT_DISCONNECTION_COMPLETE => {
             let handle = u16::from_le_bytes(take(&mut parameters)?) & HANDLE_MASK;
-            (status == STATUS_SUCCESS).then_some(Kind::Disconnection { handle })
+            let reason = parameters.first().copied();
+            (status == STATUS_SUCCESS).then_some(Kind::Disconnection { handle, reason })
         }
         EVENT_SYNCHRONOUS_CONNECTION_COMPLETE => Some(Kind::SynchronousConnection {
             opened: status == STATUS_SUCCESS,

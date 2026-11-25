@@ -5,8 +5,8 @@ use proptest::prelude::*;
 use super::super::export::render;
 use super::super::fixture::{
     EVENT_REMOTE_NAME, PKLG_ACL_RECEIVED, PKLG_ACL_SENT, PKLG_COMMAND, PKLG_COUNTED_LEN,
-    PKLG_EVENT, PKLG_SCO_RECEIVED, PKLG_SCO_SENT, PODS_HANDLE, START_UNIX_MICROS, Trace,
-    VOICE_BYTES, mac_session, session,
+    PKLG_EVENT, PKLG_SCO_RECEIVED, PKLG_SCO_SENT, PODS_HANDLE, REMOTE_USER_ENDED,
+    START_UNIX_MICROS, Trace, VOICE_BYTES, mac_session, session,
 };
 use super::super::{Read, Records, channels_by_content, read};
 use super::*;
@@ -63,6 +63,7 @@ fn reads_sent_and_received_acl_records() {
             at_ns: at_ns(1_504),
             kind: Kind::Disconnection {
                 handle: PODS_HANDLE,
+                reason: Some(REMOTE_USER_ENDED),
             },
             data: Vec::new(),
         },
