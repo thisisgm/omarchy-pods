@@ -1,5 +1,6 @@
 //! Sorts one control channel SDU by its header and opcode to that opcode's parser.
 
+use crate::awareness::{self, Awareness};
 use crate::battery::BatteryReport;
 use crate::control::ControlCommand;
 use crate::ear::EarReport;
@@ -28,6 +29,7 @@ pub enum Incoming<'a> {
     Control(ControlCommand),
     Metadata(Metadata),
     Keys(ProximityKeys),
+    Awareness(Awareness),
     /// The whole packet, for `UplinkPacket::parse`.
     Uplink(&'a [u8]),
     /// One of the two markers by which the pods say whether the uplink runs.
@@ -57,6 +59,9 @@ pub fn classify(sdu: &[u8]) -> Result<Incoming<'_>, ParseError> {
         OPCODE_CONTROL => Incoming::Control(ControlCommand::parse(sdu)?),
         OPCODE_METADATA => Incoming::Metadata(Metadata::parse(sdu)?),
         OPCODE_PROXIMITY_KEYS => Incoming::Keys(ProximityKeys::parse(sdu)?),
+        awareness::OPCODE => {
+            awareness::parse(sdu).map_or(Incoming::Other { opcode }, Incoming::Awareness)
+        }
         OPCODE_UPLINK => Incoming::Uplink(sdu),
         STATE_OPCODE | SESSION_OPCODE => match state::parse(sdu) {
             Some(state) => Incoming::UplinkState(state),
@@ -103,6 +108,15 @@ mod tests {
         let keys = pods_samples::keys_of(pods_samples::IDENTITY_KEY, pods_samples::PAYLOAD_KEY);
         let expected = Incoming::Keys(ProximityKeys::parse(&keys).unwrap());
         assert_eq!(classify(&keys), Ok(expected));
+    }
+
+    #[test]
+    fn an_awareness_report_reaches_its_parser() {
+        let report = hex("04 00 04 00 4b 00 02 00 01 01");
+        assert_eq!(
+            classify(&report),
+            Ok(Incoming::Awareness(Awareness::Started))
+        );
     }
 
     #[test]
@@ -233,6 +247,7 @@ mod tests {
                 Incoming::Metadata(_) => counts[3] += 1,
                 Incoming::Foreign => counts[4] += 1,
                 Incoming::Other { opcode } => others.push(opcode),
+                Incoming::Awareness(_) => panic!("the first burst carries no awareness report"),
                 Incoming::Uplink(_) => panic!("the first burst carries no uplink packet"),
                 Incoming::Keys(_) => panic!("the first burst carries no proximity keys"),
                 Incoming::UplinkState(state) => {

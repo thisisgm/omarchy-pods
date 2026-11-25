@@ -20,6 +20,8 @@ const OPCODE_EAR: u16 = 0x0006;
 const OPCODE_CONTROL: u16 = 0x0009;
 const OPCODE_METADATA: u16 = 0x001d;
 const OPCODE_FEATURES_ACK: u16 = 0x002b;
+const OPCODE_AWARENESS: u16 = 0x004b;
+const AWARENESS_REPORT_PREFIX: [u8; 3] = [0x02, 0x00, 0x01];
 
 /// Synthetic body of an acknowledgement or a packet nobody parses.
 const FILLER: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
@@ -172,6 +174,13 @@ pub fn ear_of(primary: Placed, secondary: Placed) -> Vec<u8> {
     packet(OPCODE_EAR, &[primary.wire(), secondary.wire()])
 }
 
+/// The Conversation Awareness report with the level as its last byte.
+#[must_use]
+pub fn awareness_of(level: u8) -> Vec<u8> {
+    let [first, second, third] = AWARENESS_REPORT_PREFIX;
+    packet(OPCODE_AWARENESS, &[first, second, third, level])
+}
+
 /// Conversation awareness switched on.
 #[must_use]
 pub fn control() -> Vec<u8> {
@@ -306,6 +315,14 @@ mod tests {
     #[test]
     fn the_battery_packet_has_the_length_the_cpp_daemon_accepts() {
         assert_eq!(battery().len(), 22);
+    }
+
+    #[test]
+    fn an_awareness_sample_carries_the_requested_level() {
+        assert_eq!(
+            awareness_of(0x09),
+            [0x04, 0x00, 0x04, 0x00, 0x4b, 0x00, 0x02, 0x00, 0x01, 0x09]
+        );
     }
 
     #[test]

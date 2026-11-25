@@ -31,6 +31,7 @@ pub enum Parser {
     ProximityKeys,
     ProximityKeyEntry,
     Proximity,
+    Awareness,
     /// `classify` reading an SDU cut inside its opcode.
     Packet,
 }
@@ -59,6 +60,7 @@ impl fmt::Display for Parser {
             Self::ProximityKeys => "proximity keys reply",
             Self::ProximityKeyEntry => "proximity key entry",
             Self::Proximity => "proximity advert",
+            Self::Awareness => "conversation awareness report",
             Self::Packet => "control channel packet",
         })
     }
@@ -230,6 +232,7 @@ mod tests {
             (Parser::ProximityKeys, "proximity keys reply"),
             (Parser::ProximityKeyEntry, "proximity key entry"),
             (Parser::Proximity, "proximity advert"),
+            (Parser::Awareness, "conversation awareness report"),
             (Parser::Packet, "control channel packet"),
         ] {
             assert_eq!(parser.to_string(), name);

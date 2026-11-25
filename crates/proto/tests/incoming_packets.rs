@@ -1,5 +1,6 @@
 //! Random input never panics the classifier or the metadata parser; each sorts or cuts by its rule.
 
+use pods_proto::awareness;
 use pods_proto::battery::BatteryReport;
 use pods_proto::control::ControlCommand;
 use pods_proto::ear::EarReport;
@@ -7,15 +8,24 @@ use pods_proto::keys::ProximityKeys;
 use pods_proto::metadata::{FIELD_MAX_BYTES, Metadata};
 use pods_proto::packet::{Incoming, classify, opcode_of};
 use pods_proto::uplink::UplinkState;
+use pods_samples::awareness_of;
 use pods_samples::uplink::{session_marker, state_marker};
 use proptest::prelude::*;
 
 const METADATA_HEADER: [u8; 6] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
 /// Every packet the pods send after the handshake starts with these bytes; the opcode follows.
 const ACCESSORY_HEADER: [u8; 4] = [0x04, 0x00, 0x04, 0x00];
-/// Battery, ear, control, the state marker, metadata, proximity keys, the session marker and uplink: the opcodes `classify` does not always report as `Other`.
-const ROUTED_OPCODES: [u16; 8] = [
-    0x0004, 0x0006, 0x0009, 0x000e, 0x001d, 0x0031, 0x0055, 0x0058,
+/// The opcodes that `classify` does not always report as `Other`.
+const ROUTED_OPCODES: [u16; 9] = [
+    0x0004,
+    0x0006,
+    0x0009,
+    0x000e,
+    0x001d,
+    0x0031,
+    awareness::OPCODE,
+    0x0055,
+    0x0058,
 ];
 /// Where the body of a packet begins, after the accessory header and the opcode.
 const BODY_AT: usize = 6;
@@ -30,7 +40,7 @@ const _: () = assert!(SHORT_FIELD_LEN < FIELD_MAX_BYTES);
 /// Long enough that random fields often run past `FIELD_MAX_BYTES`.
 const METADATA_BODY_BOUND: usize = 1024;
 
-/// Any body, or the body of an uplink marker with any six bytes in the state marker, which a random body almost never is.
+/// A random body, an uplink marker body or an awareness report body.
 fn body() -> impl Strategy<Value = Vec<u8>> {
     let state = (any::<bool>(), any::<[u8; 6]>()).prop_map(|(running, opaque)| {
         let says = state_marker(running).last().copied();
@@ -40,10 +50,13 @@ fn body() -> impl Strategy<Value = Vec<u8>> {
         let marker = session_marker(running).into_iter();
         marker.skip(BODY_AT).collect()
     });
+    let report =
+        any::<u8>().prop_map(|level| awareness_of(level).into_iter().skip(BODY_AT).collect());
     prop_oneof![
         proptest::collection::vec(any::<u8>(), 0..ROUTED_BODY_BOUND),
         state,
         session,
+        report,
     ]
 }
 
@@ -94,6 +107,7 @@ proptest! {
             0x0009 => ControlCommand::parse(&sdu).map(Incoming::Control),
             0x001d => Metadata::parse(&sdu).map(Incoming::Metadata),
             0x0031 => ProximityKeys::parse(&sdu).map(Incoming::Keys),
+            awareness::OPCODE => Ok(awareness::parse(&sdu).map_or(Incoming::Other { opcode }, Incoming::Awareness)),
             0x0058 => Ok(Incoming::Uplink(&sdu)),
             0x000e | 0x0055 => {
                 let says = if opcode == 0x000e { state_marker_says(&body) } else { session_marker_says(&body) };
