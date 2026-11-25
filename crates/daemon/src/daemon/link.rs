@@ -523,8 +523,8 @@ impl Driver {
                 }
             }
             Effect::Dictation(DictationRequest::ModeOff) => {
-                self.outlets.tap.end_dictation();
                 self.send(&doap_mode_off());
+                self.outlets.tap.end_dictation();
             }
             Effect::Dictation(request) => self.outlets.dictation.offer(request),
             Effect::Log(line) => log(&line),

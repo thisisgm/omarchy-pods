@@ -9,7 +9,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::dictation::{DOAP_STOP_ANSWER_MS, INHIBIT_WAIT_MS, MODE_SETTLE_MS};
-    use pods_proto::doap::{doap_mode_off, doap_mode_on};
+    use pods_proto::doap::{STOP_REASON_UNSOLICITED, doap_mode_off, doap_mode_on};
 
     use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, opening, ready_to_read, status};
     use super::support::logind::INHIBIT;
@@ -406,7 +406,19 @@ mod tests {
             closed.saturating_duration_since(sent) <= STOP_WAIT.saturating_add(SCHEDULING_SLACK),
             "inhibitor held past the deadline"
         );
-        fixture.stopped(1);
+        status(&fixture.rig, "armed");
+        wait_for("DoAP mode to clear after the held STOP", || {
+            (!doap.mode_seen()).then_some(())
+        });
+        // Audio already in flight on ATT can still draw one recovery STOP.
+        let stops = doap.stops();
+        assert!(
+            matches!(
+                stops.as_slice(),
+                [HOST_STOP] | [HOST_STOP, STOP_REASON_UNSOLICITED]
+            ),
+            "unexpected STOPs after the answer deadline: {stops:?}"
+        );
         fixture.rig.wait_logged(STOP_TIMEOUT);
         assert_eq!(logged(&mut fixture.rig, STOP_TIMEOUT), 1);
         lose(&fixture.rig, &fixture.device);
