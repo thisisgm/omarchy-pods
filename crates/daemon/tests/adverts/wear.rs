@@ -176,7 +176,7 @@ fn a_wear_edge_reports_a_failed_paired_get() {
             .map(str::to_owned)
     });
     rig.bluez().fail_calls(false);
-    assert_eq!(error, "org.bluez.Error.Failed");
+    assert_eq!(error, "BlueZ Paired read failed: org.bluez.Error.Failed");
     assert!(wear_call(&rig).is_none());
     rig.finish();
 }
