@@ -86,6 +86,27 @@ fn unowned_uplink_stopped_from_late_skips_restore() {
 }
 
 #[test]
+fn unowned_uplink_preserves_a_pending_playback_restore() {
+    let always = linked(Column::AlwaysKnown);
+    let auto = linked(Column::Auto);
+    let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+    let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+    let mut mic = Mic::default();
+    assert_eq!(requests(&mic.step(&always, &Fact::Changed, LEFT)), START);
+    drop(mic.step(&always, &running, LEFT.saturating_add(SOON)));
+    let initial = mic.step(&always, &stopped, SENT);
+    assert_eq!(restore_ids(&initial), [RestoreId(0)]);
+
+    let began = mic.step(&auto, &running, SENT.saturating_add(SOON));
+    let ended = mic.step(&auto, &stopped, SENT.saturating_add(SOON.saturating_mul(2)));
+    for effects in [began, ended] {
+        assert_eq!(requests(&effects), NOTHING);
+        assert_no_restore(&effects);
+        assert!(!effects.contains(&Effect::Audio(AudioRequest::CancelRestore)));
+    }
+}
+
+#[test]
 fn unowned_uplink_marker_pairs_do_not_repeat_a_playback_restore() {
     const MARKER_PAIRS: u32 = 3;
     let state = linked(Column::Auto);

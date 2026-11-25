@@ -22,8 +22,8 @@ mod tests {
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
-    use super::support::audio::wire::sink_named;
-    use super::support::audio::{Asked, FakeAudio};
+    use super::support::audio::wire::{card_named, sink_named};
+    use super::support::audio::{Asked, FakeAudio, FakeProfile};
     use super::support::pipewire::{record, start};
     use super::support::recording::wait_packets;
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
@@ -191,6 +191,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unsolicited_uplink_markers_preserve_a_pending_playback_restore() {
+        const PLAYBACK: &str = "a2dp-sink";
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+
+        let before = audio.requests().len();
+        audio.hold_at_card_list();
+        let profile = FakeProfile {
+            name: PLAYBACK,
+            available: true,
+            sinks: 1,
+            sources: 0,
+        };
+        audio.add_card(&card_named(device.address), &[profile], PLAYBACK);
+        wait_for("the card read with its reply held", || {
+            audio.requests()[before..]
+                .contains(&Asked::CardList)
+                .then_some(())
+        });
+
+        device.pods.uplink().stop_unasked();
+        wait_mic(&rig, "stopping");
+        set(rig.session(), "microphone", "auto");
+        device.pods.send(&state_marker(true));
+        device.pods.send(&session_marker(true));
+        wait_mic(&rig, "live");
+        device.pods.send(&state_marker(false));
+        device.pods.send(&session_marker(false));
+        read_up_to_now(&rig, &device);
+        wait_mic(&rig, "no_audio_server");
+        audio.assert_only_reads();
+        audio.hold_replies(false);
+
+        wait_restore(&audio, &device);
+        assert_eq!(starts(&device).len(), 1, "STARTs sent by the daemon");
+        assert!(stops(&device).is_empty(), "STOPs sent by the daemon");
+        rig.finish();
+        assert_eq!(audio.writes().len(), 2, "sink writes after both stops");
+    }
+
     /// The pods live with `always` over a playing sink, then stopped by the pods and the sink restored for it.
     fn stopped_by_the_pods() -> (Rig, Device, Rc<FakeAudio>) {
         let (mut rig, device, audio) =
@@ -218,15 +260,21 @@ mod tests {
         let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
         let pipewire = start(&rig);
         let uplink = device.pods.uplink();
+        uplink.never_answer(true);
         uplink.hold_starts(true);
         link_heard(&rig, &device);
+        wait_starts(&device, 1);
+        uplink.never_answer(false);
+        // Answer the first START with markers alone so the watchdog sends a stall retry.
+        device.pods.send(&state_marker(true));
+        device.pods.send(&session_marker(true));
         let recorder = record(&rig, &pipewire, "capture.wav");
-        wait_starts(&device, 2);
-        uplink.release_start();
         wait_mic(&rig, "recording");
+        wait_starts(&device, 2);
 
         audio.hold_replies(true);
-        uplink.stop_unasked();
+        device.pods.send(&state_marker(false));
+        device.pods.send(&session_marker(false));
         wait_mic(&rig, "stopping");
         assert!(
             audio.writes().is_empty(),

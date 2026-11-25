@@ -399,7 +399,7 @@ fn a_sink_that_wakes_under_a_quiet_stop_owes_a_restore() {
 }
 
 #[test]
-fn a_running_marker_while_restoring_cancels_the_restore() {
+fn an_unowned_running_marker_during_a_restore_tracks_the_uplink() {
     let (running, at, state) = stepped(Event::RunningMarker, Column::AlwaysKnown);
     let mut mic = Mic {
         armed: Some(SENT),
@@ -407,7 +407,7 @@ fn a_running_marker_while_restoring_cancels_the_restore() {
     };
     let effects = mic.step(&state, &running, at);
     assert_eq!(kind(mic.phase), Kind::Running);
-    assert!(effects.contains(&Effect::Audio(AudioRequest::CancelRestore)));
+    assert!(!effects.contains(&Effect::Audio(AudioRequest::CancelRestore)));
     assert_eq!(requests(&effects), NOTHING);
     assert_eq!(mic.armed, None);
 
@@ -422,7 +422,7 @@ fn a_running_marker_while_restoring_cancels_the_restore() {
 }
 
 #[test]
-fn a_sleep_wake_start_answered_during_restore_tracks_the_uplink() {
+fn a_running_marker_after_a_sleep_wake_start_keeps_the_restore() {
     let (_, mut mic) = run(Kind::Starting, Event::Sleep, Column::AlwaysKnown);
     assert_eq!(kind_of(&mic), Kind::Asleep);
     let (wake, at, state) = stepped(Event::Wake, Column::AlwaysKnown);
@@ -437,7 +437,7 @@ fn a_sleep_wake_start_answered_during_restore_tracks_the_uplink() {
     assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
     let answered = mic.step(&state, &running, at);
     assert_eq!(kind(mic.phase), Kind::Running);
-    assert!(answered.contains(&Effect::Audio(AudioRequest::CancelRestore)));
+    assert!(!answered.contains(&Effect::Audio(AudioRequest::CancelRestore)));
 }
 
 #[test]
