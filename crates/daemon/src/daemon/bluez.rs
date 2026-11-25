@@ -499,12 +499,43 @@ where
 
 /// BlueZ and the bus can include device paths and addresses in error descriptions.
 fn failure(error: &zbus::Error) -> String {
+    use zbus::Error;
+
     match error {
-        zbus::Error::MethodError(name, _, _) => name.to_string(),
-        zbus::Error::FDO(error) => error.name().to_string(),
-        zbus::Error::DBus(error) => error.name().to_string(),
-        zbus::Error::Handshake(_) => "D-Bus handshake failed".to_owned(),
-        _ => error.to_string(),
+        Error::MethodError(name, _, _) => name.to_string(),
+        Error::FDO(error) => error.name().to_string(),
+        Error::DBus(error) => error.name().to_string(),
+        Error::Handshake(_) => "D-Bus handshake failed".to_owned(),
+        Error::Failure(_)
+        | Error::InputOutput(_)
+        | Error::IncorrectType
+        | Error::Utf8(_)
+        | Error::PaddingNot0(_)
+        | Error::UnknownFd
+        | Error::SignatureMismatch(_, _)
+        | Error::OutOfBounds
+        | Error::MaxDepthExceeded(_)
+        | Error::SignatureParse(_)
+        | Error::EmptyStructure
+        | Error::InvalidObjectPath
+        | Error::InvalidName(_)
+        | Error::InvalidNameConversion { .. }
+        | Error::InterfaceNotFound
+        | Error::Address(_)
+        | Error::InvalidField
+        | Error::ExcessData
+        | Error::IncorrectEndian
+        | Error::InvalidReply
+        | Error::MissingField
+        | Error::InvalidGUID
+        | Error::Unsupported
+        | Error::NameTaken
+        | Error::InvalidMatchRule
+        | Error::MissingParameter(_)
+        | Error::InvalidSerial
+        | Error::InterfaceExists(_, _)
+        | Error::Connection(_, _) => error.to_string(),
+        _ => "D-Bus error".to_owned(),
     }
 }
 
