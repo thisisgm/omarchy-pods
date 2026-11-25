@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use pods_core::command::{Command, Outcome};
 use pods_core::link::{
-    Action, Call, End, Event, Machine, Phase, STATE_POPULATED_LINE, Signal, Ticket,
+    Action, Call, DeviceAction, End, Event, Machine, Phase, STATE_POPULATED_LINE, Signal, Ticket,
     phase_change_line,
 };
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
@@ -99,7 +99,11 @@ pub(super) enum Input {
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Request {
     Sweep,
-    Call { device: BdAddr, call: Call },
+    Call {
+        device: BdAddr,
+        call: Call,
+        when_worn: bool,
+    },
 }
 
 /// Where the policy's notices, choices, audio and media requests and keys go, one queue per adapter.
@@ -427,6 +431,16 @@ impl Driver {
         let mut next = last.clone();
         let now = self.started.elapsed();
         let actions = self.machine.step(&mut next, event, now);
+        if (matches!(event, Event::DeviceDown(_))
+            && last.connected
+            && !next.connected
+            && last.ear.any_in_ear())
+            || actions.iter().any(|action| {
+                matches!(action, Action::Call { call, .. } if call.action == DeviceAction::Disconnect)
+            })
+        {
+            self.policy.manual_disconnect();
+        }
         self.log_progress(before, &next);
         let mut facts = Vec::new();
         for action in &actions {
@@ -464,9 +478,19 @@ impl Driver {
     fn observe(&mut self, fact: Fact) {
         let last = self.hub.state();
         let mut next = last.clone();
-        next.audio_server = server_after(next.audio_server, &fact);
-        self.policy.apply(&mut next, &fact);
         let now = self.started.elapsed();
+        next.audio_server = server_after(next.audio_server, &fact);
+        let connect = if let Fact::Advert(sighting) = &fact {
+            self.policy.advert(&mut next, sighting, now)
+        } else {
+            self.policy.apply(&mut next, &fact);
+            false
+        };
+        let worn_call = if connect && self.exit.is_none() {
+            self.machine.connect_when_worn(&mut next)
+        } else {
+            None
+        };
         let mut effects = self.policy.step(&next, fact, now);
         if next != last {
             effects.extend(self.policy.step(&next, Fact::Changed, now));
@@ -474,6 +498,10 @@ impl Driver {
         self.policy.show_mic(&mut next);
         self.fold(&last, &mut next, false);
         self.publish(next);
+        if let Some((device, call)) = worn_call {
+            self.policy.connect_attempted(now);
+            self.call(device, call, true);
+        }
         self.route_effects(effects);
     }
 
@@ -548,16 +576,7 @@ impl Driver {
                 // Dropped when the queue is full: nothing waits on a sweep's answer.
                 self.requests.try_send(Request::Sweep).ok();
             }
-            Action::Call { device, call } => {
-                if self
-                    .requests
-                    .try_send(Request::Call { device, call })
-                    .is_err()
-                {
-                    let failed = DeviceEvent::CallFailed(call);
-                    self.fed_back.push_back(Input::Device(failed));
-                }
-            }
+            Action::Call { device, call } => self.call(device, call, false),
             Action::Resolve { ticket, outcome } => {
                 if let Some(reply) = self.replies.remove(&ticket) {
                     // A client that left no longer waits for its answer.
@@ -566,6 +585,21 @@ impl Driver {
             }
             // Already handed to the policy, before the publish.
             Action::Signal(_) => {}
+        }
+    }
+
+    fn call(&mut self, device: BdAddr, call: Call, when_worn: bool) {
+        if self
+            .requests
+            .try_send(Request::Call {
+                device,
+                call,
+                when_worn,
+            })
+            .is_err()
+        {
+            let failed = DeviceEvent::CallFailed(call);
+            self.fed_back.push_back(Input::Device(failed));
         }
     }
 

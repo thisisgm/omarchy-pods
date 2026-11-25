@@ -99,6 +99,12 @@ refuses the same way.
 action `connect`, `disconnect` or `forget`: they act on the same AirPods and
 return `NoDevice` when there are none to act on.
 
+While advert intake is listening, a transition from both buds out to a bud worn
+can connect the tracked paired device, with at least 30 seconds between attempts.
+A `Disconnect` command or a BlueZ disconnect while linked and worn suppresses
+this until the adverts show the buds back in the case or both buds out for at
+least 10 seconds.
+
 ## Errors
 
 A refused command's error reply carries one of these names. Its message is

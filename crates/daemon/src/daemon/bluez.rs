@@ -186,8 +186,12 @@ impl Watcher<'_> {
             match next(&mut signals, requests, waits).await {
                 Next::Signal(message) => self.take(&message).await?,
                 Next::Request(Request::Sweep) | Next::Retry => self.sweep().await?,
-                Next::Request(Request::Call { device, call }) => {
-                    self.call(device, call).await?;
+                Next::Request(Request::Call {
+                    device,
+                    call,
+                    when_worn,
+                }) => {
+                    self.call(device, call, when_worn).await?;
                 }
                 Next::Wanted => {
                     let wanted = *monitor_wanted.borrow_and_update();
@@ -217,12 +221,15 @@ impl Watcher<'_> {
     }
 
     /// No call goes to a device BlueZ does not hold.
-    async fn call(&mut self, device: BdAddr, call: Call) -> ControlFlow<()> {
+    async fn call(&mut self, device: BdAddr, call: Call, when_worn: bool) -> ControlFlow<()> {
         // A removal taken after the machine chose `device`, before this request, leaves no path.
         let Some(path) = self.candidates.path_of(device) else {
             return not_made(self.inputs, call, "BlueZ holds no such device").await;
         };
-        if !self.calls.start(&self.connection, path.to_owned(), call) {
+        if !self
+            .calls
+            .start(&self.connection, path.to_owned(), call, when_worn)
+        {
             return not_made(self.inputs, call, "too many calls already wait for BlueZ").await;
         }
         ControlFlow::Continue(())

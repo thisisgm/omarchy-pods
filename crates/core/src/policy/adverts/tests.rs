@@ -45,6 +45,97 @@ fn ours() -> Sighting {
     sighting_from(HEADER, IDENTITY_KEY)
 }
 
+fn out_of_ear(in_case: bool) -> Sighting {
+    let mut header = HEADER;
+    header[5] = if in_case { 0x60 } else { 0x20 };
+    if in_case {
+        header[8] = 0x08;
+    }
+    sighting_from(header, IDENTITY_KEY)
+}
+
+#[test]
+fn a_wear_edge_asks_once_and_steady_wear_never_repeats() {
+    let (mut policy, mut state) = listening();
+    let mut see = |advert, ms| see_advert(&mut policy, &mut state, advert, ms);
+    assert!(!see(ours(), 0), "no out-of-ear advert yet");
+    assert!(!see(out_of_ear(false), 1));
+    assert!(see(ours(), 2), "the wear edge asks to connect");
+    assert!(!see(ours(), 30_002), "steady wear is not a new edge");
+}
+
+#[test]
+fn wear_edges_are_throttled_until_thirty_seconds_after_the_attempt() {
+    let (mut policy, mut state) = listening();
+    let mut see = |advert, ms| see_advert(&mut policy, &mut state, advert, ms);
+    assert!(!see(out_of_ear(false), 0));
+    assert!(see(ours(), 1), "the first edge asks to connect");
+    assert!(!see(out_of_ear(false), 29_999));
+    assert!(!see(ours(), 30_000), "one millisecond before cooldown");
+    assert!(!see(ours(), 30_001), "the blocked edge is spent");
+    assert!(!see(out_of_ear(false), 30_001));
+    assert!(see(ours(), 30_001), "a new edge at the cooldown boundary");
+}
+
+#[test]
+fn a_manual_disconnect_holds_until_the_case() {
+    let (mut policy, mut state) = listening();
+    policy.manual_disconnect();
+    let mut see = |advert, ms| policy.advert(&mut state, &advert, Duration::from_millis(ms));
+    assert!(!see(out_of_ear(false), 0));
+    assert!(!see(ours(), 1), "an early edge is held");
+    assert!(!see(out_of_ear(true), 2));
+    assert!(see(ours(), 3), "the case clears the hold");
+}
+
+#[test]
+fn a_manual_disconnect_needs_ten_continuous_seconds_both_out() {
+    let (mut policy, mut state) = listening();
+    policy.manual_disconnect();
+    let mut see = |advert, ms| policy.advert(&mut state, &advert, Duration::from_millis(ms));
+    assert!(!see(out_of_ear(false), 0));
+    assert!(
+        !see(ours(), 9_999),
+        "one millisecond short resets the interval"
+    );
+    assert!(!see(out_of_ear(false), 10_000));
+    assert!(!see(ours(), 19_999), "the first interval does not count");
+    assert!(!see(out_of_ear(false), 20_000));
+    assert!(see(ours(), 30_000), "ten seconds out clears the hold");
+}
+
+#[test]
+fn the_link_pauses_auto_connect_until_intake_is_listening_again() {
+    let (mut policy, mut state) = listening();
+    let start = Duration::ZERO;
+    let link = Fact::Link(up());
+    policy.apply(&mut state, &link);
+    drop(policy.step(&state, link, start));
+    assert!(!policy.advert(&mut state, &out_of_ear(false), start));
+    assert!(!policy.advert(&mut state, &ours(), start));
+    drop(policy.step(&state, Fact::Link(link_down()), start));
+    assert!(!policy.advert(&mut state, &out_of_ear(false), start));
+    assert!(!policy.advert(&mut state, &ours(), start));
+    policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
+    assert!(!policy.advert(&mut state, &out_of_ear(false), start));
+    assert!(policy.advert(&mut state, &ours(), start), "listening again");
+}
+
+fn listening() -> (Policy, State) {
+    let policy = Policy::new(Some(keys()));
+    let state = applied(&policy, &Fact::Monitor(MonitorFact::Registered));
+    (policy, state)
+}
+
+fn see_advert(policy: &mut Policy, state: &mut State, sighting: Sighting, ms: u64) -> bool {
+    let now = Duration::from_millis(ms);
+    let connect = policy.advert(state, &sighting, now);
+    if connect {
+        policy.connect_attempted(now);
+    }
+    connect
+}
+
 fn charge(level: u8, charging: bool) -> Charge {
     Charge { level, charging }
 }
@@ -74,9 +165,15 @@ fn applied(policy: &Policy, fact: &Fact) -> State {
     state
 }
 
+fn advertised(mut policy: Policy, sighting: Sighting) -> State {
+    let mut state = State::default();
+    assert!(!policy.advert(&mut state, &sighting, Duration::ZERO));
+    state
+}
+
 #[test]
 fn an_advert_from_our_pods_sets_what_the_cpp_sets() {
-    let state = applied(&Policy::new(Some(keys())), &Fact::Advert(ours()));
+    let state = advertised(Policy::new(Some(keys())), ours());
     let wanted = State {
         model: Model::AirPodsPro3,
         batteries: Batteries {
@@ -114,19 +211,15 @@ fn an_advert_that_does_not_resolve_parse_or_find_keys_changes_nothing() {
         ("the link up", linked, ours()),
     ];
     for (row, policy, sighting) in rows {
-        assert_eq!(
-            applied(&policy, &Fact::Advert(sighting)),
-            State::default(),
-            "{row}"
-        );
+        assert_eq!(advertised(policy, sighting), State::default(), "{row}");
     }
 }
 
 #[test]
 fn a_headset_takes_its_one_battery_and_no_case() {
-    let state = applied(
-        &Policy::new(Some(keys())),
-        &Fact::Advert(sighting_from(MAX_HEADER, IDENTITY_KEY)),
+    let state = advertised(
+        Policy::new(Some(keys())),
+        sighting_from(MAX_HEADER, IDENTITY_KEY),
     );
     assert_eq!(state.model, Model::AirPodsMaxLightning);
     let headset_only = Batteries {
