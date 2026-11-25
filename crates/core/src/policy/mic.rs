@@ -165,6 +165,13 @@ struct Audio {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DictationActivity {
+    Unarmed,
+    Armed,
+    Active,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Mic {
     phase: Phase,
     audio: Audio,
@@ -178,8 +185,7 @@ pub(super) struct Mic {
     armed: Option<Duration>,
     node: Node,
     route: Option<Route>,
-    dictation_armed: bool,
-    dictation_active: bool,
+    dictation: DictationActivity,
 }
 
 impl Default for Mic {
@@ -194,8 +200,7 @@ impl Default for Mic {
             armed: None,
             node: Node::default(),
             route: None,
-            dictation_armed: false,
-            dictation_active: false,
+            dictation: DictationActivity::Unarmed,
         }
     }
 }
@@ -236,8 +241,13 @@ impl Mic {
 
     pub(super) fn set_route(&mut self, route: Option<Route>, dictation: &Dictation) {
         self.route = route;
-        self.dictation_armed = dictation.armed();
-        self.dictation_active = dictation.active();
+        self.dictation = if dictation.active() {
+            DictationActivity::Active
+        } else if dictation.armed() {
+            DictationActivity::Armed
+        } else {
+            DictationActivity::Unarmed
+        };
     }
 
     /// A new session waits for the STOP and its restore; a late stopped marker can owe a restore after `DoAP` begins.
@@ -708,8 +718,8 @@ impl Mic {
 
     /// An uplink recording, or a fast-capture hint with dictation neither armed nor routed, can hold the uplink under `auto`.
     fn uplink_wanted(&self, state: &State) -> bool {
-        let hint = self.audio.hint && !self.dictation_armed;
-        !self.dictation_active
+        let hint = self.audio.hint && self.dictation == DictationActivity::Unarmed;
+        self.dictation != DictationActivity::Active
             && self.route != Some(Route::Dictation)
             && !self.node.blocked()
             && (wanted(state, hint)
