@@ -169,7 +169,10 @@ fn a_reopened_node_keeps_dictation_until_an_uplink_start() {
 
     let (feed, _resync) = open(&tap);
     assert!(!tap.dictation(&dictated(&notification(2))));
-    assert!(!feed.reader.read_all(), "the reopened node has audio to play");
+    assert!(
+        !feed.reader.read_all(),
+        "the reopened node has audio to play"
+    );
 
     tap.arm();
     assert!(tap.audio(&audio(&packet(0))));
