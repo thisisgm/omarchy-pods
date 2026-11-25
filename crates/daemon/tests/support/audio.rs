@@ -50,6 +50,7 @@ pub(crate) enum Asked {
     SinkList,
     Volume {
         name: String,
+        index: Option<u32>,
         percent: u8,
     },
     Subscribe {
@@ -155,6 +156,15 @@ impl FakeAudio {
     /// Applies changes, including sink removals, without sending subscription events.
     pub(crate) fn silence_events(&self) {
         self.change(|state| state.silent_events = true);
+    }
+
+    /// Replaces the sink as one server change so a list cannot see the name missing between indices.
+    pub(crate) fn replace_default_sink(&self, name: &str, percent: u8) {
+        self.change(|state| {
+            state.remove_sink(name);
+            state.add_sink(name, volume_of(percent));
+            state.set_default_sink(name);
+        });
     }
 
     pub(crate) fn set_default_sink(&self, name: &str) {
@@ -340,6 +350,11 @@ impl FakeAudio {
     /// Starts holding messages at the next card-list reply.
     pub(crate) fn hold_at_card_list(&self) {
         self.change(State::hold_at_card_list);
+    }
+
+    /// Sends one sink event even when silenced, holding every reply it prompts until released.
+    pub(crate) fn request_sink_refresh_and_hold_replies(&self) {
+        self.change(State::request_sink_refresh_and_hold_replies);
     }
 
     /// A sink change event cut inside its payload, with replies held; `hold_replies(false)` sends the rest.

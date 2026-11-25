@@ -315,6 +315,7 @@ mod tests {
         assert_eq!(stored.cvolume, stereo(volume_of(70)));
         assert!(audio.requests().contains(&Asked::Volume {
             name: name.clone(),
+            index: None,
             percent: 70
         }));
 

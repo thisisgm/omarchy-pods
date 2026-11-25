@@ -8,6 +8,7 @@ mod reports;
 use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
+use pods_proto::awareness::Awareness;
 use pods_proto::handshake::Handshake;
 use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS};
@@ -123,6 +124,8 @@ pub enum Signal {
     Keys(ProximityKeys),
     /// The pods said whether their uplink runs, which they also do before the link is up.
     Uplink(UplinkState),
+    /// The pods reported a Conversation Awareness level.
+    Awareness(Awareness),
 }
 
 /// Where the session is, with the data each state needs.

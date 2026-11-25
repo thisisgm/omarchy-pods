@@ -89,9 +89,18 @@ pub struct RestoreId(pub(super) u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SinkFact {
+    pub index: u32,
     pub is_default: bool,
     pub volume: Percent,
     pub state: SinkState,
+    pub volume_stamp: VolumeStamp,
+}
+
+/// The sink's lifetime and the last volume request handled before a reading.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeStamp {
+    pub epoch: u64,
+    pub writes: u64,
 }
 
 /// Only `Suspended`, or no sink at all, lets a STOP out while a bud is worn; an idle sink can still hold a started stream.
@@ -106,6 +115,8 @@ pub enum SinkState {
 pub enum AudioRequest {
     /// `None` closes the connection.
     Follow(Option<BdAddr>),
+    /// Changes the followed sink's volume without interrupting its streams.
+    SetVolume(Percent, VolumeStamp),
     /// Suspends and resumes the followed device's sink, so a stream the uplink's end broke is opened again.
     Restore(RestoreId),
     /// A START went out, so a restore still owed is dropped: the newest intent wins.
@@ -117,7 +128,7 @@ pub(super) fn follow(signal: &Signal) -> Option<AudioRequest> {
     match signal {
         Signal::Up { device } => Some(AudioRequest::Follow(Some(*device))),
         Signal::Lost { .. } => Some(AudioRequest::Follow(None)),
-        Signal::Down | Signal::Keys(_) | Signal::Uplink(_) => None,
+        Signal::Down | Signal::Keys(_) | Signal::Uplink(_) | Signal::Awareness(_) => None,
     }
 }
 
@@ -129,7 +140,7 @@ pub fn server_after(was: AudioServer, fact: &Fact) -> AudioServer {
         Fact::Link(Signal::Lost { .. }) => AudioServer::Idle,
         Fact::Audio(AudioFact::Up) if was != AudioServer::Idle => AudioServer::Up,
         Fact::Audio(AudioFact::Down) if was != AudioServer::Idle => AudioServer::Down,
-        Fact::Link(Signal::Down | Signal::Keys(_) | Signal::Uplink(_))
+        Fact::Link(Signal::Down | Signal::Keys(_) | Signal::Uplink(_) | Signal::Awareness(_))
         | Fact::Audio(_)
         | Fact::Advert(_)
         | Fact::Monitor(_)

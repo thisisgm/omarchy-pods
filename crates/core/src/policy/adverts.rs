@@ -65,7 +65,7 @@ impl Adverts {
         match signal {
             Signal::Up { .. } => self.link_up = true,
             Signal::Down => self.link_up = false,
-            Signal::Lost { .. } | Signal::Uplink(_) => {}
+            Signal::Lost { .. } | Signal::Uplink(_) | Signal::Awareness(_) => {}
             Signal::Keys(keys) => self.keys = Some(keys.clone()),
         }
         let now = self.wanted();

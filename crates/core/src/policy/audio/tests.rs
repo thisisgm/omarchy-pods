@@ -6,7 +6,8 @@ use pods_proto::addr::BdAddr;
 use pods_proto::uplink::UplinkState;
 
 use super::{
-    AudioFact, AudioRequest, Percent, SinkFact, SinkState, card_name, server_after, sink_prefix,
+    AudioFact, AudioRequest, Percent, SinkFact, SinkState, VolumeStamp, card_name, server_after,
+    sink_prefix,
 };
 use crate::link::Signal;
 use crate::policy::{Effect, Fact, Policy, SleepEdge};
@@ -35,9 +36,11 @@ fn sink() -> Fact {
     let is_default = true;
     let state = SinkState::Running;
     Fact::Audio(AudioFact::Sink(Some(SinkFact {
+        index: 0,
         is_default,
         volume,
         state,
+        volume_stamp: VolumeStamp::default(),
     })))
 }
 
