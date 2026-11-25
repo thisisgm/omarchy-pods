@@ -20,17 +20,20 @@ mod tests {
     };
     use pods_fake::Profile;
     use pods_samples::MODEL_NUMBER;
+    use pods_samples::uplink::state_marker;
     use pulseaudio::protocol::SinkState;
     use serde_json::Value;
 
+    use super::support::audio::wire::sink_named;
     use super::support::audio::{Asked, FakeAudio, Volumes};
     use super::support::bus::{Listener, changes_rule};
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, not_before};
     use super::support::settings::set;
     use super::support::uplink::{
-        EXIT_BEFORE_RESTORE_LINE, MIC_EXIT, START_ANSWER, assert_hold, assert_no_sink_call, link,
-        link_heard, mic, move_sink, put_in, read_up_to_now, rig_with, rig_with_audio,
-        set_off_unworn, starts, stops, take_out, wait_mic, wait_restore, wait_starts, wait_stop,
+        EXIT_BEFORE_RESTORE_LINE, MIC_EXIT, START_ANSWER, STOP_ANSWER, assert_hold,
+        assert_no_sink_call, link, link_heard, mic, move_sink, put_in, read_up_to_now, rig_with,
+        rig_with_audio, set_off_unworn, starts, stops, take_out, wait_mic, wait_restore,
+        wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
 
@@ -148,6 +151,52 @@ mod tests {
             suspended,
             &at_once(),
         );
+        rig.finish();
+    }
+
+    #[test]
+    fn a_stop_confirmed_after_the_deadline_restores_once_more() {
+        let (rig, device, audio) = live(SinkState::Running);
+        let uplink = device.pods.uplink();
+        uplink.hold_stops(true);
+        let asked = Instant::now();
+        set_off_unworn(&rig, &device);
+        wait_stop(&device);
+        let (first_suspend, _) = wait_restore(&audio, &device);
+        assert_gap(
+            "the first suspend after requesting off",
+            asked,
+            first_suspend,
+            &(STOP_ANSWER..),
+        );
+
+        let released = Instant::now();
+        uplink.release_stop();
+        let writes = audio.wait_writes(4, HANG_LIMIT);
+        let sink = sink_named(device.address);
+        assert!(
+            matches!(
+                &writes[2..],
+                [
+                    Asked::Suspend { name: Some(first), suspend: true, at: suspended },
+                    Asked::Suspend { name: Some(second), suspend: false, at: resumed },
+                ] if *first == sink && *second == sink && released < *suspended && suspended < resumed
+            ),
+            "the late STOP confirmation should cause one more suspend and resume"
+        );
+
+        rig.wait_sink_told();
+        // Send the duplicate separately so it cannot share the late confirmation's restore.
+        device.pods.send(&state_marker(false));
+        read_up_to_now(&rig, &device);
+        rig.wait_sink_told();
+        pause(REAL_TIME_SLACK);
+        assert_eq!(
+            audio.writes().len(),
+            4,
+            "sink writes after the duplicate marker"
+        );
+        assert_eq!(stops(&device).len(), 1, "STOPs heard by the pods");
         rig.finish();
     }
 
