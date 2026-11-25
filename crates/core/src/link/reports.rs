@@ -53,7 +53,10 @@ impl Machine {
             }
             Incoming::Keys(keys) => vec![Action::Signal(Signal::Keys(keys))],
             Incoming::UplinkState(uplink) => vec![Action::Signal(Signal::Uplink(uplink))],
-            Incoming::Uplink(_) | Incoming::Other { .. } | Incoming::Foreign => Vec::new(),
+            Incoming::Awareness(_)
+            | Incoming::Uplink(_)
+            | Incoming::Other { .. }
+            | Incoming::Foreign => Vec::new(),
         }
     }
 }

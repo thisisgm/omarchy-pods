@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use pods_samples::{
-    Cell, NOISE, Placed, battery_of, burst_others, burst_settings, ear_of, features_ack,
-    handshake_ack, host, keys_of, metadata_of, setting,
+    Cell, NOISE, Placed, awareness_of, battery_of, burst_others, burst_settings, ear_of,
+    features_ack, handshake_ack, host, keys_of, metadata_of, setting,
 };
 
 use crate::{Fault, Profile};
@@ -18,6 +18,7 @@ pub(crate) enum Change {
     Ear { primary: Placed, secondary: Placed },
     Battery { left: Cell, right: Cell, case: Cell },
     Setting { identifier: u8, value: u8 },
+    Awareness { level: u8 },
 }
 
 impl Change {
@@ -36,12 +37,13 @@ impl Change {
         (!withheld).then(|| self.packet())
     }
 
-    // Layouts of daemon/airpods_packets.h, as `pods_samples` builds them.
+    // Layouts as `pods_samples` builds them.
     fn packet(self) -> Vec<u8> {
         match self {
             Self::Ear { primary, secondary } => ear_of(primary, secondary),
             Self::Battery { left, right, case } => battery_of(left, right, case),
             Self::Setting { identifier, value } => setting(identifier, value),
+            Self::Awareness { level } => awareness_of(level),
         }
     }
 }
@@ -154,6 +156,8 @@ impl Model {
             Change::Setting { identifier, value } => {
                 self.settings.insert(identifier, value);
             }
+            // A speech report is transient and is never replayed in the opening burst.
+            Change::Awareness { .. } => {}
         }
     }
 

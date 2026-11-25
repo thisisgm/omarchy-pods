@@ -191,6 +191,11 @@ impl Pods {
         self.change(Change::Setting { identifier, value });
     }
 
+    /// Reports the given Conversation Awareness level on every open control channel.
+    pub fn speak(&self, level: u8) {
+        self.change(Change::Awareness { level });
+    }
+
     /// Sends raw bytes on every open control channel.
     pub fn send(&self, sdu: &[u8]) {
         self.shared.lock().queue_everywhere(|_| Some(sdu.to_vec()));

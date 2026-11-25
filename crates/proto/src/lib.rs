@@ -3,6 +3,7 @@
 
 pub mod addr;
 pub mod att;
+pub mod awareness;
 pub mod battery;
 pub mod control;
 pub mod dictation;

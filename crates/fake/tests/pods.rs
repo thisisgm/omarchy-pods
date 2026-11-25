@@ -12,7 +12,7 @@ mod arbitrary;
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pods_fake::{Fault, Pods, Profile};
+    use pods_fake::{Fault, Pods, Profile, pair};
     use pods_samples::{
         CONVERSATION_AWARENESS, Cell, NOISE, ONE_BUD_ANC, Placed, battery, battery_of,
         burst_others, burst_settings, ear, ear_of, features_ack, first_burst, handshake_ack, host,
@@ -173,6 +173,48 @@ mod tests {
             ]
         );
         finish(pods, host);
+    }
+
+    #[test]
+    fn speak_sends_the_report_on_every_open_channel() {
+        let pods = Pods::new(Profile::default());
+        let first = open(&pods);
+        let second = open(&pods);
+        let (attribute, end) = pair();
+        pods.serve_att(end);
+
+        for level in [0x01, 0xff] {
+            pods.speak(level);
+            let expected = [0x04, 0x00, 0x04, 0x00, 0x4b, 0x00, 0x02, 0x00, 0x01, level];
+            for host in [&first, &second] {
+                assert_eq!(recv(host), expected);
+            }
+        }
+        for host in [&first, &second, &attribute] {
+            assert_quiet(host);
+        }
+
+        drop(attribute);
+        drop(first);
+        finish(pods, second);
+    }
+
+    #[test]
+    fn a_channel_opened_after_speak_hears_no_awareness_in_its_burst() {
+        let pods = Pods::new(Profile::default());
+        let first = open(&pods);
+        pods.speak(0x01);
+        assert_eq!(
+            recv(&first),
+            [0x04, 0x00, 0x04, 0x00, 0x4b, 0x00, 0x02, 0x00, 0x01, 0x01]
+        );
+
+        let late = open(&pods);
+        assert_eq!(opening(&late), first_burst()[2..]);
+        assert_quiet(&late);
+
+        drop(first);
+        finish(pods, late);
     }
 
     #[test]
