@@ -33,7 +33,6 @@ impl Stop {
 pub(super) struct Session {
     phase: Phase,
     inhibit: Inhibit,
-    refused_once: bool,
     stray_logged: bool,
 }
 
@@ -117,7 +116,7 @@ impl Session {
         self.inhibit = Inhibit::Resolved;
     }
 
-    /// Returns true only when a second refusal hands this edge to the uplink.
+    /// A live span falls back once when its last try is spent.
     pub(super) fn step(
         &mut self,
         fact: &Fact,
@@ -133,7 +132,7 @@ impl Session {
         };
         let timed_out = self.deadline().is_some_and(|at| now >= at);
         self.note_event(told, effects);
-        let mut fallback = false;
+        let was_spent = matches!(self.phase, Phase::Spent);
         self.phase = match self.phase {
             Phase::Idle | Phase::Spent if stop.is_some() => Phase::Idle,
             Phase::Settling { .. } if stop.is_some() => mode_off(effects),
@@ -148,10 +147,7 @@ impl Session {
                 send_start(tried, now, effects)
             }
             Phase::Starting { since, tried, owed } => {
-                let (next, refused_twice) =
-                    self.starting(since, tried, owed.or(stop), told, now, effects);
-                fallback = refused_twice;
-                next
+                Self::starting(since, tried, owed.or(stop), told, now, effects)
             }
             Phase::Streaming { tried, .. }
                 if matches!(told, Some(Ended | PodEvent(Event::SiriCancel))) =>
@@ -185,27 +181,24 @@ impl Session {
             | Phase::Spent) => phase,
         };
         if matches!(self.phase, Phase::Idle) && stop.is_none() {
-            self.refused_once = false;
             self.phase = mode_on(1, now, effects);
         } else if matches!(self.phase, Phase::Idle | Phase::Spent) {
             self.inhibit = Inhibit::Resolved;
         }
-        fallback
+        !was_spent && stop.is_none() && matches!(self.phase, Phase::Spent)
     }
 
     fn starting(
-        &mut self,
         since: Duration,
         tried: u32,
         owed: Option<Stop>,
         told: Option<&DictationFact>,
         now: Duration,
         effects: &mut Vec<Effect>,
-    ) -> (Phase, bool) {
+    ) -> Phase {
         use DictationFact::{Answered, FirstAudio, Refused};
         let after = now.saturating_sub(since);
-        let mut fallback = false;
-        let phase = match told {
+        match told {
             Some(Answered | FirstAudio) => {
                 let after = after.as_millis();
                 log(effects, format!("dictation: started after {after} ms"));
@@ -231,7 +224,6 @@ impl Session {
                 reason: STOP_REASON_UNSOLICITED,
             }) if owed.is_none() => {
                 if tried < DOAP_START_TRIES {
-                    self.refused_once = true;
                     log(
                         effects,
                         format!(
@@ -241,20 +233,13 @@ impl Session {
                     mode_on(tried.saturating_add(1), now, effects)
                 } else {
                     mode_off(effects);
-                    fallback = self.refused_once;
-                    let line = if fallback {
-                        "dictation: refused twice, this recording takes the uplink"
-                    } else {
-                        "dictation: last start refused"
-                    };
-                    log(effects, line);
+                    log(effects, "dictation: last start refused");
                     Phase::Spent
                 }
             }
             Some(Refused { .. }) if owed.is_some() => mode_off(effects),
             _ => Phase::Starting { since, tried, owed },
-        };
-        (phase, fallback)
+        }
     }
 
     fn note_event(&mut self, fact: Option<&DictationFact>, effects: &mut Vec<Effect>) {

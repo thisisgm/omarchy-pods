@@ -102,7 +102,7 @@ impl Uplink {
     /// From the answer to a START until both stopped markers have gone out.
     #[must_use]
     pub fn running(&self) -> bool {
-        self.shared.uplink(|uplink| uplink.run.is_some())
+        self.shared.uplink(|uplink| uplink.running())
     }
 
     /// The audio packets the pods made on their own clock since they were made, read by the host or still queued for it.
@@ -187,6 +187,10 @@ impl Machine {
             sent_packets: 0,
             largest_gap: Duration::ZERO,
         }
+    }
+
+    pub(crate) fn running(&self) -> bool {
+        self.run.is_some()
     }
 
     /// A frame the host sent on channel `line` at `now`; only a START and a STOP are the uplink's.

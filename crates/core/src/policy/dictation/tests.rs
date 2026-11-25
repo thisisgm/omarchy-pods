@@ -744,7 +744,7 @@ fn a_refusal_with_another_reason_is_logged() {
 }
 
 #[test]
-fn two_refusals_are_required_for_fallback() {
+fn a_refusal_on_the_last_try_falls_back() {
     use DictationRequest::{Mode, ModeOff, Start};
     use MicDictation::Starting;
 
@@ -782,7 +782,7 @@ fn two_refusals_are_required_for_fallback() {
             None,
             None,
             Some(ModeOff),
-            false,
+            true,
         ),
     ]);
 }

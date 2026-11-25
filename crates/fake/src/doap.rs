@@ -392,6 +392,18 @@ impl Machine {
         self.owed.retain(|(to, _)| *to != line);
     }
 
+    /// Sitting B D5-D: a START heard during the 0x58 uplink gets neither a reply nor audio.
+    pub(crate) fn ignore_start(&mut self, pdu: &[u8]) -> bool {
+        let start = self
+            .table
+            .handles()
+            .is_some_and(|handles| pdu == host::start(&handles));
+        if start {
+            self.starts = self.starts.saturating_add(1);
+        }
+        start
+    }
+
     /// The answers to one packet the host sent on attribute channel `line` at `now`.
     pub(crate) fn on_att(&mut self, line: usize, pdu: &[u8], now: Instant) -> Vec<Vec<u8>> {
         if pdu.first() == Some(&sample::ERROR_RESPONSE) {

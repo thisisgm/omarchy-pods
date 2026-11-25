@@ -232,6 +232,10 @@ A reply carries the request's `id` and `ok`.
   the service is armed and the counts show only Superwhisper recorders or no
   recorders. Otherwise it uses the uplink. Additional recorders share the chosen
   path until all leave.
+  If the uplink is running or lingering when a recording chooses DoAP, the
+  daemon sends 0x58 STOP. It waits for the stopped marker or the 1500 ms STOP
+  answer window and completes any owed playback restore before setting DoAP mode.
+  The daemon suppresses 0x58 START from that mode write through session teardown.
   The daemon requests a logind sleep delay lock when it sets DoAP mode.
   START follows the 150 ms mode settle once the lock attempt has resolved.
   A refusal, error or missing system bus counts as a resolved attempt.
@@ -239,15 +243,16 @@ A reply carries the request's `id` and `ok`.
   the daemon logs the timeout once for that request. A granted lock, even if
   it arrives late, stays open until the session ends, including retries.
   Sleep or the last recorder leaving before START cancels the start and clears
-  the mode. After one refusal from the pods, DoAP repeats the mode and START,
-  and after two it hands this recording to the uplink.
+  the mode. DoAP repeats the mode and START after a refusal with reason 6 or
+  an unanswered START. If its attempts are spent and the recorder is still
+  linked, the daemon clears the mode and uses the uplink for the rest of the span.
   When the last recorder leaves after START is confirmed, the daemon
   sends STOP immediately. If START has been sent and its answer is pending, the
   daemon waits for the answer before sending STOP, up to 500 ms from START.
   If that wait expires, it clears the mode. Once STOP is sent, the daemon
   clears the mode at the stream end or 500 ms after STOP, whichever comes
-  first. Source withdrawal, sleep and exit also stop DoAP. DoAP makes no call
-  to the audio sink.
+  first. Source withdrawal, sleep and exit also stop DoAP. The sink restore
+  belongs to 0x58 STOP.
   An uplink recording wants the uplink as `always` does, while a bud is worn.
   If DoAP is unarmed, a client with `session.fast-capture-start=true` also
   wants it before any recorder links. While DoAP is armed (`mic_dictation` reads
