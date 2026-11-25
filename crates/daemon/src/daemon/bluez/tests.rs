@@ -3,6 +3,7 @@
 use std::future::poll_fn;
 use std::ops::ControlFlow;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use pods_core::link::{Call, DeviceAction, Session};
@@ -11,12 +12,12 @@ use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, sleep, timeout};
 use zbus::export::futures_core::Stream;
-use zbus::{Connection, MessageStream};
+use zbus::{Connection, Message, MessageStream};
 
 use super::calls::{self, Calls};
 use super::monitor::Monitor;
 use super::objects::{Candidates, Change, Kind, Properties};
-use super::{DeviceEvent, ErrorLog, Input, Request, Watcher, wait_to_retry};
+use super::{DeviceEvent, ErrorLog, Input, Request, Watcher, failure, wait_to_retry};
 use crate::daemon::paused::{on_paused_clock, peers};
 
 /// Long enough for a call the watcher wrongly made to reach the peer.
@@ -35,6 +36,30 @@ const SWEEP_RETRY: Duration = Duration::from_millis(1000);
 const SWEEP_ASKED: Duration = Duration::from_millis(1000);
 
 const PODS: &str = "/org/bluez/hci0/dev_02_00_00_00_00_01";
+
+#[test]
+fn failure_logs_only_the_dbus_error_name() {
+    let description = "No such object /org/bluez/hci0/dev_00_11_22_33_44_55";
+    let expected = "org.freedesktop.DBus.Error.UnknownObject";
+    let request = Message::method_call("/", "Connect").build(&()).unwrap();
+    let reply = Message::error(&request.header(), "org.bluez.Error.Failed")
+        .build(&(description,))
+        .unwrap();
+    let method_error = zbus::Error::from(reply);
+    let unknown_object = zbus::fdo::Error::UnknownObject(description.to_owned());
+    let fdo_error = zbus::Error::from(unknown_object.clone());
+    let dbus_error = zbus::Error::DBus(Arc::new(unknown_object));
+
+    assert_eq!(failure(&method_error), "org.bluez.Error.Failed");
+    assert_eq!(failure(&fdo_error), expected);
+    assert_eq!(failure(&dbus_error), expected);
+}
+
+#[test]
+fn failure_omits_the_dbus_handshake_description() {
+    let error = zbus::Error::Handshake("Unexpected reply /org/bluez/hci0".to_owned());
+    assert_eq!(failure(&error), "D-Bus handshake failed");
+}
 
 /// What a watcher borrows across connections, kept by the test.
 #[derive(Default)]

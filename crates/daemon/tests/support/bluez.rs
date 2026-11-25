@@ -94,6 +94,7 @@ struct Objects {
     calls: Vec<(Instant, Call)>,
     hold: bool,
     fail: bool,
+    fail_paired_read: bool,
     /// When each `GetManagedObjects` call reached the fake, held ones included.
     sweeps: Vec<Instant>,
     barrier: Barrier,
@@ -407,6 +408,11 @@ impl Bluez {
         self.lock().fail = fail;
     }
 
+    /// Answers a Device1 Paired read with an UnknownObject reply carrying a fixture path.
+    pub(crate) fn fail_paired_read(&self) {
+        self.lock().fail_paired_read = true;
+    }
+
     /// When each sweep reached the fake, oldest first.
     pub(crate) fn sweeps(&self) -> Vec<Instant> {
         self.lock().sweeps.clone()
@@ -603,11 +609,18 @@ impl Objects {
                 None => Message::error(&header, UNKNOWN).build(&("No such object",)),
             },
             (Some(PROPERTIES), Some("Get"), Some(path)) => {
-                let property = call
-                    .body()
-                    .deserialize::<(String, String)>()
+                // Sample input: ("org.bluez.Device1", "Paired").
+                let body = call.body();
+                let requested = body.deserialize::<(&str, &str)>();
+                if self.fail_paired_read && requested == Ok((DEVICE_INTERFACE, "Paired")) {
+                    let reply = Message::error(&header, "org.freedesktop.DBus.Error.UnknownObject")
+                        .build(&("No such object /org/bluez/hci0/dev_00_11_22_33_44_55",))
+                        .unwrap();
+                    return Answer::Send(vec![reply]);
+                }
+                let property = requested
                     .ok()
-                    .and_then(|(_, name)| self.properties(path)?.remove(&name));
+                    .and_then(|(_, name)| self.properties(path)?.remove(name));
                 match property {
                     Some(value) => Message::method_return(&header).build(&value),
                     None => Message::error(&header, UNKNOWN).build(&("No such property",)),
