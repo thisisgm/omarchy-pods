@@ -119,6 +119,37 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_default_source_is_logged_and_keeps_the_connection() {
+        let (mut rig, device, audio) =
+            rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
+        let pipewire = start(&rig);
+        link(&rig, &device);
+        wait_node(&pipewire);
+        wait_for_read(&audio, 0, &Asked::SourceList);
+        audio.refuse_default_source();
+
+        let source = node_name();
+        let before = audio.requests().len();
+        audio.add_source(&source);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+        rig.wait_logged(
+            "mic: could not set default source: it refused SetDefaultSource with error 5",
+        );
+        let before = audio.requests().len();
+        audio.add_source(BUILT_IN);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+
+        assert_eq!(audio.writes(), [Asked::DefaultSource { name: source }]);
+        let dials = audio
+            .requests()
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Auth { .. }))
+            .count();
+        assert_eq!(dials, 1, "the refusal must not drop the connection");
+        rig.finish();
+    }
+
+    #[test]
     fn a_recorder_event_reads_only_the_recorders() {
         let (mut rig, device, audio) =
             rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
