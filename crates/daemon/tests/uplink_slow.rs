@@ -18,7 +18,7 @@ mod tests {
         UPLINK_LINGER_MS, unanswered_line,
     };
     use pods_fake::Profile;
-    use pods_samples::uplink::{START, STOP};
+    use pods_samples::uplink::START;
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
@@ -28,9 +28,10 @@ mod tests {
     use super::support::settings::set;
     use super::support::sleep::logged;
     use super::support::uplink::{
-        START_ANSWER, STOP_ANSWER, TRY_SPACING, all_tries, assert_hold, link, link_heard,
-        move_sink, read_up_to_now, rig_with, rig_with_audio, start_failures, starts, stops,
-        wait_mic, wait_restore, wait_starts, wait_stop,
+        START_ANSWER, STOP_ANSWER, Step, TRY_SPACING, all_tries, assert_after, assert_hold, link,
+        link_heard, move_sink, put_in, read_up_to_now, rig_with, rig_with_audio, set_off_unworn,
+        start_failures, starts, stops, take_out, the_stop_after, wait_mic, wait_restore,
+        wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, wait_within};
 
@@ -38,9 +39,6 @@ mod tests {
     const GRACE: Duration = Duration::from_millis(BUD_GRACE_MS);
     /// How long a shut gate is watched for a STOP that must not come.
     const STILL_SHUT: Duration = Duration::from_secs(10);
-
-    /// The instants before and after a step the daemon applies somewhere between them.
-    type Step = (Instant, Instant);
 
     /// The pods live with `always` on a confirmed model, their sink in `state`, then `auto`: nothing wants the uplink from the step returned.
     fn unwanted(state: SinkState) -> (Rig, Device, Rc<FakeAudio>, Step) {
@@ -79,33 +77,6 @@ mod tests {
         rig.holds_for(STILL_SHUT, "mic live", |status| status["mic"] == "live");
         read_up_to_now(rig, device);
         assert!(stops(device).is_empty(), "{:?}", device.pods.heard());
-    }
-
-    /// Both buds into the case, until the daemon shows them out.
-    fn take_out(rig: &Rig, device: &Device) -> Step {
-        let before = Instant::now();
-        device.pods.set_ear(Placed::InCase, Placed::InCase);
-        rig.wait_status("both buds out", |status| {
-            status["left"]["in_ear"] == false && status["right"]["in_ear"] == false
-        });
-        (before, Instant::now())
-    }
-
-    /// Fails unless `to` came `wanted` after `step`, wherever inside it the daemon applied it.
-    fn assert_after(what: &str, step: Step, to: Instant, wanted: Duration) {
-        assert_gap(what, step.0, to, &(wanted..));
-        assert_gap(
-            what,
-            step.1,
-            to,
-            &(..=wanted.saturating_add(REAL_TIME_SLACK)),
-        );
-    }
-
-    fn the_stop_after(device: &Device, wanted: Duration) -> Instant {
-        let within = wanted.saturating_add(HANG_LIMIT);
-        let heard = device.pods.wait_heard(&STOP, 1, within);
-        heard.unwrap_or_else(|deadline| panic!("a STOP: {deadline:?}"))[0].at
     }
 
     #[test]
@@ -285,6 +256,7 @@ mod tests {
         link_heard(&rig, &device);
         wait_mic(&rig, "live");
         device.pods.uplink().hold_stops(true);
+        take_out(&rig, &device);
         let asked = Instant::now();
         set(rig.session(), "microphone", "off");
         wait_stop(&device);
@@ -344,10 +316,11 @@ mod tests {
         link_heard(&rig, &device);
         wait_mic(&rig, "live");
         device.pods.uplink().hold_stops(true);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         wait_stop(&device);
         let (_, resumed) = wait_restore(&audio, &device);
         rig.wait_logged(STOP_UNCONFIRMED_LINE);
+        put_in(&rig, &device);
         let asked = Instant::now();
         set(rig.session(), "microphone", "always");
         let second = wait_starts(&device, 2)[1].at;

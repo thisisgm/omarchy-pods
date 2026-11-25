@@ -203,6 +203,12 @@ impl Policy {
         self.mic.recording()
     }
 
+    /// Whether a due STOP of the uplink still waits for a quiet sink or the last bud out.
+    #[must_use]
+    pub fn mic_stop_waits(&self) -> bool {
+        self.mic.stop_waits()
+    }
+
     /// What the `mic` status keys show, which the driver writes into the state before each publish.
     pub fn show_mic(&self, state: &mut State) {
         self.mic.show(state);

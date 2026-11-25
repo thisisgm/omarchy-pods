@@ -133,6 +133,8 @@ fn retried() -> (State, Mic) {
 fn off_while_a_stall_start_is_out_owes_the_stop_until_its_answer_window_ends() {
     for worn in [false, true] {
         let (_, mut mic) = retried();
+        // A quiet sink, so the gate is open and only the START unanswered holds the STOP.
+        mic.quiet = true;
         let mut off = linked(Column::Off);
         let owed = after(1).saturating_add(SOON);
         let effects = mic.step(&off, &Fact::Changed, owed);
@@ -152,13 +154,36 @@ fn off_while_a_stall_start_is_out_owes_the_stop_until_its_answer_window_ends() {
             [UplinkRequest::Stop],
             "{worn}"
         );
-        assert_eq!(kind(mic.phase), Kind::Stopping, "{worn}");
+        let stopping = if worn {
+            Kind::StoppingQuiet
+        } else {
+            Kind::Stopping
+        };
+        assert_eq!(kind(mic.phase), stopping, "{worn}");
     }
+}
+
+#[test]
+fn off_while_a_stall_start_is_out_over_a_playing_sink_waits_for_the_gate() {
+    let (_, mut mic) = retried();
+    let off = linked(Column::Off);
+    let effects = mic.step(&off, &Fact::Changed, after(1).saturating_add(SOON));
+    assert_eq!(requests(&effects), NOTHING);
+    assert_eq!(lines(&effects), [STOP_OWED_PLAYING_LINE]);
+    // The answer window ends with the gate still shut, so the STOP stays owed.
+    assert!(quiet(&mic.step(&off, &heard(COUNT), after(2))));
+    assert_eq!(kind(mic.phase), Kind::Waiting);
+    let suspended = sink_in(true, SinkState::Suspended);
+    let effects = mic.step(&off, &suspended, after(2).saturating_add(SOON));
+    assert_eq!(requests(&effects), [UplinkRequest::Stop]);
+    assert_eq!(kind(mic.phase), Kind::StoppingQuiet);
 }
 
 #[test]
 fn a_sleep_while_a_stall_start_is_out_sends_nothing() {
     let (state, mut mic) = retried();
+    // A quiet sink, so the gate is open and only the START unanswered holds the STOP.
+    mic.quiet = true;
     let sleeping = Fact::Sleep(SleepEdge::Sleeping);
     let effects = mic.step(&state, &sleeping, after(1).saturating_add(SOON));
     assert_eq!(requests(&effects), NOTHING);
@@ -173,11 +198,31 @@ fn a_sleep_while_a_stall_start_is_out_sends_nothing() {
 #[test]
 fn a_running_uplink_stops_at_the_sleep_edge_so_no_count_is_read_asleep() {
     let (state, mut mic) = counted();
+    // A quiet sink, so the gate lets the STOP of the sleep out.
+    mic.quiet = true;
     let sleeping = Fact::Sleep(SleepEdge::Sleeping);
     let effects = mic.step(&state, &sleeping, SENT.saturating_add(SOON));
     assert_eq!(requests(&effects), [UplinkRequest::Stop]);
     assert!(quiet(&mic.step(&state, &heard(COUNT), after(1))));
     assert_eq!(mic.start_failures, 0);
+}
+
+#[test]
+fn a_still_count_read_asleep_sends_no_start_and_spends_no_try() {
+    let (state, mut mic) = counted();
+    let sleeping = Fact::Sleep(SleepEdge::Sleeping);
+    assert!(quiet(&mic.step(
+        &state,
+        &sleeping,
+        SENT.saturating_add(SOON)
+    )));
+    assert_eq!(kind(mic.phase), Kind::Running);
+    // Over a playing sink the sleep keeps the uplink, and its stall check sends nothing until the wake.
+    assert!(quiet(&mic.step(&state, &heard(COUNT), after(1))));
+    assert_eq!(mic.start_failures, 0);
+    drop(mic.step(&state, &Fact::Sleep(SleepEdge::Woke), after(1)));
+    let effects = mic.step(&state, &heard(COUNT), after(2));
+    assert_eq!(requests(&effects), [UplinkRequest::Start]);
 }
 
 #[test]
@@ -201,6 +246,35 @@ fn a_still_count_while_the_uplink_is_not_wanted_sends_nothing_and_spends_no_try(
             [stalled.as_str(), sent.as_str()],
             "{from:?}"
         );
+    }
+}
+
+#[test]
+fn a_stall_during_exit_leaves_the_stop_owed_to_the_gate() {
+    for stall in [1, START_TRIES] {
+        let (state, mut mic) = counted();
+        for window in 1..stall {
+            assert_eq!(
+                requests(&mic.step(&state, &heard(COUNT), after(window))),
+                START
+            );
+        }
+        let before = after(stall.saturating_sub(1)).saturating_add(SOON);
+        let effects = mic.step(&state, &Fact::Exit, before);
+        assert_eq!(requests(&effects), NOTHING, "stall {stall}");
+        assert_eq!(lines(&effects), [STOP_OWED_PLAYING_LINE], "stall {stall}");
+
+        let effects = mic.step(&state, &heard(COUNT), after(stall));
+        assert_eq!(requests(&effects), NOTHING, "stall {stall}");
+        assert!(quiet(&effects), "stall {stall}: {effects:?}");
+        assert_eq!(kind(mic.phase), Kind::Waiting, "stall {stall}");
+        assert_eq!(mic.start_failures, stall - 1, "stall {stall}");
+
+        let suspended = sink_in(true, SinkState::Suspended);
+        let effects = mic.step(&state, &suspended, after(stall).saturating_add(SOON));
+        assert_eq!(requests(&effects), STOP, "stall {stall}");
+        assert_eq!(lines(&effects), [STOP_QUIET_LINE], "stall {stall}");
+        assert_eq!(kind(mic.phase), Kind::StoppingQuiet, "stall {stall}");
     }
 }
 

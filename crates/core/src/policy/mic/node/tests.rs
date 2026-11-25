@@ -10,9 +10,10 @@ use pods_samples::MODEL_NUMBER;
 use super::*;
 use crate::link::Signal;
 use crate::policy::UplinkRequest;
+use crate::policy::audio::SinkState;
 use crate::policy::mic::tests::{confirmed, hold, lines, requests};
-use crate::policy::mic::{Mic, UPLINK_LINGER_MS};
-use crate::policy::tests::device;
+use crate::policy::mic::{Mic, STOP_OWED_PLAYING_LINE, UPLINK_LINGER_MS};
+use crate::policy::tests::{device, sink_in};
 use crate::state::Microphone;
 
 /// When the last bud of a node in its grace left.
@@ -625,7 +626,7 @@ fn a_second_recorder_inside_the_linger_sends_nothing() {
 }
 
 #[test]
-fn off_while_recording_closes_the_node_and_stops_in_one_step() {
+fn off_while_recording_closes_the_node_and_owes_the_stop_in_one_step() {
     let mut state = linked();
     let mut mic = ready();
     drop(mic.step(&state, &Fact::Mic(MicFact::Recording(CURRENT, true)), SENT));
@@ -634,7 +635,16 @@ fn off_while_recording_closes_the_node_and_stops_in_one_step() {
     state.microphone.set_preference(MicPref::Off);
     let effects = mic.step(&state, &Fact::Changed, SENT);
     assert_eq!(sent(&effects), Sent::Close);
-    assert_eq!(requests(&effects), [UplinkRequest::Stop]);
+    assert_eq!(requests(&effects), []);
+    assert!(
+        lines(&effects).contains(&STOP_OWED_PLAYING_LINE),
+        "{effects:?}"
+    );
+    let quiet = sink_in(true, SinkState::Suspended);
+    assert_eq!(
+        requests(&mic.step(&state, &quiet, SENT)),
+        [UplinkRequest::Stop]
+    );
 }
 
 #[test]

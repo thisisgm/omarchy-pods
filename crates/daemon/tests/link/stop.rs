@@ -8,6 +8,7 @@ use rustix::io::Errno;
 
 use crate::support::bluez::{Call, DeviceMethod};
 use crate::support::rig::{Rig, assert_gap};
+use crate::support::uplink::keep_off;
 use crate::support::{HANG_LIMIT, wait_for};
 
 /// How soon the daemon exits after SIGTERM.
@@ -34,6 +35,8 @@ fn stop_within_a_second(rig: &mut Rig) {
 #[test]
 fn sigterm_closes_the_channel_and_leaves_the_device_connected() {
     let mut rig = Rig::new();
+    // An uplink over a sink not known quiet holds the exit for its own bound, which the uplink suites time.
+    keep_off(rig.session());
     let device = rig.add_pods(Profile::default());
     rig.start();
     rig.link_up(&device);

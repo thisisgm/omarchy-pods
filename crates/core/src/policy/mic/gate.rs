@@ -10,6 +10,7 @@ pub const UPLINK_LINGER_MS: u64 = 60_000;
 pub const BUD_GRACE_MS: u64 = 4000;
 
 pub const STOP_WAITS_LINE: &str = "mic: stop waits for playback";
+pub const STOP_OWED_PLAYING_LINE: &str = "mic: stop owed, the sink is playing";
 
 /// Why a running uplink is still running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,7 @@ impl Hold {
                 since,
                 unworn: left(worn, unworn, now),
             },
+            Self::Waiting { .. } if quiet => return Next::Stop(Word::Quiet),
             Self::Waiting { unworn } => Self::Waiting {
                 unworn: left(worn, unworn, now),
             },
@@ -59,6 +61,14 @@ impl Hold {
             Next::Hold(hold)
         } else {
             gate(worn, quiet)
+        }
+    }
+
+    /// A STOP owed with no linger, as `off` and the exit owe it; a waiting STOP's bud grace applies while the sink runs.
+    pub(super) fn owed(self, worn: bool, quiet: bool, now: Duration) -> Next {
+        match self {
+            Self::Waiting { .. } => self.follow(false, worn, quiet, now),
+            Self::Wanted | Self::Late | Self::Lingering { .. } => gate(worn, quiet),
         }
     }
 
@@ -77,16 +87,39 @@ impl Hold {
 
 /// A due STOP goes out with no bud worn or with the sink quiet, and waits otherwise.
 fn gate(worn: bool, quiet: bool) -> Next {
+    open(worn, quiet).map_or(Next::Hold(Hold::Waiting { unworn: None }), Next::Stop)
+}
+
+/// The word a due STOP goes out under; none while a worn bud's sink is not quiet.
+pub(super) fn open(worn: bool, quiet: bool) -> Option<Word> {
     if !worn {
-        Next::Stop(Word::NotWorn)
+        Some(Word::NotWorn)
     } else if quiet {
-        Next::Stop(Word::Quiet)
+        Some(Word::Quiet)
     } else {
-        Next::Hold(Hold::Waiting { unworn: None })
+        None
     }
 }
 
 /// When the last bud left, kept while none is worn.
 fn left(worn: bool, unworn: Option<Duration>, now: Duration) -> Option<Duration> {
     if worn { None } else { unworn.or(Some(now)) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quiet_sink_releases_a_waiting_stop_during_the_bud_grace() {
+        let left = Duration::from_secs(1);
+        let now = left.saturating_add(Duration::from_millis(BUD_GRACE_MS / 2));
+        let hold = Hold::Waiting { unworn: Some(left) };
+        assert_eq!(hold.owed(false, false, now), Next::Hold(hold));
+        assert_eq!(hold.owed(false, true, now), Next::Stop(Word::Quiet));
+        assert_eq!(
+            hold.follow(false, false, true, now),
+            Next::Stop(Word::Quiet)
+        );
+    }
 }

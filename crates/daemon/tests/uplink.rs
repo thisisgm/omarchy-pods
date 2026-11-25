@@ -26,8 +26,8 @@ mod tests {
         UNREADABLE, plant_settings, set, status, stop, unreadable_lines,
     };
     use super::support::uplink::{
-        START_ANSWER, STOP_ANSWER, all_tries, kept_models, link, lose, mic, read_up_to_now,
-        rig_with, starts, stops, wait_kept_models, wait_mic, wait_starts, wait_stop,
+        START_ANSWER, STOP_ANSWER, all_tries, kept_models, link, lose, mic, put_in, read_up_to_now,
+        rig_with, starts, stops, take_out, wait_kept_models, wait_mic, wait_starts, wait_stop,
     };
     use super::support::{Session, wait_for};
 
@@ -120,15 +120,16 @@ mod tests {
     }
 
     #[test]
-    fn setting_off_while_live_sends_stop_at_once() {
+    fn setting_off_with_no_bud_worn_sends_stop_at_once() {
         let (rig, device) = rig_with("always", &[], Profile::default());
         link(&rig, &device);
         wait_mic(&rig, "live");
+        take_out(&rig, &device);
         let written = Instant::now();
         set(rig.session(), "microphone", "off");
         assert_eq!(mic(&rig), "off");
         let stop = wait_stop(&device);
-        // The core table's `Running Changed Off` cell owns "at once": the STOP leaves in the write's own step.
+        // Core's `off_and_the_exit_owe_the_stop_with_no_linger_and_only_through_the_gate` owns "at once": the STOP leaves in the write's own step.
         assert_gap(
             "the STOP after the write",
             written,
@@ -154,10 +155,12 @@ mod tests {
         read_up_to_now(&rig, &device);
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
         assert_eq!(starts(&device).len(), 1, "{:?}", device.pods.heard());
+        // No bud worn, so the gate holds the owed STOP no longer than the START does.
+        take_out(&rig, &device);
         let released = Instant::now();
         device.pods.uplink().release_start();
         let stop = wait_stop(&device);
-        // The core table's `Owed RunningMarker Off` cell owns "at once": the STOP leaves in the answer's own step.
+        // Core's `off_and_the_exit_owe_the_stop_with_no_linger_and_only_through_the_gate` owns "at once": the STOP leaves in the answer's own step.
         assert_gap(
             "the STOP after the answer",
             released,
@@ -205,10 +208,12 @@ mod tests {
             &(START_ANSWER..),
         );
         assert!(stops(&device).is_empty(), "{:?}", device.pods.heard());
+        // No bud worn, so the gate lets the late answer's STOP out.
+        take_out(&rig, &device);
         let released = Instant::now();
         device.pods.uplink().release_start();
         let stop = wait_stop(&device);
-        // The core table's `Stopped RunningMarker Off` cell owns "at once": the STOP leaves in the answer's own step.
+        // Core's `off_and_the_exit_owe_the_stop_with_no_linger_and_only_through_the_gate` owns "at once": the STOP leaves in the answer's own step.
         assert_gap(
             "the STOP after the late answer",
             released,
@@ -225,6 +230,7 @@ mod tests {
         device.pods.uplink().hold_stops(true);
         link(&rig, &device);
         wait_mic(&rig, "live");
+        take_out(&rig, &device);
         let written = Instant::now();
         set(rig.session(), "microphone", "off");
         wait_stop(&device);
@@ -238,6 +244,7 @@ mod tests {
         );
         assert_eq!(mic(&rig), "off");
         set(rig.session(), "microphone", "always");
+        put_in(&rig, &device);
         wait_starts(&device, 2);
         device.pods.uplink().release_stop();
         read_up_to_now(&rig, &device);

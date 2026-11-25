@@ -15,7 +15,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::audio::RESTORE_HOLD_MS;
-    use pods_core::policy::mic::{STOP_OWED_LINE, STOP_UNCONFIRMED_LINE};
+    use pods_core::policy::mic::{
+        BUD_GRACE_MS, STOP_NOT_WORN_LINE, STOP_OWED_LINE, STOP_QUIET_LINE, STOP_UNCONFIRMED_LINE,
+    };
     use pods_fake::Profile;
     use pods_samples::MODEL_NUMBER;
     use pulseaudio::protocol::SinkState;
@@ -26,19 +28,19 @@ mod tests {
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, not_before};
     use super::support::settings::set;
     use super::support::uplink::{
-        START_ANSWER, assert_hold, link, link_heard, mic, move_sink, read_up_to_now, rig_with,
-        rig_with_audio, starts, stops, wait_mic, wait_restore, wait_starts, wait_stop,
+        EXIT_BEFORE_RESTORE_LINE, MIC_EXIT, START_ANSWER, assert_hold, assert_no_sink_call, link,
+        link_heard, mic, move_sink, put_in, read_up_to_now, rig_with, rig_with_audio,
+        set_off_unworn, starts, stops, take_out, wait_mic, wait_restore, wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
 
-    /// The daemon's bound on an exit while the uplink is up; the daemon is a binary, so its constant cannot be imported.
-    const MIC_EXIT: Duration = Duration::from_millis(2000);
     /// From the write of `off` to the sink resumed, with the fake answering at once.
     const RESTORED_WITHIN: Duration = Duration::from_millis(2000);
     /// Into the exit when a held START is answered.
     const ANSWERED_INTO_THE_EXIT: Duration = Duration::from_millis(300);
     const HOLD: Duration = Duration::from_millis(RESTORE_HOLD_MS);
     const RESTORE_SKIPPED_LINE: &str = "mic: restore skipped, sink suspended";
+    const GRACE: Duration = Duration::from_millis(BUD_GRACE_MS);
 
     fn at_once() -> RangeInclusive<Duration> {
         Duration::ZERO..=REAL_TIME_SLACK
@@ -68,8 +70,9 @@ mod tests {
     }
 
     #[test]
-    fn setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound() {
+    fn setting_off_with_no_bud_worn_sends_stop_and_one_restore_inside_the_bound() {
         let (rig, device, audio) = live(SinkState::Running);
+        take_out(&rig, &device);
         let written = Instant::now();
         set(rig.session(), "microphone", "off");
         assert_eq!(mic(&rig), "off");
@@ -99,8 +102,17 @@ mod tests {
             wait_stop(&device).at,
             &at_once(),
         );
-        rig.wait_logged(RESTORE_SKIPPED_LINE);
-        audio.assert_only_reads();
+        rig.wait_logged(STOP_QUIET_LINE);
+        wait_for("the uplink to stop", || {
+            (!device.pods.uplink().running()).then_some(())
+        });
+        read_up_to_now(&rig, &device);
+        assert_no_sink_call(&rig, &audio);
+        let log = rig.daemon().log();
+        assert!(
+            !log.lines().any(|line| line.starts_with("mic: restore")),
+            "{log}"
+        );
         rig.finish();
     }
 
@@ -110,7 +122,7 @@ mod tests {
         device.pods.uplink().hold_starts(true);
         link_heard(&rig, &device);
         wait_starts(&device, 1);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         device.pods.uplink().release_start();
         let stop = wait_stop(&device);
         let (suspended, _) = wait_restore(&audio, &device);
@@ -122,7 +134,7 @@ mod tests {
     fn the_restore_waits_for_the_stopped_marker() {
         let (rig, device, audio) = live(SinkState::Running);
         device.pods.uplink().hold_stops(true);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         wait_stop(&device);
         read_up_to_now(&rig, &device);
         assert_eq!(mic(&rig), "off");
@@ -143,7 +155,7 @@ mod tests {
     fn a_suspended_sink_is_left_alone_by_the_restore() {
         let (mut rig, device, audio) = live(SinkState::Running);
         device.pods.uplink().hold_stops(true);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         wait_stop(&device);
         move_sink(&rig, &audio, &device, SinkState::Suspended);
         device.pods.uplink().release_stop();
@@ -155,7 +167,7 @@ mod tests {
     #[test]
     fn an_idle_sink_is_suspended_and_resumed_with_no_hold() {
         let (rig, device, audio) = live(SinkState::Idle);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         let (suspended, resumed) = wait_restore(&audio, &device);
         let under_the_hold = Duration::ZERO..=HOLD.saturating_sub(Duration::from_millis(1));
         assert_gap("suspend to resume", suspended, resumed, &under_the_hold);
@@ -167,7 +179,7 @@ mod tests {
         let (mut rig, device, audio) = live(SinkState::Running);
         audio.stop();
         rig.wait_audio_server("down");
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         wait_stop(&device);
         rig.wait_logged("mic: restore owed, no audio server");
         wait_mic(&rig, "off");
@@ -182,7 +194,7 @@ mod tests {
         let (mut rig, device, audio) = live(SinkState::Running);
         audio.stop();
         rig.wait_audio_server("down");
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         wait_stop(&device);
         rig.wait_logged("mic: restore owed, no audio server");
         wait_mic(&rig, "off");
@@ -199,10 +211,11 @@ mod tests {
         let (mut rig, device, audio) = live(SinkState::Running);
         audio.stop();
         rig.wait_audio_server("down");
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         wait_stop(&device);
         rig.wait_logged("mic: restore owed, no audio server");
         set(rig.session(), "microphone", "always");
+        put_in(&rig, &device);
         wait_starts(&device, 2);
         wait_mic(&rig, "live");
         audio.restart(Volumes::Kept);
@@ -212,26 +225,22 @@ mod tests {
     }
 
     #[test]
-    fn exit_while_running_stops_and_restores_inside_the_bound() {
+    fn exit_with_no_bud_worn_stops_and_restores_inside_the_bound() {
         let (mut rig, device, audio) = live(SinkState::Running);
+        let left = take_out(&rig, &device);
         let termed = Instant::now();
         rig.term();
         let status = rig.exited(MIC_EXIT.saturating_add(REAL_TIME_SLACK));
         assert!(status.success(), "{status}");
-        assert_gap(
-            "the STOP after the signal",
-            termed,
-            stops(&device)[0].at,
-            &at_once(),
-        );
+        let stop = stops(&device)[0].at;
+        assert_gap("the STOP after the signal", termed, stop, &at_once());
+        // The linger of a want gone with the last bud sends its STOP only at the grace's end: this one is the exit's.
+        assert_gap("the STOP inside the grace", left.0, stop, &(..GRACE));
         wait_restore(&audio, &device);
         let log = rig.daemon().log();
+        assert!(log.lines().any(|line| line == STOP_NOT_WORN_LINE), "{log}");
         assert!(
-            log.lines().any(|line| line == "mic: stop sent (exit)"),
-            "{log}"
-        );
-        assert!(
-            !log.lines().any(|line| line == "mic: exit before restore"),
+            !log.lines().any(|line| line == EXIT_BEFORE_RESTORE_LINE),
             "{log}"
         );
         rig.finish();
@@ -244,6 +253,8 @@ mod tests {
         device.pods.uplink().hold_starts(true);
         link_heard(&rig, &device);
         wait_starts(&device, 1);
+        // No bud worn, so the gate holds the owed STOP no longer than the START does.
+        take_out(&rig, &device);
         rig.term();
         rig.wait_logged(STOP_OWED_LINE);
         pause(ANSWERED_INTO_THE_EXIT);
@@ -289,6 +300,7 @@ mod tests {
     #[test]
     fn exit_with_the_stop_and_the_restore_stalled_ends_at_the_bound() {
         let (mut rig, device, audio) = live(SinkState::Running);
+        take_out(&rig, &device);
         device.pods.uplink().hold_stops(true);
         audio.hold_replies(true);
         let asked = audio.requests().len();
@@ -324,7 +336,7 @@ mod tests {
         let unconfirmed = log.lines().position(|line| line == STOP_UNCONFIRMED_LINE);
         let cut = log
             .lines()
-            .position(|line| line == "mic: exit before restore");
+            .position(|line| line == EXIT_BEFORE_RESTORE_LINE);
         assert!(
             unconfirmed.is_some_and(|at| cut.is_some_and(|cut| at < cut)),
             "{log}"
@@ -336,6 +348,7 @@ mod tests {
     #[test]
     fn exit_with_the_server_lost_inside_the_restore_resumes_the_sink_before_it_ends() {
         let (mut rig, device, audio) = live(SinkState::Running);
+        take_out(&rig, &device);
         rig.term();
         audio.wait_writes(1, HANG_LIMIT);
         audio.restart(Volumes::Kept);
@@ -353,7 +366,7 @@ mod tests {
         assert_eq!(reconnected, 2, "{requests:?}");
         let log = rig.daemon().log();
         assert!(
-            !log.lines().any(|line| line == "mic: exit before restore"),
+            !log.lines().any(|line| line == EXIT_BEFORE_RESTORE_LINE),
             "{log}"
         );
         rig.finish();
@@ -380,7 +393,7 @@ mod tests {
     #[test]
     fn a_resume_the_server_never_took_is_sent_when_it_returns() {
         let (rig, device, audio) = live(SinkState::Running);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         audio.wait_writes(1, HANG_LIMIT);
         audio.stop();
         rig.wait_audio_server("down");
@@ -393,12 +406,13 @@ mod tests {
     #[test]
     fn a_suspend_left_by_a_lost_resume_is_undone_after_a_newer_start() {
         let (rig, device, audio) = live(SinkState::Running);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         audio.wait_writes(1, HANG_LIMIT);
         audio.stop();
         rig.wait_audio_server("down");
         assert_eq!(audio.writes().len(), 1, "{:?}", audio.writes());
         set(rig.session(), "microphone", "always");
+        put_in(&rig, &device);
         wait_starts(&device, 2);
         wait_mic(&rig, "live");
         audio.restart(Volumes::Kept);
@@ -409,6 +423,7 @@ mod tests {
     #[test]
     fn an_event_cut_by_the_restore_is_still_read_whole() {
         let (rig, device, audio) = live(SinkState::Running);
+        take_out(&rig, &device);
         audio.send_split_event();
         pause(REAL_TIME_SLACK);
         let asked = audio.requests().len();

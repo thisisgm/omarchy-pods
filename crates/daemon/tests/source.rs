@@ -12,7 +12,9 @@ mod support;
 mod tests {
     use std::time::Duration;
 
-    use pods_core::policy::mic::{SOURCE_UP_LINE, STOPPED_BY_THE_PODS_LINE, withdrawn_line};
+    use pods_core::policy::mic::{
+        SOURCE_UP_LINE, STOP_QUIET_LINE, STOPPED_BY_THE_PODS_LINE, withdrawn_line,
+    };
     use pods_fake::Profile;
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ};
     use pods_samples::{MODEL_NUMBER, NAME, Placed};
@@ -25,8 +27,8 @@ mod tests {
     use super::support::rig::REAL_TIME_SLACK;
     use super::support::settings::set;
     use super::support::uplink::{
-        link, link_heard, lose, mic, read_up_to_now, rig_with, rig_with_audio, starts, stops,
-        wait_mic, wait_restore, wait_starts, wait_stop,
+        assert_no_sink_call, link, link_heard, lose, mic, move_sink, read_up_to_now, rig_with,
+        rig_with_audio, starts, stops, wait_mic, wait_restore, wait_starts, wait_stop,
     };
     use super::support::{HANG_LIMIT, pause, wait_for};
 
@@ -163,36 +165,31 @@ mod tests {
         set(rig.session(), "microphone", "off");
         assert_eq!(mic(&rig), "off");
         wait_no_node(&pipewire);
+        // The node is gone at the write; the STOP waits for the playing sink of a worn bud.
+        move_sink(&rig, &audio, &device, SinkState::Suspended);
         wait_stop(&device);
-        wait_restore(&audio, &device);
         wait_for("the uplink to stop", || {
             (!device.pods.uplink().running()).then_some(())
         });
         drop(recorder.finish());
         let daemon = rig.daemon();
-        // The restore's line is the last of the four, so the log holds them all once it shows.
-        wait_for("the restore's line", || {
+        // The stopped marker's line is the last of the three, so the log holds them all once it shows.
+        let log = wait_for("the stopped marker's line", || {
             let log = daemon.log();
             log.lines()
-                .any(|line| line.starts_with("mic: restore done in "))
-                .then_some(())
+                .any(|line| line.starts_with("mic: uplink stopped after "))
+                .then_some(log)
         });
-        let log = daemon.log();
         let withdrawn = position(&log, "of the withdrawal", |line| {
             line == withdrawn_line("off")
         });
-        let stop = position(&log, "of the STOP", |line| line == "mic: stop sent (off)");
+        let stop = position(&log, "of the STOP", |line| line == STOP_QUIET_LINE);
         let stopped = position(&log, "of the stopped marker", |line| {
             line.starts_with("mic: uplink stopped after ")
         });
-        let restored = position(&log, "of the restore", |line| {
-            line.starts_with("mic: restore done in ")
-        });
-        assert!(
-            withdrawn < stop && stop < stopped && stopped < restored,
-            "{log}"
-        );
+        assert!(withdrawn < stop && stop < stopped, "{log}");
         assert_eq!(stops(&device).len(), 1, "{:?}", device.pods.heard());
+        assert_no_sink_call(&rig, &audio);
         rig.finish();
     }
 

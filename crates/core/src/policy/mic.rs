@@ -16,7 +16,7 @@ use super::{Effect, Fact, SleepEdge};
 use crate::link::Signal;
 use crate::prefs::MicPref;
 use crate::state::{MicCode, State};
-pub use gate::{BUD_GRACE_MS, STOP_WAITS_LINE, UPLINK_LINGER_MS};
+pub use gate::{BUD_GRACE_MS, STOP_OWED_PLAYING_LINE, STOP_WAITS_LINE, UPLINK_LINGER_MS};
 use gate::{Hold, Next};
 use node::Node;
 pub use node::{MicFact, MicRequest, OpenId, SOURCE_BROKEN_LINE, SOURCE_UP_LINE, withdrawn_line};
@@ -37,6 +37,9 @@ pub const NO_UPLINK_LINE: &str = "mic: this model has no uplink";
 pub const STOP_OWED_LINE: &str = "mic: stop owed, the start is unanswered";
 pub const STOP_UNCONFIRMED_LINE: &str = "mic: stop not confirmed";
 pub const STOPPED_BY_THE_PODS_LINE: &str = "mic: stopped by the pods";
+pub const STOP_QUIET_LINE: &str = "mic: stop sent (quiet)";
+pub const STOP_NOT_WORN_LINE: &str = "mic: stop sent (not_worn)";
+pub const STOP_SLEEP_LINE: &str = "mic: stop sent (sleep)";
 /// The start of the line dating the running marker after a START, which ends `<ms> ms`.
 pub const RUNNING_AFTER_PREFIX: &str = "mic: uplink running after ";
 /// The start of the line dating the first audio after a START, which ends `<ms> ms`.
@@ -71,7 +74,7 @@ enum Phase {
         owed: bool,
     },
     Running(Hold, Watch),
-    /// A STOP went out at `since` and the pods have not said they stopped; `restore` unless the gate let it out with a bud worn, and `spent` what the stop ends in.
+    /// A STOP went out at `since` and the pods have not said they stopped; `restore` says whether to restore the sink, and `spent` what the stop ends in.
     Stopping {
         since: Duration,
         restore: bool,
@@ -85,24 +88,20 @@ enum Phase {
     },
 }
 
-/// Why a STOP went out; only `Quiet` needs no restore, as the sink of a worn bud was already suspended.
+/// Why a STOP went out; `Quiet` needs no restore because the sink was already suspended or absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Word {
     Quiet,
     NotWorn,
-    Off,
     Sleep,
-    Exit,
 }
 
 impl Word {
     const fn line(self) -> &'static str {
         match self {
-            Self::Quiet => "mic: stop sent (quiet)",
-            Self::NotWorn => "mic: stop sent (not_worn)",
-            Self::Off => "mic: stop sent (off)",
-            Self::Sleep => "mic: stop sent (sleep)",
-            Self::Exit => "mic: stop sent (exit)",
+            Self::Quiet => STOP_QUIET_LINE,
+            Self::NotWorn => STOP_NOT_WORN_LINE,
+            Self::Sleep => STOP_SLEEP_LINE,
         }
     }
 }
@@ -306,7 +305,7 @@ impl Mic {
         }
     }
 
-    /// `off`, the exit and a sleep stop at once; any other end of the want goes through the linger and the gate.
+    /// `off` and the exit owe the STOP to the gate with no linger, a sleep sends one at once through an open gate, and any other end of the want lingers first.
     fn running(
         &mut self,
         hold: Hold,
@@ -316,14 +315,13 @@ impl Mic {
         now: Duration,
         effects: &mut Vec<Effect>,
     ) {
-        let next = if off {
-            Next::Stop(Word::Off)
-        } else if self.exiting {
-            Next::Stop(Word::Exit)
-        } else if self.asleep {
+        let in_ear = state.ear.any_in_ear();
+        let next = if off || self.exiting {
+            hold.owed(in_ear, self.quiet, now)
+        } else if self.asleep && gate::open(in_ear, self.quiet).is_some() {
             Next::Stop(Word::Sleep)
         } else {
-            hold.follow(self.wants(state), state.ear.any_in_ear(), self.quiet, now)
+            hold.follow(self.wants(state), in_ear, self.quiet, now)
         };
         self.phase = match next {
             // A stall's START unanswered is a START unanswered: no STOP overtakes it, and a suspend sends nothing.
@@ -335,7 +333,12 @@ impl Mic {
                 Phase::Running(hold, watch.owe())
             }
             Next::Hold(Hold::Waiting { unworn: None }) if !matches!(hold, Hold::Waiting { .. }) => {
-                effects.push(log(STOP_WAITS_LINE));
+                let owed = off || self.exiting;
+                effects.push(log(if owed {
+                    STOP_OWED_PLAYING_LINE
+                } else {
+                    STOP_WAITS_LINE
+                }));
                 Phase::Running(Hold::Waiting { unworn: None }, watch)
             }
             Next::Hold(hold) => Phase::Running(hold, watch),
@@ -438,7 +441,7 @@ impl Mic {
                 watch,
                 for_ms,
                 next,
-            } if self.wants(state) => {
+            } if self.wants(state) && !self.asleep && !self.exiting => {
                 effects.push(Effect::Log(stalled_line(for_ms)));
                 self.start_failures = self.start_failures.saturating_add(1);
                 if let Some(next) = next {
@@ -455,7 +458,7 @@ impl Mic {
                     }
                 }
             }
-            // A stall while the uplink is not wanted sends no START, so it spends no try.
+            // Only a wanted uplink on an awake, running daemon can spend a try on a stall.
             Read::Moved(watch) | Read::Stalled { watch, .. } => Phase::Running(hold, watch),
         };
     }
@@ -512,6 +515,11 @@ impl Mic {
 
     pub(super) fn recording(&self) -> bool {
         self.node.recording()
+    }
+
+    /// Whether a due STOP still waits for the gate, which an exit out of its bound says in its line.
+    pub(super) fn stop_waits(&self) -> bool {
+        matches!(self.phase, Phase::Running(Hold::Waiting { .. }, _))
     }
 
     pub(super) fn show(&self, state: &mut State) {

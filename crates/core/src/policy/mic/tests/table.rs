@@ -19,22 +19,29 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (NOTHING, Running),
         (NOTHING, Running),
         (NOTHING, Lingering),
-        (STOP, Stopping),
-        (STOP, Stopping),
+        (NOTHING, Waiting),
+        (NOTHING, Waiting),
+    ];
+    const QUIET_RUN: [Outcome; 5] = [
+        (NOTHING, Running),
+        (NOTHING, Running),
+        (NOTHING, Lingering),
+        (STOP, StoppingQuiet),
+        (STOP, StoppingQuiet),
     ];
     const WAIT: [Outcome; 5] = [
         (NOTHING, Running),
         (NOTHING, Running),
         (NOTHING, Waiting),
-        (STOP, Stopping),
-        (STOP, Stopping),
+        (NOTHING, Waiting),
+        (NOTHING, Waiting),
     ];
     const QUIET_WAIT: [Outcome; 5] = [
         (NOTHING, Running),
         (NOTHING, Running),
         (STOP, StoppingQuiet),
-        (STOP, Stopping),
-        (STOP, Stopping),
+        (STOP, StoppingQuiet),
+        (STOP, StoppingQuiet),
     ];
     const RESTART: [Outcome; 5] = [
         (START, Starting),
@@ -44,14 +51,6 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (NOTHING, Stopped),
     ];
     const RESET: [Outcome; 5] = same(Stopped);
-    const STOPS: [Outcome; 5] = [(STOP, Stopping); 5];
-    const SLEEP_STOPS: [Outcome; 5] = [
-        (STOP, Asleep),
-        (STOP, Asleep),
-        (STOP, Asleep),
-        (STOP, Stopping),
-        (STOP, Stopping),
-    ];
     const RETRY: [Outcome; 5] = [
         (START, Starting),
         (START, Starting),
@@ -189,9 +188,9 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Running, Lost, RESET),
         (Running, Changed, RUN),
         (Running, Restored, RUN),
-        (Running, Quiet, RUN),
-        (Running, Exit, STOPS),
-        (Running, Sleep, SLEEP_STOPS),
+        (Running, Quiet, QUIET_RUN),
+        (Running, Exit, same(Waiting)),
+        (Running, Sleep, RUN),
         (Running, Wake, RUN),
         (Lingering, RunningMarker, RUN),
         (Lingering, StoppedMarker, RESTORING_UNASKED),
@@ -200,9 +199,9 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Lingering, Lost, RESET),
         (Lingering, Changed, RUN),
         (Lingering, Restored, RUN),
-        (Lingering, Quiet, RUN),
-        (Lingering, Exit, STOPS),
-        (Lingering, Sleep, SLEEP_STOPS),
+        (Lingering, Quiet, QUIET_RUN),
+        (Lingering, Exit, same(Waiting)),
+        (Lingering, Sleep, RUN),
         (Lingering, Wake, RUN),
         (Waiting, RunningMarker, WAIT),
         (Waiting, StoppedMarker, RESTORING_UNASKED),
@@ -212,8 +211,8 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (Waiting, Changed, WAIT),
         (Waiting, Restored, WAIT),
         (Waiting, Quiet, QUIET_WAIT),
-        (Waiting, Exit, STOPS),
-        (Waiting, Sleep, SLEEP_STOPS),
+        (Waiting, Exit, same(Waiting)),
+        (Waiting, Sleep, WAIT),
         (Waiting, Wake, WAIT),
         (Stopping, RunningMarker, same(Stopping)),
         (Stopping, StoppedMarker, same(Restoring)),
@@ -259,7 +258,7 @@ static CELLS: [(Kind, Event, [Outcome; 5]); 165] = {
         (RestoringUnasked, Exit, RESTORING_UNASKED),
         (RestoringUnasked, Sleep, RESTORING_UNASKED),
         (RestoringUnasked, Wake, RESTORING_UNASKED),
-        (Asleep, RunningMarker, SLEEP_STOPS),
+        (Asleep, RunningMarker, WAIT),
         (Asleep, StoppedMarker, same(Asleep)),
         (Asleep, Deadline, same(Asleep)),
         (Asleep, Down, same(Asleep)),
@@ -280,8 +279,7 @@ the_preference_off_sends_no_start_and_reads_off Stopped Changed Off
 auto_with_a_confirmed_model_sends_nothing Stopped Changed Auto
 an_unconfirmed_model_is_started_once_and_stored Starting RunningMarker AlwaysNew
 the_running_marker_not_the_start_moves_the_state Starting RunningMarker AlwaysNew
-setting_off_while_live_sends_stop_at_once Running Changed Off
-setting_off_while_live_sends_stop_at_once Stopping StoppedMarker Off
+setting_off_with_no_bud_worn_sends_stop_at_once Stopping StoppedMarker Off
 setting_off_while_starting_sends_no_stop_until_the_start_is_answered Starting Changed Off
 setting_off_while_starting_sends_no_stop_until_the_start_is_answered Owed RunningMarker Off
 setting_off_while_starting_and_never_answered_sends_nothing Owed Deadline Off
@@ -298,10 +296,9 @@ a_stop_never_answered_is_logged_and_ends_stopping Stopped Changed AlwaysKnown
 a_stop_never_answered_is_logged_and_ends_stopping Starting StoppedMarker AlwaysKnown
 two_dictations_inside_the_linger_send_one_start_and_no_stop Running Changed Auto
 two_dictations_inside_the_linger_send_one_start_and_no_stop Lingering Changed AlwaysKnown
-setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Running Changed Off
-setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Stopping StoppedMarker Off
-setting_off_while_music_plays_sends_stop_and_one_restore_inside_the_bound Restoring Restored Off
-setting_off_with_a_suspended_sink_stops_at_once_and_touches_no_sink Restoring Restored Off
+setting_off_with_no_bud_worn_sends_stop_and_one_restore_inside_the_bound Stopping StoppedMarker Off
+setting_off_with_no_bud_worn_sends_stop_and_one_restore_inside_the_bound Restoring Restored Off
+setting_off_with_a_suspended_sink_stops_at_once_and_touches_no_sink StoppingQuiet StoppedMarker Off
 setting_off_while_starting_restores_after_the_owed_stop Owed RunningMarker Off
 setting_off_while_starting_restores_after_the_owed_stop Stopping StoppedMarker Off
 the_restore_waits_for_the_stopped_marker Stopping Changed Off
@@ -313,13 +310,11 @@ a_restore_owed_when_the_channel_closes_is_done_after_it_reopens Stopped Down Off
 a_resume_the_server_never_took_is_sent_when_it_returns Restoring Down Off
 a_suspend_left_by_a_lost_resume_is_undone_after_a_newer_start Stopped Changed AlwaysKnown
 an_event_cut_by_the_restore_is_still_read_whole Restoring Restored Off
-exit_while_running_stops_and_restores_inside_the_bound Running Exit AlwaysKnown
-exit_while_running_stops_and_restores_inside_the_bound Stopping StoppedMarker Exit
-exit_while_running_stops_and_restores_inside_the_bound Restoring Restored Exit
+exit_with_no_bud_worn_stops_and_restores_inside_the_bound Stopping StoppedMarker Exit
+exit_with_no_bud_worn_stops_and_restores_inside_the_bound Restoring Restored Exit
 exit_while_starting_waits_for_the_marker_then_stops_and_restores Starting Exit AlwaysNew
 exit_while_starting_waits_for_the_marker_then_stops_and_restores Owed RunningMarker Exit
 exit_while_starting_and_never_answered_sends_nothing_and_ends_at_the_start_deadline Owed Deadline Exit
-exit_with_the_stop_and_the_restore_stalled_ends_at_the_bound Running Exit AlwaysKnown
 exit_with_the_stop_and_the_restore_stalled_ends_at_the_bound Stopping Deadline Exit
 exit_with_the_server_lost_inside_the_restore_resumes_the_sink_before_it_ends Restoring Restored Exit
 a_restore_owed_while_the_server_was_down_is_dropped_by_a_newer_start Stopped Changed AlwaysKnown
@@ -357,7 +352,7 @@ both_buds_out_and_back_during_the_unasked_restore_start_after_it Running Stopped
 both_buds_out_and_back_during_the_unasked_restore_start_after_it RestoringUnasked Changed Auto
 both_buds_out_and_back_during_the_unasked_restore_start_after_it Restoring Changed AlwaysKnown
 both_buds_out_and_back_during_the_unasked_restore_start_after_it Restoring Restored AlwaysKnown
-sleep_while_running_sends_stop_before_the_suspend_and_no_restore Running Sleep AlwaysKnown
+sleep_over_a_suspended_sink_sends_stop_before_the_suspend_and_no_restore Running Sleep AlwaysKnown
 sleep_while_starting_sends_nothing Starting Sleep AlwaysKnown
 resume_starts_again_when_the_want_still_holds Asleep Wake AlwaysKnown
 the_link_dropping_in_starting_sends_nothing_more Starting Lost AlwaysKnown
@@ -368,12 +363,27 @@ a_stop_never_confirmed_through_the_gate_restores_nothing StoppingQuiet Deadline 
 a_start_is_still_sent_after_a_stop_never_confirmed Stopped Changed AlwaysKnown
 a_start_is_still_sent_after_a_stop_never_confirmed Starting StoppedMarker AlwaysKnown
 a_start_is_still_sent_after_a_stop_never_confirmed Starting Deadline AlwaysKnown
+off_during_a_call_with_music_withdraws_the_node_and_owes_the_stop Running Changed Off
+the_owed_stop_goes_out_when_the_sink_suspends Waiting Quiet Off
+the_owed_stop_goes_out_when_the_sink_suspends StoppingQuiet StoppedMarker Off
+exit_during_a_call_with_music_sends_no_stop_and_no_sink_call Running Exit AlwaysKnown
+exit_during_a_call_with_music_sends_no_stop_and_no_sink_call Waiting Deadline Exit
+exit_with_a_stalled_uplink_waits_for_the_quiet_sink Running Exit AlwaysKnown
+exit_with_a_stalled_uplink_waits_for_the_quiet_sink Waiting Deadline Exit
+exit_with_a_stalled_uplink_waits_for_the_quiet_sink Waiting Quiet Exit
+exit_when_the_sink_goes_quiet_inside_the_bound_sends_the_stop Waiting Quiet Exit
+exit_when_the_sink_goes_quiet_inside_the_bound_sends_the_stop StoppingQuiet StoppedMarker Exit
+exit_with_the_sink_suspended_sends_stop_and_no_sink_call StoppingQuiet StoppedMarker Exit
+sleep_during_a_call_with_music_sends_nothing Running Sleep AlwaysKnown
 ";
 
-/// The tests of the uplink suites whose case no column holds: no bud worn, no model number, the settings file.
-const OUTSIDE_THE_TABLE: [&str; 5] = [
+/// The tests of the uplink suites whose case no column holds: no bud worn, no model number, the settings file, a check across a whole suite.
+const OUTSIDE_THE_TABLE: [&str; 8] = [
     "no_bud_worn_sends_no_start",
     "a_bud_taken_out_while_the_stop_waits_gets_the_grace",
+    "the_owed_stop_goes_out_when_the_last_bud_leaves",
+    "the_owed_stop_goes_out_when_the_sink_suspends_during_the_bud_grace",
+    "no_uplink_stop_and_no_sink_call_while_the_sink_runs",
     "always_sends_no_start_without_a_model_number",
     "a_settings_file_with_a_bad_model_entry_is_refused",
     "a_seventeenth_model_drops_the_oldest",
@@ -438,6 +448,7 @@ fn every_end_to_end_test_names_its_cell_or_stands_outside_the_table() {
         include_str!("../../../../../daemon/tests/uplink_stop.rs"),
         include_str!("../../../../../daemon/tests/uplink_slow.rs"),
         include_str!("../../../../../daemon/tests/uplink_faults.rs"),
+        include_str!("../../../../../daemon/tests/uplink_quiet.rs"),
     ];
     let cells: Vec<String> = CELLS
         .iter()

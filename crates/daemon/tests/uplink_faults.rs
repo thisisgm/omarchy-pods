@@ -14,7 +14,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::mic::{
-        START_TRIES, STOP_WAITS_LINE, STOPPED_BY_THE_PODS_LINE, start_sent_line, unanswered_line,
+        START_TRIES, STOP_SLEEP_LINE, STOP_WAITS_LINE, STOPPED_BY_THE_PODS_LINE, start_sent_line,
+        unanswered_line,
     };
     use pods_fake::Profile;
     use pods_samples::{MODEL_NUMBER, Placed};
@@ -26,8 +27,8 @@ mod tests {
     use super::support::sleep::{logged, sleep, wake};
     use super::support::uplink::{
         START_ANSWER, STOP_ANSWER, TRY_SPACING, all_tries, link, link_heard, lose, mic, move_sink,
-        read_up_to_now, rig_with, rig_with_audio, start_failures, starts, stops, wait_mic,
-        wait_restore, wait_starts, wait_stop,
+        put_in, read_up_to_now, rig_with, rig_with_audio, set_off_unworn, start_failures, starts,
+        stops, take_out, wait_mic, wait_restore, wait_starts, wait_stop,
     };
     use super::support::{pause, wait_for};
 
@@ -188,14 +189,8 @@ mod tests {
         device.pods.uplink().stop_unasked();
         rig.wait_logged(STOPPED_BY_THE_PODS_LINE);
         wait_mic(&rig, "stopping");
-        device.pods.set_ear(Placed::InCase, Placed::InCase);
-        rig.wait_status("both buds out", |status| {
-            status["left"]["in_ear"] == false && status["right"]["in_ear"] == false
-        });
-        device.pods.set_ear(Placed::InEar, Placed::InEar);
-        rig.wait_status("both buds back", |status| {
-            status["left"]["in_ear"] == true && status["right"]["in_ear"] == true
-        });
+        take_out(&rig, &device);
+        put_in(&rig, &device);
         wait_mic(&rig, "stopping");
         audio.hold_replies(false);
         let (_, resumed) = wait_restore(&audio, &device);
@@ -208,15 +203,15 @@ mod tests {
     }
 
     #[test]
-    fn sleep_while_running_sends_stop_before_the_suspend_and_no_restore() {
+    fn sleep_over_a_suspended_sink_sends_stop_before_the_suspend_and_no_restore() {
         let (mut rig, device, audio) =
-            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Suspended);
         link_heard(&rig, &device);
         wait_mic(&rig, "live");
         let edge = sleep(&mut rig);
         let stop = wait_stop(&device);
         assert!(stop.at > edge, "the STOP before the edge into sleep");
-        rig.wait_logged("mic: stop sent (sleep)");
+        rig.wait_logged(STOP_SLEEP_LINE);
         wait_for("the uplink to stop", || {
             (!device.pods.uplink().running()).then_some(())
         });
@@ -247,8 +242,9 @@ mod tests {
 
     #[test]
     fn resume_starts_again_when_the_want_still_holds() {
-        let (mut rig, device) = rig_with("always", &[MODEL_NUMBER], Profile::default());
-        link(&rig, &device);
+        let (mut rig, device, _audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Suspended);
+        link_heard(&rig, &device);
         wait_mic(&rig, "live");
         sleep(&mut rig);
         wait_stop(&device);
@@ -289,7 +285,7 @@ mod tests {
         link_heard(&rig, &device);
         wait_mic(&rig, "live");
         device.pods.uplink().hold_stops(true);
-        set(rig.session(), "microphone", "off");
+        set_off_unworn(&rig, &device);
         let stop = wait_stop(&device);
         lose(&rig, &device);
         device.pods.uplink().release_stop();
