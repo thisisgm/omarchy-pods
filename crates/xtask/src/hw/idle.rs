@@ -273,12 +273,12 @@ fn report_wakeups(
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use std::{process, thread};
 
     use super::super::IDLE_WINDOW_SECONDS;
     use super::super::system::current_thread_id;
-    use super::super::unit::pause;
+    use super::super::unit::{POLL_INTERVAL, pause};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use proptest::prelude::*;
@@ -290,8 +290,12 @@ mod tests {
 
     /// How many times the thread under count sleeps, so wakes, before it idles.
     const SLEEPS: u64 = 200;
+    const SLEEP_EVERY: Duration = Duration::from_millis(1);
+    /// Three sample spacings, so a delayed sample still lands while the thread is alive.
+    const SLEEPER_TAIL: Duration = POLL_INTERVAL.saturating_mul(3);
     /// Long enough that the thread under count ends inside it.
-    const WINDOW: Duration = Duration::from_secs(4);
+    const WINDOW: Duration = Duration::from_secs(1);
+    const FAST_WINDOW_LIMIT: Duration = Duration::from_secs(2);
 
     #[test]
     fn the_production_wakeup_sample_interval_is_one_second() {
@@ -326,21 +330,19 @@ mod tests {
         let sleeper = thread::spawn(move || {
             named.send(current_thread_id()).unwrap();
             for _ in 0..SLEEPS {
-                pause(Duration::from_millis(1));
+                pause(SLEEP_EVERY);
             }
-            pause(
-                WAKEUP_SAMPLE_EVERY
-                    .saturating_mul(3)
-                    .checked_div(2)
-                    .unwrap(),
-            );
+            pause(SLEEPER_TAIL);
         });
         let sleeper_id = sleeper_id.recv().unwrap();
-        sample_through(WINDOW, WAKEUP_SAMPLE_EVERY, &mut wakeups).unwrap();
+        let started = Instant::now();
+        sample_through(WINDOW, POLL_INTERVAL, &mut wakeups).unwrap();
         assert!(sleeper.is_finished(), "the thread outlived the window");
         sleeper.join().unwrap();
         let woke = wakeups.unwrap().woke_by(sleeper_id);
         assert!(woke >= SLEEPS, "{woke} wakeups");
+        let elapsed = started.elapsed();
+        assert!(elapsed < FAST_WINDOW_LIMIT, "the window took {elapsed:?}");
     }
 
     proptest! {
