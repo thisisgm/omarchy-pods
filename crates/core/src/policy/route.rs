@@ -286,6 +286,46 @@ mod tests {
     }
 
     #[test]
+    fn dictation_waits_out_an_unanswered_uplink_start() {
+        use super::super::audio::AudioRequest;
+        use super::super::mic::START_ANSWER_MS;
+        use pods_proto::uplink::UplinkState;
+
+        let (mut policy, state) = waiting_for_recorders(CALL, Route::Uplink);
+        let stop = Effect::Uplink(UplinkRequest::Stop);
+        let mode = Effect::Dictation(DictationRequest::Mode);
+        let list = Fact::Audio(AudioFact::Recorders(DICTATION));
+        let effects = policy.step(&state, list, Duration::ZERO);
+        assert!(!effects.contains(&stop) && !effects.contains(&mode));
+
+        let window = Duration::from_millis(START_ANSWER_MS);
+        let early = window.saturating_sub(Duration::from_millis(1));
+        let effects = policy.step(&state, Fact::Tick, early);
+        assert!(!effects.contains(&stop) && !effects.contains(&mode));
+        let effects = policy.step(&state, Fact::Tick, window);
+        assert!(
+            effects.contains(&stop),
+            "the START window must end in the handoff STOP: {effects:?}"
+        );
+        assert!(!effects.contains(&mode));
+
+        let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+        let mut effects = policy.step(&state, stopped, window);
+        if let Some(Effect::Audio(AudioRequest::Restore(id))) = effects
+            .iter()
+            .find(|effect| matches!(effect, Effect::Audio(AudioRequest::Restore(_))))
+            .cloned()
+        {
+            assert!(!effects.contains(&mode));
+            effects = policy.step(&state, Fact::Audio(AudioFact::Restored(id)), window);
+        }
+        assert!(
+            effects.contains(&mode),
+            "mode must follow STOP: {effects:?}"
+        );
+    }
+
+    #[test]
     fn always_cannot_start_the_uplink_during_a_doap_session() {
         let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
         let mut effects = policy.step(
@@ -316,6 +356,33 @@ mod tests {
         assert!(!effects.contains(&start));
         effects = policy.step(&state, Fact::Dictation(DictationFact::Ended), settled);
         assert!(effects.contains(&start));
+    }
+
+    #[test]
+    fn an_unanswered_doap_stop_releases_the_uplink_for_always() {
+        use super::super::dictation::DOAP_STOP_ANSWER_MS;
+
+        let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
+        let list = Fact::Audio(AudioFact::Recorders(DICTATION));
+        drop(policy.step(&state, list, Duration::ZERO));
+        state.microphone.set_preference(MicPref::Always);
+        drop(policy.step(&state, Fact::Changed, Duration::ZERO));
+        let settled = Duration::from_millis(MODE_SETTLE_MS);
+        drop(policy.step(&state, Fact::Tick, settled));
+        drop(policy.step(&state, Fact::Dictation(DictationFact::Answered), settled));
+
+        let start = Effect::Uplink(UplinkRequest::Start);
+        let empty = Fact::Audio(AudioFact::Recorders(Recorders::default()));
+        assert!(!policy.step(&state, empty, settled).contains(&start));
+        let cleared = settled + Duration::from_millis(DOAP_STOP_ANSWER_MS);
+        let early = cleared.saturating_sub(Duration::from_millis(1));
+        assert!(!policy.step(&state, Fact::Tick, early).contains(&start));
+        let effects = policy.step(&state, Fact::Tick, cleared);
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::ModeOff)));
+        assert!(
+            effects.contains(&start),
+            "the silent STOP clear must release 0x58: {effects:?}"
+        );
     }
 
     #[test]
@@ -401,7 +468,8 @@ mod tests {
             1
         );
         let effects = policy.step(&state, list, now);
-        assert!(!effects.contains(&fallback));
+        assert!(!effects.contains(&fallback) && !effects.contains(&mode));
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
     }
 
     #[test]
