@@ -255,6 +255,37 @@ mod tests {
     }
 
     #[test]
+    fn dictation_starts_after_uplink_stop_on_a_quiet_sink() {
+        use super::super::audio::{AudioRequest, SinkState};
+        use super::super::tests::sink_in;
+        use pods_proto::uplink::UplinkState;
+
+        let (mut policy, state) = waiting_for_recorders(CALL, Route::Uplink);
+        let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+        drop(policy.step(&state, running, Duration::ZERO));
+        drop(policy.step(&state, sink_in(true, SinkState::Suspended), Duration::ZERO));
+
+        let mode = Effect::Dictation(DictationRequest::Mode);
+        let list = Fact::Audio(AudioFact::Recorders(DICTATION));
+        let effects = policy.step(&state, list, Duration::ZERO);
+        assert!(effects.contains(&Effect::Uplink(UplinkRequest::Stop)));
+        assert!(!effects.contains(&mode));
+
+        let stopped = Fact::Link(Signal::Uplink(UplinkState::Stopped));
+        let effects = policy.step(&state, stopped, Duration::ZERO);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Audio(AudioRequest::Restore(_)))),
+            "a quiet sink needs no restore: {effects:?}"
+        );
+        assert!(
+            effects.contains(&mode),
+            "mode must follow STOP: {effects:?}"
+        );
+    }
+
+    #[test]
     fn always_cannot_start_the_uplink_during_a_doap_session() {
         let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
         let mut effects = policy.step(
@@ -329,6 +360,48 @@ mod tests {
         assert!(!effects.contains(&start) && !effects.contains(&uplink));
         assert!(!effects.contains(&fallback));
         assert_eq!(policy.edge.route(), Some(Route::Uplink));
+    }
+
+    #[test]
+    fn a_doap_stream_ending_on_the_last_try_falls_back_for_the_span() {
+        use super::super::dictation::{DOAP_START_ANSWER_MS, DOAP_START_TRIES};
+
+        let (mut policy, state) = waiting_for_recorders(DICTATION, Route::Dictation);
+        let list = Fact::Audio(AudioFact::Recorders(DICTATION));
+        let mut effects = policy.step(&state, list.clone(), Duration::ZERO);
+        let mode = Effect::Dictation(DictationRequest::Mode);
+        let start = Effect::Dictation(DictationRequest::Start);
+        let settle = Duration::from_millis(MODE_SETTLE_MS);
+        let answer = Duration::from_millis(DOAP_START_ANSWER_MS);
+        let mut now = Duration::ZERO;
+        for attempt in 1..=DOAP_START_TRIES {
+            assert!(effects.contains(&mode));
+            now += settle;
+            effects = policy.step(&state, Fact::Tick, now);
+            assert!(effects.contains(&start));
+            if attempt < DOAP_START_TRIES {
+                now += answer;
+                effects = policy.step(&state, Fact::Tick, now);
+            }
+        }
+        let answered = Fact::Dictation(DictationFact::Answered);
+        drop(policy.step(&state, answered, now));
+        assert_eq!(policy.dictation.code(&state), MicDictation::Streaming);
+        assert_eq!(policy.edge.route(), Some(Route::Dictation));
+        assert!(policy.mic_recording());
+
+        let ended = Fact::Dictation(DictationFact::Ended);
+        let effects = policy.step(&state, ended, now);
+        let fallback = Effect::Log("dictation: this recording takes the uplink".to_owned());
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::ModeOff)));
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+        assert!(effects.contains(&Effect::Uplink(UplinkRequest::Start)));
+        assert_eq!(
+            effects.iter().filter(|effect| **effect == fallback).count(),
+            1
+        );
+        let effects = policy.step(&state, list, now);
+        assert!(!effects.contains(&fallback));
     }
 
     #[test]

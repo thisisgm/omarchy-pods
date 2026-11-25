@@ -235,6 +235,9 @@ A reply carries the request's `id` and `ok`.
   If the uplink is running or lingering when a recording chooses DoAP, the
   daemon sends 0x58 STOP. It waits for the stopped marker or the 1500 ms STOP
   answer window and completes any owed playback restore before setting DoAP mode.
+  If a 0x58 START is still unanswered when a recording chooses DoAP, the daemon
+  waits for the running marker or the end of the START answer window before
+  sending the handoff STOP.
   The daemon suppresses 0x58 START from that mode write through session teardown.
   The daemon requests a logind sleep delay lock when it sets DoAP mode.
   START follows the 150 ms mode settle once the lock attempt has resolved.
