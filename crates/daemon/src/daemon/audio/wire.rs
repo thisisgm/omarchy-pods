@@ -6,7 +6,7 @@ use std::iter;
 
 use pods_core::policy::audio::{Percent, SinkState};
 use pulseaudio::protocol::{
-    Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SubscriptionMask, Volume,
+    ChannelVolume, Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SubscriptionMask, Volume,
     encode_descriptor, read_descriptor,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,8 +30,11 @@ const BEFORE_DEFAULT_SINK: usize = 5;
 /// Description, sample spec, channel map and owner module, between a sink's name and its volume.
 const BEFORE_VOLUME: usize = 4;
 
-/// Mute, monitor index and name, two latencies, driver, flags, properties and base volume.
-const BEFORE_STATE: usize = 9;
+/// Monitor name, two latencies, driver, flags, properties and base volume.
+const BEFORE_STATE: usize = 7;
+
+/// A `PulseAudio` channel volume can carry up to 32 channels.
+const MAX_CHANNELS: u8 = 32;
 
 /// Volume steps and card.
 const AFTER_STATE: usize = 2;
@@ -139,6 +142,7 @@ pub(super) enum Malformed {
     Tag(u8),
     Nameless,
     NoChannels,
+    TooManyChannels(u8),
 }
 
 impl fmt::Display for Malformed {
@@ -152,6 +156,9 @@ impl fmt::Display for Malformed {
             Self::Tag(tag) => write!(f, "an unexpected tag 0x{tag:02x}"),
             Self::Nameless => f.write_str("a sink with no name"),
             Self::NoChannels => f.write_str("a volume of no channels"),
+            Self::TooManyChannels(count) => {
+                write!(f, "a volume of {count} channels, past {MAX_CHANNELS}")
+            }
         }
     }
 }
@@ -355,6 +362,8 @@ pub(super) struct Sink<'a> {
     pub(super) index: u32,
     pub(super) name: &'a [u8],
     pub(super) volume: Percent,
+    pub(super) channels: ChannelVolume,
+    pub(super) monitor_index: u32,
     pub(super) state: SinkState,
 }
 
@@ -445,22 +454,29 @@ impl<'a> Tags<'a> {
         clippy::arithmetic_side_effects,
         reason = "255 channels of a u32 sum in a u64, a u32 times 100 fits a u64, and neither divisor is zero"
     )]
-    fn volume(&mut self) -> Result<Percent, Malformed> {
+    fn volume(&mut self) -> Result<(Percent, ChannelVolume), Malformed> {
         self.expect(tag::CVOLUME)?;
         let channels = self.byte()?;
         if channels == 0 {
             return Err(Malformed::NoChannels);
         }
+        if channels > MAX_CHANNELS {
+            return Err(Malformed::TooManyChannels(channels));
+        }
+        let mut volumes = ChannelVolume::empty();
         let mut sum = 0_u64;
         for _ in 0..channels {
-            sum += u64::from(self.raw_u32()?);
+            let raw = self.raw_u32()?;
+            sum += u64::from(raw);
+            volumes.push(Volume::from_u32_clamped(raw));
         }
         let norm = u64::from(Volume::NORM.as_u32());
         let percent = (sum / u64::from(channels) * FULL + norm / 2) / norm;
-        Ok(u8::try_from(percent)
+        let percent = u8::try_from(percent)
             .ok()
             .and_then(Percent::new)
-            .unwrap_or(Percent::FULL))
+            .unwrap_or(Percent::FULL);
+        Ok((percent, volumes))
     }
 
     /// A sink's state, any number past the protocol's three reading as running, which keeps the gate shut; sample `L 00000002`: suspended.
@@ -529,7 +545,9 @@ impl<'a> Tags<'a> {
         let index = self.u32()?;
         let name = self.string()?.ok_or(Malformed::Nameless)?;
         self.skip_n(BEFORE_VOLUME)?;
-        let volume = self.volume()?;
+        let (volume, channels) = self.volume()?;
+        self.skip()?;
+        let monitor_index = self.u32()?;
         self.skip_n(BEFORE_STATE)?;
         let state = self.sink_state()?;
         self.skip_n(AFTER_STATE)?;
@@ -543,6 +561,8 @@ impl<'a> Tags<'a> {
             index,
             name,
             volume,
+            channels,
+            monitor_index,
             state,
         })
     }

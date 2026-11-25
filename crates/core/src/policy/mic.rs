@@ -322,7 +322,10 @@ impl Mic {
 
     fn audio(&mut self, fact: AudioFact, server: AudioServer, effects: &mut Vec<Effect>) {
         match fact {
-            AudioFact::Up | AudioFact::Headset(_) => {}
+            AudioFact::Up
+            | AudioFact::Headset(_)
+            | AudioFact::Recording(_)
+            | AudioFact::VolumeAdjusted => {}
             AudioFact::Down => {
                 self.set_quiet(false);
                 self.audio.hint = false;
