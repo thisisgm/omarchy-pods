@@ -101,6 +101,7 @@ pub(super) struct State {
     threads: Vec<JoinHandle<()>>,
     replies: Replies,
     pub(super) silent_events: bool,
+    pub(super) refuse_default_source: bool,
     pub(super) stopping: bool,
     pub(super) fault: Option<String>,
 }
@@ -512,6 +513,15 @@ impl State {
             .push(thread::spawn(move || serve(&shared, id, stream)));
     }
 
+    /// An ack, or `PulseError::NoEntity` once the test asked for refusals.
+    fn default_source(&self, seq: u32) -> Vec<u8> {
+        if self.refuse_default_source {
+            wire::error(seq, PulseError::NoEntity)
+        } else {
+            wire::ack(seq)
+        }
+    }
+
     #[expect(
         clippy::as_conversions,
         reason = "the discriminant of a fieldless enum is the protocol's command number"
@@ -599,7 +609,7 @@ impl State {
                 return Ok(());
             }
             Command::GetSourceInfoList => wire::reply(seq, &self.capture.sources(), version),
-            Command::SetDefaultSource(_) => wire::ack(seq),
+            Command::SetDefaultSource(_) => self.default_source(seq),
             Command::GetSourceOutputInfoList => {
                 wire::reply(seq, &self.capture.recorders(), version)
             }

@@ -180,6 +180,11 @@ impl FakeAudio {
         });
     }
 
+    /// Refuses every later default-source write with `PulseError::NoEntity`.
+    pub(crate) fn refuse_default_source(&self) {
+        self.change(|state| state.refuse_default_source = true);
+    }
+
     pub(crate) fn set_default_sink(&self, name: &str) {
         self.change(|state| state.set_default_sink(name));
     }
