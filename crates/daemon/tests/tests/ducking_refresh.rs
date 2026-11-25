@@ -50,11 +50,21 @@ fn a_default_sink_switch_during_the_duck_refresh_lowers_nothing() {
 #[test]
 fn a_server_event_without_a_default_sink_change_defers_ducking() {
     let (rig, device, audio) = ready(SAVED);
-    hold_duck_server_info(&rig, &device, &audio);
+    let before = hold_duck_server_info(&rig, &device, &audio);
     audio.announce_server_change();
     audio.hold_replies(false);
 
     wait_volume(&audio, &device, LOWERED);
+    let requests = &audio.requests()[before..];
+    assert!(
+        requests
+            .iter()
+            .take_while(|asked| !matches!(asked, Asked::Volume { .. }))
+            .filter(|asked| **asked == Asked::ServerInfo)
+            .nth(1)
+            .is_some(),
+        "expected a second server read before the first volume write: {requests:?}"
+    );
     speak(&rig, &device, ENDED);
     wait_volume(&audio, &device, SAVED);
     finish(rig, &audio);
@@ -82,11 +92,20 @@ fn recording_starting_during_the_duck_refresh_lowers_nothing() {
 #[test]
 fn a_capture_event_without_recording_defers_ducking() {
     let (rig, device, audio) = ready(SAVED);
-    hold_duck_server_info(&rig, &device, &audio);
+    let before = hold_duck_server_info(&rig, &device, &audio);
     audio.add_source(LAPTOP_MIC);
     audio.hold_replies(false);
 
     wait_volume(&audio, &device, LOWERED);
+    let requests = &audio.requests()[before..];
+    assert!(
+        requests
+            .iter()
+            .take_while(|asked| !matches!(asked, Asked::Volume { .. }))
+            .skip_while(|asked| **asked != Asked::ServerInfo)
+            .any(|asked| *asked == Asked::RecorderList),
+        "expected a recorder read after the held server read and before the first volume write: {requests:?}"
+    );
     speak(&rig, &device, ENDED);
     wait_volume(&audio, &device, SAVED);
     finish(rig, &audio);
