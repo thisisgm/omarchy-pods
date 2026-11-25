@@ -184,6 +184,7 @@ fn output_never_contains_the_device_address() {
     let mut host = Host {
         home: home.path().to_str().unwrap(),
         connect: &connect,
+        control_mtus: |_| Ok(None),
         lock_service: &|| Ok(RunLock::nothing()),
         stdout: &mut stdout,
         stderr: &mut stderr,

@@ -187,6 +187,12 @@ connect that fails. The commands that only read files (`init`, `hci`,
 `analyse`, `decode`, `decode-opus`, `audio`, `bench` and `source --replay`)
 never touch the service.
 
+When the control channel opens, `marks.tsv` gets a `control-mtu` mark. Its
+three tab-separated fields are a timestamp in nanoseconds, the mark kind,
+and text such as `requested=2048 incoming=2048 outgoing=672`. The sizes are
+in bytes. Captures without `--imtu` write `requested=none` and still record the
+incoming and outgoing sizes granted by the kernel.
+
 A cue is printed as `cue <text>` and the run waits there for Enter, with no
 timeout. What was typed before a cue was shown does not answer it. The Enter
 that answers a cue is stamped in `marks.tsv` as an `answer` mark, and the waits

@@ -81,6 +81,7 @@ pub(crate) struct Outputs<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Mark {
     Connect,
+    ControlMtu,
     AttConnect,
     /// The run closed the attribute channel itself.
     AttClose,
@@ -115,6 +116,7 @@ impl Mark {
     fn name(self) -> &'static str {
         match self {
             Self::Connect => "connect",
+            Self::ControlMtu => "control-mtu",
             Self::AttConnect => "att-connect",
             Self::AttClose => "att-close",
             Self::Sent => "sent",
