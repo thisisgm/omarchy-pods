@@ -44,12 +44,6 @@ pub(super) struct TakeoverArgs {
 
 /// AACP Connected Devices, whose first payload byte reports the entry count.
 const CONNECTED_DEVICES_OPCODE: u16 = 0x002e;
-/// AVDTP Close (AVDTP 1.3 section 8.5, Table 8.6).
-const CLOSE: u8 = 0x08;
-/// AVDTP Suspend (AVDTP 1.3 section 8.5, Table 8.6).
-const SUSPEND: u8 = 0x09;
-/// AVDTP Response Accept (AVDTP 1.3 section 8.4.3, Table 8.5).
-const RESPONSE_ACCEPT: u8 = 0b10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PeerClass {
@@ -117,7 +111,7 @@ pub(crate) fn connected_devices(sdus: &[(u64, &[u8])]) -> Vec<(u64, usize, Optio
         .collect()
 }
 
-/// The first marks of the named ACL in the supplied window, in wall-clock microseconds.
+/// The first link's stream marks and the trial's first eligible restart, in wall-clock microseconds.
 #[derive(Debug)]
 struct Stream {
     suspend_us: Option<(u64, Began)>,
@@ -134,21 +128,25 @@ fn stream(
     window: &Window,
     handback_us: Option<u64>,
 ) -> Result<Option<Stream>, MarksError> {
-    let Some(link) = takeover_channels(trace, device, window)? else {
+    let mut links = takeover_channels(trace, device, window)?.peekable();
+    let Some(first) = links.peek() else {
         return Ok(None);
     };
     let mut marks = Stream {
         suspend_us: None,
         close_us: None,
         restart_us: None,
-        ended: link.ended,
-        lifetime: link.lifetime,
+        ended: first.ended,
+        lifetime: first.lifetime,
     };
-    for (_, channel) in a2dp::roles(&link.channels, ONLY_LINK)
-        .into_iter()
-        .filter(|(role, _)| *role == Role::Signalling)
-    {
-        for sdu in &channel.sdus {
+    for (index, link) in links.enumerate() {
+        // The reader keeps a later link only after an earlier one ends during this trial.
+        let after_disconnect = index > 0;
+        let signalling = a2dp::roles(&link.channels, ONLY_LINK)
+            .into_iter()
+            .filter(|(role, _)| *role == Role::Signalling)
+            .flat_map(|(_, channel)| &channel.sdus);
+        for sdu in signalling {
             let at_us = sdu.at_ns / NANOS_PER_MICRO;
             if !window.holds(at_us) {
                 continue;
@@ -161,19 +159,23 @@ fn stream(
                 Direction::FromPods => Began::Pods,
             };
             match (signal.message, signal.id, sender) {
-                (a2dp::COMMAND, SUSPEND, _) => {
+                (a2dp::COMMAND, a2dp::SUSPEND, _) if !after_disconnect => {
                     marks.suspend_us = marks.suspend_us.or(Some((at_us, sender)));
                 }
-                (a2dp::COMMAND, CLOSE, _) => {
+                (a2dp::COMMAND, a2dp::CLOSE, _) if !after_disconnect => {
                     marks.close_us = marks.close_us.or(Some((at_us, sender)));
                 }
-                (RESPONSE_ACCEPT, a2dp::START, Began::Pods)
-                    if handback_us.is_none_or(|from| at_us >= from) =>
+                (a2dp::RESPONSE_ACCEPT, a2dp::START, Began::Pods)
+                    if (after_disconnect || marks.suspend_us.is_some() || marks.close_us.is_some())
+                        && handback_us.is_none_or(|from| at_us >= from) =>
                 {
                     marks.restart_us = marks.restart_us.or(Some(at_us));
                 }
                 _ => {}
             }
+        }
+        if marks.restart_us.is_some() {
+            break;
         }
     }
     Ok(Some(marks))

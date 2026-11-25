@@ -317,6 +317,7 @@ mod marks {
         assert_refused(&marks(dir.path()), "identification pattern");
     }
 
+    const TRIAL_AT_TRACE_START: &[u8] = b"1795176000.000000000 trial 1\n";
     const RETRIAL: &str = "1795176000.020000000 trial 1\n";
     const NANOS_PER_MS: u64 = 1_000_000;
     const NANOS_PER_MICRO: u64 = 1_000;
@@ -382,6 +383,27 @@ mod marks {
     }
 
     #[test]
+    fn takeover_leaves_restart_empty_after_initial_playback_and_suspend() {
+        const SUSPEND_MS: u64 = 40;
+
+        let mut trace = playing_link();
+        trace.at_ms(SUSPEND_MS);
+        trace.send(
+            Direction::FromPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, COMMAND, AVDTP_SUSPEND, &[FIRST_SEID]),
+        );
+        let dir = sitting(&trace.bytes());
+        put(&dir, "trials.log", TRIAL_AT_TRACE_START, OWNER_FILE);
+        let rows = takeover_rows(&takeover(dir.path(), &TRACE_FILES));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["suspend_us"], at_us(SUSPEND_MS).to_string());
+        assert_eq!(rows[0]["restart_us"], "");
+        assert_eq!(rows[0]["restart_after_handback_us"], "");
+    }
+
+    #[test]
     fn takeover_reads_the_reconnected_link() {
         const DISCONNECT_MS: u64 = 15;
         const RECONNECT_MS: u64 = 25;
@@ -409,6 +431,45 @@ mod marks {
         assert_eq!(rows[0]["suspend_us"], at_us(SUSPEND_MS).to_string());
         assert_eq!(rows[0]["suspend_from"], "pods");
         assert_eq!(rows[0]["ended"], "");
+    }
+
+    #[test]
+    fn takeover_counts_a_restart_after_a_disconnect_in_the_trial() {
+        const DISCONNECT_MS: u64 = 15;
+        const RECONNECT_MS: u64 = 25;
+        const START_MS: u64 = 35;
+        const RESTART_MS: u64 = 40;
+
+        let mut trace = playing_link();
+        trace.at_ms(DISCONNECT_MS);
+        trace.end_link(PODS_HANDLE);
+        trace.at_ms(RECONNECT_MS);
+        trace.link_up(RECONNECTED_PODS_HANDLE, PODS_ADDRESS);
+        trace.on(RECONNECTED_PODS_HANDLE);
+        trace.open(Direction::ToPods, AVDTP_PSM, SIGNALLING_CIDS);
+        trace.at_ms(START_MS);
+        trace.send(
+            Direction::ToPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, COMMAND, AVDTP_START, &[FIRST_SEID]),
+        );
+        trace.at_ms(RESTART_MS);
+        trace.send(
+            Direction::FromPods,
+            SIGNALLING_CIDS,
+            &avdtp(TAKEOVER_TRANSACTION, ACCEPT, AVDTP_START, &[]),
+        );
+        let dir = sitting(&trace.bytes());
+        put(&dir, "trials.log", TRIAL_AT_TRACE_START, OWNER_FILE);
+        let rows = takeover_rows(&takeover(dir.path(), &TRACE_FILES));
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["link"], "present");
+        assert_eq!(rows[0]["suspend_us"], "");
+        assert_eq!(rows[0]["close_us"], "");
+        assert_eq!(rows[0]["restart_us"], at_us(RESTART_MS).to_string());
+        assert_eq!(rows[0]["ended"], "0x13");
+        assert_eq!(rows[0]["restart_after_handback_us"], "");
     }
 
     #[test]
