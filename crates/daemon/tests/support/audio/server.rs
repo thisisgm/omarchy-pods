@@ -18,7 +18,8 @@ use pulseaudio::protocol::{
 
 use super::Asked;
 use super::capture::{Capture, Recorder, RecorderId, monitor_name};
-use super::cards::{Cards, FakeProfile};
+use super::cards::Cards;
+use super::lists::Clients;
 use super::wire::{self, CONTROL_CHANNEL, percent_of};
 
 /// A test opens a handful of clients at once.
@@ -34,9 +35,10 @@ const WRITE_LIMIT: Duration = Duration::from_secs(2);
 /// Stereo, as `SinkInfo::new_dummy` describes every sink.
 const SINK_CHANNELS: usize = 2;
 /// The commands the fake answers; any other is refused with `PulseError::Command`.
-const UNDERSTOOD: [CommandTag; 13] = [
+const UNDERSTOOD: [CommandTag; 14] = [
     CommandTag::Auth,
     CommandTag::SetClientName,
+    CommandTag::GetClientInfoList,
     CommandTag::GetServerInfo,
     CommandTag::GetSinkInfo,
     CommandTag::GetSinkInfoList,
@@ -82,6 +84,7 @@ pub(super) struct State {
     default: Option<u32>,
     next_sink: u32,
     pub(super) cards: Cards,
+    pub(super) listed_clients: Clients,
     pub(super) capture: Capture,
     pub(super) requests: Vec<Asked>,
     clients: Vec<Client>,
@@ -225,7 +228,7 @@ impl State {
         clippy::as_conversions,
         reason = "the discriminant of a fieldless enum is the protocol's facility number"
     )]
-    fn announce(
+    pub(super) fn announce(
         &mut self,
         facility: SubscriptionEventFacility,
         kind: SubscriptionEventType,
@@ -350,21 +353,6 @@ impl State {
         }
     }
 
-    pub(super) fn add_card(&mut self, name: &str, profiles: &[FakeProfile], active: &str) {
-        let index = self.cards.add(name, profiles, active);
-        self.announce(
-            SubscriptionEventFacility::Card,
-            SubscriptionEventType::New,
-            Some(index),
-        );
-    }
-
-    pub(super) fn set_profile_as_user(&mut self, card: &str, profile: &str) {
-        if let Some(index) = self.cards.set(card, profile) {
-            self.announce_card(index);
-        }
-    }
-
     pub(super) fn add_source(&mut self, name: &str) {
         let index = self.capture.add_source(name);
         self.announce(
@@ -402,7 +390,7 @@ impl State {
         );
     }
 
-    fn announce_card(&mut self, index: u32) {
+    pub(super) fn announce_card(&mut self, index: u32) {
         self.announce(
             SubscriptionEventFacility::Card,
             SubscriptionEventType::Changed,
@@ -500,7 +488,7 @@ impl State {
     )]
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "the fake answers thirteen of the protocol's commands and refuses every other alike"
+        reason = "the fake refuses every command outside the ones it serves"
     )]
     fn answer(&mut self, id: u32, frame: &[u8]) -> Result<(), String> {
         let (channel, command, seq) = wire::header(frame)?;
@@ -571,6 +559,7 @@ impl State {
                 Some(card) => wire::reply(seq, &card, version),
                 None => wire::error(seq, PulseError::NoEntity),
             },
+            Command::GetClientInfoList => wire::reply(seq, &self.listed_clients.known, version),
             Command::GetCardInfoList => wire::reply(seq, &self.cards.list(), version),
             Command::SetCardProfile(SetCardProfileParams {
                 card_index: None,
@@ -652,7 +641,7 @@ impl State {
 /// What the test sees of a command the fake understands; only a suspend is addressed by index, and `named` gives that sink's name.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "the fake names thirteen of the protocol's commands and records every other by number"
+    reason = "the fake records unrecognized commands by number"
 )]
 fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<String>) -> Asked {
     match parsed {
@@ -660,6 +649,7 @@ fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<Strin
             version: params.version,
         },
         Command::SetClientName(_) => Asked::ClientName,
+        Command::GetClientInfoList => Asked::ClientList,
         Command::GetServerInfo => Asked::ServerInfo,
         Command::GetSinkInfo(GetSinkInfo {
             index: None,

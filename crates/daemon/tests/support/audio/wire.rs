@@ -33,7 +33,12 @@ pub(crate) fn sink_named(address: BdAddr) -> String {
 
 /// What `PipeWire` names the card of a Bluetooth device: `02:00:00:00:00:01` gives `bluez_card.02_00_00_00_00_01`.
 pub(crate) fn card_of(address: &str) -> String {
-    format!("bluez_card.{}", underscored(parsed(address)))
+    card_named(parsed(address))
+}
+
+/// As `card_of`, for an address already parsed.
+pub(crate) fn card_named(address: BdAddr) -> String {
+    format!("bluez_card.{}", underscored(address))
 }
 
 fn parsed(address: &str) -> BdAddr {

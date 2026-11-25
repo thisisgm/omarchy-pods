@@ -12,12 +12,22 @@ const SINK_PREFIX: &str = "bluez_output.";
 /// `bluez_output.` then the address in capitals with underscores, as `bluez_output.02_00_00_00_00_01`.
 #[must_use]
 pub fn sink_prefix(device: BdAddr) -> String {
+    format!("{SINK_PREFIX}{}", device_suffix(device))
+}
+
+/// The audio server names the Bluetooth card using the same address as its sink.
+#[must_use]
+pub fn card_name(device: BdAddr) -> String {
+    format!("bluez_card.{}", device_suffix(device))
+}
+
+fn device_suffix(device: BdAddr) -> String {
     let groups: Vec<String> = device
         .octets()
         .iter()
         .map(|octet| format!("{octet:02X}"))
         .collect();
-    format!("{SINK_PREFIX}{}", groups.join("_"))
+    groups.join("_")
 }
 
 /// A judgment: a server slower than this is treated as gone.
@@ -60,6 +70,10 @@ pub enum AudioFact {
     Restored(RestoreId),
     /// Told when it changes; `Down` reads as none.
     Recorders(Recorders),
+    /// A program asks to keep capture ready.
+    Hint(bool),
+    /// The followed card has an active headset profile.
+    Headset(bool),
 }
 
 /// The record streams on the microphone's source: Superwhisper's, and every other program's.

@@ -2,6 +2,7 @@
 
 mod capture;
 mod cards;
+mod lists;
 mod server;
 pub(crate) mod wire;
 
@@ -41,6 +42,7 @@ pub(crate) enum Asked {
         version: u16,
     },
     ClientName,
+    ClientList,
     ServerInfo,
     SinkInfo {
         name: String,
@@ -79,6 +81,7 @@ impl Asked {
         match self {
             Self::Auth { .. }
             | Self::ClientName
+            | Self::ClientList
             | Self::ServerInfo
             | Self::SinkInfo { .. }
             | Self::SinkList
@@ -202,6 +205,14 @@ impl FakeAudio {
     /// The next `times` writes of an offered profile are answered with an error and change nothing.
     pub(crate) fn refuse_profile_writes(&self, times: u32) {
         self.change(|state| state.cards.refuse(times));
+    }
+
+    pub(crate) fn add_client(&self, hint: Option<&str>) -> u32 {
+        self.change(|state| state.add_client(hint))
+    }
+
+    pub(crate) fn remove_client(&self, index: u32) {
+        self.change(|state| state.remove_client(index));
     }
 
     pub(crate) fn add_source(&self, name: &str) {

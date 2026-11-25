@@ -5,7 +5,9 @@ use std::time::Duration;
 use pods_proto::addr::BdAddr;
 use pods_proto::uplink::UplinkState;
 
-use super::{AudioFact, AudioRequest, Percent, SinkFact, SinkState, server_after, sink_prefix};
+use super::{
+    AudioFact, AudioRequest, Percent, SinkFact, SinkState, card_name, server_after, sink_prefix,
+};
 use crate::link::Signal;
 use crate::policy::{Effect, Fact, Policy, SleepEdge};
 use crate::state::{AudioServer, State};
@@ -129,4 +131,11 @@ fn a_percent_is_0_to_100() {
 fn the_prefix_is_the_address_in_capitals_with_underscores() {
     let device = "02:00:00:00:00:0a".parse().unwrap();
     assert_eq!(sink_prefix(device), "bluez_output.02_00_00_00_00_0A");
+}
+
+#[test]
+fn the_card_uses_the_same_device_suffix_as_the_sink() {
+    let suffix = DEVICE.replace(':', "_");
+    assert_eq!(card_name(device()), format!("bluez_card.{suffix}"));
+    assert_eq!(sink_prefix(device()), format!("bluez_output.{suffix}"));
 }

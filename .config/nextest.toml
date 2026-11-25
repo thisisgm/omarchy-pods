@@ -14,6 +14,8 @@ cpu-heavy = { max-threads = 6 }
 filter = '''
 binary_id(=librepods::recorders) |
 binary_id(=librepods::source) |
+binary_id(=librepods::source_arming) |
+binary_id(=librepods::source_arming_slow) |
 binary_id(=librepods::source_audio) |
 binary_id(=librepods::source_audio_slow) |
 binary_id(=librepods::source_slow) |

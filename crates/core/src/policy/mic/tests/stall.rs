@@ -151,7 +151,7 @@ fn off_while_a_stall_start_is_out_owes_the_stop_until_its_answer_window_ends() {
     for worn in [false, true] {
         let (_, mut mic) = retried();
         // A quiet sink, so the gate is open and only the START unanswered holds the STOP.
-        mic.quiet = true;
+        mic.audio.quiet = true;
         let mut off = linked(Column::Off);
         let owed = after(1).saturating_add(SOON);
         let effects = mic.step(&off, &Fact::Changed, owed);
@@ -200,7 +200,7 @@ fn off_while_a_stall_start_is_out_over_a_playing_sink_waits_for_the_gate() {
 fn a_sleep_while_a_stall_start_is_out_keeps_running_until_its_window_ends() {
     let (state, mut mic) = retried();
     // A quiet sink, so the gate is open and only the START unanswered holds the STOP.
-    mic.quiet = true;
+    mic.audio.quiet = true;
     let owed = after(1).saturating_add(SOON);
     let effects = mic.step(&state, &Fact::Sleep(SleepEdge::Sleeping), owed);
     assert_eq!(requests(&effects), NOTHING);
@@ -231,7 +231,7 @@ fn a_sleep_while_a_stall_start_is_out_keeps_running_until_its_window_ends() {
 fn a_running_uplink_stops_at_the_sleep_edge_so_no_count_is_read_asleep() {
     let (state, mut mic) = counted();
     // A quiet sink, so the gate lets the STOP of the sleep out.
-    mic.quiet = true;
+    mic.audio.quiet = true;
     let sleeping = Fact::Sleep(SleepEdge::Sleeping);
     let effects = mic.step(&state, &sleeping, SENT.saturating_add(SOON));
     assert_eq!(requests(&effects), [UplinkRequest::Stop]);

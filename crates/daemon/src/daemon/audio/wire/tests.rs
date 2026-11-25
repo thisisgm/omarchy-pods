@@ -6,10 +6,10 @@ use std::time::Duration;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use pulseaudio::protocol::{
-    AuthReply, ChannelVolume, Command, CommandReply, FormatEncoding, FormatInfo, Prop, Props,
-    PulseError, ServerInfo, SinkInfo, SubscriptionEvent, SubscriptionEventFacility,
-    SubscriptionEventType, TagStructWriter, read_command_message, write_command_message,
-    write_error, write_reply_message,
+    AuthReply, CardInfo, CardPortInfo, ChannelVolume, ClientInfo, Command, CommandReply,
+    FormatEncoding, FormatInfo, Prop, Props, PulseError, ServerInfo, SinkInfo, SubscriptionEvent,
+    SubscriptionEventFacility, SubscriptionEventType, TagStructWriter, port_info,
+    read_command_message, write_command_message, write_error, write_reply_message,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder;
@@ -297,11 +297,14 @@ fn subscription_event(seq: u32, flags: u32) -> Frame {
 
 #[test]
 fn the_hand_built_event_reads_as_its_facility() {
-    let event = subscription_event(EVENT_SEQ, subscription::SINK | subscription::CHANGED);
-    assert_eq!(
-        message(&event),
-        Ok(Message::Event(Some(SubscriptionMask::SINK)))
-    );
+    for (facility, mask) in [
+        (subscription::SINK, SubscriptionMask::SINK),
+        (subscription::CLIENT, SubscriptionMask::CLIENT),
+        (subscription::CARD, SubscriptionMask::CARD),
+    ] {
+        let event = subscription_event(EVENT_SEQ, facility | subscription::CHANGED);
+        assert_eq!(message(&event), Ok(Message::Event(Some(mask))));
+    }
 }
 
 #[test]
@@ -328,10 +331,10 @@ fn an_event_with_bad_type_bits_invalidates_everything() {
 #[test]
 #[expect(
     clippy::as_conversions,
-    reason = "the discriminant is the protocol's card facility number"
+    reason = "the discriminant is the protocol's sink input facility number"
 )]
 fn an_event_with_an_unknown_facility_invalidates_everything() {
-    let flags = SubscriptionEventFacility::Card as u32 | subscription::CHANGED;
+    let flags = SubscriptionEventFacility::SinkInput as u32 | subscription::CHANGED;
     let event = subscription_event(EVENT_SEQ, flags);
     assert_eq!(message(&event), Ok(Message::Event(None)));
 }
@@ -470,6 +473,72 @@ fn a_property_list_inside_a_property_list_is_refused() {
     assert_eq!(Tags(&nested).skip(), Err(Malformed::Tag(tag::PROPLIST)));
 }
 
+#[test]
+fn the_hint_requires_a_complete_client_list_with_an_exact_true_value() {
+    let mut props = Props::new();
+    props.set_bytes(c"session.fast-capture-start", b"true-ish\0");
+    let mut client = ClientInfo {
+        name: c"Program".to_owned(),
+        props,
+        ..ClientInfo::default()
+    };
+    assert_eq!(
+        wants_fast_capture(body(&reply(&vec![client.clone()]))),
+        Ok(false)
+    );
+    client
+        .props
+        .set_bytes(c"session.fast-capture-start", b"true\0");
+    let packet = reply(&vec![client]);
+    let bytes = body(&packet);
+    assert_eq!(wants_fast_capture(bytes), Ok(true));
+    assert_eq!(
+        wants_fast_capture(&bytes[..bytes.len().saturating_sub(1)]),
+        Err(Malformed::Cut)
+    );
+    assert_eq!(wants_fast_capture(&[]), Ok(false));
+}
+
+#[test]
+fn the_headset_reader_walks_ports_and_matches_only_the_named_cards_active_profile() {
+    let port = CardPortInfo {
+        name: c"output".to_owned(),
+        port_type: port_info::PortType::Unknown,
+        description: None,
+        props: props(),
+        dir: port_info::PortDirection::Output,
+        priority: 0,
+        available: port_info::PortAvailable::Unknown,
+        availability_group: Some(c"speaker".to_owned()),
+        profiles: vec![c"a2dp-sink".to_owned(), c"headset-head-unit".to_owned()],
+        latency_offset: 0,
+    };
+    let card = |index, name: &CStr, active_profile: &CStr, ports| CardInfo {
+        index,
+        name: name.to_owned(),
+        props: props(),
+        owner_module_index: None,
+        driver: None,
+        ports,
+        profiles: Vec::new(),
+        active_profile: Some(active_profile.to_owned()),
+    };
+    let cards = vec![
+        card(FIRST_INDEX, c"speakers", c"a2dp-sink", vec![port]),
+        card(SEQ, c"headphones", c"headset-head-unit", Vec::new()),
+    ];
+    let packet = reply(&cards);
+    let bytes = body(&packet);
+    assert_eq!(headset(bytes, b"headphones"), Ok(true));
+    assert_eq!(headset(bytes, b"speakers"), Ok(false));
+    assert_eq!(headset(bytes, b"head"), Ok(false));
+    assert_eq!(
+        headset(&bytes[..bytes.len().saturating_sub(1)], b"speakers"),
+        Err(Malformed::Cut)
+    );
+    assert_eq!(headset(&[], b"headphones"), Ok(false));
+}
+
 proptest! {
     #[test]
     fn arbitrary_bytes_never_panic_the_readers(bytes in vec(any::<u8>(), 0..512)) {
@@ -480,6 +549,12 @@ proptest! {
         prop_assert_eq!(auth_version(&bytes).is_ok(), tagged);
         if let Ok(Some(name)) = default_sink(&bytes) {
             prop_assert!(name.len() < bytes.len() && !name.contains(&0));
+        }
+        if wants_fast_capture(&bytes) == Ok(true) {
+            prop_assert!(bytes.windows(FAST_CAPTURE.len()).any(|key| key == FAST_CAPTURE));
+        }
+        if headset(&bytes, b"card") == Ok(true) {
+            prop_assert!(bytes.windows(HEADSET_PREFIX.len()).any(|prefix| prefix == HEADSET_PREFIX));
         }
         let read: Vec<_> = sinks(&bytes).collect();
         let errors = read.iter().filter(|sink| sink.is_err()).count();

@@ -39,6 +39,21 @@ const AFTER_STATE: usize = 2;
 /// Name, description, priority, availability, availability group and type.
 const PORT_FIELDS: usize = 6;
 
+/// A desktop holds a few dozen clients; refuse a longer list whole.
+pub(super) const MAX_CLIENTS: usize = 256;
+const FAST_CAPTURE: &[u8] = b"session.fast-capture-start";
+const HEADSET_PREFIX: &[u8] = b"headset-";
+/// Index, name, owner module and driver before a client's properties.
+const BEFORE_CLIENT_PROPERTIES: usize = 4;
+/// The owner module and driver before the list of card profiles.
+const BEFORE_CARD_PROFILES: usize = 2;
+/// Name, description, sink and source counts, priority and availability.
+const PROFILE_FIELDS: usize = 6;
+/// Name, description, priority, availability, direction and properties.
+const BEFORE_PORT_PROFILES: usize = 6;
+/// Latency offset, availability group and type.
+const AFTER_PORT_PROFILES: usize = 3;
+
 /// The percent that `Volume::NORM` stands for.
 const FULL: u64 = 100;
 
@@ -108,6 +123,8 @@ mod subscription {
     pub(super) const SOURCE: u32 = SubscriptionEventFacility::Source as u32;
     pub(super) const SOURCE_OUTPUT: u32 = SubscriptionEventFacility::SourceOutput as u32;
     pub(super) const SERVER: u32 = SubscriptionEventFacility::Server as u32;
+    pub(super) const CLIENT: u32 = SubscriptionEventFacility::Client as u32;
+    pub(super) const CARD: u32 = SubscriptionEventFacility::Card as u32;
     pub(super) const NEW: u32 = SubscriptionEventType::New as u32;
     pub(super) const CHANGED: u32 = SubscriptionEventType::Changed as u32;
     pub(super) const REMOVED: u32 = SubscriptionEventType::Removed as u32;
@@ -269,6 +286,8 @@ fn event(mut tags: Tags<'_>) -> Option<SubscriptionMask> {
         subscription::SOURCE => Some(SubscriptionMask::SOURCE),
         subscription::SOURCE_OUTPUT => Some(SubscriptionMask::SOURCE_OUTPUT),
         subscription::SERVER => Some(SubscriptionMask::SERVER),
+        subscription::CLIENT => Some(SubscriptionMask::CLIENT),
+        subscription::CARD => Some(SubscriptionMask::CARD),
         _ => None,
     }
 }
@@ -284,6 +303,51 @@ pub(super) fn default_sink(body: &[u8]) -> Result<Option<&[u8]>, Malformed> {
     let mut tags = Tags(body);
     tags.skip_n(BEFORE_DEFAULT_SINK)?;
     tags.string()
+}
+
+/// Client list at protocol 35, sample `L 0 t "Recorder\0" L ffffffff N P t "session.fast-capture-start\0" L 00000005 x 00000005 "true\0" N`.
+pub(super) fn wants_fast_capture(body: &[u8]) -> Result<bool, Malformed> {
+    let mut tags = Tags(body);
+    let mut hint = false;
+    for _ in 0..MAX_CLIENTS {
+        if tags.0.is_empty() {
+            break;
+        }
+        tags.skip_n(BEFORE_CLIENT_PROPERTIES)?;
+        hint |= tags.property(FAST_CAPTURE)? == Some(b"true");
+    }
+    Ok(tags.0.is_empty() && hint)
+}
+
+/// Card list at protocol 35, sample `L 0 t "card\0" L ffffffff N L 0 t "headset-head-unit\0" P N L 0`.
+pub(super) fn headset(body: &[u8], card: &[u8]) -> Result<bool, Malformed> {
+    let mut tags = Tags(body);
+    let mut active = false;
+    while !tags.0.is_empty() {
+        active |= card_uses_headset(&mut tags, card)?;
+    }
+    Ok(active)
+}
+
+/// One card including its profiles and ports, sample `L 0 t "card\0" L ffffffff N L 1 t "off\0" N L 0 L 0 L 0 L 1 t "off\0" P N L 0`.
+fn card_uses_headset(tags: &mut Tags<'_>, card: &[u8]) -> Result<bool, Malformed> {
+    tags.u32()?;
+    let name = tags.string()?;
+    tags.skip_n(BEFORE_CARD_PROFILES)?;
+    for _ in 0..tags.u32()? {
+        tags.skip_n(PROFILE_FIELDS)?;
+    }
+    let profile = tags.string()?;
+    tags.expect(tag::PROPLIST)?;
+    tags.proplist(|_, _| {})?;
+    for _ in 0..tags.u32()? {
+        tags.skip_n(BEFORE_PORT_PROFILES)?;
+        for _ in 0..tags.u32()? {
+            tags.string()?;
+        }
+        tags.skip_n(AFTER_PORT_PROFILES)?;
+    }
+    Ok(name == Some(card) && profile.is_some_and(|name| name.starts_with(HEADSET_PREFIX)))
 }
 
 #[derive(Debug, PartialEq, Eq)]

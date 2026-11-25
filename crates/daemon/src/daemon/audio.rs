@@ -1,4 +1,4 @@
-//! Follows the desktop's audio server while a device's link is up: reads the default sink and the device's own, and writes only the suspend and resume of a restore.
+//! Follows the desktop's audio server while a device's link is up: reads the sinks, capture clients and the device's active profile, and writes only the suspend and resume of a restore.
 
 mod streams;
 mod wire;
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use pods_core::policy::audio::{
     AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, Recorders, RestoreId,
-    SinkFact, SinkState, sink_prefix,
+    SinkFact, SinkState, card_name, sink_prefix,
 };
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -53,17 +53,21 @@ const COOKIE_LENGTH: usize = 256;
 )]
 const NO_ENTITY: u32 = PulseError::NoEntity as u32;
 
-/// Sinks added, removed or changed in volume, the server's default sink, and the sources and record streams that come, go or link.
+/// Facilities read by the follower on this connection.
 const EVENTS: SubscriptionMask = SubscriptionMask::SINK
     .union(SubscriptionMask::SERVER)
     .union(SubscriptionMask::SOURCE)
-    .union(SubscriptionMask::SOURCE_OUTPUT);
+    .union(SubscriptionMask::SOURCE_OUTPUT)
+    .union(SubscriptionMask::CLIENT)
+    .union(SubscriptionMask::CARD);
 
 const QUEUE_FULL: &str = "audio: request queue full";
 
 const ADAPTER_GONE: &str = "audio: the adapter has ended; request dropped";
 
 const RESTORE_SKIPPED_LINE: &str = "mic: restore skipped, sink suspended";
+
+const RESTORE_HEADSET_LINE: &str = "mic: restore skipped, headset profile active";
 
 const RESTORE_OWED_LINE: &str = "mic: restore owed, no audio server";
 
@@ -280,6 +284,8 @@ struct Follower<'a> {
     device: BdAddr,
     /// Never logged: it holds the device's address.
     prefix: Vec<u8>,
+    /// Never logged: it holds the device's address.
+    card: Vec<u8>,
     told: Told,
     /// Attempts failed since the server was last read, which picks the step of the ladder.
     misses: usize,
@@ -288,6 +294,8 @@ struct Follower<'a> {
     state: watch::Receiver<State>,
     /// The record streams last told, none once the server is told down.
     recorders: Recorders,
+    hint: bool,
+    headset: bool,
 }
 
 impl<'a> Follower<'a> {
@@ -305,11 +313,14 @@ impl<'a> Follower<'a> {
             },
             device,
             prefix: sink_prefix(device).into_bytes(),
+            card: card_name(device).into_bytes(),
             told: Told::Nothing,
             misses: 0,
             suspended: false,
             state,
             recorders: Recorders::default(),
+            hint: false,
+            headset: false,
         }
     }
 
@@ -339,6 +350,8 @@ impl<'a> Follower<'a> {
             // The next connection reads the sink afresh, so it is told again even when unchanged.
             self.told = Told::Nothing;
             self.recorders = Recorders::default();
+            self.hint = false;
+            self.headset = false;
             self.tell(AudioFact::Down).await?;
         }
         let [.., longest] = AUDIO_RETRY_MS;
@@ -392,15 +405,44 @@ impl<'a> Follower<'a> {
                 });
                 sink = self.requests.watched(listed).await?;
             }
+            let headset = if refresh.contains(SubscriptionMask::CARD) {
+                let listed = connection.call(&Command::GetCardInfoList, &mut stale, |body| {
+                    wire::headset(body, &self.card)
+                });
+                self.requests.watched(listed).await?
+            } else {
+                self.headset
+            };
+            let hint = if refresh.contains(SubscriptionMask::CLIENT) {
+                let listed = connection.call(
+                    &Command::GetClientInfoList,
+                    &mut stale,
+                    wire::wants_fast_capture,
+                );
+                self.requests.watched(listed).await?
+            } else {
+                self.hint
+            };
             if !read {
                 read = true;
                 self.misses = 0;
                 self.tell(AudioFact::Up).await?;
             }
+            // Apply a new block before a want, and lift it only after the current want and sink are known.
+            if headset {
+                self.tell_headset(true).await?;
+            }
+            if self.hint != hint {
+                self.hint = hint;
+                self.tell(AudioFact::Hint(hint)).await?;
+            }
             let fact = sink.map(|sink| sink.fact);
             if self.told != Told::Sink(fact) {
                 self.told = Told::Sink(fact);
                 self.tell(AudioFact::Sink(fact)).await?;
+            }
+            if !headset {
+                self.tell_headset(false).await?;
             }
             self.restore(&mut connection, sink, &mut stale).await?;
             let name = self.state.borrow().mic_source();
@@ -448,7 +490,7 @@ impl<'a> Follower<'a> {
         Ok(recorders)
     }
 
-    /// Suspends then resumes the sink with no request taken between, so none leaves it suspended; a running sink is held suspended first, and nothing is done when no restore is asked and no suspend is left to undo.
+    /// Skips restores under a headset profile and takes no request between a suspend and its resume.
     async fn restore(
         &mut self,
         connection: &mut Connection,
@@ -461,6 +503,7 @@ impl<'a> Follower<'a> {
         let owed = self.requests.restore != Restore::Clear;
         let is_suspended = |state| state == SinkState::Suspended;
         match sink {
+            _ if self.headset => log(RESTORE_HEADSET_LINE),
             Some(Followed { index, fact })
                 if (owed && !is_suspended(fact.state))
                     || (self.suspended && is_suspended(fact.state)) =>
@@ -501,6 +544,14 @@ impl<'a> Follower<'a> {
         self.requests.restore = Restore::Clear;
         if let Some(id) = asked {
             self.tell(AudioFact::Restored(id)).await?;
+        }
+        Ok(())
+    }
+
+    async fn tell_headset(&mut self, headset: bool) -> Result<(), DriverGone> {
+        if self.headset != headset {
+            self.headset = headset;
+            self.tell(AudioFact::Headset(headset)).await?;
         }
         Ok(())
     }
@@ -589,7 +640,7 @@ impl Connection {
         let mut event = pin!(self.next_event());
         poll_fn(|context| {
             if renamed.as_mut().poll(context).is_ready() {
-                return Poll::Ready(Ok(EVENTS));
+                return Poll::Ready(Ok(SubscriptionMask::SOURCE));
             }
             event.as_mut().poll(context)
         })

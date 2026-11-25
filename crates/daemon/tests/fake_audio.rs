@@ -224,6 +224,16 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "fake audio: expected to remove one client at index 0")]
+    fn removing_a_client_twice_fails() {
+        let session = Session::new();
+        let audio = FakeAudio::start(&session.runtime_dir());
+        let index = audio.add_client(None);
+        audio.remove_client(index);
+        audio.remove_client(index);
+    }
+
+    #[test]
     fn the_default_sink_and_its_volume_are_read() {
         let mut rig = Rig::before_system_bus();
         let audio = rig.start_audio();
@@ -414,12 +424,12 @@ mod tests {
         let (audio, name) = one_sink(&session);
         let mut client = Client::open(audio.socket());
 
-        let error = client.refused(&Command::GetClientInfoList);
+        let error = client.refused(&Command::GetModuleInfoList);
         assert_eq!(error, PulseError::Command);
         assert_eq!(
             audio.requests().last(),
             Some(&Asked::Unknown {
-                command: u32::from(CommandTag::GetClientInfoList as u8)
+                command: u32::from(CommandTag::GetModuleInfoList as u8)
             })
         );
         let server: ServerInfo = client.ask(&Command::GetServerInfo);

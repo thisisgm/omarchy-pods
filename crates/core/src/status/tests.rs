@@ -273,3 +273,11 @@ fn every_microphone_word_lands_on_its_key() {
         assert_eq!(line["mic"], Value::from(mic), "{preference:?}");
     }
 }
+
+#[test]
+fn the_blocked_microphone_word_lands_on_its_key() {
+    let mut state = State::default();
+    state.microphone.show(MicCode::Blocked, 0, false);
+    let line = status(&state);
+    assert_eq!(line["mic"], "blocked");
+}

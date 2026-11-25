@@ -194,7 +194,10 @@ fn off_and_the_exit_owe_the_stop_with_no_linger_and_only_through_the_gate() {
                 state.ear = EarReport::from_in_ear(worn, false);
                 let mut mic = Mic {
                     exiting: column == Column::Exit,
-                    quiet,
+                    audio: Audio {
+                        quiet,
+                        ..Audio::default()
+                    },
                     ..mic(Phase::Running(from, watch()))
                 };
                 let effects = mic.step(&state, &Fact::Changed, SENT);
