@@ -19,12 +19,13 @@ use pods_core::link::{
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
 use pods_core::policy::{
-    Effect, Era, Fact, MicFact, MicRequest, MonitorFact, PlayerOwner, Policy, Sighting, SleepEdge,
-    UplinkRequest,
+    DictationFact, DictationRequest, Effect, Era, Fact, MicFact, MicRequest, MonitorFact,
+    PlayerOwner, Policy, Sighting, SleepEdge, UplinkRequest,
 };
 use pods_core::prefs::Prefs;
 use pods_core::state::{MicCounts, State};
 use pods_proto::addr::BdAddr;
+use pods_proto::doap::doap_mode_on;
 use pods_proto::keys::ProximityKeys;
 use pods_proto::model::Model;
 use pods_proto::uplink::UplinkPacket;
@@ -35,8 +36,8 @@ use tokio::time::{Instant, timeout, timeout_at};
 use zeroize::Zeroizing;
 
 use super::hub::Hub;
-use super::{MAX_CONNECTIONS, audio, keys, log, media, mic, notify};
-use reader::Open;
+use super::{MAX_CONNECTIONS, audio, dictation, keys, log, media, mic, notify};
+pub(super) use reader::Open;
 
 /// From aacp.rs in librepods-org/librepods pull request 655; a connect waits this long at most.
 pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -72,8 +73,8 @@ pub(super) enum DeviceEvent {
 #[derive(Debug)]
 pub(super) enum Input {
     Device(DeviceEvent),
-    /// From the connect thread, which ends after this or after its `Ended`.
-    Opened(Channel),
+    /// From the connect thread, which ends after this or after its `Ended`; the device is the one it dialed.
+    Opened(BdAddr, Channel),
     Ended(End),
     /// Made by the driver itself when a write fails.
     SendFailed,
@@ -91,6 +92,7 @@ pub(super) enum Input {
     Advert(Sighting),
     Monitor(MonitorFact),
     Mic(MicFact),
+    Dictation(DictationFact),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,7 +113,9 @@ pub(super) struct Outlets {
     pub(super) monitor: watch::Sender<bool>,
     /// The latest source request; a watch, so turns of the setting while an open hangs never drop the last.
     pub(super) mic: watch::Sender<MicRequest>,
-    /// Where the uplink's audio goes, shared with the source's node.
+    /// The adapter of the link's attribute channel, started and ended with the control channel.
+    pub(super) dictation: dictation::Outlet,
+    /// Where the pods' audio goes, shared with the source's node.
     pub(super) tap: Arc<mic::Tap>,
 }
 
@@ -153,24 +157,7 @@ pub(super) async fn drive(
     outlets: Outlets,
     keys: Option<ProximityKeys>,
 ) {
-    let mut driver = Driver {
-        hub,
-        machine: Machine::new(),
-        policy: Policy::new(keys),
-        outlets,
-        started: Instant::now(),
-        feedback,
-        requests,
-        connector,
-        channel: None,
-        channel_first: false,
-        replies: HashMap::new(),
-        next_ticket: 0,
-        fed_back: VecDeque::new(),
-        announced: false,
-        exit: None,
-        resets: 0,
-    };
+    let mut driver = Driver::new(hub, feedback, requests, connector, outlets, keys);
     for effect in driver.policy.start() {
         driver.route(effect);
     }
@@ -236,6 +223,34 @@ struct Exit {
 }
 
 impl Driver {
+    fn new(
+        hub: Hub,
+        feedback: mpsc::Sender<Input>,
+        requests: mpsc::Sender<Request>,
+        connector: Connector,
+        outlets: Outlets,
+        keys: Option<ProximityKeys>,
+    ) -> Self {
+        Self {
+            hub,
+            machine: Machine::new(),
+            policy: Policy::new(keys),
+            outlets,
+            started: Instant::now(),
+            feedback,
+            requests,
+            connector,
+            channel: None,
+            channel_first: false,
+            replies: HashMap::new(),
+            next_ticket: 0,
+            fed_back: VecDeque::new(),
+            announced: false,
+            exit: None,
+            resets: 0,
+        }
+    }
+
     async fn wait(&mut self, inputs: &mut mpsc::Receiver<Input>) -> Turn {
         let deadline = self
             .machine
@@ -257,9 +272,11 @@ impl Driver {
     fn take(&mut self, input: Input) {
         match input {
             Input::Device(device) => self.step(device.event()),
-            Input::Opened(channel) => match Open::watch(channel) {
+            Input::Opened(device, channel) => match Open::watch(channel) {
                 Ok(open) => {
                     self.channel = Some(open);
+                    let (inputs, tap) = (self.feedback.clone(), Arc::clone(&self.outlets.tap));
+                    self.outlets.dictation.open(device, inputs, tap);
                     self.step(Event::ChannelOpened);
                 }
                 Err(error) => {
@@ -269,6 +286,7 @@ impl Driver {
             },
             Input::Ended(end) => {
                 self.channel = None;
+                self.outlets.dictation.close();
                 self.step(Event::ChannelEnded(end));
             }
             Input::SendFailed => self.step(Event::SendFailed),
@@ -295,6 +313,7 @@ impl Driver {
             Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
             Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
             Input::Mic(fact) => self.observe(Fact::Mic(fact)),
+            Input::Dictation(fact) => self.observe(Fact::Dictation(fact)),
         }
     }
 
@@ -309,7 +328,7 @@ impl Driver {
         }
     }
 
-    /// The clock's step, then the stall check's count and a decoder reset since the last tick.
+    /// The clock's step, then a decoder reset since the last tick and each stream's count for its stall check.
     fn tick(&mut self) {
         self.step(Event::Tick);
         let resets = self
@@ -324,6 +343,7 @@ impl Driver {
         }
         let packets = self.outlets.tap.packets();
         self.observe(Fact::Mic(MicFact::Heard { packets }));
+        self.observe(heard(&self.outlets.tap));
     }
 
     /// The tap's counters go into the state when `mic` changes or a recorder leaves, never for a packet; `recorder` is the edge of the node the policy holds open.
@@ -459,6 +479,8 @@ impl Driver {
                 self.send(request.sdu());
             }
             Effect::Mic(request) => mic::offer(&self.outlets.mic, request),
+            Effect::Dictation(DictationRequest::Mode) => self.send(&doap_mode_on()),
+            Effect::Dictation(request) => self.outlets.dictation.offer(request),
             Effect::Log(line) => log(&line),
             Effect::Exited => {
                 if let Some(exit) = &mut self.exit {
@@ -506,7 +528,7 @@ impl Driver {
             .name(CONNECT_THREAD.to_owned())
             .spawn(move || {
                 let answer = match connector(device) {
-                    Ok(channel) => Input::Opened(channel),
+                    Ok(channel) => Input::Opened(device, channel),
                     Err(error) => {
                         log(&format!("link: {error}"));
                         Input::Ended(End::ConnectFailed)
@@ -593,6 +615,12 @@ impl DeviceEvent {
             Self::CallFailed(call) => Event::CallFailed(call),
         }
     }
+}
+
+fn heard(tap: &mic::Tap) -> Fact {
+    Fact::Dictation(DictationFact::Heard {
+        packets: tap.dictation_packets(),
+    })
 }
 
 /// A name, a model and one battery reading: what the bar shows first.

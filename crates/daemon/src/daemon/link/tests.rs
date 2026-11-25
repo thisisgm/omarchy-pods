@@ -3,6 +3,7 @@
 mod driver;
 mod failures;
 mod ladders;
+mod service;
 mod settle;
 
 use std::sync::{Arc, mpsc as std_mpsc};
@@ -22,12 +23,17 @@ use tokio::time::timeout;
 
 use super::{Connector, DeviceEvent, Input, Outlets, REQUEST_QUEUE, Request, drive, queue};
 use crate::daemon::hub::Hub;
-use crate::daemon::{audio, keys, media, notify};
+use crate::daemon::{audio, dictation, keys, media, notify};
 
 /// A wait in a test still running after this long has hung, and the test fails.
 pub(in crate::daemon) const HANG_LIMIT: Duration = Duration::from_secs(10);
 
-/// Outlets whose queues nobody reads, for a test that looks only at the link.
+/// A connector that refuses every dial.
+pub(in crate::daemon) fn refusing() -> Connector {
+    Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)))
+}
+
+/// Outlets whose queues nobody reads and whose attribute channel never opens, for a test that looks only at the link.
 pub(in crate::daemon) fn unread_outlets() -> Outlets {
     let (notices, _unread) = notify::queue();
     let (prefs, _unwritten) = watch::channel(Prefs::default());
@@ -44,6 +50,7 @@ pub(in crate::daemon) fn unread_outlets() -> Outlets {
         media,
         monitor,
         mic,
+        dictation: dictation::Outlet::new(refusing()),
         tap: crate::daemon::mic::Tap::new(),
     }
 }

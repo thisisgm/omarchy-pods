@@ -3,6 +3,7 @@
 mod adverts;
 pub mod audio;
 mod battery;
+pub mod dictation;
 mod ear;
 pub mod mic;
 pub mod notices;
@@ -19,6 +20,7 @@ use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
 use audio::{AudioFact, AudioRequest};
 use battery::Latches;
+pub use dictation::{DictationFact, DictationRequest};
 use ear::Ear;
 pub use ear::{BOTH_OUT_SETTLE_MS, Era, MediaRequest, PAUSED_MAX, PlayerOwner};
 use mic::Mic;
@@ -44,6 +46,7 @@ pub enum Fact {
     Advert(Sighting),
     Monitor(MonitorFact),
     Mic(MicFact),
+    Dictation(DictationFact),
     /// The daemon is stopping; it waits for `Effect::Exited` within its bound.
     Exit,
 }
@@ -62,6 +65,7 @@ pub enum Effect {
     /// Written on the open channel; a closed channel drops it.
     Uplink(UplinkRequest),
     Mic(MicRequest),
+    Dictation(DictationRequest),
     /// A line for the daemon's log.
     Log(String),
     /// The uplink is stopped and its sink restored, so the daemon may stop.
@@ -123,6 +127,7 @@ impl Policy {
             | Fact::Paused(..)
             | Fact::PauseCut(_)
             | Fact::Mic(_)
+            | Fact::Dictation(_)
             | Fact::Exit => {}
         }
     }
@@ -166,7 +171,9 @@ impl Policy {
                 self.ear.cut(era, state, now);
                 Vec::new()
             }
-            Fact::Advert(_) | Fact::Monitor(_) | Fact::Mic(_) | Fact::Exit => Vec::new(),
+            Fact::Advert(_) | Fact::Monitor(_) | Fact::Mic(_) | Fact::Dictation(_) | Fact::Exit => {
+                Vec::new()
+            }
         };
         effects.extend(monitor);
         effects.extend(mic);

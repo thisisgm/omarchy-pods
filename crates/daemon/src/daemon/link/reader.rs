@@ -17,7 +17,7 @@ pub(super) const RECV_BUFFER_LEN: usize = 4096;
 const WORTH_A_READ: Interest = Interest::READABLE.add(Interest::ERROR);
 
 #[derive(Debug)]
-pub(super) struct Open {
+pub(in crate::daemon) struct Open {
     channel: AsyncFd<Channel>,
     buf: Box<[u8]>,
     truncation_logged: bool,
@@ -29,7 +29,7 @@ impl Open {
         deprecated,
         reason = "the replacement is an unsafe fn and this crate forbids unsafe; a `Channel` owns its one descriptor for life, which is all that fn asks its caller to promise"
     )]
-    pub(super) fn watch(channel: Channel) -> io::Result<Self> {
+    pub(in crate::daemon) fn watch(channel: Channel) -> io::Result<Self> {
         Ok(Self {
             channel: AsyncFd::with_interest(channel, WORTH_A_READ)?,
             buf: vec![0; RECV_BUFFER_LEN].into(),
@@ -37,12 +37,12 @@ impl Open {
         })
     }
 
-    pub(super) fn channel(&self) -> &Channel {
+    pub(in crate::daemon) fn channel(&self) -> &Channel {
         self.channel.get_ref()
     }
 
     /// The next SDU, or `None` once the channel has ended, whichever side ended it; no await sits between taking an SDU and returning it, so dropping this future loses none.
-    pub(super) async fn read(&mut self) -> Option<Zeroizing<Box<[u8]>>> {
+    pub(in crate::daemon) async fn read(&mut self) -> Option<Zeroizing<Box<[u8]>>> {
         loop {
             let mut ready = match self.channel.ready(WORTH_A_READ).await {
                 Ok(ready) => ready,

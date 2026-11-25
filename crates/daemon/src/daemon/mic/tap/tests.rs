@@ -3,9 +3,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pods_mic::{Resync, STAMP_STEP};
+use pods_proto::dictation::{AudioNotification, DictationPacket};
+use pods_proto::doap::Handles;
 use pods_proto::uplink::{AudioSdu, UplinkPacket};
 use pods_pw::Fill;
 use pods_samples::uplink::{audio_sdu, tone_unit};
+use pods_samples::{doap, opus};
 
 use super::{Feed, Tap};
 
@@ -25,6 +28,20 @@ fn packet(place: u32) -> Vec<u8> {
 fn audio(sdu: &[u8]) -> AudioSdu<'_> {
     let Ok(Some(UplinkPacket::Audio(audio))) = UplinkPacket::parse(sdu) else {
         panic!("not an audio SDU");
+    };
+    audio
+}
+
+/// A dictation notification of one tone frame under `counter`.
+fn notification(counter: u16) -> Vec<u8> {
+    let frame = opus::tone().next().unwrap();
+    doap::audio(&doap::Handles::OBSERVED, 0, &[(counter, frame)])
+}
+
+fn dictated(pdu: &[u8]) -> AudioNotification<'_> {
+    let Ok(Some(DictationPacket::Audio(audio))) = DictationPacket::parse(pdu, &Handles::OBSERVED)
+    else {
+        panic!("not a dictation audio notification");
     };
     audio
 }
@@ -109,6 +126,53 @@ fn an_arm_starts_a_new_run_at_the_next_audio_and_reports_it_once() {
     assert!(tap.audio(&audio(&packet(2))));
     assert!(!tap.audio(&audio(&packet(3))));
     assert_eq!(concealed(&tap), 0);
+}
+
+#[test]
+fn a_dictation_start_begins_a_dictation_run_at_the_next_audio_and_reports_it_once() {
+    let tap = Tap::new();
+    let (_feed, _resync) = open(&tap);
+    // On the uplink's run a dictation frame is a stale packet: the one lost before it is not concealed.
+    assert!(!tap.dictation(&dictated(&notification(0))));
+    assert!(!tap.dictation(&dictated(&notification(2))));
+    assert_eq!(concealed(&tap), 0);
+    tap.arm_dictation();
+    assert!(tap.dictation(&dictated(&notification(10))));
+    assert!(!tap.dictation(&dictated(&notification(12))));
+    assert_eq!(concealed(&tap), 1);
+}
+
+#[test]
+fn a_node_opened_after_the_first_dictation_audio_still_gets_its_run() {
+    let tap = Tap::new();
+    tap.arm_dictation();
+    assert!(tap.dictation(&dictated(&notification(0))));
+    let (_feed, _resync) = open(&tap);
+    assert!(!tap.dictation(&dictated(&notification(1))));
+    assert!(!tap.dictation(&dictated(&notification(3))));
+    assert_eq!(
+        concealed(&tap),
+        1,
+        "the chain took the frames as a dictation run"
+    );
+}
+
+#[test]
+fn dictation_audio_is_counted_apart_from_the_uplink() {
+    let tap = Tap::new();
+    tap.dictation(&dictated(&notification(0)));
+    tap.dictation(&dictated(&notification(1)));
+    tap.audio(&audio(&packet(0)));
+    assert_eq!((tap.dictation_packets(), tap.packets()), (2, 1));
+}
+
+#[test]
+fn an_uplink_start_and_a_dictation_start_each_wait_for_their_own_audio() {
+    let tap = Tap::new();
+    tap.arm();
+    tap.arm_dictation();
+    assert!(tap.dictation(&dictated(&notification(0))));
+    assert!(tap.audio(&audio(&packet(0))));
 }
 
 #[test]
