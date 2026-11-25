@@ -8,8 +8,8 @@ use proptest::prelude::*;
 use pulseaudio::protocol::{
     AuthReply, ChannelVolume, Command, CommandReply, FormatEncoding, FormatInfo, Prop, Props,
     PulseError, ServerInfo, SinkInfo, SubscriptionEvent, SubscriptionEventFacility,
-    SubscriptionEventType, read_command_message, write_command_message, write_error,
-    write_reply_message,
+    SubscriptionEventType, TagStructWriter, read_command_message, write_command_message,
+    write_error, write_reply_message,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder;
@@ -53,6 +53,15 @@ fn stripped(bytes: &[u8]) -> Frame {
     Frame(bytes[DESCRIPTOR_SIZE..].to_vec())
 }
 
+/// A client request, sample `L 00000014 L 00000007`: `GetServerInfo` under sequence 7.
+pub(in crate::daemon::audio) async fn read_request(
+    stream: &mut UnixStream,
+    pending: &mut Vec<u8>,
+) -> (u32, Command) {
+    let frame = read_frame(stream, pending).await.unwrap();
+    Command::read_tag_prefixed(&mut frame.0.as_slice(), PROTOCOL_VERSION).unwrap()
+}
+
 pub(in crate::daemon::audio) fn reply(reply: &impl CommandReply) -> Frame {
     let mut bytes = Vec::new();
     write_reply_message(&mut bytes, SEQ, reply, PROTOCOL_VERSION).unwrap();
@@ -62,7 +71,7 @@ pub(in crate::daemon::audio) fn reply(reply: &impl CommandReply) -> Frame {
 pub(in crate::daemon::audio) fn body(frame: &Frame) -> &[u8] {
     match message(frame).unwrap() {
         Message::Reply { body, .. } => body,
-        other @ (Message::Refused { .. } | Message::Event | Message::Other) => {
+        other @ (Message::Refused { .. } | Message::Event(_) | Message::Other) => {
             panic!("not a reply: {other:?}")
         }
     }
@@ -259,7 +268,10 @@ fn message_tells_replies_refusals_events_and_the_rest_apart() {
     });
     let mut announced = Vec::new();
     write_command_message(&mut announced, EVENT_SEQ, &event, PROTOCOL_VERSION).unwrap();
-    assert_eq!(message(&stripped(&announced)), Ok(Message::Event));
+    assert_eq!(
+        message(&stripped(&announced)),
+        Ok(Message::Event(Some(SubscriptionMask::SINK)))
+    );
 
     let mut other = Vec::new();
     write_command_message(&mut other, SEQ, &Command::GetServerInfo, PROTOCOL_VERSION).unwrap();
@@ -270,6 +282,58 @@ fn message_tells_replies_refusals_events_and_the_rest_apart() {
         message(&Frame(vec![tag::STRING, 0])),
         Err(Malformed::Tag(tag::STRING))
     );
+}
+
+fn subscription_event(seq: u32, flags: u32) -> Frame {
+    const SINK_INDEX: u32 = 0;
+
+    let mut payload = Vec::new();
+    let mut tags = TagStructWriter::new(&mut payload, PROTOCOL_VERSION);
+    for value in [command::EVENT, seq, flags, SINK_INDEX] {
+        tags.write_u32(value).unwrap();
+    }
+    Frame(payload)
+}
+
+#[test]
+fn the_hand_built_event_reads_as_its_facility() {
+    let event = subscription_event(EVENT_SEQ, subscription::SINK | subscription::CHANGED);
+    assert_eq!(
+        message(&event),
+        Ok(Message::Event(Some(SubscriptionMask::SINK)))
+    );
+}
+
+#[test]
+fn an_event_with_a_request_sequence_invalidates_everything() {
+    let event = subscription_event(SEQ, subscription::SINK | subscription::CHANGED);
+    assert_eq!(message(&event), Ok(Message::Event(None)));
+}
+
+#[test]
+fn an_event_with_trailing_bytes_invalidates_everything() {
+    let mut event = subscription_event(EVENT_SEQ, subscription::SINK | subscription::CHANGED);
+    event.0.push(tag::TRUE);
+    assert_eq!(message(&event), Ok(Message::Event(None)));
+}
+
+#[test]
+fn an_event_with_bad_type_bits_invalidates_everything() {
+    const BAD_TYPE_BITS: u32 = 0x30;
+
+    let event = subscription_event(EVENT_SEQ, subscription::SINK | BAD_TYPE_BITS);
+    assert_eq!(message(&event), Ok(Message::Event(None)));
+}
+
+#[test]
+#[expect(
+    clippy::as_conversions,
+    reason = "the discriminant is the protocol's card facility number"
+)]
+fn an_event_with_an_unknown_facility_invalidates_everything() {
+    let flags = SubscriptionEventFacility::Card as u32 | subscription::CHANGED;
+    let event = subscription_event(EVENT_SEQ, flags);
+    assert_eq!(message(&event), Ok(Message::Event(None)));
 }
 
 #[test]

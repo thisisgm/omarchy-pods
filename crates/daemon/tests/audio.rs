@@ -48,8 +48,8 @@ mod tests {
         ]
     }
 
-    /// One refresh: the default sink's name, then every sink.
-    const REFRESH: [Asked; 2] = [Asked::ServerInfo, Asked::SinkList];
+    const SINK_REFRESH: [Asked; 1] = [Asked::SinkList];
+    const SERVER_REFRESH: [Asked; 2] = [Asked::ServerInfo, Asked::SinkList];
 
     fn down_line(reason: &str) -> String {
         format!("audio: the audio server is down: {reason}")
@@ -191,28 +191,33 @@ mod tests {
             audio.set_volume(&sink, PERCENT.saturating_add(step));
         }
         audio.hold_replies(false);
-        let two = before.saturating_add(REFRESH.len().saturating_mul(2));
-        audio.wait_requests(two, HANG_LIMIT);
-        // A third refresh, were one coming, would follow the second answer within this.
+        audio.wait_requests(before.saturating_add(1), HANG_LIMIT);
+        // A follow-up for any event still in flight would arrive within this.
         pause(REAL_TIME_SLACK);
         rig.link_down(&device);
         audio.wait_clients(0, HANG_LIMIT);
-        assert_eq!(audio.requests()[before..], [REFRESH, REFRESH].concat());
+        let asked = audio.requests();
+        assert!(
+            matches!(
+                &asked[before..],
+                [Asked::SinkList] | [Asked::SinkList, Asked::SinkList]
+            ),
+            "{:?}",
+            &asked[before..]
+        );
         audio.assert_only_reads();
         rig.finish();
     }
 
-    /// Makes `change`, which sends `events` events, and waits for the refresh each one causes.
+    /// Makes `change` and waits for the requests its event should cause.
     fn refreshed_after(
         audio: &FakeAudio,
         wanted: &mut Vec<Asked>,
-        events: usize,
+        reads: &[Asked],
         change: impl FnOnce(&FakeAudio),
     ) {
         change(audio);
-        for _ in 0..events {
-            wanted.extend(REFRESH);
-        }
+        wanted.extend_from_slice(reads);
         audio.wait_requests(wanted.len(), HANG_LIMIT);
     }
 
@@ -222,25 +227,41 @@ mod tests {
         let sink = sink_named(device.address);
         let other = "alsa_output.speakers";
         let mut wanted = opening();
-        refreshed_after(&audio, &mut wanted, 1, |audio| {
+        refreshed_after(&audio, &mut wanted, &SINK_REFRESH, |audio| {
             audio.add_sink(other, PERCENT);
         });
-        refreshed_after(&audio, &mut wanted, 1, |audio| {
+        refreshed_after(&audio, &mut wanted, &SERVER_REFRESH, |audio| {
             audio.set_default_sink(other);
         });
-        refreshed_after(&audio, &mut wanted, 1, |audio| {
+        refreshed_after(&audio, &mut wanted, &SINK_REFRESH, |audio| {
             audio.set_volume(&sink, PERCENT.saturating_add(1));
         });
-        refreshed_after(&audio, &mut wanted, 1, |audio| {
+        refreshed_after(&audio, &mut wanted, &SERVER_REFRESH, |audio| {
             audio.set_default_sink(&sink);
         });
-        refreshed_after(&audio, &mut wanted, 1, |audio| audio.remove_sink(other));
+        refreshed_after(&audio, &mut wanted, &SINK_REFRESH, |audio| {
+            audio.remove_sink(other);
+        });
         audio.restart(Volumes::Kept);
         wanted.extend(opening());
         audio.wait_requests(wanted.len(), HANG_LIMIT);
-        // The default sink's removal also moves the default, and that second event lands inside the first refresh.
-        refreshed_after(&audio, &mut wanted, 2, |audio| audio.remove_sink(&sink));
-        refreshed_after(&audio, &mut wanted, 1, |audio| {
+        // Removing the default sends two events, which may reach the daemon together.
+        audio.remove_sink(&sink);
+        let removed = wait_for("the new default read after removal", || {
+            let asked = audio.requests();
+            let reads = &asked[wanted.len()..];
+            reads.ends_with(&SERVER_REFRESH).then(|| reads.to_vec())
+        });
+        assert!(
+            matches!(
+                removed.as_slice(),
+                [Asked::ServerInfo, Asked::SinkList]
+                    | [Asked::SinkList, Asked::ServerInfo, Asked::SinkList]
+            ),
+            "{removed:?}"
+        );
+        wanted.extend(removed);
+        refreshed_after(&audio, &mut wanted, &SINK_REFRESH, |audio| {
             audio.add_sink(&sink, PERCENT);
         });
         rig.link_down(&device);

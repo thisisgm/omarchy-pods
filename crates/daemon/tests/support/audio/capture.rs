@@ -62,10 +62,10 @@ pub(super) struct Capture {
 }
 
 impl Capture {
-    pub(super) fn add_source(&mut self, name: &str) {
+    pub(super) fn add_source(&mut self, name: &str) -> u32 {
         let taken = self.sources.iter().any(|source| source.name == name);
         assert!(!taken, "a second source named {name}");
-        self.push_source(name.to_owned(), None);
+        self.push_source(name.to_owned(), None)
     }
 
     /// The index of the monitor source opened with the sink `sink` at `index`.

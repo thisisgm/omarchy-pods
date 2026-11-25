@@ -361,6 +361,15 @@ impl State {
         }
     }
 
+    pub(super) fn add_source(&mut self, name: &str) {
+        let index = self.capture.add_source(name);
+        self.announce(
+            SubscriptionEventFacility::Source,
+            SubscriptionEventType::New,
+            Some(index),
+        );
+    }
+
     pub(super) fn add_recorder(&mut self, target: &str, kind: Recorder) -> RecorderId {
         let id = self.capture.add(target, kind);
         self.announce(

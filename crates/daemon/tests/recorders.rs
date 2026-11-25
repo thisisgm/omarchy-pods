@@ -16,10 +16,10 @@ mod tests {
     use pods_samples::MODEL_NUMBER;
     use pulseaudio::protocol::SinkState;
 
-    use super::support::audio::{Asked, FakeAudio, PERCENT, Recorder, Volumes};
+    use super::support::audio::{Asked, FakeAudio, Recorder, Volumes};
     use super::support::pipewire::{node_name, start, wait_node};
     use super::support::rig::{Device, Rig};
-    use super::support::uplink::{link_heard, rig_with_audio, wait_mic};
+    use super::support::uplink::{link, link_heard, rig_with_audio, wait_mic};
     use super::support::wait_for;
 
     /// The node names Superwhisper gives its two recorders.
@@ -27,8 +27,6 @@ mod tests {
     const HISTORY: &str = "superwhisper-history";
     /// A source of the desktop's own.
     const BUILT_IN: &str = "alsa_input.built-in";
-    /// A sink that comes and goes, so the daemon reads every list again.
-    const PASSING_SINK: &str = "alsa_output.passing";
     /// The longest list of record streams the daemon reads.
     const MOST: usize = 256;
     const LINE_START: &str = "mic: recorders ";
@@ -65,16 +63,42 @@ mod tests {
         (rig, device, audio, pipewire)
     }
 
-    /// Returns once the daemon read the record streams again after a sink came and went.
+    /// Returns once a recorder on another source makes the daemon read the streams again.
     fn read_again(audio: &FakeAudio) {
         let before = audio.requests().len();
-        audio.add_sink(PASSING_SINK, PERCENT);
-        audio.remove_sink(PASSING_SINK);
+        let other = audio.add_recorder(BUILT_IN, Recorder::Program);
         wait_for("the record streams read again", || {
             audio.requests()[before..]
                 .contains(&Asked::RecorderList)
                 .then_some(())
         });
+        audio.remove_recorder(other);
+    }
+
+    #[test]
+    fn a_recorder_event_reads_only_the_recorders() {
+        let (mut rig, device, audio) =
+            rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
+        let source = node_name();
+        audio.add_source(&source);
+        let pipewire = start(&rig);
+        link(&rig, &device);
+        wait_node(&pipewire);
+        wait_mic(&rig, "ready");
+        let before = wait_for("the initial empty recorder read", || {
+            let requests = audio.requests();
+            (requests.last() == Some(&Asked::RecorderList)).then_some(requests.len())
+        });
+
+        let recorder = audio.add_recorder(&source, Recorder::Program);
+        wait_lines(&mut rig, &[counted(0, 1)]);
+        audio.remove_recorder(recorder);
+        wait_lines(&mut rig, &[counted(0, 1), counted(0, 0)]);
+        assert_eq!(
+            &audio.requests()[before..],
+            &[Asked::RecorderList, Asked::RecorderList]
+        );
+        rig.finish();
     }
 
     #[test]
