@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::Duration;
 
+use pods_core::command::{Command, Outcome};
+use pods_core::prefs::MicPref;
 use pods_fake::{Fault, Pods, Profile, pair, unwatchable};
 use pods_sys::l2cap::{Channel, ChannelError};
 use rustix::io::Errno;
@@ -109,7 +111,13 @@ fn a_link_the_pods_hang_up_dials_again_after_the_first_retry() {
         Ok(host_end)
     }));
     let hold = running.hold_clock();
-    let (_, mut changes) = running.hub().follow();
+    let hub = running.hub();
+    // The paused clock can advance to a restore deadline while the connector thread returns.
+    assert_eq!(
+        block_on(hub.submit(Command::SetMicrophone(MicPref::Off))),
+        Outcome::Confirmed
+    );
+    let (_, mut changes) = hub.follow();
     device_up(running.inputs());
     block_on(async {
         let mut was_up = false;

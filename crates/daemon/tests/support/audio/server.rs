@@ -88,6 +88,7 @@ pub(super) struct State {
     next_client: u32,
     threads: Vec<JoinHandle<()>>,
     hold: bool,
+    pub(super) silent_events: bool,
     pub(super) stopping: bool,
     pub(super) fault: Option<String>,
 }
@@ -230,6 +231,9 @@ impl State {
         kind: SubscriptionEventType,
         index: Option<u32>,
     ) {
+        if self.silent_events {
+            return;
+        }
         let mask = SubscriptionMask::from_bits_truncate(1 << facility as u32);
         let event = Command::SubscribeEvent(SubscriptionEvent {
             event_facility: facility,

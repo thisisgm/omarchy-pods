@@ -21,6 +21,7 @@ mod tests {
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
+    use super::support::audio::wire::sink_named;
     use super::support::audio::{Asked, FakeAudio};
     use super::support::pipewire::{record, start};
     use super::support::recording::wait_packets;
@@ -28,11 +29,12 @@ mod tests {
     use super::support::settings::set;
     use super::support::sleep::{logged, sleep, wake};
     use super::support::uplink::{
-        START_ANSWER, STOP_ANSWER, TRY_SPACING, all_tries, link, link_heard, lose, mic, move_sink,
-        put_in, read_up_to_now, rig_with, rig_with_audio, set_off_unworn, start_failures, starts,
-        stops, take_out, wait_mic, wait_restore, wait_starts, wait_stop,
+        EXIT_BEFORE_RESTORE_LINE, START_ANSWER, STOP_ANSWER, TRY_SPACING, all_tries, assert_hold,
+        link, link_heard, lose, mic, move_sink, put_in, read_up_to_now, rig_with, rig_with_audio,
+        set_off_unworn, start_failures, starts, stops, take_out, wait_mic, wait_restore,
+        wait_starts, wait_stop,
     };
-    use super::support::{pause, wait_for};
+    use super::support::{HANG_LIMIT, pause, wait_for};
 
     /// Past the deadline of a START, so a try that was still due would have shown.
     const PAST_THE_ANSWER: Duration = START_ANSWER.saturating_add(REAL_TIME_SLACK);
@@ -333,22 +335,137 @@ mod tests {
     }
 
     #[test]
-    fn the_link_dropping_in_stopping_orders_no_restore() {
+    fn a_device_removed_during_a_stop_writes_nothing_to_its_gone_sink() {
         let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
         link_heard(&rig, &device);
         wait_mic(&rig, "live");
         device.pods.uplink().hold_stops(true);
         set_off_unworn(&rig, &device);
         let stop = wait_stop(&device);
-        lose(&rig, &device);
-        device.pods.uplink().release_stop();
-        link(&rig, &device);
+        // The Bluetooth sink disappears with the device, before the channel's Down can restore it.
+        audio.remove_sink(&sink_named(device.address));
         rig.wait_sink_told();
+        rig.bluez().remove(&device.path);
+        rig.wait_status("the device cleared after the loss", |status| {
+            status["device_name"] == ""
+        });
         // A restore the lost STOP left due would go out once its answer window closed.
         let closed = STOP_ANSWER.saturating_add(REAL_TIME_SLACK);
         pause(closed.saturating_sub(stop.at.elapsed()));
-        read_up_to_now(&rig, &device);
-        assert!(audio.writes().is_empty(), "{:?}", audio.writes());
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_channel_end_in_stopping_restores_the_running_sink() {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+        device.pods.uplink().hold_stops(true);
+        set_off_unworn(&rig, &device);
+        let stop = wait_stop(&device);
+        audio.assert_only_reads();
+
+        let closing = Instant::now();
+        rig.close_channel(&device);
+        let (suspended, resumed) = wait_restore(&audio, &device);
+        assert!(
+            suspended >= closing,
+            "the suspend came before the channel closed"
+        );
+        assert!(
+            resumed < stop.at + STOP_ANSWER,
+            "the restore finished after the STOP answer window"
+        );
+        assert_hold(suspended, resumed);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_channel_end_while_live_restores_the_running_sink() {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+
+        rig.close_channel(&device);
+        let (suspended, resumed) = wait_restore(&audio, &device);
+        assert_hold(suspended, resumed);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_channel_end_before_the_running_marker_restores_the_running_sink() {
+        let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        let uplink = device.pods.uplink();
+        uplink.hold_running_markers();
+        link_heard(&rig, &device);
+        wait_starts(&device, 1);
+        wait_for("the pods' uplink to run", || uplink.running().then_some(()));
+        assert_eq!(mic(&rig), "starting");
+        audio.assert_only_reads();
+
+        rig.close_channel(&device);
+        let (suspended, resumed) = wait_restore(&audio, &device);
+        assert_hold(suspended, resumed);
+        assert_eq!(stops(&device), []);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_sink_removed_during_a_channel_end_restore_keeps_the_audio_server_up() {
+        let (mut rig, device, audio) =
+            rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
+        link_heard(&rig, &device);
+        wait_mic(&rig, "live");
+
+        // Both suspend and removal would otherwise trigger a refresh through subscription events.
+        audio.silence_events();
+        rig.hang_up_channel(&device);
+        assert!(matches!(
+            audio.wait_writes(1, HANG_LIMIT).as_slice(),
+            [Asked::Suspend {
+                name: Some(_),
+                suspend: true,
+                ..
+            }]
+        ));
+        audio.remove_sink(&sink_named(device.address));
+        assert!(matches!(
+            audio.wait_writes(2, HANG_LIMIT).as_slice(),
+            [
+                _,
+                Asked::Suspend {
+                    name: None,
+                    suspend: false,
+                    ..
+                }
+            ]
+        ));
+        wait_for("a sink refresh after the resume", || {
+            audio
+                .requests()
+                .iter()
+                .rev()
+                .take_while(|asked| !matches!(asked, Asked::Suspend { .. }))
+                .any(|asked| *asked == Asked::SinkList)
+                .then_some(())
+        });
+        wait_mic(&rig, "idle");
+        assert_eq!(rig.status()["audio_server"], "up");
+        assert!(rig.stop(HANG_LIMIT).success());
+        let log = rig.daemon().log();
+        assert_eq!(
+            log.lines()
+                .find(|line| line.starts_with("audio: the audio server is down")),
+            None
+        );
+        assert!(!log.lines().any(|line| line == EXIT_BEFORE_RESTORE_LINE));
+        let connections = audio
+            .requests()
+            .iter()
+            .filter(|asked| matches!(asked, Asked::Auth { .. }))
+            .count();
+        assert_eq!(connections, 1, "the daemon reconnected to the audio server");
         rig.finish();
     }
 

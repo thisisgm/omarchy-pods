@@ -149,6 +149,11 @@ impl FakeAudio {
         self.change(|state| state.remove_sink(name));
     }
 
+    /// Applies changes, including sink removals, without sending subscription events.
+    pub(crate) fn silence_events(&self) {
+        self.change(|state| state.silent_events = true);
+    }
+
     pub(crate) fn set_default_sink(&self, name: &str) {
         self.change(|state| state.set_default_sink(name));
     }

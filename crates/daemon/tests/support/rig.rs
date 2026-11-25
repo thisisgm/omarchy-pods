@@ -26,6 +26,7 @@ use super::logind::{FakeLogind, Impostor};
 use super::omarchy::{Mood, Omarchy};
 use super::players::{FakePlayer, Playback};
 use super::relay::Relay;
+use super::uplink::keep_off;
 use super::watch::Watch;
 use super::{
     DAEMON_LOG, Daemon, POLL, Proto1, Session, binary, do_request, outcome, pause, wait_for,
@@ -191,9 +192,10 @@ impl Rig {
         audio
     }
 
-    /// The fake audio server holding the first pods' sink as its default at `percent`, then those pods linked and the server read.
+    /// Links the pods and reads their default sink at `percent`, with the microphone off so these sink tests never start an uplink.
     pub(crate) fn with_audio(percent: u8) -> (Self, Device, Rc<FakeAudio>) {
         let mut rig = Self::new();
+        keep_off(rig.session());
         let audio = rig.start_audio();
         let device = rig.add_pods(Profile::default());
         let sink = sink_named(device.address);
