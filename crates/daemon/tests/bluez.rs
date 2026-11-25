@@ -200,6 +200,15 @@ mod tests {
         rig.wait_status("connected true", connected);
     }
 
+    #[test]
+    fn the_rig_status_poll_matches_the_cli() {
+        let mut rig = Rig::before_system_bus();
+        rig.start();
+        let status = rig.wait_status("the status document", |_| true);
+        assert_eq!(status, rig.cli_status());
+        rig.finish();
+    }
+
     /// BlueZ leaves the bus and comes back, which starts a sweep.
     fn bluez_restarts(rig: &Rig) {
         rig.bluez().drop_name();

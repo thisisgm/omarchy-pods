@@ -28,7 +28,8 @@ use super::players::{FakePlayer, Playback};
 use super::relay::Relay;
 use super::watch::Watch;
 use super::{
-    DAEMON_LOG, Daemon, Proto1, Session, binary, do_request, outcome, wait_for, wait_within,
+    DAEMON_LOG, Daemon, POLL, Proto1, Session, binary, do_request, outcome, pause, wait_for,
+    wait_within,
 };
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
@@ -451,10 +452,17 @@ impl Rig {
         self.session.run_client(Path::new(binary()), args)
     }
 
-    /// `librepods status`, parsed.
+    /// The control socket's status document, parsed.
     pub(crate) fn status(&self) -> Value {
+        // Sample input: `{"schema_version":1,"connected":false}\n`.
+        serde_json::from_str(&self.session.status()).expect("the status socket returns JSON")
+    }
+
+    /// What `librepods status` prints, parsed.
+    pub(crate) fn cli_status(&self) -> Value {
         let output = self.client(&["status"]);
         assert!(output.status.success(), "librepods status: {output:?}");
+        // Sample input: `{"schema_version":1,"connected":false}\n`.
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
@@ -463,7 +471,7 @@ impl Rig {
         Watch::start(&self.session)
     }
 
-    /// Asks `librepods status` until `ready` holds, failing at `HANG_LIMIT`.
+    /// Reads status until `ready` holds, failing at `HANG_LIMIT`.
     pub(crate) fn wait_status(&self, what: &str, ready: impl Fn(&Value) -> bool) -> Value {
         wait_for(what, || {
             let status = self.status();
@@ -471,7 +479,7 @@ impl Rig {
         })
     }
 
-    /// Asks `librepods status` until `audio_server` reads `word`.
+    /// Reads status until `audio_server` reads `word`.
     pub(crate) fn wait_audio_server(&self, word: &str) -> Value {
         self.wait_status(&format!("audio_server {word}"), |status| {
             status["audio_server"] == word
@@ -502,7 +510,7 @@ impl Rig {
         );
     }
 
-    /// Asks `librepods status` for `duration`, failing at the first answer where `check` does not hold; the first is checked whenever it comes, as every caller's state outlasts the window.
+    /// Reads status for `duration`, failing at the first answer where `check` does not hold; the first is checked whenever it comes, as every caller's state outlasts the window.
     pub(crate) fn holds_for(&self, duration: Duration, what: &str, check: impl Fn(&Value) -> bool) {
         let started = Instant::now();
         loop {
@@ -515,6 +523,7 @@ impl Rig {
             if started.elapsed() >= duration {
                 return;
             }
+            pause(POLL);
         }
     }
 

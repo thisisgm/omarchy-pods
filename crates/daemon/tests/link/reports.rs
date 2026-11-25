@@ -248,7 +248,7 @@ fn watch_prints_every_change_of_the_burst_in_order() {
         [LINK, BATTERIES, EARS, NAME_AND_MODEL, NOISE_MODE],
         "{lines:#?}"
     );
-    assert_eq!(lines.last(), Some(&rig.status()));
+    assert_eq!(lines.last(), Some(&rig.cli_status()));
     rig.finish();
 }
 
