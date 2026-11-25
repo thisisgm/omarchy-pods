@@ -7,7 +7,7 @@ use pods_samples::opus::tone;
 
 use super::*;
 use crate::conceal::UNIT_FRAMES;
-use crate::{Counters, NODE_LATENCY_MS, chain};
+use crate::{Counters, NODE_LATENCY_MS, chain, level};
 
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const FRAME: usize = FRAME_FRAMES as usize;
@@ -124,7 +124,9 @@ fn a_call_that_panics_or_will_not_conceal_ends_in_the_fall_and_a_fresh_decoder()
         // The frame after rises from nothing, and past the rise it is a fresh decoder's.
         assert!(after[0].to_bits() == 0.0_f32.to_bits(), "case {case}");
         let bits = |samples: &[f32]| -> Vec<u32> { samples.iter().map(|s| s.to_bits()).collect() };
-        assert_eq!(bits(&after[FADE..]), bits(&alone[FADE..]), "case {case}");
+        let mut fresh = alone[FADE..].to_vec();
+        level::apply(&mut fresh);
+        assert_eq!(bits(&after[FADE..]), bits(&fresh), "case {case}");
     }
 }
 

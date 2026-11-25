@@ -14,6 +14,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use pods_mic::level::MIC_GAIN_DB;
     use pods_mic::opus::{Decoder, MAX_OPUS_FRAME_BYTES};
     use pods_mic::{
         ARRIVAL_WINDOW, Chain, Counters, FRAME_MS, MAX_FRAMES_PER_NOTIFICATION, MAX_GAP_FRAMES,
@@ -204,7 +205,7 @@ mod tests {
             .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
         let level = 20.0 * f64::from(peak).log10();
         assert!(
-            (level - f64::from(TONE_DBFS)).abs() <= TONE_SLACK_DB,
+            (level - f64::from(TONE_DBFS) - f64::from(MIC_GAIN_DB)).abs() <= TONE_SLACK_DB,
             "the tone peaks at {level} dBFS"
         );
     }

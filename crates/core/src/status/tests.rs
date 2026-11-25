@@ -22,15 +22,20 @@ fn charge(level: u8, charging: bool) -> Charge {
     Charge { level, charging }
 }
 
+/// Five counts apart, so a key that reads the wrong count shows.
+const FOLDED: MicCounts = MicCounts {
+    underruns: 15,
+    concealed: 16,
+    decode_errors: 17,
+    limited: 18,
+    nonfinite: 19,
+};
+
 #[test]
 fn populated_state_lands_every_field_on_its_key() {
     let mut microphone = Microphone::new(MicPref::Off);
     microphone.show(MicCode::Off, 14, true);
-    microphone.fold(MicCounts {
-        underruns: 15,
-        concealed: 16,
-        decode_errors: 17,
-    });
+    microphone.fold(FOLDED);
     let state = State {
         connected: true,
         device_name: "Desk pods".to_owned(),
@@ -124,6 +129,8 @@ fn populated_state_lands_every_field_on_its_key() {
     expected["mic_underruns"] = json!(15);
     expected["mic_concealed"] = json!(16);
     expected["mic_decode_errors"] = json!(17);
+    expected["mic_limited"] = json!(18);
+    expected["mic_nonfinite"] = json!(19);
     assert_eq!(status(&state), expected);
 }
 

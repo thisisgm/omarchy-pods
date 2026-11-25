@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::conceal::{FADE_FRAMES, Tail, UNIT_FRAMES, fade_in};
 use super::dictation::{FRAME_MS, PREROLL_STAGE_FRAMES};
-use super::{Counters, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ};
+use super::{Counters, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ, level};
 
 /// A power of two, 2 s at 64 kHz and more at 48: the frames an opening may keep, and twice the latency a steady reader stands behind the writer.
 const RING_SAMPLES: u64 = 131_072;
@@ -338,7 +338,7 @@ impl Reader {
         (reader, resync)
     }
 
-    /// Fills `out` with the frames due at `now`, and returns the rate ratio the consumer should run at.
+    /// Fills `out` with the frames due at `now`, at the level a recorder gets, and returns the rate ratio the consumer should run at.
     pub fn read(&mut self, now: Duration, out: &mut [f32]) -> f64 {
         let frames = i64::try_from(out.len()).unwrap_or(i64::MAX);
         if self.resync.asked.swap(false, Ordering::AcqRel) {
@@ -351,7 +351,15 @@ impl Reader {
         // The run is noted before its time is read, so the time is of that run or of one after it.
         let run = self.ring.run();
         let aim = self.aim(run, now, frames);
-        self.fill(aim, frames, out)
+        let ratio = self.fill(aim, frames, out);
+        // Last, over every sample handed out, so the sum of two fades is held under the ceiling too.
+        let tally = level::apply(out);
+        let counters = &self.counters;
+        counters.limited.fetch_add(tally.limited, Ordering::Relaxed);
+        counters
+            .nonfinite
+            .fetch_add(tally.nonfinite, Ordering::Relaxed);
+        ratio
     }
 
     /// Stands the reader for a read of `frames` at `now` by the time of `run`, the run noted before, and gives what it stood by; none while the run has not told its time, or when another started since.

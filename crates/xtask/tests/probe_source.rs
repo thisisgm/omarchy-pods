@@ -19,6 +19,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_mic::decode::{Decoded, Decoder};
+    use pods_mic::level::MIC_GAIN_DB;
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ, SAMPLES_PER_UNIT, STAMP_STEP, UPLINK_PERIOD_MS};
     use pods_proto::sdulog::{Direction, Record};
     use pods_proto::uplink::{AUDIO_HEADER_LEN, START};
@@ -33,8 +34,8 @@ mod tests {
     const NODE: &str = "omapods_input.probe";
     /// Line 15 of 480 stands near 1 kHz, far under the half rate of the slowest recorder.
     const LINE: u16 = 15;
-    /// A level that decodes to a peak near a fifth of full scale, so a 16 bit recorder clips nothing.
-    const LEVEL: u8 = 186;
+    /// A level that decodes to a peak near a fourteenth of full scale, which the node's gain raises to about a third: under the limiter's knee, so the recording is the tone whole.
+    const LEVEL: u8 = 180;
     /// Longer than any test records, so the replay is still feeding when the recorder closes its file.
     const CAPTURE_PACKETS: u32 = 700;
     /// A capture whose last packet lands at 2.97 s, so only a node kept while the reader plays its tail sees the line at 3 s.
@@ -69,8 +70,8 @@ mod tests {
     const WITHIN: Duration = Duration::from_secs(10);
     /// A replay that prints no line and does not end for this long has hung.
     const HANG_LIMIT: Duration = Duration::from_secs(30);
-    /// The peak, of full scale, of the tone the capture's units decode to.
-    const TONE_AMPLITUDE: f64 = 0.1966;
+    /// The peak, of full scale, of the tone the capture's units decode to; the node's gain leaves it under the limiter's knee.
+    const TONE_AMPLITUDE: f64 = 0.0695;
     /// How far the decoder's own output may stand from that tone, and the recording from it.
     const OWN_TOLERANCE_DB: f64 = 0.1;
     const ENERGY_TOLERANCE_DB: f64 = 1.0;
@@ -317,7 +318,7 @@ mod tests {
     fn a_replayed_capture_is_recorded_by_a_real_recorder() {
         let (_, tape, rate) = recorded(&capture(CAPTURE_PACKETS, on_time), SETTLE + CHECKED);
 
-        // The recording holds the tone the decoder itself makes of the units, whole and at its pitch.
+        // The recording holds the tone the decoder itself makes of the units, whole, at its pitch and raised by the node's gain.
         assert_tone(
             &own_output(),
             RATE_HZ,
@@ -325,7 +326,8 @@ mod tests {
             TONE_AMPLITUDE,
             OWN_TOLERANCE_DB,
         );
-        assert_tone(&tape, rate, tone_hz(), TONE_AMPLITUDE, ENERGY_TOLERANCE_DB);
+        let raised = TONE_AMPLITUDE * 10_f64.powf(f64::from(MIC_GAIN_DB) / 20.0);
+        assert_tone(&tape, rate, tone_hz(), raised, ENERGY_TOLERANCE_DB);
     }
 
     #[test]

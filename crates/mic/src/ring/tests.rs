@@ -1,4 +1,4 @@
-//! Support tests: the one word that holds the run's arrival or none, the step between time and frames, how far a write runs past the index it shows, and a run that starts inside a read, at either of the two places it can, which no caller can make happen on order.
+//! Support tests: the one word that holds the run's arrival or none, the step between time and frames, how far a write runs past the index it shows, and a run that starts inside a read, at either of the two places it can, which no caller can make happen on order; and what a read adds to the counters of samples no decoder gives on order.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -10,7 +10,7 @@ use super::{
     Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Reader, Ring, UNIT_FRAMES,
     fade_in, scaled,
 };
-use crate::{Chain, Counters, FRAME_MS, NODE_LATENCY_MS, chain};
+use crate::{Chain, Counters, FRAME_MS, NODE_LATENCY_MS, chain, level};
 
 /// One read, 20 ms at the node's rate.
 const QUANTUM: usize = 1280;
@@ -53,11 +53,12 @@ fn opens(reader: &mut Reader, now: Duration) {
     let run = reader.ring.run();
     let first = i64::try_from(run).unwrap();
     let written = (0..).zip(0..).take(QUANTUM);
-    let opened: Vec<u32> = written
+    let mut opened: Vec<f32> = written
         .map(|(at, faded)| reader.ring.sample(run, first.saturating_add(at)) * fade_in(faded))
-        .map(f32::to_bits)
         .collect();
+    level::apply(&mut opened);
     assert!(!silent(&heard));
+    let opened: Vec<u32> = opened.into_iter().map(f32::to_bits).collect();
     assert_eq!(heard.map(f32::to_bits).to_vec(), opened);
     let clamp = 1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION;
     assert_eq!(ratio.to_bits(), clamp.to_bits());
@@ -160,4 +161,38 @@ fn a_dictation_placed_as_a_read_takes_its_time_is_not_stood_by_and_opens_on_the_
     reader.fill(aim, frames, &mut heard);
     assert!(silent(&heard));
     opens(&mut reader, now + PERIOD);
+}
+
+#[test]
+fn a_read_adds_what_the_level_met_to_the_counters_once() {
+    /// Past the reader's fade in and before the last unit, which plays on backwards when the ring runs dry.
+    const LOUD: [usize; 3] = [400, 401, 700];
+    const NOT_FINITE: [(usize, f32); 2] = [(500, f32::NAN), (600, f32::INFINITY)];
+    let counters = Arc::new(Counters::default());
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::clone(&counters));
+    let mut written = [0.01_f32; QUANTUM];
+    for at in LOUD {
+        written[at] = 0.5;
+    }
+    for (at, sample) in NOT_FINITE {
+        written[at] = sample;
+    }
+    ring.write(written.iter().copied());
+    ring.publish(ring.arrival_at(Duration::ZERO));
+    resync.request();
+    let counted =
+        || [&counters.limited, &counters.nonfinite].map(|count| count.load(Ordering::Relaxed));
+    let mut heard = [0.0; QUANTUM];
+    let now = Duration::from_millis(u64::from(NODE_LATENCY_MS));
+    reader.read(now, &mut heard);
+    assert_eq!(counted(), [3, 2]);
+    for (at, _) in NOT_FINITE {
+        assert_eq!(heard[at].to_bits(), 0, "sample {at}");
+    }
+    assert!(heard[LOUD[0]] > heard[LOUD[0] - 1] && heard.iter().all(|sample| sample.is_finite()));
+    // The next read hands out the fall of quiet audio and silence, which adds to neither count.
+    reader.read(now.saturating_add(PERIOD), &mut heard);
+    assert!(!silent(&heard));
+    assert_eq!(counted(), [3, 2]);
 }

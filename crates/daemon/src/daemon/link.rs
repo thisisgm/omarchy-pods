@@ -340,12 +340,14 @@ impl Driver {
             underruns: counters.underruns.load(Ordering::Relaxed),
             concealed: counters.concealed.load(Ordering::Relaxed),
             decode_errors: counters.decode_errors.load(Ordering::Relaxed),
+            limited: counters.limited.load(Ordering::Relaxed),
+            nonfinite: counters.nonfinite.load(Ordering::Relaxed),
         };
         next.microphone.fold(counts);
         if left {
             log(&format!(
-                "mic: recorder left (underruns {}, concealed {})",
-                counts.underruns, counts.concealed
+                "mic: recorder left (underruns {}, concealed {}, limited {})",
+                counts.underruns, counts.concealed, counts.limited
             ));
         }
     }

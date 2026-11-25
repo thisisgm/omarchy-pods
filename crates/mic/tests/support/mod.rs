@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use pods_mic::decode::{Decoded, Decoder};
+use pods_mic::level::{self, MIC_GAIN_DB};
 use pods_mic::opus::{self, DICTATION_DECODE_HZ};
 use pods_mic::resample::Resampler;
 use pods_mic::{
@@ -40,7 +41,7 @@ pub(crate) const FADE: usize = 320;
 pub(crate) const FIRST: Duration = Duration::from_millis(100);
 /// The steering never asks for more than 2000 parts per million either way.
 pub(crate) const MAX_STEER: f64 = 2000e-6;
-/// How far a sample under a fade may stand from the shape times the decoder's sample.
+/// How far a sample under a fade may stand from the shape times the decoder's sample, before the gain.
 pub(crate) const SHAPE_SLACK: f32 = 1e-6;
 
 /// How far a decode of a tone fixture, the tone or the mark, may stand from the sine it was coded from: the bound the suites that measure it hold a lossy codec to.
@@ -234,9 +235,21 @@ pub(crate) fn unsteered(ratio: f64) -> bool {
     ratio.to_bits() == 1.0_f64.to_bits()
 }
 
-/// Bit for bit: nothing between the decoder and the reader changed a sample.
+/// What the level makes of `samples`: every sample a reader hands out has been through it.
+pub(crate) fn levelled(samples: &[f32]) -> Vec<f32> {
+    let mut levelled = samples.to_vec();
+    level::apply(&mut levelled);
+    levelled
+}
+
+/// The fixed gain as a factor, which is the most the level stretches the distance between two samples.
+pub(crate) fn gain() -> f32 {
+    10_f32.powf(MIC_GAIN_DB / 20.0)
+}
+
+/// Bit for bit: nothing between the decoder and the reader changed a sample but the level, run here on the decoder's own.
 pub(crate) fn assert_same(heard: &[f32], decoded: &[f32]) {
-    assert_eq!(bits(heard), bits(decoded));
+    assert_eq!(bits(heard), bits(&levelled(decoded)));
 }
 
 pub(crate) fn largest_step(samples: &[f32]) -> f32 {
@@ -268,10 +281,12 @@ pub(crate) fn run_start(samples: &[f32]) -> impl Iterator<Item = f32> {
     start.map(|(&sample, at)| sample * rise(at).powi(2))
 }
 
+/// `shaped` is the shape times the decoder's samples, before the level.
 pub(crate) fn assert_shaped(heard: &[f32], shaped: impl Iterator<Item = f32>) {
-    for (at, (&heard, shaped)) in heard.iter().zip(shaped).enumerate() {
+    let shaped: Vec<f32> = shaped.take(heard.len()).collect();
+    for (at, (&heard, shaped)) in heard.iter().zip(levelled(&shaped)).enumerate() {
         assert!(
-            (heard - shaped).abs() <= SHAPE_SLACK,
+            (heard - shaped).abs() <= SHAPE_SLACK * gain(),
             "sample {at}: {heard} for {shaped}"
         );
     }

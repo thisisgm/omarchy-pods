@@ -48,12 +48,12 @@ mod tests {
             }
             let (heard, ratio) = rig.read(now, QUANTUM);
             next = match next {
-                None => find(&rig.decoded, &heard).map(|at| at.saturating_add(QUANTUM)),
+                None => find(&levelled(&rig.decoded), &heard).map(|at| at.saturating_add(QUANTUM)),
                 Some(frame) => {
                     let from = frame.checked_sub(dropped).unwrap();
                     let twin = rig.decoded.get(from..from.saturating_add(QUANTUM));
                     assert!(
-                        twin.map(bits) == Some(bits(&heard)),
+                        twin.map(|twin| bits(&levelled(twin))) == Some(bits(&heard)),
                         "the read at {now:?} left the stream"
                     );
                     Some(frame.saturating_add(QUANTUM))

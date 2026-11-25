@@ -107,17 +107,23 @@ fn a_later_fold_of_the_counts_replaces_an_earlier_one() {
         underruns: 1,
         concealed: 30,
         decode_errors: 1,
+        limited: 30,
+        nonfinite: 1,
     });
     microphone.fold(MicCounts {
         underruns: 30,
         concealed: 1,
         decode_errors: 30,
+        limited: 1,
+        nonfinite: 30,
     });
     // The tap's counters are running totals; each last value sits between the two before, so a sum, max or min misses it.
     let later = MicCounts {
         underruns: 15,
         concealed: 16,
         decode_errors: 17,
+        limited: 18,
+        nonfinite: 19,
     };
     microphone.fold(later);
     assert_eq!(microphone.counts(), later);

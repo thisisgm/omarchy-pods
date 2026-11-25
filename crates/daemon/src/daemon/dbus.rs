@@ -228,7 +228,7 @@ impl Properties {
         }
     }
 
-    fn values(&self) -> [(&'static str, Variant<'_>); 21] {
+    fn values(&self) -> [(&'static str, Variant<'_>); 23] {
         [
             ("Connected", Variant::from(self.connected)),
             ("DeviceName", Variant::from(self.device_name.as_str())),
@@ -257,6 +257,8 @@ impl Properties {
                 "MicDecodeErrors",
                 Variant::from(self.mic_counts.decode_errors),
             ),
+            ("MicLimited", Variant::from(self.mic_counts.limited)),
+            ("MicNonfinite", Variant::from(self.mic_counts.nonfinite)),
         ]
     }
 
@@ -409,6 +411,16 @@ impl Omapods {
     #[zbus(property)]
     fn mic_decode_errors(&self) -> u32 {
         self.now().mic_counts.decode_errors
+    }
+
+    #[zbus(property)]
+    fn mic_limited(&self) -> u32 {
+        self.now().mic_counts.limited
+    }
+
+    #[zbus(property)]
+    fn mic_nonfinite(&self) -> u32 {
+        self.now().mic_counts.nonfinite
     }
 
     async fn set_noise_mode(&self, mode: &str) -> Result<&'static str, CallError> {

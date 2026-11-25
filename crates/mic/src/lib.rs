@@ -3,6 +3,7 @@
 mod conceal;
 pub mod decode;
 mod dictation;
+pub mod level;
 pub mod opus;
 pub mod resample;
 mod ring;
@@ -78,6 +79,10 @@ pub struct Counters {
     pub opening_behind_ms: AtomicU32,
     /// How long the last opening the reader caught up took to reach the target, in ms.
     pub opening_ms: AtomicU32,
+    /// Samples the reader handed out whose magnitude after the gain was over the limiter's knee.
+    pub limited: AtomicU32,
+    /// Samples the reader was about to hand out that were not finite and became zero.
+    pub nonfinite: AtomicU32,
 }
 
 /// The writer's half, the real time half and the handle that restarts the real time half at its target; none when a decoder will not open.
