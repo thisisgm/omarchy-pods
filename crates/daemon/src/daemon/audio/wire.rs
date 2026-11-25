@@ -421,6 +421,15 @@ impl<'a> Tags<'a> {
         self.byte()
     }
 
+    /// One boolean tag; sample `1` for true or `0` for false.
+    pub(super) fn boolean(&mut self) -> Result<bool, Malformed> {
+        match self.byte()? {
+            tag::TRUE => Ok(true),
+            tag::FALSE => Ok(false),
+            got => Err(Malformed::Tag(got)),
+        }
+    }
+
     /// Without its closing NUL, a null string being `None`; sample `t "pulse\0"` or `N`.
     fn string(&mut self) -> Result<Option<&'a [u8]>, Malformed> {
         match self.byte()? {

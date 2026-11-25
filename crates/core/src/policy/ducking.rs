@@ -420,6 +420,68 @@ mod tests {
     }
 
     #[test]
+    fn a_user_adjustment_while_lowered_ends_ducking_until_speech_ends() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 50, 0, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 1)]);
+        let adjusted = Fact::Audio(AudioFact::VolumeAdjusted);
+        assert_eq!(ducking.step(&state, &adjusted), []);
+        assert!(ducking.pending_volume.is_none());
+        assert_eq!(ducking.step(&state, &sink(1, 30, 0, 1)), []);
+        assert_eq!(ducking.step(&state, &STARTED), []);
+        assert_eq!(ducking.step(&state, &ENDED), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(5, 0, 2)]);
+    }
+
+    #[test]
+    fn a_user_adjustment_during_restore_allows_a_new_conversation() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 50, 0, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 1)]);
+        assert_eq!(ducking.step(&state, &sink(1, 10, 0, 1)), []);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(50, 0, 2)]);
+        let adjusted = Fact::Audio(AudioFact::VolumeAdjusted);
+        assert_eq!(ducking.step(&state, &adjusted), []);
+        assert!(ducking.pending_volume.is_none());
+        assert_eq!(ducking.step(&state, &sink(1, 10, 0, 2)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(0, 0, 3)]);
+    }
+
+    #[test]
+    fn recording_while_lowered_requests_a_restore() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 50, 0, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 1)]);
+        assert_eq!(ducking.step(&state, &sink(1, 10, 0, 1)), []);
+        assert_eq!(
+            ducking.step(&state, &Fact::Audio(AudioFact::Recording(true))),
+            [restore(50, 0, 2)]
+        );
+        assert_eq!(ducking.step(&state, &STARTED), []);
+    }
+
+    #[test]
+    fn a_restore_to_the_current_volume_awaits_confirmation() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 0, 0, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(0, 0, 1)]);
+        assert!(ducking.pending_volume.is_none());
+        assert_eq!(ducking.step(&state, &ENDED), [restore(0, 0, 2)]);
+        assert_eq!(ducking.pending_volume.as_ref().unwrap().target.get(), 0);
+        assert_eq!(ducking.step(&state, &sink(1, 0, 0, 2)), []);
+        assert!(ducking.pending_volume.is_none());
+        assert!(matches!(ducking.conversation, super::Conversation::Idle));
+    }
+
+    #[test]
     fn every_percent_matches_the_cpp_grid() {
         // The C++ takes the integer fifth before snapping it to the nearest 5%.
         let buckets = [

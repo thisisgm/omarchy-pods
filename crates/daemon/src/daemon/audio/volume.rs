@@ -61,17 +61,8 @@ pub(super) struct Reading {
 pub(super) struct Saved {
     device: BdAddr,
     original: ChannelVolume,
-    lowered: Volume,
+    lowered: Percent,
     restoring: bool,
-}
-
-impl Saved {
-    fn is_lowered(&self, channels: ChannelVolume) -> bool {
-        channels
-            .channels()
-            .iter()
-            .all(|volume| *volume == self.lowered)
-    }
 }
 
 #[derive(Default)]
@@ -107,12 +98,13 @@ impl Volumes {
         let write = pending.take();
         if let Some(reading) = reading {
             let channels = reading.channels;
+            let percent = reading.fact.volume;
             let saved = position.and_then(|position| self.saved.get(position));
             let amount = match write.as_ref().map(|write| write.target) {
-                Some(Target::Lower(percent)) => {
-                    let lowered = protocol_volume(percent);
+                Some(Target::Lower(target)) => {
+                    let lowered = protocol_volume(target);
                     let original = saved
-                        .filter(|saved| saved.restoring && saved.is_lowered(channels))
+                        .filter(|saved| saved.lowered == percent)
                         .map_or(channels, |saved| saved.original);
                     let mut volume = ChannelVolume::empty();
                     for _ in channels.channels() {
@@ -123,13 +115,16 @@ impl Volumes {
                         Saved {
                             device,
                             original,
-                            lowered,
+                            lowered: target,
                             restoring: false,
                         },
                     ))
                 }
                 Some(Target::Restore) => saved
-                    .filter(|saved| saved.is_lowered(channels) || channels == saved.original)
+                    .filter(|saved| {
+                        saved.original.channels().len() == channels.channels().len()
+                            && (saved.lowered == percent || channels == saved.original)
+                    })
                     .map(|saved| {
                         let restore = Saved {
                             restoring: true,
@@ -175,17 +170,18 @@ impl Volumes {
                         }
                     }
                 }
-            } else if write.is_some() && saved.is_none() {
+            } else if let (Some(position), Some(saved)) = (position, saved) {
+                let restored = saved.restoring && channels == saved.original;
+                if restored || write.is_some() || saved.lowered != percent {
+                    observed = if restored {
+                        Observed::Publish
+                    } else {
+                        Observed::Adjusted
+                    };
+                    self.saved.swap_remove(position);
+                }
+            } else if write.is_some() {
                 observed = Observed::Publish;
-            } else if let (Some(position), Some(saved)) = (position, saved)
-                && ((saved.restoring && channels == saved.original) || !saved.is_lowered(channels))
-            {
-                observed = if saved.restoring && channels == saved.original {
-                    Observed::Publish
-                } else {
-                    Observed::Adjusted
-                };
-                self.saved.swap_remove(position);
             }
         }
         // A replaced sink can receive an older request, whose count belongs to its original epoch.

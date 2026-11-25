@@ -20,7 +20,7 @@ mod tests {
     use super::support::pipewire::{node_name, start, wait_node};
     use super::support::rig::{Device, Rig};
     use super::support::uplink::{link, link_heard, rig_with_audio, wait_mic};
-    use super::support::wait_for;
+    use super::support::{HANG_LIMIT, wait_for};
 
     /// The node names Superwhisper gives its two recorders.
     const CAPTURE: &str = "superwhisper-capture";
@@ -177,7 +177,8 @@ mod tests {
         audio.add_source(&node_name());
         audio.add_recorder(&node_name(), Recorder::Named(CAPTURE));
         link_heard(&rig, &device);
-        let before = audio.requests();
+        const OPENING_REQUESTS_WITH_CAPTURE: usize = 9;
+        let before = audio.wait_requests(OPENING_REQUESTS_WITH_CAPTURE, HANG_LIMIT);
         assert!(before.contains(&Asked::SourceList));
         assert!(before.contains(&Asked::RecorderList));
         assert_eq!(lines(&mut rig), Vec::<String>::new());

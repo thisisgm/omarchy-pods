@@ -440,9 +440,22 @@ fn heard_from(held: CommandTag, lists: &CStr) -> Vec<CommandTag> {
         requests.send(AudioRequest::Restore(id)).await.unwrap();
         server.release.send(()).unwrap();
         assert_eq!(restored(&mut facts).await, id);
+        let mut heard = vec![held];
+        if held == CommandTag::GetSourceInfoList {
+            timeout(Duration::from_millis(AUDIO_CALL_TIMEOUT_MS), async {
+                loop {
+                    let tag = server.heard.recv().await.unwrap();
+                    heard.push(tag);
+                    if tag == CommandTag::GetSourceOutputInfoList {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("the capture read follows the restore");
+        }
         drop(requests);
         stop(adapter).await;
-        let mut heard = vec![held];
         while let Ok(tag) = server.heard.try_recv() {
             heard.push(tag);
         }
@@ -606,9 +619,15 @@ fn a_restore_asked_while_the_record_streams_are_read_is_done_before_the_sink_is_
 fn a_restore_asked_while_the_sources_are_read_is_done_when_the_source_is_not_listed() {
     let held = CommandTag::GetSourceInfoList;
     let heard = heard_from(held, ANOTHER_SOURCE);
-    // The restore still precedes the capture activity read when only another source is present.
-    let restore = [held, CommandTag::SuspendSink, CommandTag::SuspendSink];
-    assert!(heard.starts_with(&restore), "{heard:?}");
+    assert_eq!(
+        heard,
+        [
+            held,
+            CommandTag::SuspendSink,
+            CommandTag::SuspendSink,
+            CommandTag::GetSourceOutputInfoList,
+        ]
+    );
 }
 
 #[test]
