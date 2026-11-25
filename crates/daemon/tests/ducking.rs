@@ -121,6 +121,19 @@ mod tests {
         audio.hold_replies(false);
     }
 
+    fn refresh_sink_with_events_silenced(rig: &Rig, audio: &FakeAudio) {
+        let before = audio.requests().len();
+        audio.request_sink_refresh_and_hold_replies();
+        // An earlier query or write may need its reply before the follower can refresh.
+        audio.hold_replies(false);
+        wait_for("a forced sink refresh with events silenced", || {
+            audio.requests()[before..]
+                .contains(&Asked::SinkList)
+                .then_some(())
+        });
+        rig.wait_queued_inputs_applied();
+    }
+
     fn assert_writes(audio: &FakeAudio, device: &Device, expected: &[u8]) {
         let sink = sink_named(device.address);
         let volumes: Vec<u8> = audio
@@ -692,13 +705,24 @@ mod tests {
 
     #[test]
     fn a_sink_channel_count_change_cancels_the_restore() {
-        let (rig, device, audio) = ready(SAVED);
+        let (rig, device, audio) = Rig::with_audio(SAVED);
+        audio.silence_events();
+        refresh_sink_with_events_silenced(&rig, &audio);
+        enable(&rig, true);
         let sink = sink_named(device.address);
         duck(&rig, &device, &audio);
         let lowered = audio.channel_volume(&sink).channels()[0].as_u32();
-        audio.silence_events();
         audio.set_channel_volume(&sink, &[lowered]);
+        let before = audio.requests().len();
         speak(&rig, &device, ENDED);
+        wait_for("the restore's pre-write sink refresh", || {
+            audio.requests()[before..]
+                .contains(&Asked::SinkList)
+                .then_some(())
+        });
+
+        // The next sink query can only follow the restore decision, including any write.
+        refresh_sink_with_events_silenced(&rig, &audio);
         finish(rig, &audio);
         assert_writes(&audio, &device, &[LOWERED]);
         assert!(
