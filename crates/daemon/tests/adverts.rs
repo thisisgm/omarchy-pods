@@ -550,7 +550,11 @@ mod tests {
             rig.wait_status("the worn advert", |status| {
                 status["right"]["in_ear"] == true
             });
-            pause(QUIET);
+            if matches!(source, ChannelFirst) {
+                pause(QUIET);
+            } else {
+                rig.no_dial_for(QUIET);
+            }
             assert!(
                 wear_call(&rig).is_none(),
                 "{source:?} disconnect must hold the wear edge"
