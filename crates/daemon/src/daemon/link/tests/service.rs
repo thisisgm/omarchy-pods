@@ -1,12 +1,13 @@
-//! Support tests: what the driver does for the dictation service, with the driver in the test's own hands; no policy asks for the service yet.
+//! Support tests: what the driver does for dictation, with the driver in the test's own hands.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use pods_core::link::End;
+use pods_core::link::{End, Signal};
 use pods_core::policy::{DictationFact, DictationRequest, Effect, Fact};
-use pods_core::state::State;
+use pods_core::prefs::MicPref;
+use pods_core::state::{MicDictation, State};
 use pods_fake::pair;
 use pods_proto::dictation::DictationPacket;
 use pods_proto::doap::{Handles, doap_mode_on};
@@ -91,6 +92,36 @@ fn the_mode_is_written_on_the_control_channel() {
         driver.take(Input::Opened(device(), control));
         driver.route(Effect::Dictation(DictationRequest::Mode));
         assert_eq!(read(&end).await.unwrap(), doap_mode_on());
+    });
+}
+
+#[test]
+fn a_queued_answer_cannot_arm_a_reopened_channel() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let (mut driver, mut inputs) = driver(refusing());
+        let (control, _end) = pair();
+        driver.take(Input::Opened(device(), control));
+        driver.hub.replace(State {
+            connected: true,
+            ..State::default()
+        });
+        driver.observe(Fact::Link(Signal::Up { device: device() }));
+        let Some(Input::Dictation(previous, DictationFact::BearerFailed)) =
+            timeout(HANG_LIMIT, inputs.recv()).await.unwrap()
+        else {
+            panic!("expected the previous arm's bearer answer");
+        };
+
+        for preference in [MicPref::Off, MicPref::Auto] {
+            let mut next = driver.hub.state();
+            next.microphone.set_preference(preference);
+            driver.hub.replace(next);
+            driver.observe(Fact::Changed);
+        }
+
+        driver.take(Input::Dictation(previous, DictationFact::Armed));
+        assert_eq!(driver.hub.state().mic_dictation, MicDictation::Arming);
     });
 }
 

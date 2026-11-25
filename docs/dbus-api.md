@@ -49,6 +49,7 @@ nothing, and a command that changes nothing sends none.
 | `Capabilities` | `as` | The names of the status object's true `supports_*` keys without the prefix, sorted, for example `adaptive`. |
 | `Microphone` | `s` | The `microphone` setting: `auto`, `always` or `off`. |
 | `Mic` | `s` | What the daemon does with the AirPods' microphone, the `mic` key of `docs/protocol-1.md`: `off`, `idle`, `not_worn`, `unsupported`, `ready`, `starting`, `live`, `recording`, `stopping`, `failed`, `no_audio_server` or `library_error`. |
+| `MicDictation` | `s` | Whether the dictation service is ready, the `mic_dictation` key of `docs/protocol-1.md`. Values are `off`, `arming`, `armed` and `unavailable`. |
 | `MicSource` | `s` | The name of the daemon's microphone source while it is on the audio server, else empty, the `mic_source` key of `docs/protocol-1.md`. |
 | `MicStartFailures` | `u` | The STARTs of the AirPods' microphone uplink left unanswered since the daemon started, a stall of a running uplink counted as one, the `mic_start_failures` key of `docs/protocol-1.md`. |
 | `MicUnderruns` | `u` | The times the microphone source ran out of audio under a recorder since the daemon started, the `mic_underruns` key of `docs/protocol-1.md`. |

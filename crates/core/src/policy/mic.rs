@@ -155,8 +155,19 @@ impl Default for Mic {
 }
 
 impl Mic {
+    #[cfg(test)]
+    fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
+        self.step_with_probe(state, fact, now, false)
+    }
+
     /// `state` is the state after the step the fact comes from.
-    pub(super) fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
+    pub(super) fn step_with_probe(
+        &mut self,
+        state: &State,
+        fact: &Fact,
+        now: Duration,
+        arming: bool,
+    ) -> Vec<Effect> {
         let mut effects = Vec::new();
         self.node.step(state, fact, now, &mut effects);
         match fact {
@@ -182,7 +193,10 @@ impl Mic {
             | Fact::Mic(_)
             | Fact::Dictation(_) => {}
         }
-        self.follow(state, now, &mut effects);
+        // A successful arm confirms an auto model without the uplink probe.
+        let probe_waits =
+            arming && state.microphone.preference() == MicPref::Auto && !self.node.recording();
+        self.follow(state, now, probe_waits, &mut effects);
         effects
     }
 
@@ -316,14 +330,20 @@ impl Mic {
     }
 
     /// What the state after the fact asks of the uplink.
-    fn follow(&mut self, state: &State, now: Duration, effects: &mut Vec<Effect>) {
+    fn follow(
+        &mut self,
+        state: &State,
+        now: Duration,
+        probe_waits: bool,
+        effects: &mut Vec<Effect>,
+    ) {
         let off = state.microphone.preference() == MicPref::Off;
         match self.phase {
             Phase::Stopped { .. } if self.exiting => effects.push(Effect::Exited),
             Phase::Stopped {
                 spent: Some(Spent::Unasked),
             } if !self.wants(state) => self.phase = Phase::Stopped { spent: None },
-            Phase::Stopped { spent: None } if self.wants(state) && !self.asleep => {
+            Phase::Stopped { spent: None } if !probe_waits && self.wants(state) && !self.asleep => {
                 self.phase = self.start(Try::FIRST, now, effects);
             }
             // No STOP is ever written while a START is unanswered: the running marker sends it.

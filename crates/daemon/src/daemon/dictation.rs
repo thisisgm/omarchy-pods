@@ -35,10 +35,23 @@ const NO_HANDLE: u16 = 0x0000;
 
 const CONNECT_THREAD: &str = "dictation-connect";
 
+/// Invalidates facts already queued when their arm is closed or replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct ArmId(u64);
+
+impl ArmId {
+    fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
+pub(super) type TaggedRequest = (ArmId, DictationRequest);
+
 /// The driver's end: the adapter of the link that is up, while one is.
 pub(super) struct Outlet {
     connect: Connector,
-    adapter: Option<(mpsc::Sender<DictationRequest>, JoinHandle<()>)>,
+    adapter: Option<(mpsc::Sender<TaggedRequest>, JoinHandle<()>)>,
+    arm: ArmId,
 }
 
 impl fmt::Debug for Outlet {
@@ -56,6 +69,7 @@ impl Outlet {
         Self {
             connect,
             adapter: None,
+            arm: ArmId::default(),
         }
     }
 
@@ -71,24 +85,36 @@ impl Outlet {
     /// Ends the link's adapter and its channel with it; aborted, so it tells the driver nothing it has not queued already.
     pub(super) fn close(&mut self) {
         if let Some((_, adapter)) = self.adapter.take() {
+            self.arm = self.arm.next();
             adapter.abort();
         }
     }
 
+    pub(super) fn current(&self, arm: ArmId) -> bool {
+        self.adapter.is_some() && self.arm == arm
+    }
+
     /// Queues `request` without waiting; with no link it is dropped as a write on a closed channel is, and a queue that does not take it drops it with a log line.
-    pub(super) fn offer(&self, request: DictationRequest) {
+    pub(super) fn offer(&mut self, request: DictationRequest) {
         let Some((requests, _)) = &self.adapter else {
             return;
         };
-        if let Err(error) = requests.try_send(request) {
-            log(&format!("dictation: request dropped: {error}"));
+        let arm = match request {
+            DictationRequest::Arm | DictationRequest::Close => self.arm.next(),
+            DictationRequest::Mode | DictationRequest::Start | DictationRequest::Stop { .. } => {
+                self.arm
+            }
+        };
+        match requests.try_send((arm, request)) {
+            Ok(()) => self.arm = arm,
+            Err(error) => log(&format!("dictation: request dropped: {error}")),
         }
     }
 }
 
 /// Serves one link's requests until the driver drops their sender, then drops the channel.
 pub(super) async fn run(
-    mut requests: mpsc::Receiver<DictationRequest>,
+    mut requests: mpsc::Receiver<TaggedRequest>,
     inputs: mpsc::Sender<Input>,
     device: BdAddr,
     connect: Connector,
@@ -100,10 +126,14 @@ pub(super) async fn run(
         tap,
         bearer: Bearer::Closed,
     };
+    let mut arm = ArmId::default();
     loop {
         let told = match next(&mut requests, &mut adapter.bearer).await {
             Turn::Ended => return,
-            Turn::Request(request) => adapter.serve(request),
+            Turn::Request((id, request)) => {
+                arm = id;
+                adapter.serve(request)
+            }
             Turn::Dialed(answer) => adapter.dialed(answer),
             Turn::Read(Some(pdu)) => adapter.packet(&pdu),
             Turn::Read(None) => adapter.over(),
@@ -115,7 +145,7 @@ pub(super) async fn run(
             }
         };
         if let Some(fact) = told
-            && inputs.send(Input::Dictation(fact)).await.is_err()
+            && inputs.send(Input::Dictation(arm, fact)).await.is_err()
         {
             return;
         }
@@ -125,7 +155,7 @@ pub(super) async fn run(
 }
 
 enum Turn {
-    Request(DictationRequest),
+    Request(TaggedRequest),
     /// The driver dropped its sender.
     Ended,
     /// The connect thread's answer, or none from a thread that never started.
@@ -137,7 +167,7 @@ enum Turn {
 }
 
 /// The arm's passed deadline, then the driver's next request, then the channel: neither of the first two waits behind pods that keep talking.
-async fn next(requests: &mut mpsc::Receiver<DictationRequest>, bearer: &mut Bearer) -> Turn {
+async fn next(requests: &mut mpsc::Receiver<TaggedRequest>, bearer: &mut Bearer) -> Turn {
     let left = match bearer {
         Bearer::Open {
             service: Service::Arming { asked, .. },

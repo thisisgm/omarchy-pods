@@ -11,7 +11,7 @@ use crate::command::tests::level;
 use crate::prefs::{MicModels, MicPref};
 use crate::state::{
     AdvertIntake, AudioServer, Counters, EarDetectionBehavior, LidState, MicCode, MicCounts,
-    Microphone,
+    MicDictation, Microphone,
 };
 
 fn status(state: &State) -> Value {
@@ -31,12 +31,11 @@ const FOLDED: MicCounts = MicCounts {
     nonfinite: 19,
 };
 
-#[test]
-fn populated_state_lands_every_field_on_its_key() {
+fn populated_state() -> State {
     let mut microphone = Microphone::new(MicPref::Off);
     microphone.show(MicCode::Off, 14, true);
     microphone.fold(FOLDED);
-    let state = State {
+    State {
         connected: true,
         device_name: "Desk pods".to_owned(),
         model: Model::AirPodsPro2USBC,
@@ -76,10 +75,15 @@ fn populated_state_lands_every_field_on_its_key() {
         },
         notifications: false,
         microphone,
+        mic_dictation: MicDictation::Armed,
         mic_models: MicModels::default(),
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,
-    };
+    }
+}
+
+#[test]
+fn populated_state_lands_every_field_on_its_key() {
     let mut expected = json!({
         "adaptive_level_changes_total": 11,
         "adaptive_noise_level": 37,
@@ -124,6 +128,7 @@ fn populated_state_lands_every_field_on_its_key() {
         "supports_one_bud_anc": true,
     });
     // Past the json macro's recursion limit.
+    expected["mic_dictation"] = json!("armed");
     expected["mic_start_failures"] = json!(14);
     expected["mic_source"] = json!("omarchypods_input.a3048");
     expected["mic_underruns"] = json!(15);
@@ -131,7 +136,7 @@ fn populated_state_lands_every_field_on_its_key() {
     expected["mic_decode_errors"] = json!(17);
     expected["mic_limited"] = json!(18);
     expected["mic_nonfinite"] = json!(19);
-    assert_eq!(status(&state), expected);
+    assert_eq!(status(&populated_state()), expected);
 }
 
 #[test]

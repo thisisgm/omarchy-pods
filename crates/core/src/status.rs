@@ -21,6 +21,7 @@ pub const ADDITIVE_KEYS: &[&str] = &[
     "advert_intake",
     "microphone",
     "mic",
+    "mic_dictation",
     "mic_start_failures",
     "mic_source",
     "mic_underruns",
@@ -98,6 +99,7 @@ pub fn to_status_object(state: &State) -> Value {
             Value::from(state.microphone.preference().word()),
         ),
         ("mic", Value::from(state.microphone.code().word())),
+        ("mic_dictation", Value::from(state.mic_dictation.word())),
         (
             "mic_start_failures",
             Value::from(state.microphone.start_failures()),

@@ -5,6 +5,7 @@ pub(crate) mod audio;
 pub(crate) mod bluez;
 pub(crate) mod bus;
 pub(crate) mod children;
+pub(crate) mod doap;
 pub(crate) mod held;
 pub(crate) mod logind;
 pub(crate) mod omarchy;

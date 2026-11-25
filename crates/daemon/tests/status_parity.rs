@@ -172,6 +172,7 @@ mod tests {
             ("AdvertIntake", Variant::from(word("advert_intake"))),
             ("Microphone", Variant::from(word("microphone"))),
             ("Mic", Variant::from(word("mic"))),
+            ("MicDictation", Variant::from(word("mic_dictation"))),
             (
                 "MicStartFailures",
                 Variant::from(count(&document["mic_start_failures"])),

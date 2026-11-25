@@ -6,7 +6,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use pods_fake::doap::{SHIFT, Table};
+    use pods_fake::doap::{MODE_SETTLE, SHIFT, Table};
     use pods_fake::{Pods, Profile, pair};
     use pods_proto::dictation::{DictationPacket, Event, Frame};
     use pods_proto::doap::{
@@ -145,6 +145,10 @@ mod tests {
         let mode = doap::doap_mode_on();
         served.control.send(&mode).unwrap();
         served.pods.wait_heard(&mode, 1, RECV_TIMEOUT).unwrap();
+        assert!(
+            served.pods.wait_closed(1, MODE_SETTLE).is_err(),
+            "the control channel closed while the mode settled"
+        );
         served.att.send(&doap::start(&handles)).unwrap();
         assert_eq!(read(&served.recv()), Some(Err(Some(Event::STARTED))));
         // Whatever the burst holds, the notifications count from 0 and none is empty.

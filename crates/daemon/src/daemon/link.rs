@@ -92,7 +92,7 @@ pub(super) enum Input {
     Advert(Sighting),
     Monitor(MonitorFact),
     Mic(MicFact),
-    Dictation(DictationFact),
+    Dictation(dictation::ArmId, DictationFact),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -313,7 +313,11 @@ impl Driver {
             Input::Advert(sighting) => self.observe(Fact::Advert(sighting)),
             Input::Monitor(fact) => self.observe(Fact::Monitor(fact)),
             Input::Mic(fact) => self.observe(Fact::Mic(fact)),
-            Input::Dictation(fact) => self.observe(Fact::Dictation(fact)),
+            Input::Dictation(arm, fact) => {
+                if self.outlets.dictation.current(arm) {
+                    self.observe(Fact::Dictation(fact));
+                }
+            }
         }
     }
 
@@ -423,15 +427,7 @@ impl Driver {
             .collect();
         self.policy.show_mic(&mut next);
         self.fold(&last, &mut next, None);
-        let prefs = Prefs::of(&next);
-        self.outlets.prefs.send_if_modified(|kept| {
-            let changed = *kept != prefs;
-            if changed {
-                *kept = prefs;
-            }
-            changed
-        });
-        self.hub.publish(next);
+        self.publish(next);
         for action in actions {
             self.execute(action);
         }
@@ -457,10 +453,23 @@ impl Driver {
         let recorder = (recording != linked).then_some(recording);
         self.policy.show_mic(&mut next);
         self.fold(&last, &mut next, recorder);
-        self.hub.publish(next);
+        self.publish(next);
         for effect in effects {
             self.route(effect);
         }
+    }
+
+    /// Publishes preferences and state only when each changes.
+    fn publish(&self, next: State) {
+        let prefs = Prefs::of(&next);
+        self.outlets.prefs.send_if_modified(|kept| {
+            let changed = *kept != prefs;
+            if changed {
+                *kept = prefs;
+            }
+            changed
+        });
+        self.hub.publish(next);
     }
 
     /// After the step's own publish and actions, so a wake is a step of its own.

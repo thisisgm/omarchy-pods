@@ -13,7 +13,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use pods_fake::doap::{BURST_PER_NOTIFICATION, Doap, FRAME, GARBLED_TOC};
+    use pods_fake::doap::{BURST_PER_NOTIFICATION, Doap, FRAME, GARBLED_TOC, MODE_SETTLE};
     use pods_fake::{Deadline, Pods, Profile, pair};
     use pods_mic::decode::Decoded;
     use pods_mic::opus::{Decoder, FRAME_SAMPLES, MAX_OPUS_FRAME_BYTES};
@@ -279,6 +279,7 @@ mod tests {
         let mut served = Served::new();
         served.mode();
         assert!(served.doap.mode_seen());
+        served.hear_for(MODE_SETTLE);
         served.start();
         served.reconnect();
         assert!(!served.doap.mode_seen() && !served.doap.streaming());
@@ -326,6 +327,7 @@ mod tests {
         let served = Served::new();
         served.doap.burst(0, 1);
         served.mode();
+        served.hear_for(MODE_SETTLE);
         served.doap.refuse_starts(1);
         ask(&served.att, &host::start(&TABLE));
         assert_eq!(recv(&served.att), doap::stopped(&TABLE, REASON_UNASKED));

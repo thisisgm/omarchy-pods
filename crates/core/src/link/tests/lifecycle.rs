@@ -546,6 +546,7 @@ fn reset_device_covers_the_cpp_reset() {
         },
         notifications: false,
         microphone: Microphone::new(MicPref::Off),
+        mic_dictation: crate::state::MicDictation::Off,
         mic_models: confirmed_models(),
         audio_server: AudioServer::Up,
         advert_intake: AdvertIntake::Listening,

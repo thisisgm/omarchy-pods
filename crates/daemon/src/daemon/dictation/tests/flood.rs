@@ -147,7 +147,7 @@ fn a_parked_adapter_tells_bearer_failed_when_the_queue_drains() {
         assert!(
             matches!(
                 facts.try_recv(),
-                Ok(Input::Dictation(DictationFact::BearerFailed))
+                Ok(Input::Dictation(_, DictationFact::BearerFailed))
             ),
             "the adapter was not parked in its send when parked() returned"
         );
