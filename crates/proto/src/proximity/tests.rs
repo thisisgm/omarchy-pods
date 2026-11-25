@@ -83,6 +83,7 @@ fn the_sample_advert_parses_to_its_fields() {
             ear: EarReport::from_in_ear(false, false),
             case: None,
             lid: Lid::Unknown,
+            connection: ConnectionState::Idle,
             sealed: data[HEADER_LEN..].try_into().unwrap(),
         }
     );

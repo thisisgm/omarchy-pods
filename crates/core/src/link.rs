@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use pods_proto::addr::BdAddr;
 use pods_proto::awareness::Awareness;
+use pods_proto::ear::EarReport;
 use pods_proto::handshake::Handshake;
 use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS};
@@ -194,6 +195,8 @@ pub struct Machine {
     populated: bool,
     /// The last step that began in `Up`, which is when the link last left it.
     down_at: Duration,
+    /// Wear at channel loss, kept while BlueZ still reports the same device connected.
+    ear_at_link_down: EarReport,
     session: Session,
     /// User disconnects called in this session and not failed; while any, the device leaving skips the grace and no dial goes out.
     user_disconnects: u32,
@@ -219,18 +222,36 @@ impl Machine {
     #[must_use]
     pub fn step(&mut self, state: &mut State, event: Event<'_>, now: Duration) -> Vec<Action> {
         let was_up = matches!(self.phase, Phase::Up { .. });
+        let ear = state.ear;
         if was_up {
             self.down_at = now;
             self.release_held(state, now);
         }
         let mut actions = self.answer_written(state, event);
         let reacted = self.react(state, event, now);
+        let down = !matches!(self.phase, Phase::Up { .. } | Phase::Stopped);
+        if !self.held || !down {
+            self.ear_at_link_down = EarReport::default();
+        } else if was_up {
+            self.ear_at_link_down = ear;
+        }
         // A shutdown signals nothing, as it signals no `Lost` either.
-        if was_up && !matches!(self.phase, Phase::Up { .. } | Phase::Stopped) {
+        if was_up && down {
             actions.push(Action::Signal(Signal::Down));
         }
         actions.extend(reacted);
         actions
+    }
+
+    /// Checks wear at the last live control link before processing a BlueZ device disconnect.
+    #[must_use]
+    pub fn unrequested_down_while_worn(&self, device: BdAddr, state: &State) -> bool {
+        let ear = if matches!(self.phase, Phase::Up { .. }) {
+            state.ear
+        } else {
+            self.ear_at_link_down
+        };
+        self.is_active(device) && self.user_disconnects == 0 && ear.any_in_ear()
     }
 
     #[expect(
