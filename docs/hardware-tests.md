@@ -163,6 +163,11 @@ and what the pods answer to a start or a stop out of turn. Two people sit: one
 at the keyboard, one wearing both buds with music playing on them. Nobody
 starts a run without the wearer present.
 
+The 0x58 audio access units carry little-endian 32-bit stamps. The capture
+probe measured a step of 180 ticks per unit and 720 ticks per four-unit SDU.
+At 24,000 ticks per second, each 180-tick unit lasts 7.5 ms and decodes to
+480 samples at 64 kHz.
+
 A step file is read only when it is the caller's alone, so each is copied
 beside the built `xtask` with `install -m 600`. Every run goes into the store
 of `xtask probe init`, on the route the step files run on:

@@ -31,8 +31,11 @@ pub const UPLINK_DECODE_HZ: u32 = 64_000;
 pub const SAMPLES_PER_UNIT: u16 = 480;
 /// The configuration the host supplies for the stream: AAC-ELD, mono, 480 sample frames, declared at 48 kHz.
 pub const EXPECTED_CONFIG: [u8; 4] = [0xf8, 0xe6, 0x30, 0x00];
-/// What one unit adds to the stamp, which counts samples.
-pub const STAMP_STEP: u32 = 480;
+/// The wire stamp's clock, inferred from 180 ticks per 7.5 ms unit.
+pub const UPLINK_STAMP_HZ: u32 = 24_000;
+/// The number of wire ticks in one decoded unit.
+#[expect(clippy::as_conversions, reason = "a const context has no `From`")]
+pub const STAMP_STEP: u32 = SAMPLES_PER_UNIT as u32 * UPLINK_STAMP_HZ / UPLINK_DECODE_HZ;
 /// Four units a packet.
 pub const UPLINK_PERIOD_MS: u32 = 30;
 /// How late a packet may land and still be played whole.
@@ -60,8 +63,8 @@ const FRAMES_PER_MS: u16 = if RATE_HZ == 48_000 { 48 } else { 64 };
 const _: () = assert!(
     (RATE_HZ == 48_000 || RATE_HZ == 64_000)
         && FRAMES_PER_MS as u32 * 1000 == RATE_HZ
-        && SAMPLES_PER_UNIT as u32 == STAMP_STEP
-        && UPLINK_PERIOD_MS * UPLINK_DECODE_HZ == UNITS_PER_PACKET * STAMP_STEP * 1000
+        && UPLINK_PERIOD_MS * UPLINK_DECODE_HZ == UNITS_PER_PACKET * SAMPLES_PER_UNIT as u32 * 1000
+        && UPLINK_PERIOD_MS * UPLINK_STAMP_HZ == UNITS_PER_PACKET * STAMP_STEP * 1000
         && MAX_UNITS_PER_SDU == 2 * UNITS_PER_PACKET as usize
 );
 

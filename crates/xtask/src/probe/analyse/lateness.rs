@@ -118,7 +118,6 @@ pub(crate) fn rows(label: &str, audio: &[AudioPacket]) -> Vec<Row> {
 
 #[cfg(test)]
 mod tests {
-    use pods_mic::STAMP_STEP;
     use pods_proto::uplink::OPAQUE_LEN;
 
     use super::super::load::Unit;
@@ -126,6 +125,7 @@ mod tests {
 
     const PERIOD_NS: u64 = 30_000_000;
     const UNITS_PER_SDU: u32 = 4;
+    const WIRE_STAMP_STEP: u32 = 180;
     /// How much sooner than its cadence the first SDU of the window test lands.
     const EARLY_NS: u64 = 20_000_000;
     const KEYS: [&str; 25] = [
@@ -160,7 +160,7 @@ mod tests {
     fn sdu(index: u32, late_ns: u64, units: u32) -> AudioPacket {
         let first = index.saturating_mul(UNITS_PER_SDU);
         let unit = |at: u32| Unit {
-            stamp: first.saturating_add(at).saturating_mul(STAMP_STEP),
+            stamp: first.saturating_add(at).saturating_mul(WIRE_STAMP_STEP),
             len: 2,
             max_sfb: None,
         };
@@ -214,7 +214,7 @@ mod tests {
             sdu(2, 0, UNITS_PER_SDU - 1),
         ];
         // The third holds one unit less, so its last stamp stands one unit sooner: it reads as one unit late.
-        let unit_ns = u64::from(STAMP_STEP) * u64::from(NS_PER_SAMPLE);
+        let unit_ns = u64::from(SAMPLES_PER_UNIT) * u64::from(NS_PER_SAMPLE);
         assert_eq!(lateness(&stream), [0, unit_ns]);
     }
 

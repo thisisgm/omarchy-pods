@@ -13,10 +13,11 @@ mod tests {
     use std::time::Duration;
 
     use pods_core::policy::mic::{FIRST_AUDIO_PREFIX, RUNNING_AFTER_PREFIX};
-    use pods_fake::uplink::UNITS_PER_PACKET;
+    use pods_fake::uplink::{DEFAULT_LEVEL, PERIOD, TONE_LINE, UNITS_PER_PACKET};
+    use pods_proto::uplink::{AccessUnit, OPAQUE_LEN, encode_audio};
+    use pods_samples::uplink::tone_unit;
     use pods_samples::{NAME, Placed};
 
-    use super::support::HANG_LIMIT;
     use super::support::pipewire::{ready, record};
     use super::support::recording::{
         LEFT, assert_left_counts, assert_sounds, counts, counts_after_leaving, first_sound, frames,
@@ -24,6 +25,7 @@ mod tests {
     };
     use super::support::settings::set;
     use super::support::uplink::{lose, read_up_to_now, wait_mic};
+    use super::support::{HANG_LIMIT, pause};
 
     /// How the daemon's lines may write the fixture address.
     const ADDRESS_FORMS: [&str; 2] = ["02:00:00", "02_00_00"];
@@ -74,6 +76,33 @@ mod tests {
         first_sound(&second.finish());
         let log = rig.daemon().log();
         assert_eq!(log.matches(FIRST_AUDIO_PREFIX).count(), 1, "{log}");
+        rig.finish();
+    }
+
+    #[test]
+    fn captured_wire_stamps_reach_an_uplink_recorder() {
+        const PACKETS: u32 = 24;
+        let (rig, device, pipewire) = ready();
+        let uplink = device.pods.uplink();
+        // Keep the fake's START and markers, and replace its scheduled audio with the wire fixture.
+        uplink.lose(u32::MAX);
+        let recorder = record(&rig, &pipewire, "capture.wav");
+        wait_mic(&rig, "recording");
+
+        let tone = tone_unit(TONE_LINE, DEFAULT_LEVEL);
+        for packet in 0..PACKETS {
+            let units = [900, 1080, 1260, 1440].map(|stamp| AccessUnit {
+                stamp: stamp + packet * 720,
+                data: &tone,
+            });
+            let sdu = encode_audio(&[0; OPAQUE_LEN], &units).unwrap();
+            device.pods.send(&sdu);
+            pause(PERIOD);
+        }
+        assert_eq!(uplink.sent_packets(), 0);
+        recorder.wait_frames(frames(AGAIN), HANG_LIMIT);
+        let samples = recorder.finish();
+        first_sound(&samples[..frames(AGAIN)]);
         rig.finish();
     }
 

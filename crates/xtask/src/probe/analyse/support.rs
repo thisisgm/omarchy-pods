@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+pub(crate) use pods_mic::STAMP_STEP;
 use pods_proto::sdulog::{Direction, Record};
 use pods_proto::uplink::{AccessUnit, OPAQUE_LEN, encode_audio};
 use tempfile::TempDir;
@@ -15,8 +16,6 @@ pub(crate) use super::synth::{NS_PER_MS, NS_PER_SECOND, OPAQUE, SILENT_UNIT, sho
 pub(crate) const STAMP: &str = "20261120T120000Z";
 /// The seed every generated log in the unit tests uses.
 pub(crate) const SEED: u64 = 0x5eed_0001;
-/// The stamp step of the generated units, one 480 sample frame.
-pub(crate) const STAMP_STEP: u32 = 480;
 /// The arrival interval of the hand built streams, four 7.5 ms units.
 pub(crate) const SDU_INTERVAL_NS: u64 = 30 * NS_PER_MS;
 pub(crate) const UNITS_PER_SDU: u32 = 4;

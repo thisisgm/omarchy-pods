@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use pods_mic::STAMP_STEP;
 use pods_proto::uplink::OPAQUE_LEN;
 
 use super::load::{AudioPacket, Loaded};
@@ -213,6 +214,7 @@ pub(crate) struct ModalDelta {
 pub(crate) enum StampUnit {
     Samples,
     Microseconds,
+    UplinkTicks,
     /// No known unit steps by this much.
     Unknown(u32),
 }
@@ -242,6 +244,8 @@ pub(crate) fn implied_unit(delta: u32) -> StampUnit {
         StampUnit::Samples
     } else if delta == MICROSECOND_DELTA {
         StampUnit::Microseconds
+    } else if delta == STAMP_STEP {
+        StampUnit::UplinkTicks
     } else {
         StampUnit::Unknown(delta)
     }

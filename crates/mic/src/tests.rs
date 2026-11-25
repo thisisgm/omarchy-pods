@@ -108,6 +108,62 @@ fn the_reader_has_read_all_only_once_a_read_reaches_the_last_frame_written() {
 }
 
 #[test]
+fn captured_wire_stamps_keep_one_run_and_reach_the_reader() {
+    use ring::Frame;
+
+    let (mut chain, mut reader, resync) = chain(Arc::default()).unwrap();
+    let tone = tone_unit(10, 180);
+    let packets = [
+        [900, 1080, 1260, 1440],
+        [1620, 1800, 1980, 2160],
+        [2340, 2520, 2700, 2880],
+    ];
+    let period = u64::from(UPLINK_PERIOD_MS);
+    for (slot, stamps) in (1_u64..).zip(packets) {
+        chain.sdu(
+            Duration::from_millis(slot * period),
+            stamps.into_iter().map(|stamp| (stamp, tone.as_slice())),
+        );
+    }
+
+    let mut heard = [0.0_f32; 2 * 4 * UNIT];
+    resync.request();
+    reader.read(
+        Duration::from_millis(2 * period + u64::from(NODE_LATENCY_MS)),
+        &mut heard,
+    );
+    let gone = (0..chain.ring.end())
+        .filter(|&frame| matches!(chain.ring.frame(frame), Frame::Gone))
+        .count();
+    let has_tone = heard.iter().any(|&sample| sample != 0.0);
+    assert_eq!((has_tone, chain.ring.run(), gone), (true, 0, 0));
+}
+
+#[test]
+fn a_wire_stamp_gap_conceals_one_unit_and_a_larger_gap_restarts_the_run() {
+    let counters = Arc::new(Counters::default());
+    let (mut chain, _, _) = chain(Arc::clone(&counters)).unwrap();
+    let tone = tone_unit(10, 180);
+    let concealed = || counters.concealed.load(Ordering::Relaxed);
+    chain.sdu(Duration::ZERO, iter::once((900, tone.as_slice())));
+
+    // 1080 is missing between 900 and 1260.
+    let writes = unit_writes(Some(1080), 1260);
+    assert_eq!((writes.units, writes.new_run), (2, false));
+    chain.sdu(Duration::ZERO, iter::once((1260, tone.as_slice())));
+    assert_eq!(concealed(), 1);
+    assert_eq!(chain.ring.run(), 0);
+
+    // 2880 would leave eight missing units, so 3060 is past the gap the chain fills.
+    let before = u64::try_from(chain.ring.end()).unwrap();
+    let writes = unit_writes(Some(1440), 3060);
+    assert_eq!((writes.units, writes.new_run), (1, true));
+    chain.sdu(Duration::ZERO, iter::once((3060, tone.as_slice())));
+    assert_eq!(concealed(), 1);
+    assert_eq!(chain.ring.run(), before);
+}
+
+#[test]
 fn a_stamp_two_packets_past_the_expected_one_is_the_last_gap_and_a_step_back_is_a_new_run() {
     let expected = Some(10 * STAMP_STEP);
     assert_eq!(lost_before(None, 7), Some(0));

@@ -8,8 +8,8 @@ const OPCODE_UPLINK: u16 = 0x0058;
 const SUBTYPE_AUDIO: u16 = 0x0001;
 /// Bytes 8 to 21 of an audio SDU, which no known code reads.
 const OPAQUE: [u8; 14] = [0x00; 14];
-/// What one unit adds to the stamp: the samples it decodes to.
-pub const STAMP_STEP: u32 = 480;
+/// The observed wire step of one 7.5 ms unit on the 24 kHz stamp clock.
+pub const STAMP_STEP: u32 = 180;
 /// The length byte in front of a unit holds no more.
 const MAX_UNIT_LEN: usize = 255;
 
@@ -155,10 +155,10 @@ mod tests {
         let mut expected = vec![0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01, 0x00];
         expected.extend(OPAQUE);
         expected.extend([0x00, 0xff, 0xff, 0xff, 0x01, 0xa1]);
-        expected.extend(0xffff_ff00_u32.wrapping_add(STAMP_STEP).to_le_bytes());
+        expected.extend(0xffff_ffb4_u32.to_le_bytes());
         expected.push(0x00);
-        // Twice the step past the first stamp wraps: 0xffffff00 + 960 is 0x000002c0.
-        expected.extend([0xc0, 0x02, 0x00, 0x00, 0xff]);
+        // Two wire steps wrap: 0xffffff00 + 360 is 0x00000068.
+        expected.extend([0x68, 0x00, 0x00, 0x00, 0xff]);
         expected.extend([0xb1; MAX_UNIT_LEN]);
         assert_eq!(sdu, expected);
     }

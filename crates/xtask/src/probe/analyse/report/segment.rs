@@ -382,6 +382,7 @@ impl Segment {
                 let name = match unit {
                     StampUnit::Samples => "samples",
                     StampUnit::Microseconds => "microseconds",
+                    StampUnit::UplinkTicks => "24 kHz ticks",
                     StampUnit::Unknown(_) => "unknown",
                 };
                 let derivation = format!("modal delta per unit {}", modal.delta);

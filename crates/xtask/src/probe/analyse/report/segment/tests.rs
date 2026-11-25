@@ -512,7 +512,7 @@ fn the_clock_is_counted_in_units_whatever_the_stamps_step_by() {
     assert!(has_note(hz, "slope x 480 samples per unit"), "{hz:?}");
     assert_eq!(one(&report, "stamp_delta_per_unit").value, "180");
     assert_eq!(one(&report, "stamp_delta_per_sdu").value, "720");
-    assert_eq!(one(&report, "stamp_unit").value, "unknown");
+    assert_eq!(one(&report, "stamp_unit").value, "24 kHz ticks");
     assert_eq!(one(&report, "gaps").value, "0");
     assert_eq!(rows(&report, "gap").len(), 0);
 }
@@ -622,7 +622,7 @@ fn gap_rows_say_what_showed_each_gap_and_stop_at_twenty() {
             "gap",
             "6120.000",
             "ms",
-            "start 1; after the start mark; late 120.000 ms; stamps 384000 to 389280 missing",
+            "start 1; after the start mark; late 120.000 ms; stamps 144000 to 145980 missing",
         ),
         (
             "gap",
