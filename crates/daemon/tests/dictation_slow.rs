@@ -385,6 +385,7 @@ mod tests {
     #[test]
     fn a_held_sleep_stop_closes_the_inhibitor_at_the_answer_deadline() {
         const SCHEDULING_SLACK: Duration = Duration::from_millis(150);
+        const HELD_WINDOW: Duration = Duration::from_millis(200);
         let mut fixture = Fixture::new();
         let doap = fixture.device.pods.doap();
         doap.hold_stop();
@@ -395,6 +396,14 @@ mod tests {
         let asleep = sleep(&mut fixture.rig);
         wait_for("sleep STOP", || (doap.stops() == [HOST_STOP]).then_some(()));
         let sent = Instant::now();
+        wait_for("the held STOP window", || {
+            assert_eq!(doap.stops(), [HOST_STOP], "a STOP inside the held window");
+            assert!(
+                doap.mode_seen(),
+                "mode was cleared with the STOP still held"
+            );
+            (sent.elapsed() >= HELD_WINDOW).then_some(())
+        });
         assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
         assert_eq!(fixture.rig.logind().inhibitors(), [None]);
         let closed = inhibitor_closed(&fixture.rig, 0);
