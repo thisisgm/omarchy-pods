@@ -176,14 +176,16 @@ mod tests {
             rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
         audio.add_source(&node_name());
         audio.add_recorder(&node_name(), Recorder::Named(CAPTURE));
-        // Returns after a whole read of the server with no source named, and a later one begun.
         link_heard(&rig, &device);
-        assert!(!audio.requests().contains(&Asked::SourceList));
+        let before = audio.requests();
+        assert!(before.contains(&Asked::SourceList));
+        assert!(before.contains(&Asked::RecorderList));
         assert_eq!(lines(&mut rig), Vec::<String>::new());
-        // No event of the audio server follows, so only the source's name coming up reads the list.
+        // The source name coming up must refresh the routing counts without an audio server event.
         let pipewire = start(&rig);
         wait_node(&pipewire);
         wait_lines(&mut rig, &[counted(1, 0)]);
+        assert!(audio.requests()[before.len()..].contains(&Asked::SourceList));
         rig.finish();
     }
 }
