@@ -166,7 +166,9 @@ fn stream(
                     marks.close_us = marks.close_us.or(Some((at_us, sender)));
                 }
                 (a2dp::RESPONSE_ACCEPT, a2dp::START, Began::Pods)
-                    if (after_disconnect || marks.suspend_us.is_some() || marks.close_us.is_some())
+                    if (after_disconnect
+                        || marks.suspend_us.is_some()
+                        || marks.close_us.is_some())
                         && handback_us.is_none_or(|from| at_us >= from) =>
                 {
                     marks.restart_us = marks.restart_us.or(Some(at_us));
