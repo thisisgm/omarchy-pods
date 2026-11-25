@@ -6,16 +6,29 @@ mod support;
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    use pods_core::policy::dictation::DOAP_STOP_ANSWER_MS;
 
     use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, ready_to_read, status};
+    use super::support::logind::INHIBIT;
     use super::support::pipewire::{record, wait_no_node};
     use super::support::recording::{assert_sounds, first_sound, frames, longest_zero_run};
-    use super::support::sleep::sleep;
+    use super::support::sleep::{inhibitor_closed, logged, sleep, wake};
     use super::support::uplink::{assert_no_sink_call, lose};
     use super::support::wait_for;
 
+    const STOP_TIMEOUT: &str = "dictation: stop not confirmed";
+    const INHIBIT_FAILED: &str = "dictation: cannot inhibit sleep via logind";
+    const STOP_WAIT: Duration = Duration::from_millis(DOAP_STOP_ANSWER_MS);
     const AUDIO: Duration = Duration::from_millis(400);
+
+    fn wait_for_inhibitor(fixture: &Fixture) {
+        wait_for("the open logind delay inhibitor", || {
+            let logind = fixture.rig.logind();
+            (logind.inhibitors() == [None] && logind.method_calls() == [INHIBIT]).then_some(())
+        });
+    }
 
     #[test]
     fn the_channel_lost_mid_dictation_fades_and_arms_again() {
@@ -58,35 +71,189 @@ mod tests {
         let recorder = fixture.capture();
         fixture.streaming(1);
         ready_to_read(&recorder, AUDIO);
+        wait_for("the open logind delay inhibitor", || {
+            (fixture.rig.logind().inhibitors() == [None]).then_some(())
+        });
+        let lost = Instant::now();
         lose(&fixture.rig, &fixture.device);
+        assert!(inhibitor_closed(&fixture.rig, 0) >= lost);
         wait_no_node(&fixture.server);
         status(&fixture.rig, "off");
         assert_sounds(&recorder.finish(), "");
         assert_eq!(fixture.device.pods.doap().stops(), [0_u8; 0]);
         fixture.no_uplink();
+        assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
         fixture.finish();
     }
 
     #[test]
-    fn sleep_while_dictating_sends_stop_on_the_edge() {
+    fn sleep_while_dictating_stops_before_the_suspend() {
         let mut fixture = Fixture::new();
         let doap = fixture.device.pods.doap();
         doap.hold_stop();
         fixture.list(CAPTURE);
         let recorder = record(&fixture.rig, &fixture.server, "dictation.wav");
         fixture.streaming(1);
-        sleep(&mut fixture.rig);
+        wait_for_inhibitor(&fixture);
+        let asleep = sleep(&mut fixture.rig);
         wait_for("sleep STOP", || (doap.stops() == [HOST_STOP]).then_some(()));
         status(&fixture.rig, "stopping");
+        assert_eq!(fixture.rig.logind().inhibitors(), [None]);
+        let released = Instant::now();
         doap.release_stop();
+        let closed = inhibitor_closed(&fixture.rig, 0);
+        assert!(
+            closed >= released,
+            "inhibitor closed before the STOP answer"
+        );
+        assert!(
+            closed < asleep + STOP_WAIT,
+            "inhibitor held until the deadline"
+        );
         fixture.stopped(1);
         fixture.rig.wait_logged("dictation: stop sent (sleep)");
-        assert_eq!(fixture.rig.logind().method_calls(), [""; 0]);
+        assert_eq!(logged(&mut fixture.rig, STOP_TIMEOUT), 0);
         assert_no_sink_call(&fixture.rig, &fixture.audio);
         assert_eq!(fixture.device.pods.doap().stops(), [HOST_STOP]);
         lose(&fixture.rig, &fixture.device);
         drop(recorder.finish());
         fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
+    fn sleep_during_start_holds_the_inhibitor_until_the_stream_ends() {
+        let mut fixture = Fixture::new();
+        let doap = fixture.device.pods.doap();
+        doap.hold_start(true);
+        doap.hold_stop();
+        fixture.list(CAPTURE);
+        let recorder = record(&fixture.rig, &fixture.server, "dictation.wav");
+        fixture.start(1);
+        status(&fixture.rig, "starting");
+        wait_for_inhibitor(&fixture);
+
+        sleep(&mut fixture.rig);
+        status(&fixture.rig, "stopping");
+        doap.release_start();
+        wait_for("sleep STOP", || (doap.stops() == [HOST_STOP]).then_some(()));
+        assert_eq!(
+            fixture.rig.logind().inhibitors(),
+            [None],
+            "inhibitor closed before the streaming end"
+        );
+
+        let released = Instant::now();
+        doap.release_stop();
+        let closed = inhibitor_closed(&fixture.rig, 0);
+        assert!(
+            closed >= released,
+            "inhibitor closed before the streaming end"
+        );
+        fixture.stopped(1);
+        fixture.rig.wait_logged("dictation: stop sent (sleep)");
+        let log = fixture.rig.daemon().log();
+        let started = log
+            .find("dictation: started after ")
+            .expect("START answer logged");
+        let stopped = log
+            .find("dictation: stop sent (sleep)")
+            .expect("sleep STOP logged");
+        assert!(started < stopped, "STOP sent before the START answer");
+        assert_eq!(logged(&mut fixture.rig, STOP_TIMEOUT), 0);
+        assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
+        assert_eq!(fixture.rig.logind().inhibitors(), [Some(closed)]);
+        lose(&fixture.rig, &fixture.device);
+        drop(recorder.finish());
+        fixture.finish();
+    }
+
+    #[test]
+    fn a_held_sleep_stop_closes_the_inhibitor_at_the_answer_deadline() {
+        const SCHEDULING_SLACK: Duration = Duration::from_millis(150);
+        let mut fixture = Fixture::new();
+        let doap = fixture.device.pods.doap();
+        doap.hold_stop();
+        fixture.list(CAPTURE);
+        let recorder = record(&fixture.rig, &fixture.server, "dictation.wav");
+        fixture.streaming(1);
+        wait_for_inhibitor(&fixture);
+        let asleep = sleep(&mut fixture.rig);
+        wait_for("sleep STOP", || (doap.stops() == [HOST_STOP]).then_some(()));
+        let sent = Instant::now();
+        assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
+        assert_eq!(fixture.rig.logind().inhibitors(), [None]);
+        let closed = inhibitor_closed(&fixture.rig, 0);
+        assert!(
+            closed.saturating_duration_since(asleep) >= STOP_WAIT,
+            "inhibitor closed before the deadline"
+        );
+        assert!(
+            closed.saturating_duration_since(sent) <= STOP_WAIT.saturating_add(SCHEDULING_SLACK),
+            "inhibitor held past the deadline"
+        );
+        fixture.stopped(1);
+        fixture.rig.wait_logged(STOP_TIMEOUT);
+        assert_eq!(logged(&mut fixture.rig, STOP_TIMEOUT), 1);
+        lose(&fixture.rig, &fixture.device);
+        drop(recorder.finish());
+        fixture.finish();
+    }
+
+    #[test]
+    fn leaving_the_recorder_closes_its_only_inhibitor() {
+        let mut fixture = Fixture::new();
+        assert_eq!(fixture.rig.logind().method_calls(), [""; 0]);
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        fixture.streaming(1);
+        wait_for_inhibitor(&fixture);
+        let left = Instant::now();
+        drop(recorder.finish());
+        fixture.stopped(1);
+        assert!(inhibitor_closed(&fixture.rig, 0) >= left);
+        sleep(&mut fixture.rig);
+        wake(&mut fixture.rig);
+        assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
+        assert_eq!(fixture.rig.logind().inhibitors().len(), 1);
+        fixture.finish();
+    }
+
+    #[test]
+    fn a_refused_inhibitor_still_dictates_and_stops_on_sleep() {
+        let mut fixture = Fixture::new();
+        fixture.rig.logind().refuse_inhibit();
+        fixture.list(CAPTURE);
+        let recorder = record(&fixture.rig, &fixture.server, "dictation.wav");
+        fixture.streaming(1);
+        wait_for("the refused logind delay inhibitor", || {
+            let logind = fixture.rig.logind();
+            (logind.method_calls() == [INHIBIT] && logind.inhibitors().is_empty()).then_some(())
+        });
+        ready_to_read(&recorder, AUDIO);
+        sleep(&mut fixture.rig);
+        fixture.stopped(1);
+        fixture.rig.wait_logged("dictation: stop sent (sleep)");
+        assert_eq!(fixture.rig.logind().method_calls(), [INHIBIT]);
+        lose(&fixture.rig, &fixture.device);
+        assert_sounds(&recorder.finish(), "");
+        fixture.no_uplink();
+        let daemon = fixture.rig.daemon();
+        let failures = wait_for("the inhibitor failure log", || {
+            let failures: Vec<_> = daemon
+                .log()
+                .lines()
+                .filter(|line| line.starts_with(INHIBIT_FAILED))
+                .map(str::to_owned)
+                .collect();
+            (!failures.is_empty()).then_some(failures)
+        });
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures[0].contains("inhibitor refused"),
+            "missing logind error: {}",
+            failures[0]
+        );
         fixture.finish();
     }
 }

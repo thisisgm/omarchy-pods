@@ -1,15 +1,16 @@
-//! Hands logind's `PrepareForSleep` edges to the driver; takes no inhibitor lock and makes no method call.
+//! Hands logind's sleep edges to the driver and shares its bus for session-scoped delay locks.
 
 use std::future::poll_fn;
 use std::ops::ControlFlow;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
+use std::task::Poll;
 use std::time::Duration;
 
 use pods_core::policy::SleepEdge;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::sleep;
 use zbus::export::futures_core::Stream;
-use zbus::{Connection, Message, MessageStream};
+use zbus::{Connection, Message, MessageStream, OwnedFd};
 
 use super::bluez::{ErrorLog, SYSTEM_BUS_RETRY_MS};
 use super::link::Input;
@@ -18,12 +19,60 @@ use super::log;
 /// The bus delivers only logind's own signal, so another sender's `PrepareForSleep` never arrives.
 const SLEEP_RULE: &str = "type='signal',sender='org.freedesktop.login1',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'";
 
+const LOGIND: &str = "org.freedesktop.login1";
+const MANAGER_PATH: &str = "/org/freedesktop/login1";
+const MANAGER: &str = "org.freedesktop.login1.Manager";
+
+const INHIBIT_FAILED: &str = "dictation: cannot inhibit sleep via logind";
 const WATCHING: &str = "sleep: watching logind for a suspend";
 const SLEEPING: &str = "sleep: the system is going to sleep";
 const WOKE: &str = "sleep: the system woke";
 
+pub(super) type Bus = watch::Receiver<Option<Connection>>;
+/// Keeps the granted fd alive until the driver drops the receiver.
+pub(super) type Inhibitor = oneshot::Receiver<OwnedFd>;
+
+/// Ask alongside START without holding up the audio path; dropping the receiver also cancels a pending call.
+pub(super) fn inhibit(bus: &Bus) -> Option<Inhibitor> {
+    let Some(connection) = bus.borrow().clone() else {
+        log(&format!("{INHIBIT_FAILED}: no system bus"));
+        return None;
+    };
+    let (mut acquired, inhibitor) = oneshot::channel();
+    drop(tokio::spawn(async move {
+        let mut call = pin!(request_inhibitor(&connection));
+        let reply = poll_fn(|context| {
+            if acquired.poll_closed(context).is_ready() {
+                return Poll::Ready(None);
+            }
+            call.as_mut().poll(context).map(Some)
+        })
+        .await;
+        match reply {
+            Some(Ok(fd)) => drop(acquired.send(fd)),
+            Some(Err(error)) => log(&format!("{INHIBIT_FAILED}: {error}")),
+            None => {}
+        }
+    }));
+    Some(inhibitor)
+}
+
+async fn request_inhibitor(connection: &Connection) -> zbus::Result<OwnedFd> {
+    let reply = connection
+        .call_method(
+            Some(LOGIND),
+            MANAGER_PATH,
+            Some(MANAGER),
+            "Inhibit",
+            &("sleep", "librepods", "Stop dictation before sleep", "delay"),
+        )
+        .await?;
+    // Sample reply: UNIX_FD 0, the first attached file descriptor.
+    reply.body().deserialize()
+}
+
 /// Retries the system bus while it is out of reach; with no logind on it, nothing ever arrives.
-pub(super) async fn watch(inputs: mpsc::Sender<Input>) {
+pub(super) async fn watch(inputs: mpsc::Sender<Input>, bus: watch::Sender<Option<Connection>>) {
     let mut errors = ErrorLog::default();
     loop {
         // The BlueZ watcher already logs a system bus out of reach, with the same reason.
@@ -31,8 +80,11 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>) {
             match MessageStream::for_match_rule(SLEEP_RULE, &connection, None).await {
                 Ok(signals) => {
                     errors.clear();
+                    drop(bus.send_replace(Some(connection)));
                     log(WATCHING);
-                    if forward(signals, &inputs).await.is_break() {
+                    let flow = forward(signals, &inputs).await;
+                    drop(bus.send_replace(None));
+                    if flow.is_break() {
                         return;
                     }
                 }

@@ -52,6 +52,7 @@ pub(in crate::daemon) fn unread_outlets() -> Outlets {
         monitor,
         mic,
         dictation: dictation::Outlet::new(refusing()),
+        sleep_bus: watch::channel(None).1,
         tap: crate::daemon::mic::Tap::new(),
     }
 }

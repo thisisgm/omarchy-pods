@@ -123,6 +123,7 @@ async fn serve(
     ));
     let (keys, pairs) = keys::queue();
     let (monitor, monitor_wanted) = watch::channel(false);
+    let (system_bus, sleep_bus) = watch::channel(None);
     let driver = tokio::spawn(link::drive(
         hub.clone(),
         inputs,
@@ -138,6 +139,7 @@ async fn serve(
             monitor,
             mic: mic_requests,
             dictation: dictation::Outlet::new(connector_on(ATT_PSM)),
+            sleep_bus,
             tap,
         },
         stored.clone(),
@@ -168,7 +170,7 @@ async fn serve(
     // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(session_bus(hub.clone(), link.clone(), media_queue));
     let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests, monitor_wanted));
-    let suspends = tokio::spawn(sleep::watch(link.clone()));
+    let suspends = tokio::spawn(sleep::watch(link.clone(), system_bus));
     let (code, driver) = until_stopped(stop.first(), accept, follow, driver, watcher).await;
     if let Some(driver) = driver {
         link::stop(&link, driver).await;
@@ -178,12 +180,8 @@ async fn serve(
     // After the driver, whose end closes the adapters' queues and so ends them.
     audio::stop(adapter).await;
     mic::stop(source).await;
-    suspends.abort();
-    // Awaited so its system bus connection closes first; the result is only the cancellation.
-    drop(suspends.await);
-    bus.abort();
-    // Awaited so the bus name is released and every player call dropped first; the result is only the cancellation.
-    drop(bus.await);
+    stop_bus(suspends).await;
+    stop_bus(bus).await;
     if let Err(error) = socket::remove(&paths.socket).await {
         log(&error);
     }
@@ -196,6 +194,12 @@ async fn serve(
         log(&format!("keys: the writer ended: {error}"));
     }
     code
+}
+
+async fn stop_bus(task: JoinHandle<()>) {
+    task.abort();
+    // Wait for the bus connection and pending calls to drop before removing the socket.
+    drop(task.await);
 }
 
 /// Dials one of the pods' channels, by its PSM, inside the link's connect timeout.
