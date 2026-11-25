@@ -7,7 +7,7 @@ mod waits;
 use pods_core::policy::audio::{Percent, SinkFact, SinkState, VolumeStamp, sink_prefix};
 use pods_proto::addr::BdAddr;
 
-use super::device_sink;
+use super::volume::device_sink;
 use super::wire::tests::{FIRST_INDEX, sink_list};
 
 const DEVICE: &str = "02:00:00:00:00:0A";
@@ -45,7 +45,9 @@ fn device_sink_of(default: Option<&[u8]>) -> Option<SinkFact> {
         (c"bluez_output.02_00_00_00_00_0A.1", &[HALF]),
         (c"bluez_output.02_00_00_00_00_0A.2", &[NORM]),
     ]);
-    device_sink(&list, &prefix(), default).unwrap()
+    device_sink(&list, &prefix(), default)
+        .unwrap()
+        .map(|reading| reading.fact)
 }
 
 #[test]

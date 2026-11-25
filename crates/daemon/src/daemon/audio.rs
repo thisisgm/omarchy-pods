@@ -1,6 +1,7 @@
 //! Reads the followed device's sink, capture clients and card profile, and applies sink requests.
 
 mod streams;
+mod volume;
 mod wire;
 
 use std::convert::Infallible;
@@ -14,14 +15,13 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use pods_core::policy::audio::{
-    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, Percent, RESTORE_HOLD_MS, Recorders, RestoreId,
-    SinkFact, SinkState, VolumeStamp, card_name, sink_prefix,
+    AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RESTORE_HOLD_MS, RestoreId, SinkFact,
+    SinkState, VolumeStamp, card_name, sink_prefix,
 };
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{
-    AuthParams, ChannelVolume, Command, CommandTag, Prop, Props, PulseError, SetDeviceVolumeParams,
-    SubscriptionMask, SuspendParams, Volume,
+    AuthParams, Command, CommandTag, Prop, Props, PulseError, SubscriptionMask, SuspendParams,
 };
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, error::TrySendError};
@@ -31,6 +31,7 @@ use tokio::time::{Instant, sleep, timeout};
 
 use super::link::{Input, STOP_WAIT_MS};
 use super::log;
+use volume::{Observed, VolumeWrite, Volumes};
 use wire::{Frame, Malformed, Message, PROTOCOL_VERSION, read_frame, take_frame, write_frame};
 
 /// The driver asks once per link signal, and the adapter takes each request at once.
@@ -54,14 +55,16 @@ const COOKIE_LENGTH: usize = 256;
 )]
 const NO_ENTITY: u32 = PulseError::NoEntity as u32;
 
-/// The sink and recorder readings refreshed for a queued volume write.
-const VOLUME_REFRESH: SubscriptionMask = SubscriptionMask::SINK
-    .union(SubscriptionMask::SERVER)
-    .union(SubscriptionMask::SOURCE)
-    .union(SubscriptionMask::SOURCE_OUTPUT);
+/// The sink and default refreshed for a queued volume write.
+const VOLUME_REFRESH: SubscriptionMask = SubscriptionMask::SINK.union(SubscriptionMask::SERVER);
+
+/// Subscription changes that can alter whether a capture stream is active.
+const CAPTURE_EVENTS: SubscriptionMask =
+    SubscriptionMask::SOURCE.union(SubscriptionMask::SOURCE_OUTPUT);
 
 /// Facilities read by the follower on this connection.
 const EVENTS: SubscriptionMask = VOLUME_REFRESH
+    .union(CAPTURE_EVENTS)
     .union(SubscriptionMask::CLIENT)
     .union(SubscriptionMask::CARD);
 
@@ -99,15 +102,17 @@ pub(super) async fn run(
 ) {
     let socket = runtime_dir.join(SOCKET);
     let mut followed = None;
+    let mut saved = Vec::new();
     loop {
         let request = match followed {
             None => requests.recv().await,
-            Some(device) => match Follower::new(&inputs, &mut requests, device, state.clone())
-                .follow(&socket)
-                .await
-            {
-                Left::Request(request) => request,
-            },
+            Some(device) => {
+                let mut session = Follower::new(&inputs, &mut requests, device, state.clone());
+                session.volume.saved = saved;
+                let Left::Request(request) = session.follow(&socket).await;
+                saved = session.volume.saved;
+                request
+            }
         };
         match request {
             Some(AudioRequest::Follow(device)) => followed = device,
@@ -121,7 +126,11 @@ pub(super) async fn run(
                     return;
                 }
             }
-            Some(AudioRequest::CancelRestore | AudioRequest::SetVolume(..)) => {}
+            Some(
+                AudioRequest::CancelRestore
+                | AudioRequest::SetVolume(..)
+                | AudioRequest::RestoreVolume(..),
+            ) => {}
             None => return,
         }
     }
@@ -215,12 +224,6 @@ enum Restore {
     Owed,
 }
 
-struct VolumeWrite {
-    percent: Percent,
-    stamp: VolumeStamp,
-    retried: bool,
-}
-
 /// Requests that use the connection stay here until the current read ends.
 struct Requests<'a> {
     queue: &'a mut mpsc::Receiver<AudioRequest>,
@@ -238,12 +241,10 @@ impl Requests<'_> {
             match self.queue.poll_recv(context) {
                 Poll::Ready(Some(AudioRequest::Restore(id))) => self.restore = Restore::Asked(id),
                 Poll::Ready(Some(AudioRequest::CancelRestore)) => self.restore = Restore::Clear,
-                Poll::Ready(Some(AudioRequest::SetVolume(percent, stamp))) => {
-                    self.volume = Some(VolumeWrite {
-                        percent,
-                        stamp,
-                        retried: false,
-                    });
+                Poll::Ready(Some(
+                    request @ (AudioRequest::SetVolume(..) | AudioRequest::RestoreVolume(..)),
+                )) => {
+                    self.volume = VolumeWrite::queued(request);
                     return Poll::Pending;
                 }
                 Poll::Ready(request) => return Poll::Ready(request),
@@ -293,15 +294,14 @@ struct Follower<'a> {
     /// Never logged: it holds the device's address.
     card: Vec<u8>,
     told: Told,
-    volume_stamp: VolumeStamp,
+    volume: Volumes,
     /// Attempts failed since the server was last read, which picks the step of the ladder.
     misses: usize,
     up: bool,
     /// A suspend sent and not yet undone, which the next connection resumes.
     suspended: bool,
     state: watch::Receiver<State>,
-    /// The record streams last told, none once the server is told down.
-    recorders: Recorders,
+    recording: streams::Recording,
     hint: bool,
     headset: Option<bool>,
 }
@@ -324,19 +324,19 @@ impl<'a> Follower<'a> {
             prefix: sink_prefix(device).into_bytes(),
             card: card_name(device).into_bytes(),
             told: Told::Nothing,
-            volume_stamp: VolumeStamp::default(),
+            volume: Volumes::default(),
             misses: 0,
             up: false,
             suspended: false,
             state,
-            recorders: Recorders::default(),
+            recording: streams::Recording::default(),
             hint: false,
             headset: None,
         }
     }
 
     /// Ends at a request for another device or for none; one for this device again, which every link up sends, keeps the restore and the suspend and only dials again.
-    async fn follow(mut self, socket: &Path) -> Left {
+    async fn follow(&mut self, socket: &Path) -> Left {
         let again = Some(AudioRequest::Follow(Some(self.device)));
         loop {
             let left = match self.serve(socket).await {
@@ -350,7 +350,7 @@ impl<'a> Follower<'a> {
                 // The driver forgot the sink at the link's up, so it is told again even when unchanged.
                 Left::Request(request) if request == again => {
                     self.told = Told::Nothing;
-                    self.reset_volume_stamp();
+                    self.volume.reset_stamp();
                 }
                 Left::Request(_) => return left,
             }
@@ -365,8 +365,8 @@ impl<'a> Follower<'a> {
         if std::mem::take(&mut self.up) || self.misses == 0 {
             // The next connection reads the sink afresh, so it is told again even when unchanged.
             self.told = Told::Nothing;
-            self.reset_volume_stamp();
-            self.recorders = Recorders::default();
+            self.volume.reset_stamp();
+            self.recording = streams::Recording::default();
             self.hint = false;
             self.tell(AudioFact::Down).await;
         }
@@ -393,13 +393,6 @@ impl<'a> Follower<'a> {
         Ok(())
     }
 
-    fn reset_volume_stamp(&mut self) {
-        self.volume_stamp = VolumeStamp {
-            epoch: self.volume_stamp.epoch.saturating_add(1),
-            writes: 0,
-        };
-    }
-
     /// One connection from its connect to its loss; events arriving during a refresh mark what the next refresh needs.
     async fn serve(&mut self, socket: &Path) -> Result<Infallible, Ended> {
         let mut connection = self.requests.watched(Connection::open(socket)).await?;
@@ -408,12 +401,11 @@ impl<'a> Follower<'a> {
         let mut read = false;
         let mut default_sink = None;
         let mut sink: Option<SinkFact> = None;
-        let mut sample_stamp = VolumeStamp::default();
-        let mut source_name = String::new();
-        let mut source_index = None;
+
+        let mut capture = streams::CaptureList::default();
         loop {
             let change = if stale.is_empty() {
-                let changed = connection.changed(&mut self.state, &source_name);
+                let changed = connection.changed(&mut self.state, &capture.name);
                 self.requests.waited(changed).await?
             } else {
                 self.requests.waited(future::ready(Ok(stale))).await?
@@ -434,18 +426,45 @@ impl<'a> Follower<'a> {
                 });
                 default_sink = self.requests.watched(default).await?;
             }
+            let mut observed = Observed::Unchanged;
             if refresh.intersects(SubscriptionMask::SERVER | SubscriptionMask::SINK) {
                 let listed = connection.call(&Command::GetSinkInfoList, &mut stale, |body| {
-                    device_sink(body, &self.prefix, default_sink.as_deref())
+                    volume::device_sink(body, &self.prefix, default_sink.as_deref())
                 });
                 let listed = self.requests.watched(listed).await?;
-                if sink.is_some_and(|last| Some(last.index) != listed.map(|next| next.index)) {
-                    self.reset_volume_stamp();
+                if sink.is_some_and(|last| Some(last.index) != listed.map(|next| next.fact.index)) {
+                    self.volume.reset_stamp();
                 }
-                sink = listed;
-                sample_stamp = self.volume_stamp;
-                self.write_volume(&mut connection, sink.map(|sink| sink.index), &mut stale)
-                    .await?;
+                sink = listed.map(|reading| SinkFact {
+                    volume_stamp: self.volume.stamp,
+                    ..reading.fact
+                });
+                if self.recording.active && !refresh.intersects(CAPTURE_EVENTS) {
+                    self.requests.volume = self
+                        .requests
+                        .volume
+                        .take()
+                        .filter(|write| !write.is_lowering());
+                }
+                // A new duck waits for any capture reading already due in this refresh.
+                if !self
+                    .requests
+                    .volume
+                    .as_ref()
+                    .is_some_and(VolumeWrite::is_lowering)
+                    || !refresh.intersects(CAPTURE_EVENTS)
+                {
+                    observed = self
+                        .volume
+                        .apply(
+                            self.device,
+                            &mut self.requests.volume,
+                            &mut connection,
+                            listed,
+                            &mut stale,
+                        )
+                        .await?;
+                }
             }
             if !read {
                 self.tell(AudioFact::Up).await;
@@ -458,43 +477,25 @@ impl<'a> Follower<'a> {
                 read = true;
                 self.misses = 0;
             }
-            if self.told != Told::Sink(sink) {
-                self.told = Told::Sink(sink);
-                let stamped = sink.map(|reading| SinkFact {
-                    volume_stamp: sample_stamp,
-                    ..reading
-                });
-                self.tell(AudioFact::Sink(stamped)).await;
+            if matches!(observed, Observed::Adjusted) {
+                self.tell(AudioFact::VolumeAdjusted).await;
+            }
+            let confirmed = matches!(observed, Observed::Publish);
+            if confirmed && let Some(sink) = &mut sink {
+                // This sample settles a restore without a later write changing it.
+                sink.volume_stamp = self.volume.stamp;
+            }
+            if confirmed || self.told != Told::Sink(sink.map(unstamped)) {
+                self.told = Told::Sink(sink.map(unstamped));
+                self.tell(AudioFact::Sink(sink)).await;
             }
             // Lift a block only after the current want and sink are known.
             if !headset {
                 self.tell_headset(false).await;
             }
             self.restore(&mut connection, sink, &mut stale).await?;
-            let name = self.state.borrow().mic_source();
-            let reread_source = refresh.contains(SubscriptionMask::SOURCE) || name != source_name;
-            if reread_source {
-                source_name = name;
-                source_index = if source_name.is_empty() {
-                    None
-                } else {
-                    let listed = connection.call(&Command::GetSourceInfoList, &mut stale, |body| {
-                        streams::source_index(body, source_name.as_bytes())
-                    });
-                    let index = self.requests.watched(listed).await?;
-                    self.restore(&mut connection, sink, &mut stale).await?;
-                    index
-                };
-            }
-            if reread_source || refresh.contains(SubscriptionMask::SOURCE_OUTPUT) {
-                let recorders = self
-                    .record_streams(&mut connection, sink, source_index, &mut stale)
-                    .await?;
-                if recorders != self.recorders {
-                    self.recorders = recorders;
-                    self.tell(AudioFact::Recorders(recorders)).await;
-                }
-            }
+            self.refresh_recorders(&mut connection, refresh, &mut stale, &mut capture, sink)
+                .await?;
         }
     }
 
@@ -528,64 +529,6 @@ impl<'a> Follower<'a> {
             self.tell(AudioFact::Hint(hint)).await;
         }
         Ok(headset)
-    }
-
-    /// Applies a queued write to the index just read and counts it once it has left the queue.
-    async fn write_volume(
-        &mut self,
-        connection: &mut Connection,
-        index: Option<u32>,
-        stale: &mut SubscriptionMask,
-    ) -> Result<(), Lost> {
-        let Some(write) = self.requests.volume.take() else {
-            return Ok(());
-        };
-        if let Some(index) = index {
-            match connection.set_volume(index, write.percent, stale).await {
-                Ok(()) => {}
-                Err(Lost::Refused {
-                    command: CommandTag::SetSinkVolume,
-                    code: NO_ENTITY,
-                }) => {
-                    if write.retried {
-                        log(
-                            "audio: volume write dropped after SetSinkVolume returned NoEntity twice",
-                        );
-                    } else {
-                        *stale |= SubscriptionMask::SINK;
-                        self.requests.volume = Some(VolumeWrite {
-                            retried: true,
-                            ..write
-                        });
-                        return Ok(());
-                    }
-                }
-                Err(lost) => return Err(lost),
-            }
-        }
-        // The current index can receive an older request. Its count tracks this sink's epoch.
-        if write.stamp.epoch == self.volume_stamp.epoch {
-            self.volume_stamp.writes = write.stamp.writes;
-        }
-        Ok(())
-    }
-
-    /// The record streams on `source`; a restore asked during the read is done as it ends, on the sink as last read.
-    async fn record_streams(
-        &mut self,
-        connection: &mut Connection,
-        sink: Option<SinkFact>,
-        source: Option<u32>,
-        stale: &mut SubscriptionMask,
-    ) -> Result<Recorders, Ended> {
-        let Some(source) = source else {
-            return Ok(Recorders::default());
-        };
-        let counted = |body: &[u8]| streams::recorders(body, source);
-        let recorders = connection.call(&Command::GetSourceOutputInfoList, stale, counted);
-        let recorders = self.requests.watched(recorders).await?;
-        self.restore(connection, sink, stale).await?;
-        Ok(recorders)
     }
 
     /// Skips restores under a headset profile and takes no request between a suspend and its resume.
@@ -658,6 +601,13 @@ impl<'a> Follower<'a> {
     }
 }
 
+fn unstamped(sink: SinkFact) -> SinkFact {
+    SinkFact {
+        volume_stamp: VolumeStamp::default(),
+        ..sink
+    }
+}
+
 /// The last sink fact sent, so an unchanged one is not sent again.
 #[derive(PartialEq, Eq)]
 enum Told {
@@ -701,28 +651,6 @@ impl Connection {
         let subscribe = Command::Subscribe(EVENTS);
         connection.call(&subscribe, &mut stale, |_| Ok(())).await?;
         Ok(connection)
-    }
-
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "100 times Volume::NORM plus the rounding offset fits a u32"
-    )]
-    async fn set_volume(
-        &mut self,
-        index: u32,
-        percent: Percent,
-        stale: &mut SubscriptionMask,
-    ) -> Result<(), Lost> {
-        let full = u32::from(Percent::FULL.get());
-        let raw = (u32::from(percent.get()) * Volume::NORM.as_u32() + full / 2) / full;
-        let mut volume = ChannelVolume::empty();
-        volume.push(Volume::from_u32_clamped(raw));
-        let command = Command::SetSinkVolume(SetDeviceVolumeParams {
-            device_index: Some(index),
-            device_name: None,
-            volume,
-        });
-        self.call(&command, stale, |_| Ok(())).await
     }
 
     async fn suspend(
@@ -828,32 +756,6 @@ async fn within<T>(work: impl Future<Output = Result<T, Lost>>) -> Result<T, Los
     timeout(Duration::from_millis(AUDIO_CALL_TIMEOUT_MS), work)
         .await
         .unwrap_or(Err(Lost::Timeout))
-}
-
-/// The device's sink: the default when its name starts with `prefix`, else the first sink whose name does.
-fn device_sink(
-    body: &[u8],
-    prefix: &[u8],
-    default: Option<&[u8]>,
-) -> Result<Option<SinkFact>, Malformed> {
-    let mut found = None;
-    for sink in wire::sinks(body) {
-        let sink = sink?;
-        if !sink.name.starts_with(prefix) {
-            continue;
-        }
-        let is_default = default == Some(sink.name);
-        if is_default || found.is_none() {
-            found = Some(SinkFact {
-                index: sink.index,
-                is_default,
-                volume: sink.volume,
-                state: sink.state,
-                volume_stamp: VolumeStamp::default(),
-            });
-        }
-    }
-    Ok(found)
 }
 
 #[cfg(test)]

@@ -60,8 +60,8 @@ pub(super) struct Shared {
 struct Sink {
     index: u32,
     name: CString,
-    volume: Volume,
-    added: Volume,
+    volume: ChannelVolume,
+    added: ChannelVolume,
     monitor: u32,
     /// What its streams make of it; a client's suspend overrides it until the resume.
     state: SinkState,
@@ -166,10 +166,6 @@ impl Client {
 
 impl Sink {
     fn info(&self) -> SinkInfo {
-        let mut cvolume = ChannelVolume::empty();
-        for _ in 0..SINK_CHANNELS {
-            cvolume.push(self.volume);
-        }
         let state = if self.suspended {
             SinkState::Suspended
         } else {
@@ -178,7 +174,7 @@ impl Sink {
         let monitor = monitor_name(&self.name.to_string_lossy());
         SinkInfo {
             name: self.name.clone(),
-            cvolume,
+            cvolume: self.volume,
             state,
             monitor_source_index: Some(self.monitor),
             monitor_source_name: Some(CString::new(monitor).unwrap()),
@@ -284,6 +280,7 @@ impl State {
         let index = self.next_sink;
         self.next_sink = self.next_sink.saturating_add(1);
         let monitor = self.capture.add_monitor(name, index);
+        let volume = uniform_volume(volume);
         self.sinks.push(Sink {
             index,
             name: c_name,
@@ -332,15 +329,23 @@ impl State {
     }
 
     pub(super) fn volume(&self, name: &str) -> Volume {
+        loudest(&self.channel_volume(name))
+    }
+
+    pub(super) fn channel_volume(&self, name: &str) -> ChannelVolume {
         self.sinks[self.named(name)].volume
     }
 
     pub(super) fn set_volume(&mut self, name: &str, volume: Volume) {
+        self.set_channel_volume(name, uniform_volume(volume));
+    }
+
+    pub(super) fn set_channel_volume(&mut self, name: &str, volume: ChannelVolume) {
         self.change_volume(self.named(name), volume);
     }
 
     /// A real server announces a volume only when it changed.
-    fn change_volume(&mut self, position: usize, volume: Volume) {
+    fn change_volume(&mut self, position: usize, volume: ChannelVolume) {
         let sink = &mut self.sinks[position];
         if sink.volume != volume {
             sink.volume = volume;
@@ -651,7 +656,12 @@ impl State {
             return;
         };
         self.send(id, wire::ack(seq));
-        self.change_volume(position, loudest(&params.volume));
+        let volume = if let [volume] = channels {
+            uniform_volume(*volume)
+        } else {
+            params.volume
+        };
+        self.change_volume(position, volume);
     }
 
     /// The ack goes out before the change event, as for a volume.
@@ -733,6 +743,14 @@ fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<Strin
         },
         _ => Asked::Unknown { command },
     }
+}
+
+fn uniform_volume(volume: Volume) -> ChannelVolume {
+    let mut uniform = ChannelVolume::empty();
+    for _ in 0..SINK_CHANNELS {
+        uniform.push(volume);
+    }
+    uniform
 }
 
 /// The sink's one volume is its loudest channel, as `pactl` reports it.

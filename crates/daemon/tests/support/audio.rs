@@ -16,7 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pods_core::policy::audio::AUDIO_CALL_TIMEOUT_MS;
-use pulseaudio::protocol::{SinkState, SubscriptionMask};
+use pulseaudio::protocol::{ChannelVolume, SinkState, SubscriptionMask, Volume};
 use rustix::net::{self, Shutdown};
 
 pub(crate) use capture::{Recorder, RecorderId};
@@ -172,6 +172,18 @@ impl FakeAudio {
     }
 
     /// As a user would set it, so every subscriber hears the change.
+    pub(crate) fn channel_volume(&self, name: &str) -> ChannelVolume {
+        self.state().channel_volume(name)
+    }
+
+    pub(crate) fn set_channel_volume(&self, name: &str, raw: &[u32]) {
+        let mut volumes = ChannelVolume::empty();
+        for raw in raw {
+            volumes.push(Volume::from_u32_clamped(*raw));
+        }
+        self.change(|state| state.set_channel_volume(name, volumes));
+    }
+
     pub(crate) fn set_volume(&self, name: &str, percent: u8) {
         self.change(|state| state.set_volume(name, volume_of(percent)));
     }

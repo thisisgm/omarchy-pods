@@ -45,14 +45,17 @@ struct PendingVolume {
     superseded: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 enum Conversation {
     #[default]
     Idle,
     Lowered {
         saved: Percent,
         ducked: Percent,
-        restore_owed: bool,
+    },
+    Restoring {
+        saved: Percent,
+        ducked: Percent,
     },
     /// The wearer set their own volume, so another start report in this conversation is ignored.
     UserAdjusted,
@@ -89,15 +92,26 @@ impl Ducking {
             {
                 self.read_sink(*sink)
             }
-            Fact::Audio(AudioFact::Recorders(recorders))
+            Fact::Audio(AudioFact::Recording(recording))
                 if state.audio_server != AudioServer::Idle =>
             {
-                self.recording = recorders.dictation != 0 || recorders.other != 0;
+                self.recording = *recording;
                 if self.recording && matches!(self.conversation, Conversation::Lowered { .. }) {
                     self.restore()
                 } else {
                     None
                 }
+            }
+            Fact::Audio(AudioFact::VolumeAdjusted)
+                if state.connected && state.audio_server == AudioServer::Up =>
+            {
+                self.pending_volume = None;
+                self.conversation = match self.conversation {
+                    Conversation::Lowered { .. } => Conversation::UserAdjusted,
+                    Conversation::Restoring { .. } => Conversation::Idle,
+                    Conversation::Idle | Conversation::UserAdjusted => self.conversation,
+                };
+                None
             }
             Fact::Link(Signal::Awareness(Awareness::Started))
                 if state.connected && state.conversational_awareness && !self.recording =>
@@ -112,6 +126,8 @@ impl Ducking {
                 | AudioFact::Sink(_)
                 | AudioFact::Restored(_)
                 | AudioFact::Recorders(_)
+                | AudioFact::Recording(_)
+                | AudioFact::VolumeAdjusted
                 | AudioFact::Hint(_)
                 | AudioFact::Headset(_),
             )
@@ -128,14 +144,20 @@ impl Ducking {
         let (Some(volume), Some(sink)) = (volume, self.sink) else {
             return Vec::new();
         };
+        vec![self.request_volume(volume, sink)]
+    }
+
+    fn request_volume(&mut self, volume: Percent, sink: SinkFact) -> Effect {
         if let Some(pending) = &mut self.pending_volume {
             if !pending.stale.contains(&pending.target) {
                 pending.stale.push(pending.target);
             }
             pending.target = volume;
             pending.superseded = true;
-        } else if sink.volume != volume {
-            // The audio adapter deduplicates unchanged sink readings.
+        } else if sink.volume != volume
+            || matches!(self.conversation, Conversation::Restoring { .. })
+        {
+            // An unchanged duck can have no echo. A restore asks for a confirmation reading.
             self.pending_volume = Some(PendingVolume {
                 target: volume,
                 stale: vec![sink.volume],
@@ -147,7 +169,12 @@ impl Ducking {
             writes: self.volume_writes,
             ..sink.volume_stamp
         };
-        vec![Effect::Audio(AudioRequest::SetVolume(volume, stamp))]
+        let request = if matches!(self.conversation, Conversation::Restoring { .. }) {
+            AudioRequest::RestoreVolume(volume, stamp)
+        } else {
+            AudioRequest::SetVolume(volume, stamp)
+        };
+        Effect::Audio(request)
     }
 
     fn follow(&mut self, device: BdAddr) {
@@ -155,7 +182,7 @@ impl Ducking {
         if self.device == Some(device) {
             return;
         }
-        if let (Some(previous), Conversation::Lowered { saved, ducked, .. }) =
+        if let (Some(previous), Conversation::Restoring { saved, ducked }) =
             (self.device, &self.conversation)
         {
             self.parked_restores.push((previous, *saved, *ducked));
@@ -166,11 +193,7 @@ impl Ducking {
             .position(|(owner, ..)| *owner == device);
         self.conversation = if let Some(index) = parked {
             let (_, saved, ducked) = self.parked_restores.swap_remove(index);
-            Conversation::Lowered {
-                saved,
-                ducked,
-                restore_owed: true,
-            }
+            Conversation::Restoring { saved, ducked }
         } else {
             Conversation::Idle
         };
@@ -180,33 +203,27 @@ impl Ducking {
 
     fn start(&mut self) -> Option<Percent> {
         let sink = self.sink.filter(|sink| sink.is_default)?;
-        if !matches!(self.conversation, Conversation::Idle) {
-            return None;
-        }
-        let saved = self
-            .pending_volume
-            .as_ref()
-            .map_or(sink.volume, |pending| pending.target);
-        let ducked = lowered(saved);
-        self.conversation = Conversation::Lowered {
-            saved,
-            ducked,
-            restore_owed: false,
+        let saved = match self.conversation {
+            Conversation::Idle => sink.volume,
+            Conversation::Restoring { saved, .. } => saved,
+            Conversation::Lowered { .. } | Conversation::UserAdjusted => return None,
         };
+        let ducked = lowered(saved);
+        self.conversation = Conversation::Lowered { saved, ducked };
         Some(ducked)
     }
 
     fn restore(&mut self) -> Option<Percent> {
         match self.conversation {
-            Conversation::Lowered { saved, .. } if self.sink.is_some() => {
-                self.conversation = Conversation::Idle;
-                Some(saved)
+            Conversation::Lowered { saved, ducked } => {
+                self.conversation = Conversation::Restoring { saved, ducked };
+                self.sink.map(|_| saved)
             }
             Conversation::UserAdjusted => {
                 self.conversation = Conversation::Idle;
                 None
             }
-            Conversation::Idle | Conversation::Lowered { .. } => None,
+            Conversation::Idle | Conversation::Restoring { .. } => None,
         }
     }
 
@@ -214,8 +231,8 @@ impl Ducking {
         self.sink = None;
         self.pending_volume = None;
         self.volume_writes = 0;
-        if let Conversation::Lowered { restore_owed, .. } = &mut self.conversation {
-            *restore_owed = true;
+        if let Conversation::Lowered { saved, ducked } = self.conversation {
+            self.conversation = Conversation::Restoring { saved, ducked };
         }
     }
 
@@ -243,6 +260,9 @@ impl Ducking {
         if let Some(pending) = &self.pending_volume {
             if sink.volume == pending.target {
                 self.pending_volume = None;
+                if matches!(self.conversation, Conversation::Restoring { .. }) {
+                    self.conversation = Conversation::Idle;
+                }
                 return None;
             }
             if pending.stale.contains(&sink.volume) {
@@ -250,22 +270,23 @@ impl Ducking {
             }
             self.pending_volume = None;
         }
-        let Conversation::Lowered {
-            saved,
-            ducked,
-            restore_owed,
-        } = self.conversation
-        else {
-            return None;
-        };
-        if restore_owed || replaced {
-            self.conversation = Conversation::Idle;
-            return (sink.volume == ducked).then_some(saved);
+        if replaced && let Conversation::Lowered { saved, ducked } = self.conversation {
+            self.conversation = Conversation::Restoring { saved, ducked };
         }
-        if sink.volume != saved && sink.volume != ducked {
-            self.conversation = Conversation::UserAdjusted;
+        match self.conversation {
+            Conversation::Restoring { saved, ducked } if sink.volume == ducked => Some(saved),
+            Conversation::Restoring { .. } => {
+                self.conversation = Conversation::Idle;
+                None
+            }
+            Conversation::Lowered { saved, ducked }
+                if sink.volume != saved && sink.volume != ducked =>
+            {
+                self.conversation = Conversation::UserAdjusted;
+                None
+            }
+            Conversation::Idle | Conversation::Lowered { .. } | Conversation::UserAdjusted => None,
         }
-        None
     }
 }
 
@@ -307,6 +328,13 @@ mod tests {
         ))
     }
 
+    fn restore(percent: u8, epoch: u64, writes: u64) -> Effect {
+        Effect::Audio(AudioRequest::RestoreVolume(
+            Percent::new(percent).unwrap(),
+            VolumeStamp { epoch, writes },
+        ))
+    }
+
     #[test]
     fn a_sink_reading_queued_before_start_sets_the_restore_volume() {
         let state = connected();
@@ -317,7 +345,7 @@ mod tests {
         assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 1)]);
         assert_eq!(ducking.step(&state, &queued), []);
         assert_eq!(ducking.step(&state, &sink(0, 10, 0, 1)), []);
-        assert_eq!(ducking.step(&state, &ENDED), [set(45, 0, 2)]);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(45, 0, 2)]);
     }
 
     #[test]
@@ -338,7 +366,7 @@ mod tests {
         // Re-follow resets the adapter count before it applies the queued duck.
         assert_eq!(ducking.step(&state, &sink(1, 55, 1, 0)), []);
         assert_eq!(ducking.step(&state, &sink(1, 10, 1, 0)), []);
-        assert_eq!(ducking.step(&state, &ENDED), [set(55, 1, 1)]);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(55, 1, 1)]);
     }
 
     #[test]
@@ -359,7 +387,10 @@ mod tests {
         );
         state.connected = true;
         assert_eq!(ducking.step(&state, &up), []);
-        assert_eq!(ducking.step(&state, &sink(2, 10, 1, 0)), [set(50, 1, 1)]);
+        assert_eq!(
+            ducking.step(&state, &sink(2, 10, 1, 0)),
+            [restore(50, 1, 1)]
+        );
 
         // The queued restore reaches the new epoch without changing its write count.
         assert_eq!(ducking.step(&state, &sink(2, 10, 2, 0)), []);
@@ -371,7 +402,7 @@ mod tests {
         };
         let echo = sink(2, volume.get(), stamp.epoch, stamp.writes);
         assert_eq!(ducking.step(&state, &echo), []);
-        assert_eq!(ducking.step(&state, &ENDED), [set(30, 2, 2)]);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(30, 2, 2)]);
         assert_eq!(next_duck, [set(5, 2, 1)]);
     }
 
@@ -382,10 +413,10 @@ mod tests {
 
         assert_eq!(ducking.step(&state, &sink(1, 50, 0, 0)), []);
         assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 1)]);
-        assert_eq!(ducking.step(&state, &ENDED), [set(50, 0, 2)]);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(50, 0, 2)]);
         assert_eq!(ducking.step(&state, &STARTED), [set(10, 0, 3)]);
         assert_eq!(ducking.step(&state, &sink(1, 10, 0, 1)), []);
-        assert_eq!(ducking.step(&state, &ENDED), [set(50, 0, 4)]);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(50, 0, 4)]);
     }
 
     #[test]

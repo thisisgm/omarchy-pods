@@ -16,6 +16,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
+use super::super::volume::protocol_volume;
 use super::super::wire::PROTOCOL_VERSION;
 use super::super::wire::tests::sink;
 use super::super::{Connection, Follower, Input, Left, Requests, Restore, queue};
@@ -34,6 +35,12 @@ fn set_volume(percent: Percent, writes: u64) -> AudioRequest {
 }
 
 #[test]
+fn the_audio_follower_stays_within_its_main_line_count() {
+    const MAIN_LINES: usize = 832;
+    assert!(include_str!("../../audio.rs").lines().count() <= MAIN_LINES);
+}
+
+#[test]
 fn a_pending_volume_write_holds_the_queue_end() {
     let (sender, mut receiver) = queue();
     sender.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -47,7 +54,7 @@ fn a_pending_volume_write_holds_the_queue_end() {
     assert_eq!(requests.poll_next(&mut context), Poll::Pending);
     assert_eq!(requests.poll_next(&mut context), Poll::Pending);
     let write = requests.volume.take().unwrap();
-    assert_eq!(write.percent, Percent::FULL);
+    assert_eq!(write.lowered(), Some(Percent::FULL));
     assert!(!write.retried);
     assert_eq!(requests.poll_next(&mut context), Poll::Ready(None));
 }
@@ -77,8 +84,10 @@ fn set_volume_rounds_to_the_nearest_protocol_value() {
         });
         let mut stale = SubscriptionMask::empty();
         for (percent, _) in cases {
+            let mut channels = pulseaudio::protocol::ChannelVolume::empty();
+            channels.push(protocol_volume(Percent::new(percent).unwrap()));
             connection
-                .set_volume(OLD_INDEX, Percent::new(percent).unwrap(), &mut stale)
+                .set_channel_volume(OLD_INDEX, channels, &mut stale)
                 .await
                 .unwrap();
         }
@@ -111,7 +120,7 @@ fn a_volume_wake_keeps_a_card_change_read_during_a_call() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let follower = Follower::new(&inputs, &mut queue, device, state);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             notify_change(&mut server, SubscriptionEventFacility::Card, CARD_INDEX).await;
@@ -150,7 +159,7 @@ fn a_volume_write_refused_for_a_missing_sink_retries_on_the_same_connection() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let follower = Follower::new(&inputs, &mut queue, device, state);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -196,7 +205,7 @@ fn two_missing_sink_refusals_drop_only_the_pending_write() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let follower = Follower::new(&inputs, &mut queue, device, state);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -257,7 +266,7 @@ fn a_volume_write_refused_for_another_reason_disconnects() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let follower = Follower::new(&inputs, &mut queue, device, state);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -295,7 +304,7 @@ async fn check_new_sink(during: RequestDuring) {
     let (requests, mut queue) = queue();
     let state = watch::channel(State::default()).1;
     let device = DEVICE.parse().unwrap();
-    let follower = Follower::new(&inputs, &mut queue, device, state);
+    let mut follower = Follower::new(&inputs, &mut queue, device, state);
     let check = tokio::spawn(async move {
         let mut server = open_with_sink(&listener, &mut facts).await;
 
@@ -384,6 +393,7 @@ async fn open_with_sink(listener: &UnixListener, facts: &mut mpsc::Receiver<Inpu
         facts.recv().await,
         Some(Input::Audio(AudioFact::Headset(false)))
     ));
+    answer_command(&mut server, CommandTag::GetSourceInfoList).await;
     server
 }
 

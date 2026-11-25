@@ -70,6 +70,10 @@ pub enum AudioFact {
     Restored(RestoreId),
     /// Told when it changes; `Down` reads as none.
     Recorders(Recorders),
+    /// At least one recording stream is attached to a non-monitor source.
+    Recording(bool),
+    /// The sink changed outside a Conversation Awareness volume write.
+    VolumeAdjusted,
     /// A program asks to keep capture ready.
     Hint(bool),
     /// The followed card has an active headset profile.
@@ -117,6 +121,8 @@ pub enum AudioRequest {
     Follow(Option<BdAddr>),
     /// Changes the followed sink's volume without interrupting its streams.
     SetVolume(Percent, VolumeStamp),
+    /// Restores the precise channel levels saved by the adapter.
+    RestoreVolume(Percent, VolumeStamp),
     /// Suspends and resumes the followed device's sink, so a stream the uplink's end broke is opened again.
     Restore(RestoreId),
     /// A START went out, so a restore still owed is dropped: the newest intent wins.

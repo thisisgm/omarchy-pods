@@ -222,6 +222,7 @@ fn a_new_recorder_is_told_after_reading_only_the_record_streams() {
         );
         server.recorders.push(recorder);
         server.announce(&added).await;
+        assert_eq!(server.fact().await, AudioFact::Recording(true));
         assert_eq!(
             server.fact().await,
             AudioFact::Recorders(Recorders {

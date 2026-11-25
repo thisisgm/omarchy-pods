@@ -39,6 +39,7 @@ mod tests {
     const UNKNOWN: u8 = 0xff;
     const DICTATION: &str = "superwhisper-capture";
     const SPEAKERS: &str = "alsa_output.speakers";
+    const LAPTOP_MIC: &str = "alsa_input.laptop";
     const STOP_WAIT: Duration = Duration::from_millis(2500);
 
     fn enable(rig: &Rig, enabled: bool) {
@@ -576,6 +577,107 @@ mod tests {
         duck(&rig, &device, &audio);
         finish(rig, &audio);
         assert_writes(&audio, &device, &[LOWERED, SAVED]);
+    }
+
+    #[test]
+    fn another_capture_source_blocks_ducking_but_a_sink_monitor_does_not() {
+        let (rig, device, audio) = ready(SAVED);
+        let sink = sink_named(device.address);
+        audio.add_recorder(&sink, Recorder::Monitor);
+        duck(&rig, &device, &audio);
+
+        audio.add_source(LAPTOP_MIC);
+        let recorder = audio.add_recorder(LAPTOP_MIC, Recorder::Program);
+        wait_volume(&audio, &device, SAVED);
+        speak(&rig, &device, STARTED);
+        speak(&rig, &device, ENDED);
+        rig.wait_sink_told();
+        assert_writes(&audio, &device, &[LOWERED, SAVED]);
+
+        let before = audio.requests().len();
+        audio.remove_recorder(recorder);
+        wait_for("a recorder list after the capture stream exits", || {
+            audio.requests()[before..]
+                .contains(&Asked::RecorderList)
+                .then_some(())
+        });
+        rig.wait_sink_told();
+        duck(&rig, &device, &audio);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[LOWERED, SAVED, LOWERED, SAVED]);
+    }
+
+    #[test]
+    fn an_interrupted_restore_remains_owed_on_reconnect() {
+        let (rig, device, audio) = ready(SAVED);
+        duck(&rig, &device, &audio);
+        rig.wait_sink_told();
+        audio.hold_replies(true);
+        let before = audio.requests().len();
+        speak(&rig, &device, ENDED);
+        wait_for("the restore starts its pre-write refresh", || {
+            audio.requests()[before..]
+                .contains(&Asked::ServerInfo)
+                .then_some(())
+        });
+        audio.stop();
+        rig.wait_audio_server("down");
+        assert_writes(&audio, &device, &[LOWERED]);
+
+        audio.hold_replies(false);
+        audio.restart(Volumes::Kept);
+        wait_volume(&audio, &device, SAVED);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[LOWERED, SAVED]);
+    }
+
+    #[test]
+    fn relinking_restores_the_exact_boost_and_balance() {
+        // The original channels are 125% and 112.5%, so both the clamp and the average would lose data.
+        let original = [81_920, 73_728];
+        let (rig, device, audio) = ready(SAVED);
+        let sink = sink_named(device.address);
+        audio.set_channel_volume(&sink, &original);
+        rig.wait_sink_told();
+        speak(&rig, &device, STARTED);
+        wait_volume(&audio, &device, 20);
+        rig.link_down(&device);
+        rig.wait_status("the link down", |status| !connected(status));
+        audio.wait_clients(0, HANG_LIMIT);
+        rig.relink(&device);
+        wait_for("the original channel levels", || {
+            audio
+                .channel_volume(&sink)
+                .channels()
+                .iter()
+                .map(pulseaudio::protocol::Volume::as_u32)
+                .eq(original)
+                .then_some(())
+        });
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[20, 125]);
+    }
+
+    #[test]
+    fn a_balance_adjustment_at_the_ducked_percent_cancels_restore() {
+        let (rig, device, audio) = ready(SAVED);
+        let sink = sink_named(device.address);
+        duck(&rig, &device, &audio);
+        // These unequal raw channels round to the same 15% as the uniform duck.
+        let adjusted = [9_000, 10_660];
+        audio.set_channel_volume(&sink, &adjusted);
+        rig.wait_sink_told();
+        speak(&rig, &device, ENDED);
+        finish(rig, &audio);
+        assert_writes(&audio, &device, &[LOWERED]);
+        assert!(
+            audio
+                .channel_volume(&sink)
+                .channels()
+                .iter()
+                .map(pulseaudio::protocol::Volume::as_u32)
+                .eq(adjusted)
+        );
     }
 
     #[test]
