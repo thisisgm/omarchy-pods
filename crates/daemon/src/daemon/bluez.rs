@@ -25,7 +25,7 @@ use zbus::export::serde::Deserialize;
 use zbus::message::{Flags, Type as MessageType};
 use zbus::names::MemberName;
 use zbus::zvariant::Type;
-use zbus::{Connection, Message, MessageStream, OwnedObjectPath, OwnedVariant};
+use zbus::{Connection, DBusError, Message, MessageStream, OwnedObjectPath, OwnedVariant};
 
 use super::link::{DeviceEvent, Input, Request};
 use super::log;
@@ -105,7 +105,8 @@ pub(super) async fn watch(
                 }
             }
             Err(error) => errors.note(format!(
-                "bluez: cannot reach the system bus: {error}; trying again every {SYSTEM_BUS_RETRY_MS} ms"
+                "bluez: cannot reach the system bus: {}; trying again every {SYSTEM_BUS_RETRY_MS} ms",
+                failure(&error)
             )),
         }
         if tell(&inputs, monitor.forget_bluez()).await.is_break()
@@ -168,8 +169,10 @@ impl Watcher<'_> {
             match MessageStream::for_match_rule(rule, &self.connection, None).await {
                 Ok(stream) => streams.push(stream.peekable()),
                 Err(error) => {
-                    self.errors
-                        .note(format!("bluez: cannot subscribe to BlueZ: {error}"));
+                    self.errors.note(format!(
+                        "bluez: cannot subscribe to BlueZ: {}",
+                        failure(&error)
+                    ));
                     return ControlFlow::Continue(());
                 }
             }
@@ -494,12 +497,14 @@ where
     }
 }
 
-/// A method error logs its name alone: BlueZ may put the path, so the address, in the message.
+/// BlueZ and the bus can include device paths and addresses in error descriptions.
 fn failure(error: &zbus::Error) -> String {
-    if let zbus::Error::MethodError(name, _, _) = error {
-        name.to_string()
-    } else {
-        error.to_string()
+    match error {
+        zbus::Error::MethodError(name, _, _) => name.to_string(),
+        zbus::Error::FDO(error) => error.name().to_string(),
+        zbus::Error::DBus(error) => error.name().to_string(),
+        zbus::Error::Handshake(_) => "D-Bus handshake failed".to_owned(),
+        _ => error.to_string(),
     }
 }
 
