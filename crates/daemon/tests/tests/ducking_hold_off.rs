@@ -2,8 +2,9 @@
 
 use std::time::{Duration, Instant};
 
-use super::super::support::pause;
+use super::super::support::audio::writes_except_default_source;
 use super::super::support::rig::{REAL_TIME_SLACK, not_before};
+use super::super::support::{pause, wait_within};
 use super::{
     Asked, DICTATION, Device, ENDED, FakeAudio, LOWERED, Recorder, Rig, SAVED, STARTED,
     assert_writes, finish, node_name, recording_ready, sink_named, speak, wait_volume,
@@ -39,13 +40,21 @@ fn start_speech_after_unlink(
     unlink
 }
 
+fn wait_for_sink_write(audio: &FakeAudio) -> Vec<Asked> {
+    let limit = MUFFLE_RELEASE.saturating_add(REAL_TIME_SLACK);
+    wait_within("the first sink write", limit, || {
+        let writes = writes_except_default_source(&audio.requests());
+        (!writes.is_empty()).then_some(writes)
+    })
+}
+
 #[test]
 fn post_recording_hold_off_defers_ongoing_speech() {
     let (mut rig, device, audio, _pipewire) = recording_ready();
     let unlink = start_speech_after_unlink(&mut rig, &device, &audio, SPEECH_START);
 
     // Timestamp the first write against the earliest possible MUFFLE_RELEASE deadline.
-    let writes = audio.wait_writes(1, MUFFLE_RELEASE.saturating_add(REAL_TIME_SLACK));
+    let writes = wait_for_sink_write(&audio);
     let [Asked::Volume { at, .. }] = writes.as_slice() else {
         panic!("expected one sink volume write, got {writes:?}");
     };
@@ -83,7 +92,7 @@ fn post_recording_hold_off_counts_from_the_recorder_unlink() {
     let (mut rig, device, audio, _pipewire) = recording_ready();
     let unlink = start_speech_after_unlink(&mut rig, &device, &audio, LATE_SPEECH);
 
-    let writes = audio.wait_writes(1, MUFFLE_RELEASE.saturating_add(REAL_TIME_SLACK));
+    let writes = wait_for_sink_write(&audio);
     let [Asked::Volume { at, .. }] = writes.as_slice() else {
         panic!("expected one sink volume write, got {writes:?}");
     };

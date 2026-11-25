@@ -14,7 +14,7 @@ use pulseaudio::protocol::SinkState;
 use serde_json::{Value, json};
 
 use super::audio::wire::sink_named;
-use super::audio::{Asked, FakeAudio, PERCENT, writes_of};
+use super::audio::{Asked, FakeAudio, PERCENT, writes_except_default_source};
 use super::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap, connected};
 use super::settings::{plant_settings, set};
 use super::{HANG_LIMIT, Session, wait_for};
@@ -100,9 +100,7 @@ pub(crate) fn move_sink(rig: &Rig, audio: &FakeAudio, device: &Device, state: Si
 /// No sink call so far, allowing the microphone's default-source write.
 pub(crate) fn assert_no_sink_call(rig: &Rig, audio: &FakeAudio) {
     rig.wait_sink_told();
-    let mut writes = audio.writes();
-    writes.retain(|asked| !matches!(asked, Asked::DefaultSource { .. }));
-    assert_eq!(writes, []);
+    assert_eq!(writes_except_default_source(&audio.requests()), []);
 }
 
 /// Fails unless the resume came the whole restore hold after the suspend, and not `HOLD_SLACK` later.
@@ -120,7 +118,7 @@ pub(crate) fn wait_restore(audio: &FakeAudio, device: &Device) -> (Instant, Inst
         let gone = audio.clients() == 0;
         let requests = audio.requests();
         let settled = gone || requests.last().is_some_and(Asked::only_reads);
-        let writes = writes_of(&requests);
+        let writes = writes_except_default_source(&requests);
         (writes.len() >= 2 && settled).then_some(writes)
     });
     match writes.as_slice() {

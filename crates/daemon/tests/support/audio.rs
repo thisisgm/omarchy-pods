@@ -111,6 +111,13 @@ pub(crate) fn writes_of(requests: &[Asked]) -> Vec<Asked> {
     writes.cloned().collect()
 }
 
+/// The writes a sink assertion checks, apart from the microphone's default-source request.
+pub(crate) fn writes_except_default_source(requests: &[Asked]) -> Vec<Asked> {
+    let mut writes = writes_of(requests);
+    writes.retain(|asked| !matches!(asked, Asked::DefaultSource { .. }));
+    writes
+}
+
 /// Whether a restarted server keeps the volumes set before it, as a session manager that stored them does.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Volumes {
