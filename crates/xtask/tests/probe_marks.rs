@@ -28,8 +28,8 @@ mod marks {
     use pods_proto::addr::BdAddr;
     use tempfile::TempDir;
 
-    use super::fixture::{OTHER_PODS_ADDRESS, two_devices};
-    use super::hci_fixture::{PODS_ADDRESS, PODS_HANDLE, Trace};
+    use super::fixture::{OTHER_PODS_ADDRESS, two_devices, whole_connection};
+    use super::hci_fixture::{EVENT_DISCONNECTION_COMPLETE, PODS_ADDRESS, PODS_HANDLE, Trace};
 
     /// The mode the bounded read demands of the trace and the logs, and exactly of the device file.
     const OWNER_FILE: u32 = 0o600;
@@ -163,6 +163,36 @@ mod marks {
             text(&ran.stdout).lines().nth(1),
             Some("1\thost\t\t0\t\t\t\t\t0x13\t\t\t")
         );
+    }
+
+    #[test]
+    fn marks_ends_the_link_when_the_disconnect_reason_is_missing() {
+        const FIRST_ACL_MS: u64 = 100;
+        const DISCONNECT_MS: u64 = 1_000;
+        const RECONNECTED_ACL_MS: u64 = 1_280;
+        const STATUS_SUCCESS: u8 = 0x00;
+
+        let mut trace = Trace::new();
+        trace.create_connection(PODS_ADDRESS);
+        trace.at_ms(FIRST_ACL_MS);
+        trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+        trace.at_ms(DISCONNECT_MS);
+        let [low, high] = PODS_HANDLE.to_le_bytes();
+        trace.event(EVENT_DISCONNECTION_COMPLETE, &[STATUS_SUCCESS, low, high]);
+        trace.create_connection(PODS_ADDRESS);
+        trace.at_ms(RECONNECTED_ACL_MS);
+        trace.link_up(PODS_HANDLE, PODS_ADDRESS);
+        trace.on(PODS_HANDLE);
+        trace.carry(&whole_connection());
+        let dir = sitting(&trace.bytes());
+        let ran = marks(dir.path());
+
+        assert!(ran.status.success(), "{}", text(&ran.stderr));
+        assert_eq!(
+            text(&ran.stdout).lines().nth(1),
+            Some("1\thost\t\t0\t\t\t\t\treasonless\t\t\t")
+        );
+        assert_no_address(&ran);
     }
 
     #[test]
