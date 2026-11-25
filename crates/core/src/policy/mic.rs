@@ -179,7 +179,8 @@ impl Mic {
             | Fact::PauseCut(_)
             | Fact::Advert(_)
             | Fact::Monitor(_)
-            | Fact::Mic(_) => {}
+            | Fact::Mic(_)
+            | Fact::Dictation(_) => {}
         }
         self.follow(state, now, &mut effects);
         effects

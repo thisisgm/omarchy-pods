@@ -114,7 +114,8 @@ impl Node {
             | Fact::Paused(..)
             | Fact::PauseCut(_)
             | Fact::Advert(_)
-            | Fact::Monitor(_) => {}
+            | Fact::Monitor(_)
+            | Fact::Dictation(_) => {}
         }
         self.follow_buds(state, now);
         match (self.wanted(state), self.source) {

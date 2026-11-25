@@ -3,6 +3,7 @@
 mod audio;
 mod bluez;
 mod dbus;
+mod dictation;
 mod hub;
 mod keys;
 mod legacy_dialect;
@@ -33,7 +34,7 @@ use pods_core::policy::MicRequest;
 use pods_core::prefs::Prefs;
 use pods_core::status::to_status_line;
 use pods_proto::keys::ProximityKeys;
-use pods_proto::packets::CONTROL_PSM;
+use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_sys::l2cap;
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -103,8 +104,7 @@ async fn serve(
     let (link, inputs) = link::queue();
     let hub = Hub::new(link.clone(), loaded.clone().into_state());
     let (requests, watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
-    let connector: link::Connector =
-        Arc::new(|device| l2cap::connect(device, CONTROL_PSM, link::CONNECT_TIMEOUT));
+    let connector = connector_on(CONTROL_PSM);
     let (notices, notice_queue) = notify::queue();
     let (stop_notifier, notifier_stops) = oneshot::channel();
     let (prefs, prefs_changes) = watch::channel(loaded);
@@ -137,6 +137,7 @@ async fn serve(
             media: media_requests,
             monitor,
             mic: mic_requests,
+            dictation: dictation::Outlet::new(connector_on(ATT_PSM)),
             tap,
         },
         stored.clone(),
@@ -195,6 +196,11 @@ async fn serve(
         log(&format!("keys: the writer ended: {error}"));
     }
     code
+}
+
+/// Dials one of the pods' channels, by its PSM, inside the link's connect timeout.
+fn connector_on(psm: u16) -> link::Connector {
+    Arc::new(move |device| l2cap::connect(device, psm, link::CONNECT_TIMEOUT))
 }
 
 /// The socket's lock, or the code to exit with when a daemon already serves or starts there.

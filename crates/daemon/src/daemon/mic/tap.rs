@@ -1,4 +1,4 @@
-//! The tap: where the pods' audio, read on the runtime's thread, meets the chain of the node that is open, and the node's real time half of it.
+//! The tap: where the pods' audio of either stream, read on the runtime's thread, meets the chain of the node that is open, and the node's real time half of it.
 
 use std::mem;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use pods_mic::{Chain, Counters, Reader, Resync};
+use pods_proto::dictation::AudioNotification;
 use pods_proto::uplink::AudioSdu;
 use pods_pw::Fill;
 
@@ -19,6 +20,11 @@ pub(in crate::daemon) struct Tap {
     packets: AtomicU64,
     /// A START went out and its first audio has not come.
     armed: AtomicBool,
+    dictation_packets: AtomicU64,
+    /// A dictation start went out and its first audio has not come.
+    dictation_armed: AtomicBool,
+    /// A dictation start went out and no chain has begun its run yet.
+    dictation_run_due: AtomicBool,
 }
 
 impl Tap {
@@ -29,6 +35,9 @@ impl Tap {
             epoch: Instant::now(),
             packets: AtomicU64::new(0),
             armed: AtomicBool::new(false),
+            dictation_packets: AtomicU64::new(0),
+            dictation_armed: AtomicBool::new(false),
+            dictation_run_due: AtomicBool::new(false),
         })
     }
 
@@ -49,6 +58,33 @@ impl Tap {
     /// Audio SDUs read since the daemon started.
     pub(in crate::daemon) fn packets(&self) -> u64 {
         self.packets.load(Ordering::Relaxed)
+    }
+
+    /// Hands the notification's frames to the open node's chain in one call, or drops them with no node; true for the first audio since `arm_dictation`.
+    pub(in crate::daemon) fn dictation(&self, audio: &AudioNotification<'_>) -> bool {
+        let first = self.dictation_armed.swap(false, Ordering::AcqRel);
+        self.dictation_packets.fetch_add(1, Ordering::Relaxed);
+        let now = self.epoch.elapsed();
+        if let Some(chain) = self.lock().as_mut() {
+            // Owed until a chain takes it, as a node may open after the start's first audio.
+            if self.dictation_run_due.swap(false, Ordering::AcqRel) {
+                chain.dictation_run();
+            }
+            let frames = audio.frames().map(|frame| (frame.counter, frame.data));
+            chain.frames(now, frames);
+        }
+        first
+    }
+
+    /// Dictation notifications read since the daemon started.
+    pub(in crate::daemon) fn dictation_packets(&self) -> u64 {
+        self.dictation_packets.load(Ordering::Relaxed)
+    }
+
+    /// A dictation start went out: the next dictation audio a chain takes starts a new run of it, on that stream.
+    pub(in crate::daemon) fn arm_dictation(&self) {
+        self.dictation_armed.store(true, Ordering::Release);
+        self.dictation_run_due.store(true, Ordering::Release);
     }
 
     /// A START went out: the next audio starts a new run of the chain.
