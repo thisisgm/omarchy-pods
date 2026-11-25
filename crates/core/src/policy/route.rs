@@ -182,6 +182,30 @@ mod tests {
     }
 
     #[test]
+    fn fast_capture_stays_ignored_while_the_route_is_dictation() {
+        let start = Effect::Uplink(UplinkRequest::Start);
+        let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
+        state.audio_server = AudioServer::Up;
+        for fact in [
+            Fact::Audio(AudioFact::Headset(false)),
+            Fact::Audio(AudioFact::Recorders(DICTATION)),
+            Fact::Audio(AudioFact::Hint(true)),
+        ] {
+            let effects = policy.step(&state, fact, Duration::ZERO);
+            assert!(!effects.contains(&start));
+        }
+        assert_eq!(policy.edge.route(), Some(Route::Dictation));
+        let lost = Fact::Dictation(DictationFact::BearerLost);
+        let effects = policy.step(&state, lost, Duration::ZERO);
+        assert!(!policy.dictation.armed());
+        assert_eq!(policy.edge.route(), Some(Route::Dictation));
+        assert!(
+            !effects.contains(&start),
+            "a bearer loss inside a DoAP span"
+        );
+    }
+
+    #[test]
     fn a_headset_profile_prevents_a_due_doap_start() {
         let start = Effect::Dictation(DictationRequest::Start);
         for headset in [false, true] {
