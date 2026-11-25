@@ -27,6 +27,7 @@ const MICROS_PER_SECOND: u64 = 1_000_000;
 const MICROS_PER_MILLI: i128 = 1_000;
 const NANOS_PER_MICRO: u64 = 1_000;
 const INCOMPLETE: &str = "incomplete";
+const REASONLESS: &str = "reasonless";
 /// How many digits `date +%N` prints.
 const NANOS_DIGITS: usize = 9;
 /// The word between the stamp and the number of a trials log line.
@@ -155,7 +156,7 @@ fn after(connection: &Connection, mark_us: Option<u64>) -> String {
     mark_us.map_or_default(ms)
 }
 
-/// The fields of one connection for `HEADER` after the trial, tab separated: times in whole milliseconds after the ACL link came up, an absent mark empty.
+/// The fields of one connection for `HEADER` after the trial, separated by tabs. Times are whole milliseconds after the ACL link came up and absent marks are empty. The `ended` column holds the hex reason, `reasonless` when the reason byte is missing, or `incomplete` when a cut trace leaves the end unknown.
 // Sample output: `pods\t-280\t1\t220\t320\t20:0x0000\t420\t0x13\t40\t70\t620`; each control dial is its time, a colon and its result.
 pub(crate) fn row(
     connection: &Connection,
@@ -171,12 +172,12 @@ pub(crate) fn row(
     let dial =
         |(at_us, result): &(u64, u16)| format!("{}:{result:#06x}", after(connection, Some(*at_us)));
     let dials: Vec<String> = connection.control_dials.iter().map(dial).collect();
-    let ended = if incomplete && connection.ended.is_none() {
-        INCOMPLETE.to_owned()
-    } else {
-        connection
-            .ended
-            .map_or_default(|end| format!("{:#04x}", end.reason))
+    let ended = match connection.ended {
+        Some(end) => end
+            .reason
+            .map_or_else(|| REASONLESS.to_owned(), |reason| format!("{reason:#04x}")),
+        None if incomplete => INCOMPLETE.to_owned(),
+        None => String::new(),
     };
     [
         began.to_owned(),

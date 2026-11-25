@@ -96,7 +96,7 @@ enum ProbeCommand {
         #[arg(long)]
         run: String,
     },
-    /// Reads the marks of each trial's connection with the pods from a trace, the daemon's journal and a log of the sinks, and prints one row a trial: who began it, then each mark in milliseconds after the ACL link came up. A cut trace prints every trial, marks missing connections beyond its coverage incomplete, and exits with failure.
+    /// Reads the marks of each trial's connection with the pods from a trace, the daemon's journal and a log of the sinks. Each row names who began the connection and gives its marks in milliseconds after the ACL link came up. The ended column holds the reason in hex, reasonless for a disconnect with no reason byte, or incomplete when a cut trace leaves the end unknown. It stays empty for an open link. A cut trace prints every trial, marks missing connections beyond its coverage incomplete, and exits with failure.
     Marks(marks::MarksArgs),
     /// Measures the shape of the audio streams in one run and writes analysis.tsv and units.tsv into it, and analysis-att.tsv, frames.tsv and att-handles.tsv when the run holds att.log.
     Analyse {

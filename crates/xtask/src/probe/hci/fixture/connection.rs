@@ -30,7 +30,7 @@ impl Trace {
         self.command(CREATE_CONNECTION, &parameters);
     }
 
-    /// The answer to either: an ACL link to `address` on `handle`, or with a `status` other than success none.
+    /// The answer to a Create Connection or a Connection Request.
     pub(crate) fn connection_complete(&mut self, status: u8, handle: u16, address: [u8; 6]) {
         let mut parameters = vec![status];
         parameters.extend(handle.to_le_bytes());

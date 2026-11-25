@@ -101,7 +101,7 @@ fn first_trial() -> Connection {
         media_us: Some(at_us(1_700)),
         ended: Some(Disconnect {
             at_us: at_us(9_000),
-            reason: REMOTE_USER_ENDED,
+            reason: Some(REMOTE_USER_ENDED),
         }),
     }
 }
@@ -230,7 +230,7 @@ fn a_trace_of_two_devices_marks_only_the_named_one() {
             media_us: Some(at_us(1_245)),
             ended: Some(Disconnect {
                 at_us: at_us(9_500),
-                reason: REMOTE_USER_ENDED,
+                reason: Some(REMOTE_USER_ENDED),
             }),
         })
     );
@@ -262,7 +262,7 @@ fn a_handle_given_out_again_does_not_reach_the_link_that_ended() {
         read_first.ended,
         Some(Disconnect {
             at_us: at_us(3_000),
-            reason: REMOTE_USER_ENDED,
+            reason: Some(REMOTE_USER_ENDED),
         })
     );
 }

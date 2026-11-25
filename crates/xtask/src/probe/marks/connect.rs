@@ -70,7 +70,7 @@ pub(crate) struct Connection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Disconnect {
     pub(crate) at_us: u64,
-    pub(crate) reason: u8,
+    pub(crate) reason: Option<u8>,
 }
 
 /// The address a Create Connection command asks for.
@@ -221,10 +221,8 @@ impl Reader<'_> {
                 }
             }
             _ => {
-                if let Some(Kind::Disconnection {
-                    handle,
-                    reason: Some(reason),
-                }) = hci::event_kind(code, parameters)
+                if let Some(Kind::Disconnection { handle, reason }) =
+                    hci::event_kind(code, parameters)
                 {
                     self.disconnected(handle, Disconnect { at_us, reason });
                 }
