@@ -1,7 +1,7 @@
 //! The tap: where the pods' audio of either stream, read on the runtime's thread, meets the chain of the node that is open, and the node's real time half of it.
 
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
@@ -13,40 +13,54 @@ use pods_pw::Fill;
 /// Where the pods' audio meets the node: the writer's half of the open node's chain, behind a lock the channel's reads and the adapter's opens and drops take.
 #[derive(Debug)]
 pub(in crate::daemon) struct Tap {
-    chain: Mutex<Option<Chain>>,
+    state: Mutex<State>,
     counters: Arc<Counters>,
     /// Both halves of every chain count time from here.
     epoch: Instant,
     packets: AtomicU64,
-    /// A START went out and its first audio has not come.
-    armed: AtomicBool,
     dictation_packets: AtomicU64,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    chain: Option<Chain>,
+    stream: Stream,
+    /// A START went out and its first audio has not come.
+    armed: bool,
     /// A dictation start went out and its first audio has not come.
-    dictation_armed: AtomicBool,
-    /// A dictation start went out and no chain has begun its run yet.
-    dictation_run_due: AtomicBool,
+    dictation_armed: bool,
+}
+
+#[derive(Debug, Default)]
+enum Stream {
+    #[default]
+    Uplink,
+    Dictation {
+        /// The current chain has yet to begin the selected run.
+        run_due: bool,
+    },
 }
 
 impl Tap {
     pub(in crate::daemon) fn new() -> Arc<Self> {
         Arc::new(Self {
-            chain: Mutex::new(None),
+            state: Mutex::default(),
             counters: Arc::default(),
             epoch: Instant::now(),
             packets: AtomicU64::new(0),
-            armed: AtomicBool::new(false),
             dictation_packets: AtomicU64::new(0),
-            dictation_armed: AtomicBool::new(false),
-            dictation_run_due: AtomicBool::new(false),
         })
     }
 
-    /// Hands the SDU's units to the open node's chain, or drops them with no node; true for the first audio since `arm`.
+    /// Queues audio when uplink is selected and a node is open, returning true for the first SDU since `arm`.
     pub(in crate::daemon) fn audio(&self, sdu: &AudioSdu<'_>) -> bool {
-        let first = self.armed.swap(false, Ordering::AcqRel);
         self.packets.fetch_add(1, Ordering::Relaxed);
         let now = self.epoch.elapsed();
-        if let Some(chain) = self.lock().as_mut() {
+        let mut state = self.lock();
+        let first = mem::take(&mut state.armed);
+        if matches!(state.stream, Stream::Uplink)
+            && let Some(chain) = state.chain.as_mut()
+        {
             if first {
                 chain.reset();
             }
@@ -60,14 +74,19 @@ impl Tap {
         self.packets.load(Ordering::Relaxed)
     }
 
-    /// Hands the notification's frames to the open node's chain in one call, or drops them with no node; true for the first audio since `arm_dictation`.
+    /// Queues audio when dictation is selected and a node is open, returning true for the first notification since `arm_dictation`.
     pub(in crate::daemon) fn dictation(&self, audio: &AudioNotification<'_>) -> bool {
-        let first = self.dictation_armed.swap(false, Ordering::AcqRel);
         self.dictation_packets.fetch_add(1, Ordering::Relaxed);
         let now = self.epoch.elapsed();
-        if let Some(chain) = self.lock().as_mut() {
-            // Owed until a chain takes it, as a node may open after the start's first audio.
-            if self.dictation_run_due.swap(false, Ordering::AcqRel) {
+        let mut state = self.lock();
+        let first = mem::take(&mut state.dictation_armed);
+        if let State {
+            chain: Some(chain),
+            stream: Stream::Dictation { run_due },
+            ..
+        } = &mut *state
+        {
+            if mem::take(run_due) {
                 chain.dictation_run();
             }
             let frames = audio.frames().map(|frame| (frame.counter, frame.data));
@@ -83,13 +102,16 @@ impl Tap {
 
     /// A dictation start went out: the next dictation audio a chain takes starts a new run of it, on that stream.
     pub(in crate::daemon) fn arm_dictation(&self) {
-        self.dictation_armed.store(true, Ordering::Release);
-        self.dictation_run_due.store(true, Ordering::Release);
+        let mut state = self.lock();
+        state.dictation_armed = true;
+        state.stream = Stream::Dictation { run_due: true };
     }
 
     /// A START went out: the next audio starts a new run of the chain.
     pub(in crate::daemon) fn arm(&self) {
-        self.armed.store(true, Ordering::Release);
+        let mut state = self.lock();
+        state.armed = true;
+        state.stream = Stream::Uplink;
     }
 
     pub(in crate::daemon) fn counters(&self) -> &Counters {
@@ -127,13 +149,21 @@ impl Tap {
 
     /// The old chain is dropped after the lock is let go.
     fn put(&self, chain: Option<Chain>) {
-        let old = mem::replace(&mut *self.lock(), chain);
+        let old = {
+            let mut state = self.lock();
+            if chain.is_some()
+                && let Stream::Dictation { run_due } = &mut state.stream
+            {
+                *run_due = true;
+            }
+            mem::replace(&mut state.chain, chain)
+        };
         drop(old);
     }
 
     /// No holder can panic while it holds the lock, as the decoder's panics are caught inside the chain.
-    fn lock(&self) -> MutexGuard<'_, Option<Chain>> {
-        self.chain.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
