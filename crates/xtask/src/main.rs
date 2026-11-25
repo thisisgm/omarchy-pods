@@ -37,7 +37,7 @@ const CI_STEPS: [Gate; 5] = [
     },
     Gate {
         name: "nextest",
-        args: &["run", "--workspace", "--locked"],
+        args: &["run", "--workspace", "--locked", "--profile", "gate"],
     },
     Gate {
         name: "test",
@@ -223,7 +223,15 @@ mod tests {
         let workflow = fs::read_to_string(&path).unwrap();
         let has_line = |wanted: &str| workflow.lines().any(|line| line.trim() == wanted);
         for gate in CI_STEPS {
-            let args = gate.args.join(" ");
+            // Hosted nextest uses the profile with CPU-count concurrency.
+            let hosted_args = if gate.name == "nextest" {
+                gate.args
+                    .strip_suffix(&["--profile", "gate"])
+                    .expect("local nextest must select the gate profile")
+            } else {
+                gate.args
+            };
+            let args = hosted_args.join(" ");
             let hosted = match gate.name {
                 // The hosted job runs cargo-deny through its action, which takes the arguments as `command`.
                 "deny" => {

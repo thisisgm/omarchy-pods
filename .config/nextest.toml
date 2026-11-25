@@ -1,0 +1,39 @@
+[profile.default]
+retries = 0
+
+[profile.gate]
+# Most integration tests spend their time waiting on wall-clock deadlines.
+test-threads = 36
+
+[test-groups]
+realtime-audio = { max-threads = 4 }
+cpu-heavy = { max-threads = 6 }
+
+# Private PipeWire graphs and paced audio captures need regular scheduling.
+[[profile.default.overrides]]
+filter = '''
+binary_id(=librepods::recorders) |
+binary_id(=librepods::source) |
+binary_id(=librepods::source_audio) |
+binary_id(=librepods::source_audio_slow) |
+binary_id(=librepods::source_slow) |
+binary_id(=pods-pw::no_alloc) |
+binary_id(=pods-pw::source) |
+binary_id(=pods-pwrig::rig) |
+binary_id(=xtask::probe_capture) |
+binary_id(=xtask::probe_source) |
+binary_id(=xtask::probe_source_live)
+'''
+test-group = 'realtime-audio'
+
+# Offline DSP and codec oracles compete for CPU with the PipeWire graph.
+[[profile.default.overrides]]
+filter = '''
+binary_id(=pods-mic::steer) |
+binary_id(=pods-mic::threads) |
+binary_id(=xtask::audio) |
+binary_id(=xtask::decode) |
+binary_id(=xtask::decode_opus) |
+(binary_id(=xtask::probe_hci) & test(/^hci::chain::/))
+'''
+test-group = 'cpu-heavy'

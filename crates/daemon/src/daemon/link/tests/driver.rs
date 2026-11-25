@@ -476,7 +476,7 @@ fn never_more_than_one_connect_thread() {
             ended.fetch_sub(1, Ordering::SeqCst);
         }
     });
-    let running = Running::start(connector, Some(tap));
+    let running = Running::paused(connector, tap);
     device_up(running.inputs());
     for attempt in 1..=LADDER_ATTEMPTS {
         let name = connects
