@@ -8,9 +8,10 @@ use pods_proto::addr::BdAddr;
 use pods_proto::handshake::{Handshake, Step};
 use pods_proto::packet::{Incoming, classify, opcode_of};
 use pods_proto::packets::{CONTROL_PSM, HANDSHAKE};
-use pods_sys::l2cap::{self, Channel, ChannelError, Received};
+use pods_sys::l2cap::{self, ChannelError, Received};
 use rustix::io::Errno;
 
+use super::clock::{Clock, SystemClock};
 use super::lab::Lab;
 use super::report::Check;
 use super::system::bluez;
@@ -191,13 +192,13 @@ fn runs(settings: &BTreeSet<u8>) -> String {
 }
 
 /// C8: stops the test unit, then opens the control channel once and tallies the first burst.
-pub(super) fn run(_lab: &Lab<'_>) -> Result<Check, Interrupted> {
+pub(super) fn run(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     let mut check = Check::new("C8 burst");
     // The daemon under test holds a channel while it runs, and whether the pods would take a second one is unknown.
     let address = unit::stop(UNDER_TEST).and_then(|()| connected_address());
     let ended = match address {
         Ok(_) if stopped() => Err(Ended::Interrupted),
-        Ok(address) => listen(address),
+        Ok(address) => listen(address, lab.waits.burst),
         Err(error) => Err(Ended::Failed(error)),
     };
     match ended {
@@ -223,33 +224,53 @@ fn connected_address() -> Result<BdAddr, String> {
         .ok_or_else(|| "BlueZ gave no address for the connected AirPods".to_owned())
 }
 
-/// Opens the channel, runs the opening exchange and tallies what arrives within `BURST_WINDOW` of the notification request; the channel closes on return.
-fn listen(address: BdAddr) -> Result<Tally, Ended> {
+/// Opens the channel, runs the opening exchange and tallies what arrives within `window` of the notification request; the channel closes on return.
+fn listen(address: BdAddr, window: Duration) -> Result<Tally, Ended> {
     let timeout = Duration::from_millis(CONNECT_TIMEOUT_MS);
     let connected = l2cap::connect(address, CONTROL_PSM, timeout);
     if stopped() {
         return Err(Ended::Interrupted);
     }
     let channel = connected?;
+    let mut receive = |buffer: &mut [u8], left| {
+        channel.set_recv_timeout(left)?;
+        channel.recv(buffer)
+    };
     let mut buffer = vec![0; RECV_BUFFER_LEN];
     channel.send(&HANDSHAKE)?;
     let mut handshake = Handshake::default();
-    let mut asked = Instant::now();
+    let clock = SystemClock;
+    let mut asked = clock.now();
     while handshake.step() != Step::Ready {
-        let Some(len) = next(&channel, &mut buffer, asked, ACK_WAIT)? else {
-            return Err(Ended::Failed(format!(
-                "waited {} s for {}",
-                ACK_WAIT.as_secs(),
-                handshake.step()
-            )));
-        };
+        let len = next_acknowledgement(&clock, &mut buffer, asked, handshake.step(), &mut receive)?;
         if let Some(request) = handshake.on_packet(buffer.get(..len).unwrap_or_default()) {
             channel.send(request)?;
-            asked = Instant::now();
+            asked = clock.now();
         }
     }
+    tally_burst(&clock, &mut buffer, asked, window, &mut receive)
+}
+
+fn next_acknowledgement(
+    clock: &dyn Clock,
+    buffer: &mut [u8],
+    since: Instant,
+    step: Step,
+    receive: &mut impl FnMut(&mut [u8], Duration) -> Result<Received, ChannelError>,
+) -> Result<usize, Ended> {
+    next(clock, buffer, since, ACK_WAIT, receive)?
+        .ok_or_else(|| Ended::Failed(format!("waited {} s for {step}", ACK_WAIT.as_secs())))
+}
+
+fn tally_burst(
+    clock: &dyn Clock,
+    buffer: &mut [u8],
+    since: Instant,
+    window: Duration,
+    receive: &mut impl FnMut(&mut [u8], Duration) -> Result<Received, ChannelError>,
+) -> Result<Tally, Ended> {
     let mut tally = Tally::default();
-    while let Some(len) = next(&channel, &mut buffer, asked, BURST_WINDOW)? {
+    while let Some(len) = next(clock, buffer, since, window, receive)? {
         tally.note(buffer.get(..len).unwrap_or_default());
     }
     Ok(tally)
@@ -257,22 +278,22 @@ fn listen(address: BdAddr) -> Result<Tally, Ended> {
 
 /// The length of the next SDU in `buffer`, or none once `limit` after `since` has passed; a stop signal ends the wait.
 fn next(
-    channel: &Channel,
+    clock: &dyn Clock,
     buffer: &mut [u8],
     since: Instant,
     limit: Duration,
+    receive: &mut impl FnMut(&mut [u8], Duration) -> Result<Received, ChannelError>,
 ) -> Result<Option<usize>, Ended> {
     loop {
         // Read on every turn: a signal that lands between two reads interrupts neither.
         if stopped() {
             return Err(Ended::Interrupted);
         }
-        let left = limit.saturating_sub(since.elapsed());
+        let left = limit.saturating_sub(clock.now().saturating_duration_since(since));
         if left.is_zero() {
             return Ok(None);
         }
-        channel.set_recv_timeout(left)?;
-        match channel.recv(buffer) {
+        match receive(buffer, left) {
             Ok(Received::Sdu(len)) => return Ok(Some(len)),
             Ok(Received::Truncated { .. }) => return Ok(Some(buffer.len())),
             Ok(Received::Closed) => {
@@ -350,5 +371,72 @@ mod tests {
             prop_assert!(tally.opcodes.values().sum::<usize>() <= 1);
             prop_assert!(tally.unparsed.values().sum::<usize>() <= tally.opcodes.values().sum::<usize>());
         }
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::super::Waits;
+    use super::super::clock::{Clock, PausedClock};
+    use super::{RECV_BUFFER_LEN, Received, tally_burst};
+    use std::time::Duration;
+
+    #[test]
+    fn the_burst_ends_at_its_deadline_even_after_receiving_an_sdu() {
+        let clock = PausedClock::default();
+        let mut buffer = [0; RECV_BUFFER_LEN];
+        let mut waits = Vec::new();
+        let tally = tally_burst(
+            &clock,
+            &mut buffer,
+            clock.now(),
+            Waits::default().burst,
+            &mut |buffer, left| {
+                waits.push(left);
+                if waits.len() == 1 {
+                    clock.pause(Duration::from_secs(2));
+                    let packet = pods_samples::battery();
+                    assert!(packet.len() <= buffer.len());
+                    buffer[..packet.len()].copy_from_slice(&packet);
+                    Ok(Received::Sdu(packet.len()))
+                } else {
+                    clock.pause(left);
+                    Ok(Received::TimedOut)
+                }
+            },
+        )
+        .unwrap_or_else(|_| panic!("the burst should end normally"));
+        assert_eq!(tally.opcodes.values().sum::<usize>(), 1);
+        assert_eq!(waits, [Duration::from_secs(3), Duration::from_secs(1)]);
+        assert_eq!(clock.elapsed(), Duration::from_secs(3));
+    }
+}
+
+#[cfg(test)]
+mod acknowledgement_tests {
+    use super::super::clock::{Clock, PausedClock};
+    use super::{RECV_BUFFER_LEN, Received, Step, next_acknowledgement};
+    use std::time::Duration;
+
+    #[test]
+    fn an_unanswered_handshake_fails_at_the_acknowledgement_deadline() {
+        let clock = PausedClock::default();
+        let mut buffer = [0; RECV_BUFFER_LEN];
+        let began = clock.now();
+        let result = next_acknowledgement(
+            &clock,
+            &mut buffer,
+            began,
+            Step::AwaitHandshakeAck,
+            &mut |_, left| {
+                assert_eq!(left, Duration::from_secs(2));
+                clock.pause(left);
+                Ok(Received::TimedOut)
+            },
+        );
+        assert!(
+            matches!(result, Err(super::Ended::Failed(reason)) if reason == "waited 2 s for the handshake acknowledgement")
+        );
+        assert_eq!(clock.elapsed(), Duration::from_secs(2));
     }
 }

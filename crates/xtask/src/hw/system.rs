@@ -11,7 +11,8 @@ use pods_proto::addr::BdAddr;
 use serde_json::Value;
 
 use super::Interrupted;
-use super::lab::wait_until;
+use super::clock::{Clock, SystemClock};
+use super::lab::wait_until_on;
 use super::unit::run;
 
 /// Every phase line the daemon writes starts so; only `link: <word> to <word>` lines are ever printed.
@@ -95,8 +96,17 @@ pub(super) fn wait_for_entries(
     timeout: Duration,
     done: impl Fn(&[Entry]) -> bool,
 ) -> Result<Waited, Interrupted> {
+    wait_for_entries_on(&SystemClock, timeout, || journal_after(cursor), done)
+}
+
+pub(super) fn wait_for_entries_on(
+    clock: &dyn Clock,
+    timeout: Duration,
+    mut read: impl FnMut() -> Result<Vec<Entry>, String>,
+    done: impl Fn(&[Entry]) -> bool,
+) -> Result<Waited, Interrupted> {
     let mut waited = Waited::TimedOut;
-    wait_until(timeout, || match journal_after(cursor) {
+    wait_until_on(clock, timeout, || match read() {
         Ok(entries) if done(&entries) => {
             waited = Waited::Found(entries);
             true

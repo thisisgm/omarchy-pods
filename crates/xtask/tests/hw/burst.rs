@@ -25,8 +25,10 @@ const SAMPLE_COUNTS: &str = "36 packets; opcodes 02 x1, 04 x1, 06 x1, 08 x1, 09 
 
 #[test]
 fn the_burst_check_passes_against_the_fake_pods() {
+    const BURST_WINDOW: Duration = Duration::from_secs(3);
     let bench = Bench::new();
-    let output = bench.run(&[]);
+    let output = bench.run_with_windows(None, None, &[]);
+    let ended = Instant::now();
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{stdout}");
     assert!(
@@ -49,6 +51,8 @@ fn the_burst_check_passes_against_the_fake_pods() {
     let dials = bench.dials();
     assert_eq!(dials.len(), 1, "{dials:?}");
     assert_eq!(dials[0].outcome, Outcome::Accepted);
+    let waited = ended.duration_since(dials[0].at);
+    assert!(waited >= BURST_WINDOW, "{waited:?}");
     assert_eq!(bench.sockets(), 1);
     assert_eq!(
         bench.read("units-at-dial"),

@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use super::bench::{
-    ADDRESS, Bench, DEVICE_NAME, DEVICE_PATH, assert_restarted_after_the_run, interrupted_by,
-    signalled, text,
+    ADDRESS, Bench, DEVICE_NAME, DEVICE_PATH, QUICK_BURST_MS, assert_restarted_after_the_run,
+    interrupted_by, signalled, text,
 };
 
 #[test]
@@ -384,15 +384,15 @@ fn a_daemon_woken_in_the_idle_window_misses_g3() {
     const SECONDS_PER_MINUTE: u64 = 60;
     let bench = Bench::new();
     bench.set("daemon-busy", "");
-    let output = bench.run(&[]);
+    let output = bench.run_with_windows(Some("1"), Some(QUICK_BURST_MS), &[]);
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
     let counted = stdout
         .lines()
-        .find(|line| line.contains("G3 link up: ") && line.contains(" wakeups in 1 s"))
+        .find(|line| line.contains("G3 link up: ") && line.contains(" wakeups in 1000 ms"))
         .unwrap_or_else(|| panic!("no G3 link up count: {stdout}"));
-    // G3 link up: 2 wakeups in 1 s, 120.0 a minute, bound at most 12, watch lines 1
+    // G3 link up: 2 wakeups in 1000 ms, 120.0 a minute, bound at most 12, watch lines 1
     let woke: u64 = counted
         .split("G3 link up: ")
         .nth(1)
@@ -403,7 +403,7 @@ fn a_daemon_woken_in_the_idle_window_misses_g3() {
     let per_minute = woke.saturating_mul(SECONDS_PER_MINUTE);
     assert!(
         stdout.contains(&format!(
-            "G3 link up: {woke} wakeups in 1 s, {per_minute}.0 a minute, bound at most 12, watch lines 1"
+            "G3 link up: {woke} wakeups in 1000 ms, {per_minute}.0 a minute, bound at most 12, watch lines 1"
         )),
         "{stdout}"
     );
