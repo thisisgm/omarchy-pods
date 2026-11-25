@@ -308,11 +308,7 @@ impl State {
         if self.default == Some(index) {
             // corner: a real server ranks the remaining sinks; the fake takes the earliest added
             self.default = self.sinks.first().map(|sink| sink.index);
-            self.announce(
-                SubscriptionEventFacility::Server,
-                SubscriptionEventType::Changed,
-                None,
-            );
+            self.announce_server_change();
         }
     }
 
@@ -320,12 +316,16 @@ impl State {
         let index = self.sinks[self.named(name)].index;
         if self.default != Some(index) {
             self.default = Some(index);
-            self.announce(
-                SubscriptionEventFacility::Server,
-                SubscriptionEventType::Changed,
-                None,
-            );
+            self.announce_server_change();
         }
+    }
+
+    pub(super) fn announce_server_change(&mut self) {
+        self.announce(
+            SubscriptionEventFacility::Server,
+            SubscriptionEventType::Changed,
+            None,
+        );
     }
 
     pub(super) fn volume(&self, name: &str) -> Volume {
