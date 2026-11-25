@@ -127,8 +127,8 @@ impl Watch {
         }
     }
 
-    /// One stall window, when the next read would come.
-    fn answer_by(self) -> Option<Duration> {
+    /// The deadline of an unanswered stall START, one stall window after it went out.
+    pub(super) fn answer_by(self) -> Option<Duration> {
         let window = Duration::from_millis(UPLINK_STALL_MS);
         self.retried.map(|retry| retry.sent.saturating_add(window))
     }

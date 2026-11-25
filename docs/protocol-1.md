@@ -168,13 +168,14 @@ A reply carries the request's `id` and `ok`.
   the linger: their STOP goes out at once when no bud is worn or the sink is
   suspended or gone, and waits the same way otherwise. Once a STOP is waiting,
   a suspended or absent sink releases it even during the last bud's grace.
-  After a STOP the daemon suspends and resumes the AirPods' sink to reopen a
-  stream the uplink's end broke. A STOP sent for a suspended or absent sink
-  begins with no restore owed. If the sink becomes active or its state becomes
-  unknown before confirmation, a restore is owed. A channel drop can still
-  leave the sink up and a restore owed. The daemon skips the restore for a sink
-  that is already suspended or absent. With no audio server it owes the restore
-  until the server is back, and a newer START drops a restore not yet begun.
+  After stopping an uplink it started, the daemon suspends and resumes the
+  sink to reopen a stream the uplink's end broke. A STOP sent for a suspended
+  or absent sink begins with no restore owed. If the sink becomes active or
+  its state becomes unknown before confirmation, a restore is owed. A channel
+  drop can still leave the sink up and a restore owed. The daemon skips the
+  restore for a sink that is already suspended or absent. With no audio server
+  it owes the restore until the server is back, and a newer START drops a
+  restore not yet begun.
   At a stop of the daemon the STOP has 2 s to go out, be answered and have its
   restore done; the daemon then exits, and logs that the uplink still runs
   when a worn bud's sink was not known to be suspended or gone in that time.
@@ -183,11 +184,12 @@ A reply carries the request's `id` and `ok`.
   is sent while one waits for its answer. An uplink the AirPods say
   runs while nothing wants it, such as a late answer, is stopped as one whose
   linger has passed. A STOP the AirPods do not confirm in time is taken as
-  done, and a later START still goes out. An uplink the AirPods stop on their
-  own gets the restore at once, and starts again only once the want has gone
-  and come back. While a headset profile is active, the source is withdrawn
-  even with a recorder linked, so no DoAP START goes out. The daemon waits for
-  the profile to change before sending uplink START or STOP. It drops any
+  done, and a later START still goes out. If the pods stop an uplink the daemon
+  started, the daemon restores playback at once. After a stop from the pods,
+  another START waits until the want has gone and come back. While a headset
+  profile is active, the source is withdrawn even with a recorder linked, so
+  no DoAP START goes out. The daemon waits for the profile to change before
+  sending uplink START or STOP. It drops any
   uplink restore due during the block, including one owed before it. It only
   reads the profile and holds uplink START while waiting for the first profile
   read from a connected audio server.

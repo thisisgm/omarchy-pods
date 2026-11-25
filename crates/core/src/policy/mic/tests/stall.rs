@@ -138,12 +138,17 @@ fn a_stall_start_answered_during_restore_tracks_the_next_unasked_stop() {
     let first = mic.step(&state, &stopped, at);
     assert!(first.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(0)))));
     assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+    let mut expired = mic;
     let answered = mic.step(&state, &running, at);
     assert_eq!(kind(mic.phase), Kind::Running);
     assert!(answered.contains(&Effect::Audio(AudioRequest::CancelRestore)));
     let second = mic.step(&state, &stopped, at);
     assert!(second.contains(&Effect::Audio(AudioRequest::Restore(RestoreId(1)))));
     assert_eq!(kind(mic.phase), Kind::RestoringUnasked);
+
+    drop(expired.step(&state, &running, after(2)));
+    let after_window = expired.step(&state, &stopped, after(2).saturating_add(SOON));
+    assert_eq!(restore_ids(&after_window), []);
 }
 
 #[test]

@@ -304,6 +304,19 @@ pub(in crate::policy::mic) fn requests(effects: &[Effect]) -> Vec<UplinkRequest>
         .collect()
 }
 
+fn restore_ids(effects: &[Effect]) -> Vec<RestoreId> {
+    effects
+        .iter()
+        .filter_map(|effect| {
+            if let Effect::Audio(AudioRequest::Restore(id)) = effect {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 pub(in crate::policy::mic) fn lines(effects: &[Effect]) -> Vec<&str> {
     effects
         .iter()
@@ -328,6 +341,14 @@ pub(in crate::policy::mic) fn hold(mic: &Mic) -> Hold {
 fn mic(phase: Phase) -> Mic {
     Mic {
         phase,
+        ownership: match phase {
+            Phase::Stopped { .. } | Phase::Restoring { .. } | Phase::Running(Hold::Late, _) => {
+                Ownership::Unowned
+            }
+            Phase::Starting { .. } | Phase::Running(..) | Phase::Stopping { .. } => {
+                Ownership::Owned
+            }
+        },
         ..Mic::default()
     }
 }
