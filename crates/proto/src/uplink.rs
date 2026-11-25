@@ -101,7 +101,7 @@ impl<'a> AudioSdu<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccessUnit<'a> {
-    /// Little endian on the wire, with 180 ticks per 7.5 ms unit on the measured 24 kHz stamp clock.
+    /// Little endian on the wire, with 180 ticks per 7.5 ms unit on the 24 kHz stamp clock inferred from the captures.
     pub stamp: u32,
     pub data: &'a [u8],
 }

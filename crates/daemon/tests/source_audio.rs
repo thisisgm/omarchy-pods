@@ -82,6 +82,8 @@ mod tests {
     #[test]
     fn captured_wire_stamps_reach_an_uplink_recorder() {
         const PACKETS: u32 = 24;
+        // Captured units.tsv steps 720 ticks per four-unit SDU, written literally so the test owes nothing to STAMP_STEP.
+        const CAPTURED_SDU_STEP: u32 = 720;
         let (rig, device, pipewire) = ready();
         let uplink = device.pods.uplink();
         // Keep the fake's START and markers, and replace its scheduled audio with the wire fixture.
@@ -92,7 +94,7 @@ mod tests {
         let tone = tone_unit(TONE_LINE, DEFAULT_LEVEL);
         for packet in 0..PACKETS {
             let units = [900, 1080, 1260, 1440].map(|stamp| AccessUnit {
-                stamp: stamp + packet * 720,
+                stamp: stamp + packet * CAPTURED_SDU_STEP,
                 data: &tone,
             });
             let sdu = encode_audio(&[0; OPAQUE_LEN], &units).unwrap();
