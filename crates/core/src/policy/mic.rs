@@ -620,10 +620,11 @@ impl Mic {
         !self.node.awaiting_profile(state.audio_server) && self.uplink_wanted(state)
     }
 
-    /// An uplink recording or a fast-capture hint without armed dictation can hold the uplink under `auto`.
+    /// An uplink recording, or a fast-capture hint with dictation neither armed nor routed, can hold the uplink under `auto`.
     fn uplink_wanted(&self, state: &State) -> bool {
+        let hint = self.audio.hint && !self.dictation_armed && self.route != Some(Route::Dictation);
         !self.node.blocked()
-            && (wanted(state, self.audio.hint && !self.dictation_armed)
+            && (wanted(state, hint)
                 || (self.route == Some(Route::Uplink) && state.ear.any_in_ear()))
     }
 
