@@ -165,11 +165,12 @@ mod tests {
         for _ in 0..MARKER_PAIRS {
             device.pods.send(&state_marker(true));
             device.pods.send(&session_marker(true));
-            wait_mic(&rig, "live");
+            read_up_to_now(&rig, &device);
+            assert_eq!(mic(&rig), "no_audio_server");
             device.pods.send(&state_marker(false));
             device.pods.send(&session_marker(false));
             read_up_to_now(&rig, &device);
-            wait_mic(&rig, "no_audio_server");
+            assert_eq!(mic(&rig), "no_audio_server");
         }
         assert_eq!(starts(&device).len(), 0, "STARTs sent by the daemon");
         assert_eq!(stops(&device).len(), 0, "STOPs sent by the daemon");
@@ -221,15 +222,17 @@ mod tests {
         set(rig.session(), "microphone", "auto");
         device.pods.send(&state_marker(true));
         device.pods.send(&session_marker(true));
-        wait_mic(&rig, "live");
+        read_up_to_now(&rig, &device);
+        assert_eq!(mic(&rig), "stopping");
         device.pods.send(&state_marker(false));
         device.pods.send(&session_marker(false));
         read_up_to_now(&rig, &device);
-        wait_mic(&rig, "no_audio_server");
+        assert_eq!(mic(&rig), "stopping");
         audio.assert_only_reads();
         audio.hold_replies(false);
 
         wait_restore(&audio, &device);
+        wait_mic(&rig, "no_audio_server");
         assert_eq!(starts(&device).len(), 1, "STARTs sent by the daemon");
         assert!(stops(&device).is_empty(), "STOPs sent by the daemon");
         rig.finish();
@@ -237,27 +240,27 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_retry_cancels_a_pending_playback_restore() {
+    fn an_unsolicited_marker_does_not_retry_while_playback_is_restoring() {
         let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
         let uplink = device.pods.uplink();
         link_heard(&rig, &device);
         wait_mic(&rig, "live");
         hold_card_read(&audio, &device);
 
-        uplink.hold_starts(true);
         uplink.stop_unasked();
         wait_mic(&rig, "stopping");
         device.pods.send(&state_marker(true));
         device.pods.send(&session_marker(true));
-        wait_mic(&rig, "live");
-        wait_starts(&device, 2);
-        assert_eq!(start_failures(&rig), 1, "the stall before the retry");
+        read_up_to_now(&rig, &device);
+        assert_eq!(mic(&rig), "stopping");
         audio.assert_only_reads();
 
         audio.hold_replies(false);
-        // The next sink refresh follows the restore check after the held card read.
-        rig.wait_sink_told();
-        audio.assert_only_reads();
+        wait_restore(&audio, &device);
+        wait_mic(&rig, "no_audio_server");
+        read_up_to_now(&rig, &device);
+        assert_eq!(starts(&device).len(), 1, "STARTs sent by the daemon");
+        assert_eq!(start_failures(&rig), 0);
         rig.finish();
     }
 

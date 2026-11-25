@@ -79,6 +79,7 @@ impl Edge {
 #[cfg(test)]
 mod tests {
     use pods_proto::ear::EarReport;
+    use pods_proto::uplink::UplinkState;
     use pods_samples::MODEL_NUMBER;
 
     use super::super::dictation::MODE_SETTLE_MS;
@@ -89,7 +90,7 @@ mod tests {
     };
     use super::*;
     use crate::prefs::MicPref;
-    use crate::state::{AudioServer, Microphone};
+    use crate::state::{AudioServer, MicDictation, Microphone};
 
     #[test]
     fn edge_cells() {
@@ -225,6 +226,39 @@ mod tests {
                 assert_eq!(policy.edge.route(), None);
             }
         }
+    }
+
+    #[test]
+    fn an_unsolicited_uplink_marker_leaves_a_doap_start_alone() {
+        let (mut policy, state) = waiting_for_recorders(DICTATION, Route::Dictation);
+        let list = Fact::Audio(AudioFact::Recorders(DICTATION));
+        drop(policy.step(&state, list, Duration::ZERO));
+        let settled = Duration::from_millis(MODE_SETTLE_MS);
+        let effects = policy.step(&state, Fact::Tick, settled);
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::Start)));
+
+        let marker_delay = Duration::from_millis(21);
+        let at = settled.saturating_add(marker_delay);
+        let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+        let quiet = Fact::Audio(AudioFact::Sink(None));
+        for fact in [running, quiet] {
+            let effects = policy.step(&state, fact, at);
+            assert!(
+                !effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::Uplink(_))),
+                "DoAP start produced uplink traffic: {effects:?}"
+            );
+            assert_eq!(policy.dictation.code(&state), MicDictation::Starting);
+        }
+
+        let first_audio = Fact::Dictation(DictationFact::FirstAudio);
+        let effects = policy.step(&state, first_audio, at);
+        assert!(!effects.iter().any(|effect| matches!(
+            effect,
+            Effect::Uplink(_) | Effect::Dictation(DictationRequest::Stop { .. })
+        )));
+        assert_eq!(policy.dictation.code(&state), MicDictation::Streaming);
     }
 
     #[test]

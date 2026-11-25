@@ -16,7 +16,7 @@ pub const STOP_OWED_PLAYING_LINE: &str = "mic: stop owed, the sink is playing";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Hold {
     Wanted,
-    /// The pods said they run with no START out, so the want and its linger are over already.
+    /// The START answer arrived late, so with no current want the STOP is due at once.
     Late,
     /// Unwanted from `since`, and no bud worn from `unworn`.
     Lingering {
