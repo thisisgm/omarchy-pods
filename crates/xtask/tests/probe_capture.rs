@@ -111,6 +111,10 @@ mod tests {
         assert_control_logged(&pods, &run);
         let marks = read(&run, "marks.tsv");
         assert!(
+            marks.contains("\tcontrol-mtu\trequested=2048 incoming=2048 outgoing=672\n"),
+            "{marks}"
+        );
+        assert!(
             marks.ends_with("\tend\tinterrupted by a signal\n"),
             "{marks}"
         );
@@ -338,6 +342,7 @@ mod tests {
         assert_eq!(read(&run, "sdu.log"), "");
         let marks = read(&run, "marks.tsv");
         assert!(marks.contains("\thandles\tpresent\n"), "{marks}");
+        assert!(!marks.contains("\tcontrol-mtu\t"), "{marks}");
     }
 
     #[test]
@@ -378,6 +383,10 @@ mod tests {
         );
         let run = run_path(&home, "oversized");
         let marks = read(&run, "marks.tsv");
+        assert!(
+            marks.contains("\tcontrol-mtu\trequested=none incoming=672 outgoing=672\n"),
+            "{marks}"
+        );
         let mark = format!(
             "\ttruncated\t{OVERSIZED_LEN} bytes: longer than the 4096 byte receive buffer\n"
         );

@@ -34,7 +34,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use pods_proto::addr::BdAddr;
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
-use pods_sys::l2cap::{self, Channel, ChannelError};
+use pods_sys::l2cap::{self, Channel, ChannelError, Mtus};
 use rustix::time::{ClockId, clock_gettime};
 use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
@@ -170,6 +170,8 @@ struct Host<'a> {
     home: &'a str,
     /// Opens the channel the PSM names on the device.
     connect: &'a dyn Fn(BdAddr, u16) -> Result<Channel, ChannelError>,
+    /// Reads the granted control-channel MTUs. The Unix socket fixtures have no L2CAP options.
+    control_mtus: fn(&Channel) -> Result<Option<Mtus>, ChannelError>,
     /// Takes the hardware run's lock before a probe can dial the pods.
     lock_service: &'a dyn Fn() -> Result<RunLock, ServiceError>,
     stdout: &'a mut dyn Write,
@@ -231,6 +233,8 @@ enum ProbeError {
         file: &'static str,
         source: io::Error,
     },
+    #[error(transparent)]
+    Output(#[from] capture::IoFailure),
     #[error("{0}")]
     Connect(ChannelError),
 }
@@ -249,20 +253,21 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         }
     };
     let capture_imtu = if let ProbeCommand::Capture(args) = &command {
-        Some(args.imtu)
+        args.imtu
     } else {
         None
     };
     let connect = |peer, psm| {
         let timeout = Duration::from_millis(CONNECT_TIMEOUT_MS);
         match capture_imtu {
-            Some(imtu) if psm == CONTROL_PSM => capture::connect_control(peer, timeout, imtu),
+            Some(imtu) if psm == CONTROL_PSM => l2cap::connect_with_imtu(peer, psm, timeout, imtu),
             _ => l2cap::connect(peer, psm, timeout),
         }
     };
     let mut host = Host {
         home: &home,
         connect: &connect,
+        control_mtus: |channel| channel.mtus().map(Some),
         lock_service: &RunLock::take,
         stdout: &mut io::stdout(),
         stderr: &mut io::stderr(),
@@ -424,14 +429,8 @@ fn record(
     // The files above are made first, so a capture refused for its arguments or its store never stops the service.
     let recorded = host.with_service_stopped(lock, |host| {
         reached_dial = true;
-        let accessory = match dial_control(connect, peer, script.opening) {
-            Ok(accessory) => accessory,
-            Err(error) => {
-                // The connect error is what the owner is told; the mark only keeps it with the run.
-                let _unmarked = capture::write_mark(&mut marks, now_ns(), Mark::End, &error);
-                return Err(ProbeError::Connect(error));
-            }
-        };
+        let accessory =
+            dial_capture_control(host, peer, script.opening, args.imtu, &mut marks, &now_ns)?;
         let open_att = || connect(peer, ATT_PSM);
         let links = Links {
             accessory: accessory.as_ref(),
@@ -497,6 +496,45 @@ fn dial_control(
             connect(peer, CONTROL_PSM).map(Some)
         }
     }
+}
+
+/// Dials the capture's control channel and records the requested and granted MTUs.
+fn dial_capture_control(
+    host: &mut Host<'_>,
+    peer: BdAddr,
+    opening: Opening,
+    requested: Option<u16>,
+    marks: &mut dyn Write,
+    now_ns: &dyn Fn() -> u64,
+) -> Result<Option<Channel>, ProbeError> {
+    let opened = dial_control(host.connect, peer, opening).and_then(|accessory| {
+        let mtus = match &accessory {
+            Some(channel) => (host.control_mtus)(channel)?,
+            None => None,
+        };
+        Ok((accessory, mtus))
+    });
+    let (accessory, mtus) = match opened {
+        Ok(opened) => opened,
+        Err(error) => {
+            // The connect error is what the owner is told; the mark only keeps it with the run.
+            let _unmarked = capture::write_mark(marks, now_ns(), Mark::End, &error);
+            return Err(ProbeError::Connect(error));
+        }
+    };
+    if let Some(Mtus { incoming, outgoing }) = mtus {
+        host.say(&format_args!(
+            "control channel MTU incoming {incoming} bytes, outgoing {outgoing} bytes"
+        ));
+        let requested = requested.map_or_else(|| "none".to_owned(), |imtu| imtu.to_string());
+        capture::write_mark(
+            marks,
+            now_ns(),
+            Mark::ControlMtu,
+            &format_args!("requested={requested} incoming={incoming} outgoing={outgoing}"),
+        )?;
+    }
+    Ok(accessory)
 }
 
 /// The way to the attribute channel on every route but uplink, which the run opens itself.

@@ -12,14 +12,13 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use pods_proto::addr::BdAddr;
 use pods_proto::control::{ControlCommand, ControlId};
 use pods_proto::dictation;
 use pods_proto::ear::EarReport;
 use pods_proto::handshake::{Handshake, Step};
-use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
+use pods_proto::packets::ATT_PSM;
 use pods_proto::uplink::{self, MicSide};
-use pods_sys::l2cap::{self, Channel, ChannelError};
+use pods_sys::l2cap::{Channel, ChannelError};
 
 use super::dictate::{self, HANDLE_WALK_TIMEOUT_MS, HandleCheck};
 use super::script::{Action, Opening, Script, StepPacket};
@@ -618,24 +617,6 @@ fn first_failure(end: EndReason, later: Result<(), IoFailure>) -> EndReason {
         (EndReason::ScriptDone, Err(failure)) => EndReason::Io(failure),
         (end, Ok(()) | Err(_)) => end,
     }
-}
-
-/// Opens the control channel and reports the kernel's MTUs for the capture.
-pub(super) fn connect_control(
-    peer: BdAddr,
-    timeout: Duration,
-    imtu: Option<u16>,
-) -> Result<Channel, ChannelError> {
-    let channel = match imtu {
-        Some(imtu) => l2cap::connect_with_imtu(peer, CONTROL_PSM, timeout, imtu),
-        None => l2cap::connect(peer, CONTROL_PSM, timeout),
-    }?;
-    let mtus = channel.mtus()?;
-    crate::report(&format!(
-        "xtask probe: control channel MTU incoming {} bytes, outgoing {} bytes",
-        mtus.incoming, mtus.outgoing
-    ));
-    Ok(channel)
 }
 
 pub(crate) fn run(
