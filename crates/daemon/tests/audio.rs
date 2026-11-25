@@ -49,6 +49,7 @@ mod tests {
             Asked::SinkList,
             Asked::CardList,
             Asked::ClientList,
+            Asked::SourceList,
         ]
     }
 
@@ -94,7 +95,7 @@ mod tests {
         assert_eq!(property(&rig, "AudioServer"), "up");
         let document: Value = serde_json::from_str(&property(&rig, "StatusJson")).unwrap();
         assert_eq!(document["audio_server"], "up");
-        assert_eq!(audio.requests(), opening());
+        assert_eq!(audio.wait_requests(opening().len(), HANG_LIMIT), opening());
         assert_eq!(audio.clients(), 1);
         audio.assert_only_reads();
         rig.finish();
@@ -116,6 +117,7 @@ mod tests {
     #[test]
     fn the_socket_closes_when_the_link_is_lost() {
         let (rig, device, audio) = Rig::with_audio(PERCENT);
+        audio.wait_requests(opening().len(), HANG_LIMIT);
         rig.link_down(&device);
         rig.wait_audio_server("idle");
         audio.wait_clients(0, HANG_LIMIT);
@@ -125,7 +127,8 @@ mod tests {
         assert_eq!(audio.requests(), opening());
         rig.relink(&device);
         rig.wait_audio_server("up");
-        assert_eq!(audio.requests(), [opening(), opening()].concat());
+        let expected = [opening(), opening()].concat();
+        assert_eq!(audio.wait_requests(expected.len(), HANG_LIMIT), expected);
         audio.assert_only_reads();
         rig.finish();
     }
@@ -188,7 +191,7 @@ mod tests {
     fn an_event_burst_costs_two_refreshes_at_most() {
         let (rig, device, audio) = Rig::with_audio(PERCENT);
         let sink = sink_named(device.address);
-        let before = audio.requests().len();
+        let before = audio.wait_requests(opening().len(), HANG_LIMIT).len();
         // Held, so the whole burst reaches the daemon at once, behind no answer.
         audio.hold_replies(true);
         for step in 1..=BURST {
@@ -231,6 +234,7 @@ mod tests {
         let sink = sink_named(device.address);
         let other = "alsa_output.speakers";
         let mut wanted = opening();
+        audio.wait_requests(wanted.len(), HANG_LIMIT);
         refreshed_after(&audio, &mut wanted, &SINK_REFRESH, |audio| {
             audio.add_sink(other, PERCENT);
         });
