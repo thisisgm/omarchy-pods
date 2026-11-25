@@ -59,6 +59,11 @@ impl Uplink {
         self.shared.uplink(|uplink| uplink.hold_stops = hold);
     }
 
+    /// Keeps sending audio with both buds out, to model a stream that continues after removal.
+    pub fn send_audio_unworn(&self) {
+        self.shared.uplink(|uplink| uplink.send_audio_unworn = true);
+    }
+
     /// Answers a held STOP: two more packets, then both stopped markers.
     pub fn release_stop(&self) {
         self.shared.uplink(Machine::release_stop);
@@ -125,6 +130,7 @@ impl Uplink {
 )]
 pub(crate) struct Machine {
     hold_starts: bool,
+    send_audio_unworn: bool,
     hold_running_markers: bool,
     hold_stops: bool,
     never_answer: bool,
@@ -173,6 +179,7 @@ impl Machine {
     pub(crate) fn new() -> Self {
         Self {
             hold_starts: false,
+            send_audio_unworn: false,
             hold_running_markers: false,
             hold_stops: false,
             never_answer: false,
@@ -307,7 +314,7 @@ impl Machine {
         run.next = slot.saturating_add(1);
         self.stall = None;
         // corner: assumed until measured on hardware, the five packets count from the START however the buds move after it
-        if !worn && slot >= NOT_WORN_PACKETS {
+        if !worn && !self.send_audio_unworn && slot >= NOT_WORN_PACKETS {
             return None;
         }
         let line = if self.marked > 0 {

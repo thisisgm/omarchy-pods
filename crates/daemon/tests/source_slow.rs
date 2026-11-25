@@ -26,7 +26,7 @@ mod tests {
     };
     use super::support::rig::assert_gap;
     use super::support::settings::set;
-    use super::support::uplink::{link, rig_with, wait_mic};
+    use super::support::uplink::{link, rig_with, take_out, wait_mic, wait_stop};
     use super::support::wait_for;
 
     const GRACE: Duration = Duration::from_millis(BUD_GRACE_MS);
@@ -56,19 +56,75 @@ mod tests {
 
     #[test]
     #[ignore = "the grace at real time; the slow job runs it"]
-    fn a_bud_out_while_recording_keeps_the_node() {
+    fn buds_out_withdraws_a_stopped_stream_while_the_recorder_is_linked() {
         let (mut rig, device, pipewire) = ready();
+        let uplink = device.pods.uplink();
         let recorder = record(&rig, &pipewire, "capture.wav");
         wait_mic(&rig, "recording");
-        device.pods.set_ear(Placed::InCase, Placed::InCase);
+        uplink.stop_unasked();
+        wait_for("the uplink stopped", || (!uplink.running()).then_some(()));
+        let (left, _) = take_out(&rig, &device);
+        wait_no_node(&pipewire);
+        assert_gap(
+            "withdrawal after the bud grace",
+            left,
+            Instant::now(),
+            &(GRACE..),
+        );
+        rig.wait_logged(&withdrawn_line("silent"));
+        drop(recorder.finish());
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "the grace at real time; the slow job runs it"]
+    fn buds_out_keeps_a_talking_uplink_then_withdraws_on_silence() {
+        let (mut rig, device, pipewire) = ready();
+        let uplink = device.pods.uplink();
+        uplink.hold_stops(true);
+        uplink.send_audio_unworn();
+        let recorder = record(&rig, &pipewire, "capture.wav");
+        wait_mic(&rig, "recording");
+        take_out(&rig, &device);
         rig.holds_for(PAST_THE_GRACE, "the node kept", |status| {
             status["mic_source"] == node_name()
         });
-        rig.assert_not_logged("the node kept past the grace", &withdrawn_line("not_worn"));
-        wait_node(&pipewire);
-        drop(recorder.finish());
+        wait_stop(&device);
+        assert!(uplink.running());
+        uplink.set_level(0);
         wait_no_node(&pipewire);
-        rig.wait_logged(&withdrawn_line("not_worn"));
+        rig.wait_logged(&withdrawn_line("silent"));
+        drop(recorder.finish());
+        rig.finish();
+    }
+
+    #[test]
+    #[ignore = "the grace at real time; the slow job runs it"]
+    fn buds_out_keeps_the_node_if_one_is_worn_or_returns_in_time() {
+        let (rig, device, pipewire) = ready();
+        let recorder = record(&rig, &pipewire, "capture.wav");
+        wait_mic(&rig, "recording");
+        device.pods.uplink().set_level(0);
+        let one_worn = |status: &serde_json::Value| {
+            status["right"]["in_ear"] == true && status["left"]["in_ear"] == false
+        };
+        device.pods.set_ear(Placed::InEar, Placed::InCase);
+        rig.wait_status("one bud worn", one_worn);
+        rig.holds_for(PAST_THE_GRACE, "one bud keeps the node", |status| {
+            status["mic_source"] == node_name()
+        });
+        take_out(&rig, &device);
+        rig.holds_for(GRACE / 2, "the grace keeps the node", |status| {
+            status["mic_source"] == node_name()
+        });
+        device.pods.set_ear(Placed::InEar, Placed::InCase);
+        rig.wait_status("one bud returned", one_worn);
+        rig.holds_for(
+            PAST_THE_GRACE,
+            "the returned bud keeps the node",
+            |status| status["mic_source"] == node_name(),
+        );
+        drop(recorder.finish());
         rig.finish();
     }
 

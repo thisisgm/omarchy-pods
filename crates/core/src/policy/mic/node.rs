@@ -12,6 +12,8 @@ use crate::state::{AudioServer, MicCode, State};
 const DESCRIPTION_SUFFIX: &str = " Microphone";
 /// The description of a model with no display name.
 const FALLBACK_DESCRIPTION: &str = "AirPods Microphone";
+/// Recheck a linked, unworn node after its grace, even when the transport has no timer left.
+const SILENCE_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 pub const SOURCE_UP_LINE: &str = "mic: source up";
 pub const SOURCE_BROKEN_LINE: &str = "mic: source failed in the library";
@@ -41,6 +43,8 @@ pub enum MicFact {
     Heard {
         packets: u64,
     },
+    /// The recorder has received a quiet stretch and no speech is waiting in the chain.
+    OutputSilent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +117,7 @@ pub(super) struct Node {
     buds: Buds,
     recorders: Recorders,
     recorders_fresh: bool,
+    silence_check: Option<Duration>,
 }
 
 impl Node {
@@ -151,7 +156,8 @@ impl Node {
             | Fact::Dictation(_) => {}
         }
         self.follow_buds(state, now);
-        match (self.wanted(state), self.source) {
+        let silent = matches!(fact, Fact::Mic(MicFact::OutputSilent));
+        match (self.wanted(state, silent), self.source) {
             (true, Source::Closed) => {
                 let id = OpenId(self.next_id);
                 self.next_id = self.next_id.wrapping_add(1);
@@ -161,7 +167,7 @@ impl Node {
             (false, source @ (Source::Opening(_) | Source::Up { .. } | Source::Down(_))) => {
                 effects.push(Effect::Mic(MicRequest::Close));
                 if let Source::Up { .. } = source {
-                    effects.push(Effect::Log(withdrawn_line(self.why_not(state))));
+                    effects.push(Effect::Log(withdrawn_line(self.why_not(state, silent))));
                 }
                 self.source = Source::Closed;
             }
@@ -177,6 +183,17 @@ impl Node {
             // The audio adapter only reports a change, so keep the counts for the next deadline.
             self.recorders_fresh = false;
         }
+        self.silence_check = match (
+            self.buds == Buds::Out && self.recording(),
+            fact,
+            self.silence_check,
+        ) {
+            (true, Fact::Tick, _) | (true, _, None) => {
+                Some(now.saturating_add(SILENCE_CHECK_INTERVAL))
+            }
+            (true, _, check) => check,
+            (false, _, _) => None,
+        };
     }
 
     fn listed(&mut self, recorders: Recorders) {
@@ -206,7 +223,7 @@ impl Node {
                 }
                 self.source = Source::Broken;
             }
-            MicFact::FirstAudio | MicFact::Heard { .. } => {}
+            MicFact::FirstAudio | MicFact::Heard { .. } | MicFact::OutputSilent => {}
             MicFact::Up(id) | MicFact::Down(id) | MicFact::Recording(id, _)
                 if self.source.id() != Some(id) => {}
             // Every Up is a fresh node with no recorder.
@@ -247,9 +264,9 @@ impl Node {
         };
     }
 
-    /// A recorder keeps the node through a bud leaving; the link lost and `off` end it at once.
-    fn wanted(&self, state: &State) -> bool {
-        let near = self.buds != Buds::Out || self.recording();
+    /// An unworn recorder keeps the node until a current silence check confirms its audio is gone.
+    fn wanted(&self, state: &State, silent: bool) -> bool {
+        let near = self.buds != Buds::Out || (self.recording() && !silent);
         !self.exiting
             && !self.blocked()
             && near
@@ -260,7 +277,7 @@ impl Node {
     }
 
     /// The word of a withdrawal, the first that holds.
-    fn why_not(&self, state: &State) -> &'static str {
+    fn why_not(&self, state: &State, silent: bool) -> &'static str {
         if self.exiting {
             "exit"
         } else if !state.connected {
@@ -269,16 +286,19 @@ impl Node {
             "blocked"
         } else if state.microphone.preference() == MicPref::Off {
             "off"
+        } else if silent && self.buds == Buds::Out && self.recording() {
+            "silent"
         } else {
             "not_worn"
         }
     }
 
-    /// The grace's end, which only a node asked for waits on.
+    /// The grace's end or the next check for a linked recorder with no bud worn.
     pub(super) fn deadline(&self) -> Option<Duration> {
         match (self.source.id(), self.buds) {
             (Some(_), Buds::Left(left)) => Some(grace_end(left)),
-            (None, _) | (Some(_), Buds::Out | Buds::Worn) => None,
+            (Some(_), Buds::Out) => self.silence_check,
+            (None, _) | (Some(_), Buds::Worn) => None,
         }
     }
 

@@ -252,8 +252,9 @@ an_outage_logs_its_reason_once_and_a_late_server_gets_the_node Down Refused
 an_outage_logs_its_reason_once_and_a_late_server_gets_the_node Down Opened
 the_last_bud_out_withdraws_the_node_after_the_grace Up BudOut
 the_last_bud_out_withdraws_the_node_after_the_grace Grace Deadline
-a_bud_out_while_recording_keeps_the_node Recording BudOut
-a_bud_out_while_recording_keeps_the_node RecordingOut PausedOut
+buds_out_withdraws_a_stopped_stream_while_the_recorder_is_linked Recording BudOut
+buds_out_keeps_a_talking_uplink_then_withdraws_on_silence Recording BudOut
+buds_out_keeps_the_node_if_one_is_worn_or_returns_in_time Recording BudOut
 turns_of_the_setting_while_an_open_hangs_end_on_the_last Opening Off
 turns_of_the_setting_while_an_open_hangs_end_on_the_last Closed Changed
 a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again Recording Paused
@@ -402,7 +403,7 @@ fn every_kind_against_every_fact() {
         assert_eq!(sent(&effects), wanted, "{cell}");
         assert_eq!(kind(node), to, "{cell}");
         // A grace that holds keeps its end; a restarted one would move it.
-        if to == from && matches!(from, Kind::Grace | Kind::RecordingOut) {
+        if to == from && from == Kind::Grace {
             assert_eq!(node.deadline(), self::node(from).deadline(), "{cell}");
         }
     }
@@ -522,6 +523,33 @@ fn the_grace_is_the_deadline_and_ends_with_it() {
     node.step(&state, &Fact::Tick, later, &mut effects);
     // The one Close, and no reopen after it while no bud is worn.
     assert_eq!(sent(&effects), Sent::Close);
+}
+
+#[test]
+fn an_unworn_recorder_withdraws_when_the_output_is_silent_after_grace() {
+    let mut node = node(Kind::Recording);
+    let mut state = linked();
+    state.ear = EarReport::default();
+    let mut effects = Vec::new();
+    let silent = Fact::Mic(MicFact::OutputSilent);
+    let due = SENT.saturating_add(GRACE);
+    node.step(&state, &silent, SENT, &mut effects);
+    node.step(&state, &Fact::Tick, due, &mut effects);
+    assert_eq!(effects, []);
+    assert_eq!(
+        node.deadline(),
+        Some(due.saturating_add(SILENCE_CHECK_INTERVAL))
+    );
+
+    node.step(&state, &silent, due, &mut effects);
+    assert_eq!(
+        effects,
+        [
+            Effect::Mic(MicRequest::Close),
+            Effect::Log(withdrawn_line("silent")),
+        ]
+    );
+    assert_eq!(node.deadline(), None);
 }
 
 #[test]

@@ -34,6 +34,10 @@ const STEER_SMOOTH_MS: u16 = 2000;
 const PARTS_PER_MILLION: f64 = 1e6;
 const NS_PER_SECOND: u32 = 1_000_000_000;
 const NO_RESYNC: u64 = u64::MAX;
+/// The digital silence ceiling, about -90 dBFS peak, well below speech.
+const SILENCE_PEAK: f32 = 0.000_03;
+/// Two seconds of quiet output, longer than either path's jitter cover and the staged opening.
+const SILENCE_FRAMES: u32 = 2 * RATE_HZ;
 
 /// `count` times `by` over `over`, rounded down: frames from ns and back at a rate that need not divide a second.
 fn scaled(count: i64, by: u32, over: u32) -> i64 {
@@ -104,6 +108,11 @@ pub(crate) struct Ring {
     samples: Box<[AtomicU32]>,
     /// Samples written since the ring was made; it never goes back.
     written: AtomicU64,
+    /// The position just after the most recent decoded sample above the silence ceiling.
+    signal_end: AtomicU64,
+    /// How far the reader got through audio already written, published after the quiet count.
+    played_until: AtomicI64,
+    quiet_frames: AtomicU32,
     /// Where the run began: of what stands before it the reader hands out only the fall of audio it was playing.
     floor: AtomicU64,
     /// Counts runs even when one ends without writing a sample.
@@ -126,6 +135,9 @@ impl Ring {
         Self {
             samples: (0..RING_SAMPLES).map(|_| AtomicU32::new(0)).collect(),
             written: AtomicU64::new(0),
+            signal_end: AtomicU64::new(0),
+            played_until: AtomicI64::new(0),
+            quiet_frames: AtomicU32::new(0),
             floor: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             resync_from: AtomicU64::new(NO_RESYNC),
@@ -150,17 +162,46 @@ impl Ring {
     /// Never waits, and overwrites the oldest; the index is shown at least every unit, which is as far past it as the reader's lap check lets the writer be.
     pub(crate) fn write(&self, samples: impl Iterator<Item = f32>) {
         let mut end = self.written.load(Ordering::Relaxed);
+        let mut signal_end = None;
         for (sample, of_the_unit) in samples.zip((1..=UNIT_FRAMES).cycle()) {
             if let Some(slot) = self.slot(end) {
                 // Release, so a reader that sees this sample sees the write index it was stored under.
                 slot.store(sample.to_bits(), Ordering::Release);
             }
             end = end.saturating_add(1);
+            if sample.abs() > SILENCE_PEAK {
+                signal_end = Some(end);
+            }
             if of_the_unit == UNIT_FRAMES {
                 self.written.store(end, Ordering::Release);
             }
         }
         self.written.store(end, Ordering::Release);
+        if let Some(signal_end) = signal_end {
+            self.signal_end.store(signal_end, Ordering::Release);
+        }
+    }
+
+    fn note_output(&self, next: i64, out: &[f32], resynced: bool) {
+        let quiet = if let Some(last) = out.iter().rposition(|sample| sample.abs() > SILENCE_PEAK) {
+            u32::try_from(out.len().saturating_sub(last).saturating_sub(1)).unwrap_or(u32::MAX)
+        } else {
+            let previous = if resynced {
+                0
+            } else {
+                self.quiet_frames.load(Ordering::Relaxed)
+            };
+            previous.saturating_add(u32::try_from(out.len()).unwrap_or(u32::MAX))
+        };
+        self.quiet_frames.store(quiet, Ordering::Relaxed);
+        self.played_until.store(next, Ordering::Release);
+    }
+
+    pub(crate) fn output_silent(&self) -> bool {
+        let played = u64::try_from(self.played_until.load(Ordering::Acquire)).unwrap_or(0);
+        let signal = self.signal_end.load(Ordering::Acquire);
+        signal <= played.max(self.run())
+            && self.quiet_frames.load(Ordering::Relaxed) >= SILENCE_FRAMES
     }
 
     /// Where the run began.
@@ -395,7 +436,8 @@ impl Reader {
     pub fn read(&mut self, now: Duration, out: &mut [f32]) -> f64 {
         let frames = i64::try_from(out.len()).unwrap_or(i64::MAX);
         let previous = self.ring.resync_from.swap(NO_RESYNC, Ordering::AcqRel);
-        if previous != NO_RESYNC {
+        let resynced = previous != NO_RESYNC;
+        if resynced {
             // A recorder that links hears nothing from before it, whether or not a packet of the run has landed.
             (self.ended, self.earlier, self.left) = (Tail::NONE, Tail::NONE, Tail::NONE);
             (self.heard, self.was) = (None, Was::Gone);
@@ -403,12 +445,16 @@ impl Reader {
             self.previous_span_run = self.edge.map(|_| previous);
             self.edge = Some(self.ring.link(now));
         }
+        // A dry read can run ahead of the writer, so it only accounts for frames already written.
+        let written = self.ring.end();
         // The run is noted before its time is read, so the time is of that run or of one after it.
         let run = self.ring.run();
         let aim = self.aim(run, now, frames);
         let ratio = self.fill(aim, frames, out);
         // Last, over every sample handed out, so the sum of two fades is held under the ceiling too.
         let tally = level::apply(out);
+        let played = aim.map_or(0, |_| self.next.min(written));
+        self.ring.note_output(played, out, resynced);
         let counters = &self.counters;
         counters.limited.fetch_add(tally.limited, Ordering::Relaxed);
         counters

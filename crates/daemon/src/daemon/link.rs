@@ -359,9 +359,15 @@ impl Driver {
         }
     }
 
-    /// The clock's step, then a decoder reset since the last tick and each stream's count for its stall check.
+    /// The clock's step, then the node's silence check and each stream's count for its stall check.
     fn tick(&mut self) {
         self.step(Event::Tick);
+        if self.policy.mic_recording()
+            && !self.hub.state().ear.any_in_ear()
+            && self.outlets.tap.output_silent()
+        {
+            self.observe(Fact::Mic(MicFact::OutputSilent));
+        }
         let resets = self
             .outlets
             .tap

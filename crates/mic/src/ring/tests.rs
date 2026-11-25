@@ -127,6 +127,31 @@ fn a_write_longer_than_a_unit_shows_its_index_every_unit() {
 }
 
 #[test]
+fn a_quiet_output_waits_for_the_whole_window_and_any_unplayed_signal() {
+    use super::{SILENCE_FRAMES, SILENCE_PEAK};
+
+    let ring = Arc::new(Ring::new());
+    let (mut reader, _) = Reader::new(Arc::clone(&ring), Arc::default());
+    let mut quiet = vec![0.0; usize::try_from(SILENCE_FRAMES - 1).unwrap()];
+    reader.read(Duration::ZERO, &mut quiet);
+    assert!(!ring.output_silent());
+    reader.read(Duration::ZERO, &mut [0.0]);
+    assert!(ring.output_silent());
+
+    let signal = SILENCE_PEAK * 2.0;
+    ring.write(std::iter::once(signal));
+    assert!(!ring.output_silent());
+    ring.note_output(1, &[signal], false);
+    assert!(!ring.output_silent());
+    ring.note_output(1, &quiet, false);
+    assert!(!ring.output_silent());
+    ring.note_output(1, &[0.0], false);
+    assert!(ring.output_silent());
+    ring.note_output(1, &[0.0], true);
+    assert!(!ring.output_silent());
+}
+
+#[test]
 fn a_dictation_placed_inside_a_read_is_not_played_by_it_and_opens_on_the_next() {
     let (mut chain, mut reader, now) = linked_after_a_dictation();
     let frames = i64::try_from(QUANTUM).unwrap();
