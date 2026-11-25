@@ -25,12 +25,12 @@ mod tests {
     const MAX_TAIL: Duration = Duration::from_millis(100);
     const MARK_FRAMES: u32 = 3;
     const MARK_LENGTH: Duration = FRAME.saturating_mul(MARK_FRAMES);
+    const FAST_RATIO: f64 = 1.10;
 
-    fn assert_marks(samples: &[i16], count: usize, opening: (u32, Option<u32>)) {
+    fn assert_marks(samples: &[i16], count: usize, length: Duration, opening: (u32, Option<u32>)) {
         use super::support::recording::{dictation_marks, frames};
 
         const ANALYSIS_SLACK: Duration = Duration::from_millis(5);
-        const MAX_RATIO: f64 = 1.10;
         let marks = dictation_marks(samples);
         assert_eq!(
             marks.len(),
@@ -38,15 +38,11 @@ mod tests {
             "detected marks: {marks:?}, {} samples, opening {opening:?}",
             samples.len()
         );
-        let minimum = frames(
-            MARK_LENGTH
-                .div_f64(MAX_RATIO)
-                .saturating_sub(ANALYSIS_SLACK),
-        );
+        let minimum = frames(length.div_f64(FAST_RATIO).saturating_sub(ANALYSIS_SLACK));
         for mark in marks {
             assert!(
                 mark.len() >= minimum,
-                "mark was cut: {mark:?}, opening {opening:?}"
+                "mark was cut: {mark:?}, at least {minimum} samples required, opening {opening:?}"
             );
         }
     }
@@ -82,7 +78,7 @@ mod tests {
         fixture.stopped(1);
         assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
         let timing = opening(&mut fixture);
-        assert_marks(&samples, 2, timing);
+        assert_marks(&samples, 2, MARK_LENGTH, timing);
         let (behind, _) = timing;
         assert!(
             Duration::from_millis(u64::from(behind)) <= TRIMMED_OPENING_LIMIT,
@@ -97,7 +93,6 @@ mod tests {
         use super::support::recording::counts_after_leaving;
 
         const SPEECH: Duration = Duration::from_secs(2);
-        const MS_TO_CLOSE_ONE_MS: u32 = 10;
         const CATCH_UP_SLACK: Duration = FRAME.saturating_mul(6);
         let mut fixture = Fixture::with_recorder_quantum();
         let doap = fixture.device.pods.doap();
@@ -117,15 +112,18 @@ mod tests {
         fixture.stopped(1);
         assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
         let timing = opening(&mut fixture);
-        assert_marks(&samples, 1, timing);
+        assert_marks(&samples, 1, MARK_LENGTH, timing);
         let (behind, caught_up) = timing;
         assert!(behind > 0, "continuous dictation did not start behind");
-        let limit = Duration::from_millis(u64::from(behind.saturating_mul(MS_TO_CLOSE_ONE_MS)))
-            .saturating_add(CATCH_UP_SLACK);
+        let fastest = Duration::from_millis(u64::from(behind)).div_f64(FAST_RATIO - 1.0);
+        let floor = fastest.saturating_sub(CATCH_UP_SLACK);
+        let limit = fastest.saturating_add(CATCH_UP_SLACK);
         let caught_up = caught_up.expect("the reader was still catching up at the tail");
         assert!(
-            Duration::from_millis(u64::from(caught_up)) <= limit,
-            "{behind} ms in {caught_up} ms"
+            (floor..=limit).contains(&Duration::from_millis(u64::from(caught_up))),
+            "{behind} ms behind caught up in {caught_up} ms (expected {}..{} ms)",
+            floor.as_millis(),
+            limit.as_millis()
         );
         fixture.no_uplink();
         fixture.finish();
@@ -136,8 +134,9 @@ mod tests {
         use super::support::sleep::sleep;
 
         const BURST_FRAMES: u32 = 4;
+        const BURST_LENGTH: Duration = FRAME.saturating_mul(BURST_FRAMES);
         const NO_STEADY: Duration = Duration::from_secs(2);
-        const FLUSH_SPAN: Duration = FRAME.saturating_mul(BURST_FRAMES).saturating_add(MAX_TAIL);
+        const FLUSH_SPAN: Duration = BURST_LENGTH.saturating_add(MAX_TAIL);
         let mut fixture = Fixture::new();
         let doap = fixture.device.pods.doap();
         doap.burst(BURST_FRAMES, BURST_FRAMES);
@@ -157,7 +156,7 @@ mod tests {
         sleep(&mut fixture.rig);
         fixture.stopped(1);
         pause(FLUSH_SPAN);
-        assert_marks(&recorder.finish(), 1, (0, None));
+        assert_marks(&recorder.finish(), 1, BURST_LENGTH, (0, None));
         fixture.no_uplink();
         fixture.finish();
     }
