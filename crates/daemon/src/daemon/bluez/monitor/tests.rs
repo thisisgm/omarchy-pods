@@ -6,14 +6,14 @@ use std::task::Poll;
 
 use pods_core::policy::{MonitorFact, Sighting};
 use pods_proto::addr::BdAddr;
-use pods_proto::proximity::ADVERT_LEN;
+use pods_proto::proximity::{ADVERT_LEN, APPLE_COMPANY_ID};
 use proptest::prelude::*;
 use tokio::sync::mpsc;
 use tokio::task::yield_now;
 use zbus::Variant;
 
 use super::{
-    ADVERT_DEVICES_MAX, ADVERT_QUEUE, APPLE, MONITOR_TRIES, Monitor, apple_advert, objects, offer,
+    ADVERT_DEVICES_MAX, ADVERT_QUEUE, MONITOR_TRIES, Monitor, apple_advert, objects, offer,
 };
 use crate::daemon::link::Input;
 use crate::daemon::link::tests::block_on;
@@ -41,7 +41,7 @@ fn manufacturer_data(company: u16, bytes: Vec<u8>) -> Variant<'static> {
 }
 
 fn read_entry(len: usize) -> Option<[u8; ADVERT_LEN]> {
-    apple_advert(&manufacturer_data(APPLE, data(len)))
+    apple_advert(&manufacturer_data(APPLE_COMPANY_ID, data(len)))
 }
 
 #[test]
@@ -58,9 +58,12 @@ fn an_apple_entry_of_the_advert_length_or_more_is_read_by_its_first_bytes() {
 #[test]
 fn another_company_or_another_shape_is_dropped() {
     let other = manufacturer_data(OTHER_COMPANY, data(ADVERT_LEN));
-    let text = Variant::from(HashMap::from([(APPLE, Variant::from("not bytes"))]));
+    let text = Variant::from(HashMap::from([(
+        APPLE_COMPANY_ID,
+        Variant::from("not bytes"),
+    )]));
     let words = Variant::from(HashMap::from([(
-        APPLE,
+        APPLE_COMPANY_ID,
         Variant::from(vec![1_u16; ADVERT_LEN]),
     )]));
     let flat = Variant::from(data(ADVERT_LEN));
@@ -171,7 +174,7 @@ fn a_change_during_the_first_read_wins_over_its_reply_and_later_ones_go_at_once(
         let mut bytes = data(ADVERT_LEN);
         bytes[0] = first;
         (
-            manufacturer_data(APPLE, bytes.clone()),
+            manufacturer_data(APPLE_COMPANY_ID, bytes.clone()),
             <[u8; ADVERT_LEN]>::try_from(bytes).unwrap(),
         )
     };
@@ -299,9 +302,9 @@ fn a_call_or_read_ended_before_bluez_is_forgotten_is_never_joined() {
 
 proptest! {
     #[test]
-    fn arbitrary_entries_never_panic(company in prop_oneof![Just(APPLE), any::<u16>()], bytes in proptest::collection::vec(any::<u8>(), 0..ENTRY_LONGEST)) {
+    fn arbitrary_entries_never_panic(company in prop_oneof![Just(APPLE_COMPANY_ID), any::<u16>()], bytes in proptest::collection::vec(any::<u8>(), 0..ENTRY_LONGEST)) {
         let read = apple_advert(&manufacturer_data(company, bytes.clone()));
-        let wanted = (company == APPLE && bytes.len() >= ADVERT_LEN)
+        let wanted = (company == APPLE_COMPANY_ID && bytes.len() >= ADVERT_LEN)
             .then(|| <[u8; ADVERT_LEN]>::try_from(&bytes[..ADVERT_LEN]).unwrap());
         prop_assert_eq!(read, wanted);
     }

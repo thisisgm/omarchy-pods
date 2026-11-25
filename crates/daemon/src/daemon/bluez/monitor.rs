@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use pods_core::policy::{MonitorFact, Sighting};
 use pods_proto::addr::BdAddr;
-use pods_proto::proximity::{ADVERT_LEN, PROXIMITY_TYPE};
+use pods_proto::proximity::{ADVERT_LEN, APPLE_COMPANY_ID, MANUFACTURER_DATA, PROXIMITY_TYPE};
 use tokio::sync::{Barrier, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::{Sleep, sleep, timeout};
@@ -40,14 +40,12 @@ const MONITOR_PATH: &str = "/librepods/adverts/apple";
 
 const OR_PATTERNS: &str = "or_patterns";
 
-const APPLE: u16 = 0x004c;
-
-const APPLE_LOW_HIGH: [u8; 2] = APPLE.to_le_bytes();
+const APPLE_LOW_HIGH: [u8; 2] = APPLE_COMPANY_ID.to_le_bytes();
 
 /// The one pattern: from the start of manufacturer data, Apple's company identifier little endian, then the proximity type.
 const PATTERN: (u8, u8, [u8; 3]) = (
     0,
-    0xff,
+    MANUFACTURER_DATA,
     [APPLE_LOW_HIGH[0], APPLE_LOW_HIGH[1], PROXIMITY_TYPE],
 );
 
@@ -359,7 +357,7 @@ pub(super) fn objects() -> Objects {
 /// Sample input: `{0x004c: <[0x07, 0x19, 0x01, 0x27, 0x20, ...]>}`, `ManufacturerData` as `a{qv}`; a shorter Apple entry or none is dropped.
 fn apple_advert(manufacturer_data: &Variant<'_>) -> Option<[u8; ADVERT_LEN]> {
     let entries = <&Dict<'_, '_>>::try_from(manufacturer_data).ok()?;
-    let bytes: &Array<'_> = entries.get(&APPLE).ok()??;
+    let bytes: &Array<'_> = entries.get(&APPLE_COMPANY_ID).ok()??;
     let mut data = [0_u8; ADVERT_LEN];
     let mut taken = 0_usize;
     for (slot, byte) in data.iter_mut().zip(bytes.iter()) {

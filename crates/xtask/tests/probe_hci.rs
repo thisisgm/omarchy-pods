@@ -5,6 +5,10 @@
 #[path = "support/dictation.rs"]
 mod dictation;
 #[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "the trace of two devices and what builds it go unused where no command reads marks"
+)]
 #[path = "../src/probe/hci/fixture.rs"]
 mod fixture;
 #[cfg(test)]

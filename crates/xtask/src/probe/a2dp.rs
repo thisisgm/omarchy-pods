@@ -17,7 +17,7 @@ const TWO_BITS: u8 = 0b11;
 /// A signal that fits one packet; the other packet types are fragments (AVDTP 1.3 section 8.4.2, Table 8.4).
 const SINGLE_PACKET: u8 = 0b00;
 /// Message type of a command (AVDTP 1.3 section 8.4.3, Table 8.5).
-const COMMAND: u8 = 0b00;
+pub(crate) const COMMAND: u8 = 0b00;
 /// Message type of an accepted response (AVDTP 1.3 section 8.4.3, Table 8.5).
 const RESPONSE_ACCEPT: u8 = 0b10;
 /// Message type of a rejected response (AVDTP 1.3 section 8.4.3, Table 8.5).
@@ -27,9 +27,11 @@ const SIGNAL_ID_MASK: u8 = 0b0011_1111;
 /// `AVDTP_GET_CAPABILITIES` (AVDTP 1.3 section 8.5, Table 8.6).
 const GET_CAPABILITIES: u8 = 0x02;
 /// `AVDTP_SET_CONFIGURATION` (AVDTP 1.3 section 8.5, Table 8.6).
-const SET_CONFIGURATION: u8 = 0x03;
+pub(crate) const SET_CONFIGURATION: u8 = 0x03;
+/// `AVDTP_OPEN` (AVDTP 1.3 section 8.5, Table 8.6).
+pub(crate) const OPEN: u8 = 0x06;
 /// `AVDTP_START` (AVDTP 1.3 section 8.5, Table 8.6).
-const START: u8 = 0x07;
+pub(crate) const START: u8 = 0x07;
 /// `AVDTP_SUSPEND` (AVDTP 1.3 section 8.5, Table 8.6).
 const SUSPEND: u8 = 0x09;
 /// `AVDTP_GET_ALL_CAPABILITIES` (AVDTP 1.3 section 8.5, Table 8.6).
@@ -106,7 +108,7 @@ pub(crate) struct Unread {
 
 /// What an AVDTP channel carries, told by the order the channels of a link open in (AVDTP 1.3 section 5.4.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
+pub(crate) enum Role {
     Signalling,
     Media,
     /// A reporting or recovery channel, which is not read.
@@ -115,15 +117,15 @@ enum Role {
 
 /// One signal that fits a single packet.
 #[derive(Debug, Clone, Copy)]
-struct Signal<'a> {
+pub(crate) struct Signal<'a> {
     label: u8,
-    message: u8,
-    id: u8,
+    pub(crate) message: u8,
+    pub(crate) id: u8,
     body: &'a [u8],
 }
 
 #[derive(Debug, Clone, Copy)]
-enum Packet<'a> {
+pub(crate) enum Packet<'a> {
     Single(Signal<'a>),
     Fragment,
     Malformed,
@@ -177,7 +179,7 @@ fn bump(count: &mut u64) {
 }
 
 // Sample input: 12 02 01 00, label 1, a single packet, response accept; then AVDTP_GET_CAPABILITIES and the body.
-fn packet(bytes: &[u8]) -> Packet<'_> {
+pub(crate) fn packet(bytes: &[u8]) -> Packet<'_> {
     let mut rest = bytes;
     let Some([first]) = take(&mut rest) else {
         return Packet::Malformed;
@@ -227,7 +229,7 @@ fn rtp_sequence(packet: &[u8]) -> Option<u16> {
 }
 
 /// The first channel to open is signalling and the next is media.
-fn roles(channels: &Channels, link: usize) -> Vec<(Role, &Channel)> {
+pub(crate) fn roles(channels: &Channels, link: usize) -> Vec<(Role, &Channel)> {
     let mut roles: Vec<(Role, &Channel)> = Vec::new();
     for channel in &channels.list {
         if channel.psm != AVDTP_PSM || channel.link != link {

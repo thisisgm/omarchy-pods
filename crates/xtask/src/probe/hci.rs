@@ -8,8 +8,8 @@ mod l2cap;
 mod pklg;
 
 pub(crate) use content::Carries;
-pub(crate) use export::export;
-pub(crate) use l2cap::{Channel, Channels, channels, channels_by_content};
+pub(crate) use export::{MAX_TRACE_BYTES, export};
+pub(crate) use l2cap::{Channel, Channels, Request, channels, channels_by_content};
 pub(crate) use pklg::{Fault, records_pklg};
 
 use std::fmt;
@@ -29,12 +29,14 @@ const MAX_RECORD_LEN: u32 = 65_535;
 /// Microseconds from the btsnoop epoch, midnight of year 0, to 1970 (`BlueZ` src/shared/btsnoop.c: 0x00E03AB44A676000 less 946684800 seconds).
 const YEAR_0_TO_1970_MICROS: u64 = 62_168_256_000_000_000;
 const NANOS_PER_MICRO: u64 = 1_000;
+/// Monitor opcode of an HCI command (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_COMMAND_PKT`).
+pub(crate) const OPCODE_COMMAND: u16 = 2;
 /// Monitor opcode of an HCI event (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_EVENT_PKT`).
-const OPCODE_EVENT: u16 = 3;
+pub(crate) const OPCODE_EVENT: u16 = 3;
 /// Monitor opcode of ACL data the host sent (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_ACL_TX_PKT`).
-const OPCODE_ACL_TX: u16 = 4;
+pub(crate) const OPCODE_ACL_TX: u16 = 4;
 /// Monitor opcode of ACL data the host received (`BlueZ` src/shared/btsnoop.h, `BTSNOOP_OPCODE_ACL_RX_PKT`).
-const OPCODE_ACL_RX: u16 = 5;
+pub(crate) const OPCODE_ACL_RX: u16 = 5;
 /// HCI Disconnection Complete (`BlueZ` monitor/bt.h, `BT_HCI_EVT_DISCONNECT_COMPLETE`).
 const EVENT_DISCONNECTION_COMPLETE: u8 = 0x05;
 /// HCI Synchronous Connection Complete (`BlueZ` monitor/bt.h, `BT_HCI_EVT_SYNC_CONN_COMPLETE`).
@@ -160,6 +162,16 @@ pub(crate) struct Records {
     pub cut: Option<Cut>,
 }
 
+/// One whole record of a btsnoop trace, as the file holds it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Raw<'a> {
+    /// When the monitor saw it, in nanoseconds since 1970.
+    pub at_ns: u64,
+    /// What the monitor datalink says the record is.
+    pub opcode: u16,
+    pub data: &'a [u8],
+}
+
 /// `None`, with nothing taken, when fewer than `N` bytes are left.
 pub(crate) fn take<const N: usize>(rest: &mut &[u8]) -> Option<[u8; N]> {
     let (head, tail) = rest.split_first_chunk::<N>()?;
@@ -238,8 +250,12 @@ pub(crate) fn read(trace: &[u8]) -> Result<Read, TraceError> {
     }
 }
 
+/// Gives `each` every whole record in trace order, and returns the damaged record that ended the reading early.
 // Sample input: 62 74 73 6e 6f 6f 70 00, 00 00 00 01, 00 00 07 d1, then records: a 24 byte header and as many data bytes as it claims.
-pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
+pub(crate) fn walk<'a>(
+    trace: &'a [u8],
+    mut each: impl FnMut(Raw<'a>),
+) -> Result<Option<Cut>, TraceError> {
     let mut rest = trace;
     let header = (
         take::<8>(&mut rest),
@@ -258,7 +274,6 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
     if u32::from_be_bytes(datalink) != MONITOR_DATALINK {
         return Err(TraceError::UnknownDatalink);
     }
-    let mut kept = Vec::new();
     let mut cut = None;
     let mut record = 0_usize;
     while !rest.is_empty() {
@@ -292,15 +307,29 @@ pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
             cut = stop(Damage::StampOutOfRange);
             break;
         };
-        let kind = match header.opcode {
-            OPCODE_ACL_TX => Some(Kind::AclSent),
-            OPCODE_ACL_RX => Some(Kind::AclReceived),
-            OPCODE_EVENT => event(data),
-            _ => None,
-        };
-        keep(&mut kept, at_ns, kind, data);
+        let opcode = header.opcode;
+        each(Raw {
+            at_ns,
+            opcode,
+            data,
+        });
         record = record.saturating_add(1);
     }
+    Ok(cut)
+}
+
+/// The records the tables need of a trace; every other record is skipped.
+pub(crate) fn records(trace: &[u8]) -> Result<Records, TraceError> {
+    let mut kept = Vec::new();
+    let cut = walk(trace, |raw| {
+        let kind = match raw.opcode {
+            OPCODE_ACL_TX => Some(Kind::AclSent),
+            OPCODE_ACL_RX => Some(Kind::AclReceived),
+            OPCODE_EVENT => event(raw.data),
+            _ => None,
+        };
+        keep(&mut kept, raw.at_ns, kind, raw.data);
+    })?;
     Ok(Records { kept, cut })
 }
 

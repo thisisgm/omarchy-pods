@@ -10,6 +10,11 @@ use crate::ear::EarReport;
 use crate::error::{ParseError, Parser};
 use crate::keys::Key;
 
+/// Apple's Bluetooth SIG company identifier, carried first in manufacturer-specific data.
+pub const APPLE_COMPANY_ID: u16 = 0x004c;
+/// The advertising data type for manufacturer-specific data.
+pub const MANUFACTURER_DATA: u8 = 0xff;
+
 /// The C++ `proximityPairingBytes`: a longer advert is read by its first `ADVERT_LEN` bytes, a shorter one is refused.
 pub const ADVERT_LEN: usize = 27;
 /// One AES block: the sealed end of the `ADVERT_LEN` bytes, and what `resolves` encrypts.
