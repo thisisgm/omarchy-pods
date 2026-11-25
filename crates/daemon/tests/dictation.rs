@@ -272,6 +272,89 @@ mod tests {
     }
 
     #[test]
+    fn the_last_listed_recorder_leaving_during_playback_stops_doap() {
+        use super::support::pipewire::{node_name, wait_node};
+        use super::support::recording::{LEFT as SOURCE_LEFT, pace};
+
+        const PLAYBACK_SPAN: Duration = Duration::from_secs(30);
+        const GRAPH_RUNNING: Duration = Duration::from_millis(100);
+        let mut fixture = Fixture::new();
+        let mut playback = pace(&fixture.rig, &fixture.server, PLAYBACK_SPAN);
+        ready_to_read(&playback.recorder, GRAPH_RUNNING);
+        let listed = fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        fixture.streaming(1);
+
+        // Keep the source Streaming through a graph link outside the fake audio server's recorder list.
+        fixture.server.link(&node_name(), playback.recorder.node());
+        drop(recorder.finish());
+        assert_eq!(wait_node(&fixture.server)["info"]["state"], "running");
+        fixture.audio.remove_recorder(listed);
+        fixture.rig.wait_logged(NO_RECORDER);
+        let log = fixture.rig.daemon().log();
+        assert_eq!(
+            log.lines()
+                .filter(|line| line.starts_with(SOURCE_LEFT))
+                .count(),
+            1,
+            "the empty list must log the recorder leaving"
+        );
+        fixture.stopped(1);
+        assert_eq!(wait_node(&fixture.server)["info"]["state"], "running");
+        assert!(playback.player.wait(Duration::ZERO).is_none());
+        assert_no_sink_call(&fixture.rig, &fixture.audio);
+
+        fixture.list(Listed::Program);
+        let call = fixture.call();
+        uplink(&fixture);
+        drop(call.finish());
+        fixture.rig.wait_logged("mic: route uplink (1 recorders)");
+        assert_eq!(fixture.mode_writes(), 1);
+        drop(playback);
+        fixture.finish();
+    }
+
+    #[test]
+    fn two_dictations_keep_their_pre_roll_while_the_source_stays_running() {
+        use super::support::pipewire::{node_name, wait_node};
+        use super::support::recording::pace;
+
+        const PLAYBACK_SPAN: Duration = Duration::from_secs(30);
+        const SILENT_FRAMES: u32 = 10;
+        const HELD_START: Duration = FRAME.saturating_mul(SILENT_FRAMES + 1);
+        const PLAY_OPENING: Duration = FRAME.saturating_mul(25);
+        let fixture = Fixture::with_recorder_quantum();
+        let playback = pace(&fixture.rig, &fixture.server, PLAYBACK_SPAN);
+        let doap = fixture.device.pods.doap();
+        for count in 1..=2 {
+            doap.hold_start(true);
+            doap.silent(SILENT_FRAMES);
+            doap.mark(MARK_FRAMES);
+            let listed = fixture.list(CAPTURE);
+            let recorder = fixture.capture();
+            wait_for("dictation mode set", || doap.mode_seen().then_some(()));
+            let mode = Instant::now();
+            if count == 1 {
+                // The extra graph link keeps the source Streaming across the break in Pulse's list.
+                fixture.server.link(&node_name(), playback.recorder.node());
+            }
+            fixture.start(count);
+            pause(HELD_START.saturating_sub(mode.elapsed()));
+            doap.release_start();
+            fixture.streaming(count);
+            pause(PLAY_OPENING);
+            let samples = recorder.finish();
+            assert_eq!(wait_node(&fixture.server)["info"]["state"], "running");
+            fixture.audio.remove_recorder(listed);
+            fixture.stopped(usize::try_from(count).unwrap());
+            assert_marks(&samples, 1, MARK_LENGTH, (0, None));
+        }
+        drop(playback);
+        fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
     fn twenty_dictations_with_music_make_no_sink_call_and_no_uplink_command() {
         let mut fixture = Fixture::new();
         for count in 1..=20 {

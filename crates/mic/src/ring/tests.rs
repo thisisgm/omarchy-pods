@@ -164,6 +164,33 @@ fn a_dictation_placed_as_a_read_takes_its_time_is_not_stood_by_and_opens_on_the_
 }
 
 #[test]
+fn the_previous_runs_tail_does_not_spend_the_new_spans_opening() {
+    let (mut chain, mut reader, resync) = chain(Arc::new(Counters::default())).unwrap();
+    resync.request();
+    let mut heard = [0.0; QUANTUM];
+    reader.read(Duration::ZERO, &mut heard);
+    chain.dictation_run();
+    chain.frames(Duration::ZERO, (0..).zip(tone()).take(1));
+    chain.flush_dictation(Duration::ZERO);
+
+    resync.request();
+    let linked = Duration::from_millis(u64::from(DOAP_LATENCY_MS));
+    reader.read(linked, &mut heard);
+    assert!(
+        !silent(&heard),
+        "the previous span still had a tail to play"
+    );
+
+    let next = linked + PERIOD;
+    restart(&mut chain, next);
+    reader.read(next, &mut heard);
+    assert!(
+        reader.opening.is_some(),
+        "the new span must open on its pre-roll"
+    );
+}
+
+#[test]
 fn a_read_adds_what_the_level_met_to_the_counters_once() {
     /// Past the reader's fade in and before the last unit, which plays on backwards when the ring runs dry.
     const LOUD: [usize; 3] = [400, 401, 700];

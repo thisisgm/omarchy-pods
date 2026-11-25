@@ -78,6 +78,7 @@ impl Edge {
 
 #[cfg(test)]
 mod tests {
+    use pods_proto::doap::STOP_REASON_HOST;
     use pods_proto::ear::EarReport;
     use pods_proto::uplink::UplinkState;
     use pods_samples::MODEL_NUMBER;
@@ -155,6 +156,78 @@ mod tests {
         dictation: 0,
         other: 1,
     };
+    const STREAMING_AT: Duration = Duration::from_millis(ROUTE_WAIT_MS + MODE_SETTLE_MS);
+
+    fn streaming_dictation(recorders: Recorders) -> (Policy, State) {
+        let mut state = linked_auto();
+        let mut policy = Policy::default();
+        let id = OpenId::default();
+        for fact in [
+            Fact::Link(Signal::Up { device: device() }),
+            Fact::Dictation(DictationFact::Armed),
+            Fact::Mic(MicFact::Up(id)),
+            Fact::Mic(MicFact::Recording(id, true)),
+            Fact::Audio(AudioFact::Recorders(recorders)),
+        ] {
+            drop(policy.step(&state, fact, Duration::ZERO));
+        }
+        drop(policy.step(&state, Fact::Tick, Duration::from_millis(ROUTE_WAIT_MS)));
+        let effects = policy.step(&state, Fact::Tick, STREAMING_AT);
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::Start)));
+        let answered = Fact::Dictation(DictationFact::Answered);
+        drop(policy.step(&state, answered, STREAMING_AT));
+        policy.show_mic(&mut state);
+        assert_eq!(state.mic_dictation, MicDictation::Streaming);
+        assert_eq!(policy.edge.route(), Some(Route::Dictation));
+        (policy, state)
+    }
+
+    #[test]
+    fn the_recorder_list_emptying_ends_the_dictation_span() {
+        let empty = || Fact::Audio(AudioFact::Recorders(Recorders::default()));
+        let stop = Effect::Dictation(DictationRequest::Stop {
+            reason: STOP_REASON_HOST,
+        });
+
+        let (mut policy, mut state) = streaming_dictation(Recorders::default());
+        assert!(!policy.step(&state, empty(), STREAMING_AT).contains(&stop));
+        let later = STREAMING_AT + Duration::from_secs(1);
+        assert!(!policy.step(&state, Fact::Tick, later).contains(&stop));
+        policy.show_mic(&mut state);
+        assert_eq!(state.mic_dictation, MicDictation::Streaming);
+        assert_eq!(policy.edge.route(), Some(Route::Dictation));
+
+        let (mut policy, state) = streaming_dictation(DICTATION);
+        let effects = policy.step(&state, empty(), STREAMING_AT);
+        assert!(
+            effects.contains(&stop),
+            "the empty list must send STOP: {effects:?}"
+        );
+        assert_eq!(policy.edge.route(), None);
+        assert!(!policy.mic_recording());
+    }
+
+    #[test]
+    fn a_recorder_after_an_empty_list_opens_a_new_span() {
+        let (mut policy, state) = streaming_dictation(DICTATION);
+        let empty = || Fact::Audio(AudioFact::Recorders(Recorders::default()));
+        drop(policy.step(&state, empty(), STREAMING_AT));
+        drop(policy.step(&state, empty(), STREAMING_AT));
+        let idle = STREAMING_AT + Duration::from_millis(ROUTE_WAIT_MS);
+        drop(policy.step(&state, Fact::Tick, idle));
+        assert!(!policy.mic_recording());
+
+        let list = Fact::Audio(AudioFact::Recorders(CALL));
+        let effects = policy.step(&state, list, idle);
+        let route = Effect::Log("mic: route uplink (1 recorders)".to_owned());
+        assert!(
+            effects.contains(&route),
+            "the next recorder must get a route: {effects:?}"
+        );
+        assert!(effects.contains(&Effect::Uplink(UplinkRequest::Start)));
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+        assert!(policy.mic_recording());
+    }
 
     #[test]
     fn fast_capture_starts_the_uplink_only_while_dictation_is_unarmed() {

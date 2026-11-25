@@ -303,11 +303,11 @@ fn node(kind: Kind) -> Node {
         Kind::Down => Source::Down(CURRENT),
         Kind::Up | Kind::Grace => Source::Up {
             id: CURRENT,
-            recording: false,
+            capture: Capture::Paused,
         },
         Kind::Recording | Kind::RecordingOut => Source::Up {
             id: CURRENT,
-            recording: true,
+            capture: Capture::Recording,
         },
     };
     Node {
@@ -324,7 +324,7 @@ fn kind(node: Node) -> Kind {
         Source::Closed => Kind::Closed,
         Source::Opening(_) => Kind::Opening,
         Source::Down(_) => Kind::Down,
-        Source::Up { recording, .. } => match (recording, node.buds) {
+        Source::Up { .. } => match (node.recording(), node.buds) {
             (true, Buds::Worn) => Kind::Recording,
             (true, Buds::Left(_) | Buds::Out) => Kind::RecordingOut,
             (false, Buds::Left(_)) => Kind::Grace,

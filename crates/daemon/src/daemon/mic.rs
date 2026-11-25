@@ -62,18 +62,37 @@ pub(super) fn offer(requests: &watch::Sender<Request>, node: MicRequest, device:
     }
 }
 
+/// Starts the source adapter and returns its task, requests and current reader.
+pub(super) fn start(
+    inputs: mpsc::Sender<Input>,
+    runtime_dir: PathBuf,
+    tap: Arc<Tap>,
+    cards: watch::Receiver<Option<CardId>>,
+) -> (
+    JoinHandle<()>,
+    watch::Sender<Request>,
+    watch::Receiver<Option<Resync>>,
+) {
+    let (requests, wanted) = watch::channel(Request::CLOSE);
+    let (reader, opened) = watch::channel(None);
+    let source = tokio::spawn(run(wanted, inputs, runtime_dir, tap, reader, cards));
+    (source, requests, opened)
+}
+
 /// Serves the requests until the driver drops their sender, then takes the node off the server.
-pub(super) async fn run(
+async fn run(
     mut requests: watch::Receiver<Request>,
     inputs: mpsc::Sender<Input>,
     runtime_dir: PathBuf,
     tap: Arc<Tap>,
+    reader: watch::Sender<Option<Resync>>,
     mut cards: watch::Receiver<Option<CardId>>,
 ) {
     let (wake, mut wakes) = mpsc::channel(MIC_EVENT_QUEUE);
     let mut adapter = Adapter {
         socket: runtime_dir.join(SOCKET),
         tap,
+        reader,
         wake,
         wanted: None,
         opened: None,
@@ -187,6 +206,7 @@ struct Wanted {
 struct Adapter {
     socket: PathBuf,
     tap: Arc<Tap>,
+    reader: watch::Sender<Option<Resync>>,
     wake: mpsc::Sender<()>,
     /// The open last asked for, with its node's name and description, until a close.
     wanted: Option<Wanted>,
@@ -236,7 +256,7 @@ impl Adapter {
             return Some(self.broken(&REFUSED_CONFIG));
         };
         let events = Arc::new(AtomicU8::new(PAUSED));
-        let watch = watcher(Arc::clone(&events), self.wake.clone(), resync);
+        let watch = watcher(Arc::clone(&events), self.wake.clone(), resync.clone());
         let socket = self.socket.clone();
         let tap = Arc::clone(&self.tap);
         let opened = spawn_blocking(move || {
@@ -254,6 +274,7 @@ impl Adapter {
         match opened {
             Ok(Ok(source)) => {
                 self.misses = 0;
+                self.reader.send_replace(Some(resync));
                 self.opened = Some(Opened {
                     id,
                     source,
@@ -345,6 +366,7 @@ impl Adapter {
         let Some(opened) = self.opened.take() else {
             return;
         };
+        self.reader.send_replace(None);
         let tap = Arc::clone(&self.tap);
         let closed = spawn_blocking(move || tap.close(opened.source));
         if let Err(error) = closed.await {

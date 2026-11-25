@@ -105,6 +105,8 @@ pub(crate) struct Ring {
     written: AtomicU64,
     /// Where the run began: of what stands before it the reader hands out only the fall of audio it was playing.
     floor: AtomicU64,
+    /// Counts runs even when one ends without writing a sample.
+    generation: AtomicU64,
     /// Whether the run is of the dictation stream.
     dictation: AtomicBool,
     finished: AtomicBool,
@@ -122,6 +124,7 @@ impl Ring {
             samples: (0..RING_SAMPLES).map(|_| AtomicU32::new(0)).collect(),
             written: AtomicU64::new(0),
             floor: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
             dictation: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             arrival: Moment::none(),
@@ -179,6 +182,7 @@ impl Ring {
             .store(path == Path::Dictation, Ordering::Release);
         self.floor
             .store(self.written.load(Ordering::Relaxed), Ordering::Release);
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     /// Running out of audio after the stream ended is the normal tail.
@@ -282,6 +286,7 @@ impl Resync {
 struct Aim {
     target: i64,
     run: u64,
+    generation: u64,
 }
 
 /// A run the reader started on behind its target, at the run's first frame.
@@ -315,6 +320,8 @@ pub struct Reader {
     heard: Option<u64>,
     /// The exclusive end of the audio handed out in `heard`, even if the reader has since run dry.
     played: i64,
+    /// The generation still playing when another recorder linked to this reader.
+    previous_span_run: Option<u64>,
     /// What still sounds of the last two ends of audio where the reader stood, and of the audio a jump left.
     ended: Tail,
     earlier: Tail,
@@ -367,6 +374,7 @@ impl Reader {
             fade: 0,
             heard: None,
             played: 0,
+            previous_span_run: None,
             ended: Tail::NONE,
             earlier: Tail::NONE,
             left: Tail::NONE,
@@ -386,6 +394,9 @@ impl Reader {
             (self.ended, self.earlier, self.left) = (Tail::NONE, Tail::NONE, Tail::NONE);
             (self.heard, self.was) = (None, Was::Gone);
             (self.linking, self.opening) = (true, None);
+            self.previous_span_run = self
+                .edge
+                .map(|_| self.ring.generation.load(Ordering::Acquire));
             self.edge = Some(self.ring.link(now));
         }
         // The run is noted before its time is read, so the time is of that run or of one after it.
@@ -404,13 +415,19 @@ impl Reader {
 
     /// Stands the reader for a read of `frames` at `now` by the time of `run`, the run noted before, and gives what it stood by; none while the run has not told its time, or when another started since.
     fn aim(&mut self, run: u64, now: Duration, frames: i64) -> Option<Aim> {
+        let generation = self.ring.generation.load(Ordering::Acquire);
         let target = self.ring.target(now)?;
         // A run that started since `run` was noted may have told the time just read, so the read stands by neither.
-        if self.ring.run() != run {
+        if self.ring.run() != run || self.ring.generation.load(Ordering::Acquire) != generation {
             return None;
         }
-        self.stand(target.saturating_sub(frames), now);
-        Some(Aim { target, run })
+        let aim = Aim {
+            target,
+            run,
+            generation,
+        };
+        self.stand(aim, frames, now);
+        Some(aim)
     }
 
     /// Hands out the frames from where the reader stands, those of the run it stood by and none of a run that started since, and gives the ratio.
@@ -425,6 +442,12 @@ impl Reader {
                 .span_gone_frames
                 .fetch_add(gone, Ordering::Relaxed);
         }
+        if let (Some(previous), Some(aim)) = (self.previous_span_run, aim)
+            && previous != aim.generation
+            && self.heard == Some(aim.run)
+        {
+            self.previous_span_run = None;
+        }
         match (aim, self.opening) {
             (None, _) => 1.0,
             (Some(aim), Some(_)) => opening_ratio(aim.target.saturating_sub(self.next), frames),
@@ -433,12 +456,20 @@ impl Reader {
     }
 
     /// Puts the reader where a read at `now` should open, which is at `place` when it is on its target: a recorder the run opened against starts on the run's first frame when that is behind `place`, and until it is near its target it is not moved.
-    fn stand(&mut self, place: i64, now: Duration) {
+    fn stand(&mut self, aim: Aim, frames: i64, now: Duration) {
+        let Aim {
+            target,
+            run,
+            generation,
+        } = aim;
+        let place = target.saturating_sub(frames);
         let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
-        let run = self.ring.run();
         let first = i64::try_from(run).unwrap_or(i64::MAX);
         // Only a recorder that has heard nothing since it linked still waits for what came before its edge.
-        if self.heard.is_none() && first < place && self.ring.opened_against(self.edge) {
+        let unheard = self
+            .previous_span_run
+            .map_or(self.heard.is_none(), |previous| previous != generation);
+        if unheard && first < place && self.ring.opened_against(self.edge) {
             self.jump(first);
             let behind = scaled(place.saturating_sub(first), 1, u32::from(FRAMES_PER_MS));
             self.counters.opening_ms.store(0, Ordering::Relaxed);
