@@ -257,7 +257,7 @@ A reply carries the request's `id` and `ok`.
   first. Source withdrawal, sleep and exit also stop DoAP. The sink restore
   belongs to 0x58 STOP.
   An uplink recording wants the uplink as `always` does, while a bud is worn.
-  If DoAP is unarmed, a client with `session.fast-capture-start=true` also
+  If DoAP is neither arming nor armed, a client with `session.fast-capture-start=true` also
   wants it before any recorder links. While DoAP is arming, the hint waits for
   the arm outcome. While DoAP is armed (`mic_dictation` reads `armed`, `starting`,
   `streaming` or `stopping`) or a recording is routed to DoAP, the hint is ignored.
