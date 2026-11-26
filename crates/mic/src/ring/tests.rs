@@ -473,3 +473,68 @@ fn steering_brings_a_late_reader_back_within_the_realign_bound() {
     }
     assert!(lag <= bound && now <= deadline, "{lag:?} of lag at {now:?}");
 }
+
+#[test]
+fn a_recorder_that_keeps_pulling_after_stop_gets_the_whole_stalled_dictation() {
+    const STALL_AT: Duration = Duration::from_millis(400);
+    const LATE_PERIOD: Duration = Duration::from_millis(200);
+    const STOP_AFTER_STALL: Duration = Duration::from_secs(1);
+    const RECORDER_TAIL: Duration = Duration::from_millis(100);
+    const SAMPLE_STEP: f32 = 0.000_001;
+    let first = Duration::from_millis(u64::from(DOAP_LATENCY_MS)) + PERIOD;
+    let stalled = first + STALL_AT;
+    let stop = stalled + LATE_PERIOD + STOP_AFTER_STALL;
+    let frames_at = |now| usize::try_from(scaled(ns_of(now), RATE_HZ, NS_PER_SECOND)).unwrap();
+    let samples: Vec<_> = (1_u16..=u16::MAX)
+        .cycle()
+        .take(frames_at(stop))
+        .map(|frame| f32::from(frame) * SAMPLE_STEP)
+        .collect();
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
+    ring.start_run(Path::Dictation);
+    ring.publish(0);
+    resync.request();
+
+    let mut tape = Vec::new();
+    let mut now = first;
+    let mut written = 0;
+    while now <= stop {
+        let end = frames_at(now);
+        ring.write(samples[written..end].iter().copied());
+        written = end;
+        let mut heard = [0.0; QUANTUM];
+        reader.read(now, &mut heard);
+        tape.extend(heard);
+        let interval = if now == stalled { LATE_PERIOD } else { PERIOD };
+        now = now.saturating_add(interval);
+    }
+
+    assert_eq!(written, samples.len());
+    let missing_at_unlink = samples.len().checked_sub(tape.len()).unwrap();
+    let tail = Duration::from_millis(u64::from(DOAP_LATENCY_MS))
+        .saturating_add(LATE_PERIOD)
+        .saturating_sub(PERIOD);
+    assert_eq!(missing_at_unlink, frames_at(tail));
+    assert!(missing_at_unlink > frames_at(RECORDER_TAIL));
+
+    ring.finish();
+    while !reader.read_all() && tape.len() < samples.len() {
+        let mut heard = [0.0; QUANTUM];
+        reader.read(now, &mut heard);
+        tape.extend(heard);
+        now = now.saturating_add(PERIOD);
+    }
+    assert!(reader.read_all());
+    let mut expected = samples;
+    for (sample, fade) in expected.iter_mut().zip(0_u16..=u16::MAX) {
+        *sample *= fade_in(fade);
+    }
+    level::apply(&mut expected);
+    assert!(
+        tape[..expected.len()]
+            .iter()
+            .zip(expected)
+            .all(|(heard, expected)| heard.to_bits() == expected.to_bits())
+    );
+}
