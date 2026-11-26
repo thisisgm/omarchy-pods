@@ -17,7 +17,9 @@ mod tests {
     use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, opening, ready_to_read, status};
     use super::support::logind::INHIBIT;
     use super::support::pipewire::{record, wait_no_node};
-    use super::support::recording::{assert_sounds, first_sound, frames, longest_zero_run, marked};
+    use super::support::recording::{
+        assert_sounds, first_sound, frames, longest_zero_run, marked, span_at,
+    };
     use super::support::sleep::{WATCHING, inhibitor_closed, logged, sleep, wake};
     use super::support::uplink::{assert_no_sink_call, lose};
     use super::support::{pause, wait_for, wait_within};
@@ -53,6 +55,44 @@ mod tests {
         pause(AFTER_SETTLE.saturating_sub(mode_at.elapsed()));
     }
 
+    struct RecordedStep {
+        first: usize,
+        index: usize,
+        before: i16,
+        after: i16,
+    }
+
+    impl RecordedStep {
+        fn largest(samples: &[i16], first: usize, skip: usize) -> Self {
+            let start = first.saturating_add(skip);
+            let (offset, &[before, after]) = samples[start..]
+                .array_windows::<2>()
+                .enumerate()
+                .max_by_key(|(_, [before, after])| after.abs_diff(*before))
+                .unwrap();
+            Self {
+                first,
+                index: start.saturating_add(offset).saturating_add(1),
+                before,
+                after,
+            }
+        }
+
+        fn size(&self) -> u16 {
+            self.after.abs_diff(self.before)
+        }
+
+        fn describe(&self, rate: u32) -> String {
+            let recording_offset = span_at(u64::try_from(self.index).unwrap(), rate);
+            let after_first = self.index.saturating_sub(self.first);
+            let sound_offset = span_at(u64::try_from(after_first).unwrap(), rate);
+            format!(
+                "index {} at {recording_offset:?} from WAV start, {sound_offset:?} after first sound: {} -> {}",
+                self.index, self.before, self.after
+            )
+        }
+    }
+
     #[test]
     fn history_recorder_stays_click_free_across_opening_catchup_exit() {
         use std::f64::consts::PI;
@@ -64,7 +104,7 @@ mod tests {
         use pods_samples::opus::{TONE_DBFS, TONE_HZ};
 
         use super::support::pipewire::node_name;
-        use super::support::recording::{counts_after_leaving, frames_at as at_rate, largest_step};
+        use super::support::recording::{counts_after_leaving, frames_at as at_rate};
 
         const SPEECH: Duration = Duration::from_secs(3);
         const DECODER_SETTLE: Duration = FRAME.saturating_mul(2);
@@ -116,16 +156,20 @@ mod tests {
                 first + at_rate(catch_up + AUDIO, rate) <= last,
                 "{name} lacks {AUDIO:?} of tone after catch-up at {caught_up} ms"
             );
-            largest_step(&samples[first + at_rate(DECODER_SETTLE, rate)..])
+            RecordedStep::largest(samples, first, at_rate(DECODER_SETTLE, rate))
         });
         let peak = 10_f64.powf(f64::from(TONE_DBFS + MIC_GAIN_DB) / 20.0) * f64::from(i16::MAX);
         let fastest_tone = f64::from(TONE_HZ) * (1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION);
         let bound = 2.0 * (PI * fastest_tone / f64::from(rate)).sin() * peak * STEP_TOLERANCE;
         // A missed quantum in one recorder can also make a large step.
         assert!(
-            f64::from(history_step.min(witness_step)) <= bound,
-            "history step {history_step} and witness step {witness_step} exceed {bound:.1} (opening {behind} ms behind, caught up after {caught_up} ms, underruns {underruns}, largest DoAP gap {:?})",
-            fixture.device.pods.doap().largest_gap()
+            f64::from(history_step.size().min(witness_step.size())) <= bound,
+            "history step {} and witness step {} exceed {bound:.1} (opening {behind} ms behind, caught up after {caught_up} ms, underruns {underruns}, largest DoAP gap {:?})\nhistory: {}\nwitness: {}",
+            history_step.size(),
+            witness_step.size(),
+            fixture.device.pods.doap().largest_gap(),
+            history_step.describe(rate),
+            witness_step.describe(rate)
         );
         fixture.no_uplink();
         fixture.finish();
