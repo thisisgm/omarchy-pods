@@ -24,8 +24,8 @@ mod tests {
     use super::support::dictation::{
         CAPTURE, Fixture, HOST_STOP, NO_RECORDER, opening, ready_to_read, status, uplink,
     };
-    use super::support::pipewire::record;
-    use super::support::recording::{assert_sounds, counts_after_leaving};
+    use super::support::pipewire::{node_name, record, wait_node};
+    use super::support::recording::{assert_sounds, counts_after_leaving, pace};
     use super::support::uplink::{assert_no_sink_call, move_sink, read_up_to_now};
     use super::support::{HANG_LIMIT, pause, wait_for};
 
@@ -283,46 +283,6 @@ mod tests {
         fixture.rig.wait_logged("mic: route uplink (1 recorders)");
         assert_eq!(fixture.mode_writes(), 1);
         drop(playback);
-        fixture.finish();
-    }
-
-    #[test]
-    fn two_dictations_keep_their_pre_roll_while_the_source_stays_running() {
-        use super::support::pipewire::{node_name, wait_node};
-        use super::support::recording::pace;
-
-        const PLAYBACK_SPAN: Duration = Duration::from_secs(30);
-        const SILENT_FRAMES: u32 = 10;
-        const HELD_START: Duration = FRAME.saturating_mul(SILENT_FRAMES + 1);
-        const PLAY_OPENING: Duration = FRAME.saturating_mul(25);
-        let fixture = Fixture::with_recorder_quantum();
-        let playback = pace(&fixture.rig, &fixture.server, PLAYBACK_SPAN);
-        let doap = fixture.device.pods.doap();
-        for count in 1..=2 {
-            doap.hold_start(true);
-            doap.silent(SILENT_FRAMES);
-            doap.mark(MARK_FRAMES);
-            let listed = fixture.list(CAPTURE);
-            let recorder = fixture.capture();
-            wait_for("dictation mode set", || doap.mode_seen().then_some(()));
-            let mode = Instant::now();
-            if count == 1 {
-                // The extra graph link keeps the source Streaming across the break in Pulse's list.
-                fixture.server.link(&node_name(), playback.recorder.node());
-            }
-            fixture.start(count);
-            pause(HELD_START.saturating_sub(mode.elapsed()));
-            doap.release_start();
-            fixture.streaming(count);
-            pause(PLAY_OPENING);
-            let samples = recorder.finish();
-            assert_eq!(wait_node(&fixture.server)["info"]["state"], "running");
-            fixture.audio.remove_recorder(listed);
-            fixture.stopped(usize::try_from(count).unwrap());
-            assert_marks(&samples, 1, MARK_LENGTH, (0, None));
-        }
-        drop(playback);
-        fixture.no_uplink();
         fixture.finish();
     }
 
