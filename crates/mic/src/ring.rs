@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::conceal::{FADE_FRAMES, Tail, UNIT_FRAMES, fade_in};
 use super::dictation::{FRAME_MS, PREROLL_STAGE_FRAMES};
-use super::{Counters, DOAP_LATENCY_MS, FRAMES_PER_MS, NODE_LATENCY_MS, RATE_HZ, level};
+use super::{Counters, DOAP_LATENCY_MS, FRAMES_PER_MS, NODE_LATENCY_MS, NS_PER_MS, RATE_HZ, level};
 
 /// A power of two, 2 s at 64 kHz and more at 48: the frames an opening may keep, and twice the latency a steady reader stands behind the writer.
 const RING_SAMPLES: u64 = 131_072;
@@ -33,7 +33,6 @@ pub const OPENING_MAX_PPM: f64 = 100_000.0;
 const STEER_SMOOTH_MS: u16 = 2000;
 const PARTS_PER_MILLION: f64 = 1e6;
 const NS_PER_SECOND: u32 = 1_000_000_000;
-const NS_PER_MS: i64 = 1_000_000;
 
 /// `count` times `by` over `over`, rounded down: frames from ns and back at a rate that need not divide a second.
 fn scaled(count: i64, by: u32, over: u32) -> i64 {

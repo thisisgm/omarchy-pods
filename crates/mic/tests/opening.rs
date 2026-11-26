@@ -514,10 +514,11 @@ mod tests {
 
     #[test]
     fn no_realign_happens_inside_an_opening() {
+        const KEPT_FRAMES: u32 = 15;
         // Five seconds: the reader is behind by far more than a realign allows for most of them, and a jump to the target would leave out what the tape is asserted to hold.
         let take = opened(0, LEAD_MS, 260);
-        // At the 200 ms lead, lag is 15 kept frames minus the 65 ms hold and one 20 ms read.
-        let expected = LEAD_MS + FRAME_MS - DOAP_LATENCY_MS % FRAME_MS;
+        // At the 200 ms lead, lag is 15 kept frames minus the latency hold and one 20 ms read.
+        let expected = KEPT_FRAMES * FRAME_MS - DOAP_LATENCY_MS - FRAME_MS;
         assert_eq!(take.opening()[0], expected);
         assert_eq!(take.allocations, 0);
     }
@@ -561,8 +562,8 @@ mod tests {
     }
 
     #[test]
-    fn the_opening_catches_up_200_ms_at_ten_percent_within_exit_bound() {
-        const OPENINGS: [(u32, u32); 3] = [(130, 145), (195, 200), (250, 265)];
+    fn the_opening_catches_up_at_ten_percent_within_exit_bound() {
+        const OPENINGS: [(u32, u32); 3] = [(130, 125), (195, 180), (250, 245)];
         const READS: usize = 400;
         // Allow one read at each boundary because the opening and exit are observed on quantum boundaries.
         const SLACK_QUANTA: u32 = 2;
@@ -692,7 +693,8 @@ mod tests {
 
     #[test]
     fn dictation_holds_doap_latency_while_uplink_holds_uplink_latency() {
-        const _: () = assert!(DOAP_LATENCY_MS == 65 && NODE_LATENCY_MS == 85);
+        // Dictation holds the same 85 ms already advertised by the node.
+        const _: () = assert!(DOAP_LATENCY_MS == NODE_LATENCY_MS && NODE_LATENCY_MS == 85);
         const STEADY_READS: usize = 3;
         const UPLINK_PACKETS: u32 = 10;
         let mut take = Take::new(0, None);
