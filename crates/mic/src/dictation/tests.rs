@@ -3,7 +3,7 @@
 use std::iter;
 use std::sync::Arc;
 
-use pods_samples::opus::tone;
+use pods_samples::opus::{silence, tone};
 
 use super::*;
 use crate::conceal::UNIT_FRAMES;
@@ -166,4 +166,78 @@ fn a_staged_frame_that_came_too_long_is_still_refused_when_placed() {
         counted.map(|counter| counter.load(Ordering::Relaxed)),
         [1, 1]
     );
+}
+
+/// A dictation chain with the recorder linked at zero, so every staged frame is inside the opening's reach.
+fn linked_stage() -> Chain {
+    let (mut chain, mut reader, resync) = chain(Arc::default()).unwrap();
+    chain.dictation_run();
+    resync.request();
+    reader.read(Duration::ZERO, &mut [0.0; FRAME]);
+    chain
+}
+
+#[test]
+fn an_expired_stage_is_placed_only_by_a_frame_it_takes() {
+    let mut chain = linked_stage();
+    let frames: Vec<&[u8]> = tone().take(4).collect();
+    let just_before = PREROLL_STAGE_TIME.saturating_sub(Duration::from_millis(1));
+    chain.frames(Duration::ZERO, [(0, frames[0]), (1, frames[1])].into_iter());
+    chain.frames(just_before, [(2, frames[2]), (3, frames[3])].into_iter());
+    assert!(chain.dictation.stage.is_some(), "placed before the bound");
+    // A repeat takes nothing, so it does not place the stage even past the bound.
+    chain.frames(
+        PREROLL_STAGE_TIME,
+        [(2, frames[2]), (3, frames[3])].into_iter(),
+    );
+    assert!(chain.dictation.stage.is_some(), "placed by a repeat");
+    chain.frames(
+        PREROLL_STAGE_TIME,
+        [(4, frames[0]), (5, frames[1])].into_iter(),
+    );
+    assert!(chain.dictation.stage.is_none(), "not placed at the bound");
+}
+
+#[test]
+fn a_counter_jump_in_the_stage_keeps_the_opening_clock() {
+    const JUMP: u16 = 100;
+    let mut chain = linked_stage();
+    let frames: Vec<&[u8]> = tone().take(6).collect();
+    let just_before = PREROLL_STAGE_TIME.saturating_sub(Duration::from_millis(1));
+    chain.frames(Duration::ZERO, [(0, frames[0]), (1, frames[1])].into_iter());
+    chain.frames(
+        just_before,
+        [(JUMP, frames[2]), (JUMP + 1, frames[3])].into_iter(),
+    );
+    assert!(chain.dictation.stage.is_some(), "placed by the jump");
+    // The bound measures the whole opening, so the pair at the opening's bound places it, not one at the jump's.
+    chain.frames(
+        PREROLL_STAGE_TIME,
+        [(JUMP + 2, frames[4]), (JUMP + 3, frames[5])].into_iter(),
+    );
+    assert!(
+        chain.dictation.stage.is_none(),
+        "the jump restarted the clock"
+    );
+}
+
+#[test]
+fn a_stage_placed_by_time_trims_its_last_frame_as_burst() {
+    const PAIRS: u16 = 5;
+    let mut chain = linked_stage();
+    let from = chain.ring.end();
+    for pair in 0..PAIRS {
+        let at = if pair.saturating_add(1) == PAIRS {
+            PREROLL_STAGE_TIME
+        } else {
+            Duration::ZERO
+        };
+        let counter = pair.saturating_mul(2);
+        let pair = [(counter, silence()), (counter.saturating_add(1), silence())];
+        chain.frames(at, pair.into_iter());
+    }
+    assert!(chain.dictation.stage.is_none());
+    // No lone frame closed this stage, so every frame of it is burst and only the collar is written.
+    let written = usize::try_from(chain.ring.end().saturating_sub(from)).unwrap();
+    assert_eq!(written, SILENCE_COLLAR_FRAMES * FRAME);
 }
