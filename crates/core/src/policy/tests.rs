@@ -18,7 +18,7 @@ use super::sleep::{RESUME_SETTLE_MS, Suspend};
 use super::{
     Effect, Era, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge, UplinkRequest,
 };
-use crate::link::Signal;
+use crate::link::{SavedKeys, Signal};
 use crate::prefs::MicPref;
 use crate::state::{EarDetectionBehavior, LidState, Microphone, State};
 
@@ -328,10 +328,13 @@ fn the_notices_and_the_latches_are_the_same_with_notices_off() {
 }
 
 /// The sample pair the pods answer with.
-pub(super) fn sample_keys() -> ProximityKeys {
-    ProximityKeys {
-        identity: Key::from_bytes(IDENTITY_KEY),
-        payload: Key::from_bytes(PAYLOAD_KEY),
+pub(super) fn sample_keys() -> SavedKeys {
+    SavedKeys {
+        keys: ProximityKeys {
+            identity: Key::from_bytes(IDENTITY_KEY),
+            payload: Key::from_bytes(PAYLOAD_KEY),
+        },
+        device: Some(device()),
     }
 }
 

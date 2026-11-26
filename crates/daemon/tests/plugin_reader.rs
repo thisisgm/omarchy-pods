@@ -374,7 +374,7 @@ mod tests {
             "Model.js: advertHint does not compare with ADVERT_UNAVAILABLE"
         );
         let mut rig = Rig::new();
-        rig.session().store_sample_keys();
+        rig.session().store_sample_keys(None);
         rig.start();
         rig.wait_status(&format!("advert_intake {word}"), |status| {
             status["advert_intake"] == word

@@ -121,14 +121,14 @@ impl Monitor {
         if !self.wanted {
             return None;
         }
+        let was_observing = self.accepted || self.activated;
         self.stop_calls();
         self.refusals = 0;
-        self.accepted = false;
         if self.managers.is_empty() {
             return Some(MonitorFact::Unavailable);
         }
         self.attempt(connection, self.managers.clone());
-        None
+        was_observing.then_some(MonitorFact::Interrupted)
     }
 
     /// bluetoothd or the connection to it is gone, so nothing it held stands; `unavailable` while wanted if it offered monitors.
@@ -136,7 +136,6 @@ impl Monitor {
         let offered = !self.managers.is_empty();
         self.stop_calls();
         self.managers.clear();
-        self.accepted = false;
         (self.wanted && offered).then_some(MonitorFact::Unavailable)
     }
 
@@ -337,6 +336,8 @@ impl Monitor {
         self.retry = None;
         self.refused.clear();
         self.reported.clear();
+        self.accepted = false;
+        self.activated = false;
     }
 }
 

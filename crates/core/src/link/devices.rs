@@ -27,13 +27,15 @@ impl DeviceAction {
 }
 
 impl Machine {
-    /// A wear edge asks BlueZ to connect the tracked device without a client ticket.
+    /// Connects only if the tracked device supplied the keys that resolved the advert.
     #[must_use]
-    pub fn connect_when_worn(&self, state: &mut State) -> Option<(BdAddr, Call)> {
+    pub fn connect_when_worn(&self, state: &mut State, device: BdAddr) -> Option<(BdAddr, Call)> {
         if self.held || matches!(self.phase, Phase::Up { .. } | Phase::Stopped) {
             return None;
         }
-        let device = self.target()?;
+        if self.target() != Some(device) {
+            return None;
+        }
         Some((device, self.device_call(state, DeviceAction::Connect)))
     }
 

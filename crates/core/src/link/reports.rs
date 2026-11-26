@@ -1,6 +1,8 @@
 //! Packets to state: each report the pods send lands in the fields its row names, one report per packet.
 
+use pods_proto::addr::BdAddr;
 use pods_proto::control::{ControlCommand, ControlId};
+use pods_proto::keys::ProximityKeys;
 use pods_proto::model::Model;
 use pods_proto::packet::{Incoming, classify};
 use pods_proto::packets::REQUEST_PROXIMITY_KEYS;
@@ -10,6 +12,14 @@ use std::time::Duration;
 use super::commands::Setting;
 use super::{Action, Machine, Phase, Signal};
 use crate::state::State;
+
+/// Proximity keys and the BlueZ device that supplied them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedKeys {
+    pub keys: ProximityKeys,
+    /// Absent in key files written before the device was recorded.
+    pub device: Option<BdAddr>,
+}
 
 impl Machine {
     /// Applies the report in one packet to `state`; a control report held back by an earlier write is dropped.
@@ -51,7 +61,16 @@ impl Machine {
                 // As the C++ daemon asks, with no wait and no retry: pods that never answer cost nothing.
                 vec![Action::Send(REQUEST_PROXIMITY_KEYS.to_vec())]
             }
-            Incoming::Keys(keys) => vec![Action::Signal(Signal::Keys(keys))],
+            Incoming::Keys(keys) => self
+                .active
+                .map(|device| {
+                    Action::Signal(Signal::Keys(SavedKeys {
+                        keys,
+                        device: Some(device),
+                    }))
+                })
+                .into_iter()
+                .collect(),
             Incoming::UplinkState(uplink) => vec![Action::Signal(Signal::Uplink(uplink))],
             Incoming::Awareness(awareness) => vec![Action::Signal(Signal::Awareness(awareness))],
             Incoming::Uplink(_) | Incoming::Other { .. } | Incoming::Foreign => Vec::new(),
