@@ -561,11 +561,12 @@ mod tests {
     #[test]
     fn a_fill_leaves_the_readers_distance_and_the_rate_it_asked_for() {
         let (_chain, mut held, _resync) = fed();
-        let mut out = vec![0.0; usize::from(SAMPLES_PER_UNIT)];
+        let capacity = usize::from(SAMPLES_PER_UNIT);
+        let mut out = vec![0.0; capacity];
         let mut moved = 0;
         // Reads one after the other, with no time between them, put the reader ahead of its target.
         for _ in 0..PACKETS {
-            let ratio = held.fill(&mut out);
+            let ratio = held.fill(&mut out, capacity);
             let ahead_ms = held.seen.ahead_ms.load(Ordering::Relaxed);
             let rate_ppm = held.seen.rate_ppm.load(Ordering::Relaxed);
             assert_eq!(ahead_ms, held.reader.ahead_ms().to_bits());
@@ -580,13 +581,14 @@ mod tests {
         let (_chain, mut held, resync) = fed();
         let (lost, gone) = mpsc::channel();
         let mut events = on_event(resync, lost);
-        let mut out = vec![0.0; usize::from(SAMPLES_PER_UNIT)];
+        let capacity = usize::from(SAMPLES_PER_UNIT);
+        let mut out = vec![0.0; capacity];
         // The second read, with no time since the first, leaves the reader one read ahead.
-        held.fill(&mut out);
-        held.fill(&mut out);
+        held.fill(&mut out, capacity);
+        held.fill(&mut out, capacity);
         assert_ne!(held.reader.ahead_ms().to_bits(), 0.0_f64.to_bits());
         events(Event::Streaming);
-        held.fill(&mut out);
+        held.fill(&mut out, capacity);
         assert_eq!(held.reader.ahead_ms().to_bits(), 0.0_f64.to_bits());
         events(Event::Paused);
         assert!(gone.try_recv().is_err());

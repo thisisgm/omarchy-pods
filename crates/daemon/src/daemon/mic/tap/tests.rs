@@ -235,7 +235,7 @@ fn the_feed_never_allocates() {
     let mut out = [0.0_f32; FRAMES];
     let reading = allocation_counter::measure(|| {
         for _ in 0..READS {
-            black_box(feed.fill(&mut out));
+            black_box(feed.fill(&mut out, FRAMES));
         }
     });
     assert_eq!(reading.count_total, 0);
