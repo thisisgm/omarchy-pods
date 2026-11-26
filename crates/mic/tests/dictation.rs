@@ -27,8 +27,8 @@ mod tests {
 
     use super::support::{
         FADE, FIRST, HELD, LEVELS, LINES, PACKET_FRAMES, QUANTUM, Rig, TONE_SLACK_DB,
-        TONE_SLACK_HZ, Twin, after, assert_same, assert_shaped, frame_frames, frames_in,
-        largest_step, ms, period, reads, run_start, silent, unsteered,
+        TONE_SLACK_HZ, Twin, after, assert_same, assert_shaped, find, frame_frames, frames_in,
+        largest_step, levelled, ms, period, reads, run_start, silent, unsteered,
     };
 
     /// A frame of the tone past any a run here lands, so its bytes are not those a counter before it carried.
@@ -295,6 +295,41 @@ mod tests {
     #[test]
     fn a_sustained_step_just_past_the_cover_is_re_anchored() {
         assert_short_silence_after_step(DOAP_LATENCY_MS - FRAME_MS + 5, &[0]);
+    }
+
+    #[test]
+    fn a_sustained_step_does_not_replay_dictation() {
+        const FIRST_LATE: u32 = 10;
+        const STEP_MS: u32 = 60;
+        const READS: u32 = 20;
+        let mut stream = Stream::new();
+        stream.resync.request();
+        let from = at(5);
+        let tape = stream.play_at(&reads(from, READS), |step| {
+            if step < FIRST_LATE {
+                at(step)
+            } else {
+                at(step) + ms(STEP_MS)
+            }
+        });
+        assert_eq!(counted(&stream.counters), [0; 4]);
+
+        let decoded = levelled(&stream.twin.decoded);
+        let mut played = base_of(from);
+        let (quanta, remainder) = tape.as_chunks::<QUANTUM>();
+        assert_eq!(remainder, []);
+        for (read, quantum) in quanta.iter().enumerate() {
+            // Past any fade, the decoded tone gives each read a unique location in the source.
+            let steady = &quantum[FADE..];
+            let source = find(&decoded, steady).expect("read must match the decoded tone");
+            assert!(find(&decoded[source + 1..], steady).is_none());
+            let start = source - FADE;
+            assert!(
+                start >= played,
+                "read {read} replayed dictation: source sample {start}, already played up to {played}"
+            );
+            played = start + QUANTUM;
+        }
     }
 
     #[test]
