@@ -684,6 +684,51 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_bearer_before_the_doap_start_takes_the_uplink() {
+        let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
+        state.audio_server = AudioServer::Up;
+        let start = Effect::Uplink(UplinkRequest::Start);
+        let profile = Fact::Audio(AudioFact::Headset(false));
+        drop(policy.step(&state, profile, Duration::ZERO));
+        let recorders = Fact::Audio(AudioFact::Recorders(DICTATION));
+        let effects = policy.step(&state, recorders, Duration::ZERO);
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::Mode)));
+        assert!(!effects.contains(&Effect::Dictation(DictationRequest::Start)));
+        assert!(policy.dictation_session_open());
+
+        let lost = Fact::Dictation(DictationFact::BearerLost);
+        let effects = policy.step(&state, lost, Duration::ZERO);
+        let uplink = effects
+            .iter()
+            .position(|effect| *effect == start)
+            .expect("BearerLost before the DoAP START must still send 0x58 START");
+        let mode_off = Effect::Dictation(DictationRequest::ModeOff);
+        assert!(effects[..uplink].contains(&mode_off));
+        assert!(!policy.dictation_session_open());
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+    }
+
+    #[test]
+    fn a_lost_bearer_outside_a_dictation_route_is_no_fallback() {
+        let fallback = Effect::Log("dictation: this recording takes the uplink".to_owned());
+        let (mut policy, state) = waiting_for_recorders(CALL, Route::Uplink);
+        assert_eq!(policy.edge.route(), None);
+        let lost = Fact::Dictation(DictationFact::BearerLost);
+        let effects = policy.step(&state, lost, Duration::ZERO);
+        assert!(!effects.contains(&fallback));
+        assert_eq!(policy.edge.route(), None);
+
+        drop(policy.step(&state, Fact::Tick, Duration::from_millis(ROUTE_WAIT_MS)));
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+        let at = Duration::from_millis(ROUTE_WAIT_MS);
+        drop(policy.step(&state, Fact::Dictation(DictationFact::Armed), at));
+        let lost = Fact::Dictation(DictationFact::BearerLost);
+        let effects = policy.step(&state, lost, at);
+        assert!(!effects.contains(&fallback));
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+    }
+
+    #[test]
     fn a_headset_profile_prevents_a_due_doap_start() {
         let start = Effect::Dictation(DictationRequest::Start);
         for headset in [false, true] {
