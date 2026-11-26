@@ -48,7 +48,7 @@ impl<'server> Recorder<'server> {
         Self::start(server, target, file, ("test-recorder", HISTORY.1))
     }
 
-    /// Records the stock player at the history rate beside both daemon recorders.
+    /// Records the stock player at the history rate under its own node name, so links by name stay unique.
     pub fn control(server: &'server Server, target: &str, file: &Path) -> Self {
         Self::start(server, target, file, ("stock-player-control", HISTORY.1))
     }

@@ -139,6 +139,8 @@ mod tests {
         };
 
         const SPEECH: Duration = Duration::from_secs(3);
+        // Setup and close waits of a slow runner can pass HANG_LIMIT, and a tone that ran out there would blame the rig for its own length.
+        const CONTROL_COVER: Duration = HANG_LIMIT.saturating_mul(4);
         const DECODER_SETTLE: Duration = FRAME.saturating_mul(2);
         const PARTS_PER_MILLION: f64 = 1_000_000.0;
         // Allow for the decoder and resampler's deviation from a pure sine.
@@ -150,7 +152,7 @@ mod tests {
         let witness = Recorder::program(&fixture.server, &node, &dir.join("witness.wav"));
         let rate = history.rate();
         let peak = 10_f64.powf(f64::from(TONE_DBFS + MIC_GAIN_DB) / 20.0) * f64::from(i16::MAX);
-        let tone = control_tone(at_rate(SPEECH + HANG_LIMIT, rate), rate, TONE_HZ, peak);
+        let tone = control_tone(at_rate(SPEECH + CONTROL_COVER, rate), rate, TONE_HZ, peak);
         let Pace {
             mut player,
             recorder: stock_recorder,
