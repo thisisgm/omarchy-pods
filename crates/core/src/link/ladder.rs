@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::{Action, Machine, Phase, after};
+use super::{Action, Machine, Phase, after, raise};
 use crate::state::State;
 
 /// No C++ counterpart: the C++ daemon never times out a handshake step, and the acknowledgement was measured at about 10 ms.
@@ -34,6 +34,20 @@ pub const ABSENT_GRACE_MS: u64 = 7750;
 
 /// Paired AirPods the machine remembers; once full, a new address is not kept.
 pub const KNOWN_MAX: usize = 16;
+
+/// The wait after failed held attempt `attempt`, `None` once the held ladder is spent.
+pub(super) fn held_delay(attempt: u32) -> Option<u64> {
+    let index = usize::try_from(attempt).ok()?.checked_sub(1)?;
+    HELD_DELAYS_MS.get(index).copied()
+}
+
+/// The held ladder is spent or a parked attempt failed: count the failure and park.
+pub(super) fn parked(state: &mut State, now: Duration) -> Phase {
+    raise(&mut state.counters.reconnect_failures);
+    Phase::Parked {
+        until: after(now, PARKED_RETRY_MS),
+    }
+}
 
 impl Machine {
     /// A waiting ladder dials now and goes on from its attempt, a grace starts again, and BlueZ is read again; a stopped machine does nothing.
