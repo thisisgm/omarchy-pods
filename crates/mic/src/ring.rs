@@ -33,6 +33,7 @@ pub const OPENING_MAX_PPM: f64 = 100_000.0;
 const STEER_SMOOTH_MS: u16 = 2000;
 const PARTS_PER_MILLION: f64 = 1e6;
 const NS_PER_SECOND: u32 = 1_000_000_000;
+const NO_RESYNC: u64 = u64::MAX;
 
 /// `count` times `by` over `over`, rounded down: frames from ns and back at a rate that need not divide a second.
 fn scaled(count: i64, by: u32, over: u32) -> i64 {
@@ -107,6 +108,8 @@ pub(crate) struct Ring {
     floor: AtomicU64,
     /// Counts runs even when one ends without writing a sample.
     generation: AtomicU64,
+    /// The generation at the first pending resync request, or `NO_RESYNC`.
+    resync_from: AtomicU64,
     /// Whether the run is of the dictation stream.
     dictation: AtomicBool,
     finished: AtomicBool,
@@ -125,6 +128,7 @@ impl Ring {
             written: AtomicU64::new(0),
             floor: AtomicU64::new(0),
             generation: AtomicU64::new(0),
+            resync_from: AtomicU64::new(NO_RESYNC),
             dictation: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             arrival: Moment::none(),
@@ -272,12 +276,15 @@ impl Ring {
 /// Asks the reader to drop where it stands and start at its target, as for a recorder that just linked.
 #[derive(Debug, Clone)]
 pub struct Resync {
-    asked: Arc<AtomicBool>,
+    ring: Arc<Ring>,
 }
 
 impl Resync {
     pub fn request(&self) {
-        self.asked.store(true, Ordering::Release);
+        let generation = self.ring.generation.load(Ordering::Acquire);
+        self.ring
+            .resync_from
+            .fetch_min(generation, Ordering::Release);
     }
 }
 
@@ -310,7 +317,6 @@ enum Was {
 pub struct Reader {
     ring: Arc<Ring>,
     counters: Arc<Counters>,
-    resync: Resync,
     /// The frame the next read opens on; it moves by what is read, whatever was handed out.
     next: i64,
     was: Was,
@@ -360,15 +366,14 @@ fn opening_ratio(behind: i64, frames: i64) -> f64 {
 }
 
 impl Reader {
-    /// The reader, and the one handle to its flag.
+    /// The reader and its resync handle.
     pub(crate) fn new(ring: Arc<Ring>, counters: Arc<Counters>) -> (Self, Resync) {
         let resync = Resync {
-            asked: Arc::default(),
+            ring: Arc::clone(&ring),
         };
         let reader = Self {
             ring,
             counters,
-            resync: resync.clone(),
             next: 0,
             was: Was::Gone,
             fade: 0,
@@ -389,14 +394,13 @@ impl Reader {
     /// Fills `out` with the frames due at `now`, at the level a recorder gets, and returns the rate ratio the consumer should run at.
     pub fn read(&mut self, now: Duration, out: &mut [f32]) -> f64 {
         let frames = i64::try_from(out.len()).unwrap_or(i64::MAX);
-        if self.resync.asked.swap(false, Ordering::AcqRel) {
+        let previous = self.ring.resync_from.swap(NO_RESYNC, Ordering::AcqRel);
+        if previous != NO_RESYNC {
             // A recorder that links hears nothing from before it, whether or not a packet of the run has landed.
             (self.ended, self.earlier, self.left) = (Tail::NONE, Tail::NONE, Tail::NONE);
             (self.heard, self.was) = (None, Was::Gone);
             (self.linking, self.opening) = (true, None);
-            self.previous_span_run = self
-                .edge
-                .map(|_| self.ring.generation.load(Ordering::Acquire));
+            self.previous_span_run = self.edge.map(|_| previous);
             self.edge = Some(self.ring.link(now));
         }
         // The run is noted before its time is read, so the time is of that run or of one after it.
