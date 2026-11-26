@@ -259,7 +259,7 @@ impl Policy {
             effects.push(Effect::Log(line));
         }
         // An uplink answer unblocks DoAP, and a spent DoAP session changes uplink demand on the same turn.
-        self.mic.set_route(route, &self.dictation);
+        self.mic.set_route(route, &self.dictation, state);
         self.mic.observe_uplink(state, fact, now, &mut effects);
         let bearer_lost = matches!(fact, Fact::Dictation(DictationFact::BearerLost));
         let doap_route = route
@@ -274,9 +274,9 @@ impl Policy {
             ));
         }
         effects.extend(arm);
-        self.mic.set_route(self.edge.route(), &self.dictation);
         self.mic
-            .follow_uplink(state, now, &self.dictation, &mut effects);
+            .set_route(self.edge.route(), &self.dictation, state);
+        self.mic.follow_uplink(state, now, &mut effects);
         if self.dictation.active() {
             effects.retain(|effect| *effect != Effect::Exited);
         }
