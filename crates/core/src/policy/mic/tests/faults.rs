@@ -229,7 +229,7 @@ fn auto_clears_an_unasked_stop_when_capture_ends_with_the_card_profile_unread() 
 }
 
 #[test]
-fn a_fast_capture_hint_starts_the_uplink_while_dictation_arms() {
+fn unblocking_the_card_keeps_a_fast_capture_hint_waiting_for_the_arm() {
     let state = State {
         audio_server: AudioServer::Up,
         ..linked(Column::Auto)
@@ -248,7 +248,7 @@ fn a_fast_capture_hint_starts_the_uplink_while_dictation_arms() {
 
     assert_eq!(requests(&blocked), NOTHING);
     assert_eq!(requests(&hinted), NOTHING);
-    assert_eq!(requests(&unblocked), START);
+    assert_eq!(requests(&unblocked), NOTHING);
 }
 
 #[test]

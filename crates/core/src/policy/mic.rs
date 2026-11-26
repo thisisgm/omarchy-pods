@@ -168,6 +168,7 @@ struct Audio {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DictationActivity {
     Unarmed,
+    Arming,
     Armed,
     Active,
 }
@@ -223,9 +224,9 @@ impl Mic {
         let mut effects = Vec::new();
         self.step_node(state, fact, now, &mut effects);
         let route = self.recording().then_some(Route::Uplink);
-        self.set_route(route, dictation);
+        self.set_route(route, dictation, state);
         self.observe_uplink(state, fact, now, &mut effects);
-        self.follow_uplink(state, now, dictation, &mut effects);
+        self.follow_uplink(state, now, &mut effects);
         effects
     }
 
@@ -240,12 +241,14 @@ impl Mic {
         self.node.recorders()
     }
 
-    pub(super) fn set_route(&mut self, route: Option<Route>, dictation: &Dictation) {
+    pub(super) fn set_route(&mut self, route: Option<Route>, dictation: &Dictation, state: &State) {
         self.route = route;
         self.dictation = if dictation.active() {
             DictationActivity::Active
         } else if dictation.armed() {
             DictationActivity::Armed
+        } else if dictation.code(state) == MicDictation::Arming {
+            DictationActivity::Arming
         } else {
             DictationActivity::Unarmed
         };
@@ -294,13 +297,11 @@ impl Mic {
         &mut self,
         state: &State,
         now: Duration,
-        dictation: &Dictation,
         effects: &mut Vec<Effect>,
     ) {
         // A successful arm confirms an auto model without the uplink probe.
-        let probe_waits = dictation.code(state) == MicDictation::Arming
+        let probe_waits = self.dictation == DictationActivity::Arming
             && state.microphone.preference() == MicPref::Auto
-            && !self.audio.hint
             && !self.node.recording();
         self.follow(state, now, probe_waits, effects);
     }
@@ -650,7 +651,7 @@ impl Mic {
         !self.node.awaiting_profile(state.audio_server) && self.uplink_wanted(state)
     }
 
-    /// An uplink recording, or a fast-capture hint with dictation neither armed nor routed, can hold the uplink under `auto`.
+    /// A routed recorder or an eligible fast-capture hint can hold the uplink under `auto`.
     fn uplink_wanted(&self, state: &State) -> bool {
         let hint = self.audio.hint && self.dictation == DictationActivity::Unarmed;
         self.dictation != DictationActivity::Active

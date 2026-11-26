@@ -84,7 +84,7 @@ level included.
 | `one_bud_anc` | `true` or `false` |
 | `adaptive_level` | a whole number from 0 to 100, written in decimal, with an optional leading `+` or `-` and optional trailing ASCII spaces, tabs or line breaks |
 | `notifications` | `true` (desktop notices on) or `false` (no desktop notice is sent) |
-| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. Under the same conditions, `auto` starts it for a recorder routed to the uplink or when a client requests fast capture while DoAP is unarmed and no recording is routed to DoAP. It also probes models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. While a headset profile is active, the source is withdrawn, uplink START and STOP wait, and uplink restores are dropped. |
+| `microphone` | `auto`, `always` or `off`: whether the daemon may use the AirPods' microphone. With `auto` or `always`, the daemon tries to arm dictation while the link is up. `always` starts the AirPods' microphone uplink while the link is up, the model number is known and a bud is worn. Under the same conditions, `auto` starts it for a recorder routed to the uplink or when a client requests fast capture when DoAP is neither arming nor armed and no recording is routed to DoAP. It also probes models whose support is still unknown after trying to arm dictation. `off` removes the microphone source and closes the dictation channel at once. It stops the uplink once no bud is worn or the AirPods' sink is suspended or gone. Stopping the daemon does the same and waits at most 2 seconds for the uplink stop and restore, leaving the uplink running when a worn bud's sink is not known to be suspended or gone by then. Any other end of the want while the link holds lets the uplink linger first, as the `mic` reply says. While a headset profile is active, the source is withdrawn, uplink START and STOP wait, and uplink restores are dropped. |
 
 `ear_detection`, `notifications` and `microphone` are kept across restarts in
 `settings.json` beside the state file, readable only by its owner. When that
@@ -258,9 +258,9 @@ A reply carries the request's `id` and `ok`.
   belongs to 0x58 STOP.
   An uplink recording wants the uplink as `always` does, while a bud is worn.
   If DoAP is unarmed, a client with `session.fast-capture-start=true` also
-  wants it before any recorder links. While DoAP is armed (`mic_dictation` reads
-  `armed`, `starting`, `streaming` or `stopping`) or a recording is routed to
-  DoAP, the hint is ignored.
+  wants it before any recorder links. While DoAP is arming, the hint waits for
+  the arm outcome. While DoAP is armed (`mic_dictation` reads `armed`, `starting`,
+  `streaming` or `stopping`) or a recording is routed to DoAP, the hint is ignored.
   When the hint stops applying and the uplink is no longer wanted, the usual
   linger and playback gate apply. Loss of the audio server clears the hint
   and the headset block, and the source retries while still wanted.

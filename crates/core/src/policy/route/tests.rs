@@ -493,32 +493,6 @@ fn only_a_reopened_dictation_span_requests_mic_resync() {
 }
 
 #[test]
-fn fast_capture_starts_the_uplink_only_while_dictation_is_unarmed() {
-    let state = State {
-        audio_server: AudioServer::Up,
-        ..linked_auto()
-    };
-    let start = Effect::Uplink(UplinkRequest::Start);
-    for armed in [false, true] {
-        let mut policy = Policy::default();
-        let link = Fact::Link(Signal::Up { device: device() });
-        drop(policy.step(&state, link, Duration::ZERO));
-        if armed {
-            let ready = Fact::Dictation(DictationFact::Armed);
-            drop(policy.step(&state, ready, Duration::ZERO));
-        }
-        assert_eq!(policy.dictation.armed(), armed);
-        assert!(!policy.mic_recording());
-        let profile = Fact::Audio(AudioFact::Headset(false));
-        let effects = policy.step(&state, profile, Duration::ZERO);
-        assert!(!effects.contains(&start));
-        let hint = Fact::Audio(AudioFact::Hint(true));
-        let effects = policy.step(&state, hint, Duration::ZERO);
-        assert_eq!(effects.contains(&start), !armed, "armed: {armed}");
-    }
-}
-
-#[test]
 fn fast_capture_stays_ignored_while_the_route_is_dictation() {
     let start = Effect::Uplink(UplinkRequest::Start);
     let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
@@ -782,3 +756,4 @@ fn spans(first: Recorders, first_route: Route, idle_lists: &[Recorders]) -> (Pol
 }
 
 mod bearer;
+mod hint;
