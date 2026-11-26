@@ -25,6 +25,10 @@ const QUIET_PEAK: f32 = 0.005_623_413;
 const STEER_PPM_PER_MS: f64 = 200.0;
 /// Inaudible as pitch, and more than ten times the drift measured.
 const STEER_MAX_PPM: f64 = 2000.0;
+/// Close 40 ms of missed playout plus 5 ms of margin per second.
+const CATCH_UP_RATIO: f64 = 1.045;
+/// Bring catch-up back into the drift range over the last 5 ms above the realignment bound.
+const CATCH_UP_TAPER_MS: f64 = 5.0;
 /// The most lag an opening can leave to steady steering.
 pub const OPENING_EXIT_MS: u16 = 2;
 /// The number of quanta over which the opening rate returns to nominal.
@@ -344,6 +348,7 @@ struct Aim {
     target: i64,
     run: u64,
     generation: u64,
+    catch_up: bool,
 }
 
 /// A run the reader started on behind its target, at the run's first frame.
@@ -480,13 +485,13 @@ impl Reader {
         if self.ring.run() != run || self.ring.generation.load(Ordering::Acquire) != generation {
             return None;
         }
-        let aim = Aim {
+        let catch_up = self.stand(target.saturating_sub(frames), run, generation, now);
+        Some(Aim {
             target,
             run,
             generation,
-        };
-        self.stand(aim, frames, now);
-        Some(aim)
+            catch_up,
+        })
     }
 
     /// Hands out the frames from where the reader stands, those of the run it stood by and none of a run that started since, and gives the ratio.
@@ -510,18 +515,16 @@ impl Reader {
         match (aim, self.opening) {
             (None, _) => 1.0,
             (Some(aim), Some(_)) => opening_ratio(aim.target.saturating_sub(self.next), frames),
-            (Some(aim), None) => self.steer(aim.target, frames),
+            (Some(aim), None) => {
+                let catch_up =
+                    aim.catch_up && self.was == Was::Sample && self.heard == Some(aim.run);
+                self.steer(aim.target, frames, catch_up)
+            }
         }
     }
 
-    /// Puts the reader where a read at `now` should open, which is at `place` when it is on its target: a recorder the run opened against starts on the run's first frame when that is behind `place`, and until it is near its target it is not moved.
-    fn stand(&mut self, aim: Aim, frames: i64, now: Duration) {
-        let Aim {
-            target,
-            run,
-            generation,
-        } = aim;
-        let place = target.saturating_sub(frames);
+    /// Positions the read and indicates when retained audio needs to catch up by rate.
+    fn stand(&mut self, place: i64, run: u64, generation: u64, now: Duration) -> bool {
         let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
         let first = i64::try_from(run).unwrap_or(i64::MAX);
         // Only a recorder that has heard nothing since it linked still waits for what came before its edge.
@@ -544,7 +547,7 @@ impl Reader {
             let same_run = run == opening.run;
             let exit = i64::from(OPENING_EXIT_MS.saturating_mul(FRAMES_PER_MS));
             if same_run && place.saturating_sub(self.next) > exit {
-                return;
+                return false;
             }
             if same_run {
                 self.caught_up(opening, now);
@@ -567,8 +570,10 @@ impl Reader {
                     self.jump(oldest);
                 } else if let Some(to) = self.quiet_destination(place, run) {
                     self.jump(to);
+                } else {
+                    return true;
                 }
-                return;
+                return false;
             }
             // A later dictation anchor can reach audio that has already been handed out.
             let place = if off > 0 && self.heard == Some(run) && self.ring.path() == Path::Dictation
@@ -581,6 +586,7 @@ impl Reader {
                 self.jump(place);
             }
         }
+        false
     }
 
     /// Only cut sustained quiet, leaving quiet under both sides of the realignment fade.
@@ -616,6 +622,12 @@ impl Reader {
     #[must_use]
     pub fn read_all(&self) -> bool {
         self.next >= self.ring.end()
+    }
+
+    /// The exclusive ends of the last read's whole request and of the audio handed out so far.
+    #[must_use]
+    pub fn read_ends(&self) -> (i64, i64) {
+        (self.next, self.played)
     }
 
     /// The audio a jump leaves falls away while the new fades in.
@@ -684,14 +696,20 @@ impl Reader {
     }
 
     /// The ratio is 1 less a share of the smoothed distance, so a reader that is ahead asks for fewer frames a second.
-    fn steer(&mut self, target: i64, frames: i64) -> f64 {
+    fn steer(&mut self, target: i64, frames: i64, catch_up: bool) -> f64 {
         let per_ms = f64::from(FRAMES_PER_MS);
         let ahead_ms = float_of(self.next.saturating_sub(target)) / per_ms;
         let smooth_frames = f64::from(STEER_SMOOTH_MS) * per_ms;
         let share = 1.0 - (-float_of(frames) / smooth_frames).exp();
         self.ahead_ms += (ahead_ms - self.ahead_ms) * share;
         let ppm = (self.ahead_ms * STEER_PPM_PER_MS).clamp(-STEER_MAX_PPM, STEER_MAX_PPM);
-        1.0 - ppm / PARTS_PER_MILLION
+        let drift = 1.0 - ppm / PARTS_PER_MILLION;
+        if catch_up && ahead_ms < -f64::from(REALIGN_MS) {
+            let excess = -ahead_ms - f64::from(REALIGN_MS);
+            let share = (excess / CATCH_UP_TAPER_MS).min(1.0);
+            return drift.max(1.0 + (CATCH_UP_RATIO - 1.0) * share);
+        }
+        drift
     }
 }
 

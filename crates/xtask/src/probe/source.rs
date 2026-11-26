@@ -4,6 +4,7 @@ mod live;
 
 use std::env;
 use std::io::{self, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -47,6 +48,9 @@ pub(super) struct SourceArgs {
     /// The sdu.log of a run to serve: the caller's own, with no access for group or others; without it the pods of the device file are served live.
     #[arg(long)]
     replay: Option<PathBuf>,
+    /// Report the consumption and rate-adjusted duration of a replay's source frame interval.
+    #[arg(long, requires = "replay", value_name = "FIRST:END", value_parser = source_span)]
+    measure_source: Option<Range<i64>>,
     /// How many seconds a live run serves before it stops the uplink; without it, until a signal.
     #[arg(long, conflicts_with = "replay")]
     seconds: Option<u64>,
@@ -114,17 +118,101 @@ struct Seen {
     past_end: AtomicU32,
 }
 
+// Sample input: `65280:257280`, inclusive first frame and exclusive end.
+fn source_span(input: &str) -> Result<Range<i64>, &'static str> {
+    let range = input.split_once(':').and_then(|(first, end)| {
+        let first = first.parse::<i64>().ok()?;
+        let end = end.parse::<i64>().ok()?;
+        (first >= 0 && end > first).then_some(first..end)
+    });
+    range.ok_or("the measured span must be two increasing nonnegative frame indices")
+}
+
+#[derive(Debug)]
+struct Span {
+    wanted: Range<i64>,
+    frames: AtomicU64,
+    at_nominal_rate: AtomicU64,
+    gone: AtomicU64,
+    discontinuous: AtomicBool,
+}
+
+impl Span {
+    fn new(wanted: Range<i64>) -> Self {
+        Self {
+            wanted,
+            frames: AtomicU64::new(0),
+            at_nominal_rate: AtomicU64::new(0),
+            gone: AtomicU64::new(0),
+            discontinuous: AtomicBool::new(false),
+        }
+    }
+
+    fn observe(&self, reader: &Reader, count: usize, rate: f64, gone: u64) {
+        let (cursor, played) = reader.read_ends();
+        let first = cursor
+            .saturating_sub(i64::try_from(count).unwrap_or(i64::MAX))
+            .max(self.wanted.start);
+        let end = cursor.min(played).min(self.wanted.end);
+        if first >= end {
+            return;
+        }
+        let issued = self.frames.load(Ordering::Relaxed);
+        let expected = self
+            .wanted
+            .start
+            .saturating_add(i64::try_from(issued).unwrap_or(i64::MAX));
+        if first != expected {
+            self.discontinuous.store(true, Ordering::Relaxed);
+        }
+        let count = u32::try_from(end.saturating_sub(first)).unwrap_or(u32::MAX);
+        let nominal = f64::from_bits(self.at_nominal_rate.load(Ordering::Relaxed));
+        self.at_nominal_rate.store(
+            (nominal + f64::from(count) / rate).to_bits(),
+            Ordering::Relaxed,
+        );
+        self.gone.fetch_add(gone, Ordering::Relaxed);
+        self.frames.fetch_add(u64::from(count), Ordering::Release);
+    }
+
+    fn print(&self, out: &mut dyn Write, unsteered: u64) -> Result<(), SourceError> {
+        let frames = self.frames.load(Ordering::Acquire);
+        let nominal = f64::from_bits(self.at_nominal_rate.load(Ordering::Relaxed));
+        let gone = self.gone.load(Ordering::Relaxed);
+        let discontinuous = self.discontinuous.load(Ordering::Relaxed);
+        writeln!(
+            out,
+            "source span {frames} {nominal:.6} {gone} {discontinuous} {unsteered}"
+        )
+        .map_err(SourceError::Print)
+    }
+}
+
 /// The real time half: the reader, the instant it and the feeding half count from, and its reads in a row past the end.
 struct Held {
     reader: Reader,
     since: Instant,
     seen: Arc<Seen>,
     past_end: u32,
+    measure: Option<(Arc<Span>, Arc<Counters>)>,
 }
 
 impl Fill for Held {
     fn fill(&mut self, out: &mut [f32]) -> f64 {
+        let gone = self.measure.as_ref().map_or(0, |(_, counters)| {
+            counters.span_gone_frames.load(Ordering::Relaxed)
+        });
         let ratio = self.reader.read(self.since.elapsed(), out);
+        if let Some((span, counters)) = &self.measure {
+            // The previous request set the converter's rate for the buffer it just requested.
+            let ppm = f64::from_bits(self.seen.rate_ppm.load(Ordering::Relaxed));
+            let applied = 1.0 + ppm / PARTS_PER_MILLION;
+            let gone = counters
+                .span_gone_frames
+                .load(Ordering::Relaxed)
+                .saturating_sub(gone);
+            span.observe(&self.reader, out.len(), applied, gone);
+        }
         self.past_end = if self.reader.read_all() {
             self.past_end.saturating_add(1)
         } else {
@@ -181,7 +269,7 @@ fn status_line(seen: &Seen, unsteered: u64, counters: &Counters) -> String {
 /// Serves a capture to its end or the pods' uplink for its seconds, either until a signal, with a status line a second and one at the end; any error the run says fails it.
 pub(super) fn serve(args: &SourceArgs, host: &mut Host<'_>, interrupted: &AtomicBool) -> ExitCode {
     let served = match &args.replay {
-        Some(file) => replay(file, host, interrupted),
+        Some(file) => replay(file, args.measure_source.clone(), host, interrupted),
         None => live::serve(args.seconds, host, interrupted),
     };
     match served {
@@ -193,7 +281,12 @@ pub(super) fn serve(args: &SourceArgs, host: &mut Host<'_>, interrupted: &Atomic
     }
 }
 
-fn replay(file: &Path, host: &mut Host<'_>, interrupted: &AtomicBool) -> Result<(), SourceError> {
+fn replay(
+    file: &Path,
+    measure: Option<Range<i64>>,
+    host: &mut Host<'_>,
+    interrupted: &AtomicBool,
+) -> Result<(), SourceError> {
     // Read whole before the node exists, so a capture that cannot be served never shows one.
     let audio = audio_of(file)?;
     if audio.cut_short > 0 {
@@ -209,7 +302,8 @@ fn replay(file: &Path, host: &mut Host<'_>, interrupted: &AtomicBool) -> Result<
     let counters = Arc::new(Counters::default());
     let (mut chain, reader, resync) =
         pods_mic::chain(Arc::clone(&counters)).ok_or(SourceError::Decoder)?;
-    let served = open_node(reader, resync, counters)?;
+    let measure = measure.map(|range| Arc::new(Span::new(range)));
+    let served = open_node(reader, resync, counters, measure.clone())?;
     feed(
         &audio.packets,
         &mut chain,
@@ -217,7 +311,11 @@ fn replay(file: &Path, host: &mut Host<'_>, interrupted: &AtomicBool) -> Result<
         host.stdout,
         interrupted,
     )?;
-    served.print_status(host.stdout)
+    served.print_status(host.stdout)?;
+    if let Some(span) = measure {
+        span.print(host.stdout, served.source.unsteered())?;
+    }
+    Ok(())
 }
 
 /// Opens the node on the session's audio server, its reader counting from now.
@@ -225,6 +323,7 @@ fn open_node(
     reader: Reader,
     resync: Resync,
     counters: Arc<Counters>,
+    measure: Option<Arc<Span>>,
 ) -> Result<Served, SourceError> {
     let runtime_dir = env::var_os("XDG_RUNTIME_DIR").ok_or(SourceError::NoRuntimeDir)?;
     let socket = Path::new(&runtime_dir).join(SERVER_SOCKET);
@@ -237,6 +336,7 @@ fn open_node(
         since,
         seen: Arc::clone(&seen),
         past_end: 0,
+        measure: measure.map(|span| (span, Arc::clone(&counters))),
     };
     let spec = Spec {
         remote: &socket,
@@ -443,6 +543,7 @@ mod tests {
             since: Instant::now(),
             seen: Arc::default(),
             past_end: 0,
+            measure: None,
         };
         let unit = tone_unit(LINE, LEVEL);
         for packet in 0..PACKETS {

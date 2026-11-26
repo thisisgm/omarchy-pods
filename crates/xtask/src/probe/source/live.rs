@@ -74,7 +74,7 @@ fn uplink(
         peer,
         pending: true,
     };
-    let served = open_node(reader, resync, counters);
+    let served = open_node(reader, resync, counters, None);
     // The last status line is printed apart from the feed, so a failed print cannot hide the pods' own stop.
     let (ended, printed) = match &served {
         Ok(served) => {

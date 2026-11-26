@@ -11,7 +11,7 @@ mod run;
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::{self, BufRead, BufReader, Read, Write};
     use std::path::{Path, PathBuf};
     use std::process::{Child, ExitStatus, Stdio};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -131,6 +131,15 @@ mod tests {
 
     impl Replay {
         fn start(server: &Server, home: &Path, capture: &Path) -> Self {
+            Self::start_measured(server, home, capture, None)
+        }
+
+        fn start_measured(
+            server: &Server,
+            home: &Path,
+            capture: &Path,
+            span: Option<(u32, u32)>,
+        ) -> Self {
             let mut command = server.command(env!("CARGO_BIN_EXE_xtask"));
             command
                 .args(["probe", "source", "--replay"])
@@ -139,6 +148,9 @@ mod tests {
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            if let Some((first, end)) = span {
+                command.args(["--measure-source", &format!("{first}:{end}")]);
+            }
             let mut child = command.spawn().unwrap();
             let stdout = BufReader::new(child.stdout.take().unwrap());
             let (lines, printed) = mpsc::channel();
@@ -342,7 +354,12 @@ mod tests {
             record.sdu = audio_sdu(packet.wrapping_mul(UNITS_PER_SDU * STAMP_STEP), &silent);
         }
         let capture = kept(dir.path(), &records);
-        let replay = Replay::start(&server, dir.path(), &capture);
+        let measuring = std::env::var_os("OMAPODS_STALL_PROBE").is_some();
+        let per_packet = u32::from(SAMPLES_PER_UNIT).saturating_mul(UNITS_PER_SDU);
+        let first_frame = SILENT_PACKETS.saturating_mul(per_packet);
+        let source_frames = SHORT_PACKETS.saturating_mul(per_packet);
+        let span = measuring.then_some((first_frame, first_frame.saturating_add(source_frames)));
+        let replay = Replay::start_measured(&server, dir.path(), &capture, span);
         server.wait_node(NODE, WITHIN);
         let recorder = Recorder::superwhisper(&server, NODE, &dir.path().join("recorded.wav"));
         server.link(NODE, recorder.node());
@@ -363,10 +380,21 @@ mod tests {
         // Once the reader passes the last unit it falls away over one more unit at most.
         let not_before = frames(tone.checked_sub(SPAN_SLACK).unwrap(), rate);
         let not_after = frames(tone + unit + SPAN_SLACK, rate);
-        assert!(
-            (not_before..=not_after).contains(&sounding),
-            "the tone sounds for {sounding} samples, not {not_before} to {not_after}"
-        );
+        if measuring {
+            let nominal = frames(tone, rate);
+            assert_measured_span(
+                &ran.lines,
+                source_frames,
+                rate,
+                sounding,
+                (nominal - not_before, not_after - nominal),
+            );
+        } else {
+            assert!(
+                (not_before..=not_after).contains(&sounding),
+                "the tone sounds for {sounding} samples, not {not_before} to {not_after}"
+            );
+        }
         // The last unit sounds and falls away, so the tape ends in silence rather than inside the tone.
         let quiet = tape
             .iter()
@@ -378,6 +406,43 @@ mod tests {
             "the tape of {} samples ends with {silent_end} near zero",
             tape.len()
         );
+    }
+
+    fn assert_measured_span(
+        lines: &[String],
+        source_frames: u32,
+        rate: u32,
+        sounding: usize,
+        tolerance: (usize, usize),
+    ) {
+        // Sample input: `source span 192000 190100.500000 0 false 0`.
+        let measured = lines
+            .iter()
+            .find_map(|line| line.strip_prefix("source span "))
+            .unwrap_or_else(|| panic!("no measured source span in {lines:?}"));
+        let mut fields = measured.split_whitespace();
+        let consumed = fields.next().unwrap().parse::<u32>().unwrap();
+        let at_nominal_rate = fields.next().unwrap().parse::<f64>().unwrap();
+        assert_eq!(
+            fields.collect::<Vec<_>>(),
+            ["0", "false", "0"],
+            "{measured}"
+        );
+        assert_eq!(consumed, source_frames, "{measured}");
+        let at_wav_rate = at_nominal_rate * f64::from(rate) / f64::from(RATE_HZ);
+        let expected = at_wav_rate.round();
+        let (before, after) = tolerance;
+        let float = |count: usize| f64::from(u32::try_from(count).unwrap());
+        let bounds = expected - float(before)..=expected + float(after);
+        assert!(
+            bounds.contains(&float(sounding)),
+            "{consumed} source frames, rate-adjusted WAV {expected}, measured {sounding}, bounds {bounds:?}"
+        );
+        writeln!(
+            io::stderr(),
+            "stall probe: {consumed}/{source_frames} source frames, 0 gone, WAV {sounding} vs {expected} at applied rate"
+        )
+        .unwrap();
     }
 
     #[test]

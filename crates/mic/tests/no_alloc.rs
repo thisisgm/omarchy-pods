@@ -61,7 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quiet_cut_never_allocates() {
+    fn quiet_cuts_and_speech_catch_up_never_allocate() {
         let mut rig = Rig::new();
         let silence = vec![silent_unit(); usize::try_from(UNITS_PER_PACKET).unwrap()];
         for at in on_time(0..PACKETS) {
@@ -85,7 +85,14 @@ mod tests {
         }
         loud.resync.request();
         loud.reader.read(now, &mut heard);
-        let kept = loud.reader.read(now + READ_EVERY + MISSED, &mut heard);
-        assert!(!unsteered(kept), "the tone was cut, ratio {kept}");
+        let mut catch_up = 0.0;
+        let measured = allocation_counter::measure(|| {
+            catch_up = black_box(loud.reader.read(now + READ_EVERY + MISSED, &mut heard));
+        });
+        assert_eq!(measured.count_total, 0);
+        assert!(
+            catch_up > 1.0 + MAX_STEER && catch_up <= 1.05,
+            "ratio {catch_up} stayed at the drift clamp"
+        );
     }
 }
