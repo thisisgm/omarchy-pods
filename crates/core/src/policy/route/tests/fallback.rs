@@ -1,4 +1,4 @@
-//! Route transitions from DoAP to the uplink after ModeOff.
+//! Route transitions from `DoAP` to the uplink after `ModeOff`.
 
 use super::*;
 use crate::policy::dictation::BEARER_RETRY_MS;
@@ -307,4 +307,94 @@ fn a_lost_bearer_starts_the_uplink_after_the_mode_clears() {
     assert!(policy.mic_accepts_uplink());
     assert!(!policy.dictation_session_open());
     assert!(!effects.contains(&Effect::Dictation(DictationRequest::Mode)));
+}
+
+fn waiting_for_fallback_settle() -> (Policy, State, Duration) {
+    use crate::policy::dictation::DOAP_START_TRIES;
+    use pods_proto::doap::STOP_REASON_UNSOLICITED;
+
+    let (mut policy, state) = waiting_for_recorders(DICTATION, Route::Dictation);
+    let settle = Duration::from_millis(MODE_SETTLE_MS);
+    let mut effects = policy.step(
+        &state,
+        Fact::Audio(AudioFact::Recorders(DICTATION)),
+        Duration::ZERO,
+    );
+    let mut cleared = Duration::ZERO;
+    let uplink = Effect::Uplink(UplinkRequest::Start);
+    for _ in 0..DOAP_START_TRIES {
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::Mode)));
+        assert!(!effects.contains(&uplink));
+        cleared = cleared.saturating_add(settle);
+        let effects_at_start = policy.step(&state, Fact::Tick, cleared);
+        assert!(effects_at_start.contains(&Effect::Dictation(DictationRequest::Start)));
+        assert!(!effects_at_start.contains(&uplink));
+        let refused = Fact::Dictation(DictationFact::Refused {
+            reason: STOP_REASON_UNSOLICITED,
+        });
+        effects = policy.step(&state, refused, cleared);
+    }
+    assert!(effects.contains(&Effect::Dictation(DictationRequest::ModeOff)));
+    assert!(!effects.contains(&uplink));
+    assert_eq!(policy.edge.route(), Some(Route::Uplink));
+    assert_eq!(policy.deadline(), Some(cleared.saturating_add(settle)));
+    (policy, state, cleared)
+}
+
+#[test]
+fn switching_the_mic_off_during_mode_off_settle_cancels_fallback() {
+    let (mut policy, mut state, cleared) = waiting_for_fallback_settle();
+    let settle = Duration::from_millis(MODE_SETTLE_MS);
+    let uplink = Effect::Uplink(UplinkRequest::Start);
+    state.microphone.set_preference(MicPref::Off);
+    let effects = policy.step(&state, Fact::Changed, cleared + settle / 2);
+    assert!(!effects.contains(&uplink), "{effects:?}");
+
+    for at in [cleared + settle, cleared + settle * 2] {
+        let effects = policy.step(&state, Fact::Tick, at);
+        assert!(!effects.contains(&uplink), "{effects:?}");
+    }
+    assert!(effects.contains(&Effect::Mic(MicRequest::Close)));
+    assert!(!policy.mic_recording());
+    assert!(!policy.dictation_session_open());
+    assert_eq!(policy.edge.route(), None);
+    policy.show_mic(&mut state);
+    assert_eq!(state.microphone.code(), MicCode::Off);
+}
+
+#[test]
+fn a_new_dictation_recorder_during_mode_off_settle_keeps_one_route() {
+    let (mut policy, mut state, cleared) = waiting_for_fallback_settle();
+    let settle = Duration::from_millis(MODE_SETTLE_MS);
+    let between = cleared + settle / 2;
+    let uplink = Effect::Uplink(UplinkRequest::Start);
+    let empty = Fact::Audio(AudioFact::Recorders(Recorders::default()));
+    let effects = policy.step(&state, empty, between);
+    assert!(!effects.contains(&uplink), "{effects:?}");
+    assert_eq!(policy.edge.route(), None);
+
+    let recorder = Fact::Audio(AudioFact::Recorders(DICTATION));
+    let effects = policy.step(&state, recorder, between);
+    assert!(effects.contains(&Effect::Dictation(DictationRequest::Mode)));
+    assert!(!effects.contains(&uplink), "{effects:?}");
+    assert_eq!(policy.edge.route(), Some(Route::Dictation));
+
+    let start = Effect::Dictation(DictationRequest::Start);
+    let effects = policy.step(&state, Fact::Tick, cleared + settle);
+    assert!(
+        !effects.contains(&start) && !effects.contains(&uplink),
+        "{effects:?}"
+    );
+    let started = between + settle;
+    let effects = policy.step(&state, Fact::Tick, started);
+    assert!(effects.contains(&start));
+    assert!(!effects.contains(&uplink), "{effects:?}");
+
+    let answered = Fact::Dictation(DictationFact::Answered);
+    let effects = policy.step(&state, answered, started);
+    assert!(!effects.contains(&uplink), "{effects:?}");
+    assert_eq!(policy.edge.route(), Some(Route::Dictation));
+    assert!(!policy.mic_accepts_uplink());
+    policy.show_mic(&mut state);
+    assert_eq!(state.mic_dictation, MicDictation::Streaming);
 }
