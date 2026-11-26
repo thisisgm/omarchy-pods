@@ -354,12 +354,11 @@ mod tests {
             record.sdu = audio_sdu(packet.wrapping_mul(UNITS_PER_SDU * STAMP_STEP), &silent);
         }
         let capture = kept(dir.path(), &records);
-        let measuring = std::env::var_os("OMAPODS_STALL_PROBE").is_some();
         let per_packet = u32::from(SAMPLES_PER_UNIT).saturating_mul(UNITS_PER_SDU);
         let first_frame = SILENT_PACKETS.saturating_mul(per_packet);
         let source_frames = SHORT_PACKETS.saturating_mul(per_packet);
-        let span = measuring.then_some((first_frame, first_frame.saturating_add(source_frames)));
-        let replay = Replay::start_measured(&server, dir.path(), &capture, span);
+        let span = (first_frame, first_frame.saturating_add(source_frames));
+        let replay = Replay::start_measured(&server, dir.path(), &capture, Some(span));
         server.wait_node(NODE, WITHIN);
         let recorder = Recorder::superwhisper(&server, NODE, &dir.path().join("recorded.wav"));
         server.link(NODE, recorder.node());
@@ -380,21 +379,14 @@ mod tests {
         // Once the reader passes the last unit it falls away over one more unit at most.
         let not_before = frames(tone.checked_sub(SPAN_SLACK).unwrap(), rate);
         let not_after = frames(tone + unit + SPAN_SLACK, rate);
-        if measuring {
-            let nominal = frames(tone, rate);
-            assert_measured_span(
-                &ran.lines,
-                source_frames,
-                rate,
-                sounding,
-                (nominal - not_before, not_after - nominal),
-            );
-        } else {
-            assert!(
-                (not_before..=not_after).contains(&sounding),
-                "the tone sounds for {sounding} samples, not {not_before} to {not_after}"
-            );
-        }
+        let nominal = frames(tone, rate);
+        assert_measured_span(
+            &ran.lines,
+            source_frames,
+            rate,
+            sounding,
+            (nominal - not_before, not_after - nominal),
+        );
         // The last unit sounds and falls away, so the tape ends in silence rather than inside the tone.
         let quiet = tape
             .iter()
@@ -440,7 +432,7 @@ mod tests {
         );
         writeln!(
             io::stderr(),
-            "stall probe: {consumed}/{source_frames} source frames, 0 gone, WAV {sounding} vs {expected} at applied rate"
+            "replay probe: {consumed}/{source_frames} source frames, 0 gone, WAV {sounding} vs {expected} at applied rate"
         )
         .unwrap();
     }
