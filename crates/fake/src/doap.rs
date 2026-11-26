@@ -130,6 +130,11 @@ impl Doap {
             .doap(|doap| doap.burst = (frames, per_notification));
     }
 
+    /// After the burst, wait for two frames before sending each audio notification.
+    pub fn pair_notifications(&self) {
+        self.shared.doap(|doap| doap.live_per_notification = 2);
+    }
+
     /// The next `frames` frames the microphone hears are silent, before any queued mark.
     pub fn silent(&self, frames: u32) {
         self.shared.doap(|doap| {
@@ -255,6 +260,7 @@ pub(crate) struct Machine {
     /// The channel of a START heard and not answered.
     held: Option<usize>,
     burst: (u32, u32),
+    live_per_notification: u32,
     repeat: Option<u16>,
     silent: u32,
     marked: u32,
@@ -320,6 +326,7 @@ impl Machine {
             hold_stop: false,
             held: None,
             burst: (BURST_FRAMES, BURST_PER_NOTIFICATION),
+            live_per_notification: 1,
             repeat: None,
             silent: 0,
             marked: 0,
@@ -471,10 +478,11 @@ impl Machine {
         }
         if self.held_back(&run, now).is_zero() {
             let fresh = self.kept_from(run.next);
-            for heard in fresh {
+            let per_notification = usize::try_from(self.live_per_notification).unwrap_or(1);
+            for frames in fresh.chunks_exact(per_notification) {
                 self.stall = None;
-                run.next = heard.place.saturating_add(1);
-                due.extend(self.audio(&handles, &mut run, &[heard], now));
+                run.next = run.next.saturating_add(self.live_per_notification);
+                due.extend(self.audio(&handles, &mut run, frames, now));
             }
         }
         self.run = Some(run);
@@ -493,7 +501,7 @@ impl Machine {
         if !run.announced {
             return Some(Duration::ZERO);
         }
-        let heard_after = FRAME.saturating_mul(run.next.saturating_add(1));
+        let heard_after = FRAME.saturating_mul(run.next.saturating_add(self.live_per_notification));
         let on_schedule = heard_after.saturating_sub(now.saturating_duration_since(mic.since));
         Some(on_schedule.max(self.held_back(run, now)))
     }

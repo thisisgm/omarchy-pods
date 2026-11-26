@@ -174,6 +174,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn two_frame_notifications_place_the_opening_on_time() {
+        const BURST_PER_NOTIFICATION: usize = 5;
+        const BURST_GAP_MS: u32 = 5;
+        const LIVE_PER_NOTIFICATION: usize = 2;
+        const PAIR_TIME_MS: u32 = 2 * FRAME_MS;
+        const RECORDER_LEAD_MS: u32 = 200;
+        const LIVE_NOTIFICATIONS: u32 = 20;
+        const READ_SPAN_MS: u32 = 1_200;
+        const OPENING_LIMIT_MS: u32 = 320;
+        let mut stream = Stream::new();
+        let first_burst = ms(RECORDER_LEAD_MS);
+        let second_burst = first_burst.saturating_add(ms(BURST_GAP_MS));
+        let burst = [first_burst, second_burst].map(|due| (due, BURST_PER_NOTIFICATION));
+        let live = (1..=LIVE_NOTIFICATIONS).map(|step| {
+            (
+                after(second_burst, ms(PAIR_TIME_MS), step),
+                LIVE_PER_NOTIFICATION,
+            )
+        });
+        let mut notifications = burst.into_iter().chain(live).peekable();
+        stream.resync.request();
+        let heard = reads(Duration::ZERO, READ_SPAN_MS / FRAME_MS)
+            .into_iter()
+            .find(|&now| {
+                while notifications.peek().is_some_and(|&(due, _)| due <= now) {
+                    let (due, count) = notifications.next().unwrap();
+                    stream.notify(due, count);
+                }
+                !silent(&stream.read(now, QUANTUM).0)
+            });
+        assert!(
+            heard.is_some_and(|now| now <= first_burst.saturating_add(ms(OPENING_LIMIT_MS))),
+            "no dictation audio within {OPENING_LIMIT_MS} ms of the burst, first sound at {heard:?}"
+        );
+    }
+
     /// The largest step between two samples of the tone as a run that lost nothing gives it.
     fn own_step() -> f32 {
         let mut clean = Stream::new();
