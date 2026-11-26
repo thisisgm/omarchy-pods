@@ -60,6 +60,8 @@ const MAX_GAP_UNITS: u32 = 2 * UNITS_PER_PACKET;
 pub const ARRIVAL_WINDOW: usize = 32;
 // Three late steady notifications distinguish a delay step from a brief stall.
 const DOAP_REANCHOR_PACKETS: usize = 3;
+// How much earlier than the oldest of those three the newest may land and still be jitter on a step, not a queue draining.
+const DOAP_DRAIN_MARGIN_MS: u32 = 5;
 const NS_PER_MS: i64 = 1_000_000;
 const FRAMES_PER_MS: u16 = if RATE_HZ == 48_000 { 48 } else { 64 };
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
@@ -219,8 +221,9 @@ impl Arrivals {
         let recent = self.0.range(stale..).copied().fold(arrival, i64::min);
         let oldest_recent = self.0.get(stale).copied().unwrap_or(arrival);
         let cover_ns = i64::from(DOAP_JITTER_COVER_MS).saturating_mul(NS_PER_MS);
-        // A queue draining after a stall lands each frame earlier than the one before it; a delay step does not.
-        let draining = arrival < oldest_recent;
+        let margin_ns = i64::from(DOAP_DRAIN_MARGIN_MS).saturating_mul(NS_PER_MS);
+        // A queue draining after a stall lands each frame earlier than the one before it; a delay step lands level, give or take a few ms of jitter.
+        let draining = arrival.saturating_add(margin_ns) < oldest_recent;
         if !draining && recent.saturating_sub(earliest) > cover_ns {
             drop(self.0.drain(..stale));
             return recent;
