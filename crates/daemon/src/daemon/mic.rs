@@ -143,6 +143,8 @@ async fn next(
     });
     let mut changed = pin!(requests.changed());
     let mut card_changed = pin!(cards.changed());
+    // A finished `changed` panics if polled again, and the audio adapter can end before this one.
+    let mut cards_open = true;
     poll_fn(|context| {
         if let Poll::Ready(changed) = changed.as_mut().poll(context) {
             return Poll::Ready(changed.map_or(Turn::Ended, |()| Turn::Request));
@@ -151,8 +153,12 @@ async fn next(
         if let Poll::Ready(Some(())) = wakes.poll_recv(context) {
             return Poll::Ready(Turn::Woken);
         }
-        if let Poll::Ready(Ok(())) = card_changed.as_mut().poll(context) {
-            return Poll::Ready(Turn::Card);
+        if cards_open {
+            match card_changed.as_mut().poll(context) {
+                Poll::Ready(Ok(())) => return Poll::Ready(Turn::Card),
+                Poll::Ready(Err(_)) => cards_open = false,
+                Poll::Pending => {}
+            }
         }
         retry.as_mut().poll(context).map(|()| Turn::Retry)
     })
