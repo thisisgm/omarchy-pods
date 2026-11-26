@@ -235,7 +235,7 @@ async fn session_bus(hub: Hub, link: mpsc::Sender<link::Input>, mut media_queue:
     let connection = match dbus::connect().await {
         Ok(connection) => connection,
         Err(error) => {
-            log(&format!("{NO_SESSION_BUS}: {error}"));
+            log(&format!("{NO_SESSION_BUS}: {}", dbus::failure(&error)));
             // Drained, so a request finds neither a full queue nor a closed one, and pauses nothing.
             media_queue.drain().await;
             return;

@@ -13,6 +13,7 @@ use zbus::export::futures_core::Stream;
 use zbus::{Connection, Message, MessageStream, OwnedFd};
 
 use super::bluez::{ErrorLog, SYSTEM_BUS_RETRY_MS};
+use super::dbus::failure;
 use super::link::Input;
 use super::log;
 
@@ -65,7 +66,7 @@ pub(super) fn inhibit(bus: &Bus) -> Option<Inhibitor> {
         .await;
         match reply {
             Some(Ok(fd)) => drop(acquired.send(fd)),
-            Some(Err(error)) => log(&format!("{INHIBIT_FAILED}: {error}")),
+            Some(Err(error)) => log(&format!("{INHIBIT_FAILED}: {}", failure(&error))),
             None => {}
         }
     }));
@@ -104,7 +105,8 @@ pub(super) async fn watch(inputs: mpsc::Sender<Input>, bus: watch::Sender<Option
                     }
                 }
                 Err(error) => errors.note(format!(
-                    "sleep: cannot subscribe to logind: {error}; trying again every {SYSTEM_BUS_RETRY_MS} ms"
+                    "sleep: cannot subscribe to logind: {}; trying again every {SYSTEM_BUS_RETRY_MS} ms",
+                    failure(&error)
                 )),
             }
         }

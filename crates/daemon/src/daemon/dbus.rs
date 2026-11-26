@@ -48,6 +48,48 @@ const LOG_PREFIX: &str = "D-Bus interface off";
 /// The status document's prefix for the flags `Capabilities` lists.
 const CAPABILITY_KEY_PREFIX: &str = "supports_";
 
+/// Remote D-Bus error descriptions can contain device paths and addresses.
+pub(super) fn failure(error: &zbus::Error) -> String {
+    use zbus::Error;
+
+    match error {
+        Error::MethodError(name, _, _) => name.to_string(),
+        Error::FDO(error) => error.name().to_string(),
+        Error::DBus(error) => error.name().to_string(),
+        Error::Handshake(_) => "D-Bus handshake failed".to_owned(),
+        Error::Failure(_)
+        | Error::InputOutput(_)
+        | Error::IncorrectType
+        | Error::Utf8(_)
+        | Error::PaddingNot0(_)
+        | Error::UnknownFd
+        | Error::SignatureMismatch(_, _)
+        | Error::OutOfBounds
+        | Error::MaxDepthExceeded(_)
+        | Error::SignatureParse(_)
+        | Error::EmptyStructure
+        | Error::InvalidObjectPath
+        | Error::InvalidName(_)
+        | Error::InvalidNameConversion { .. }
+        | Error::InterfaceNotFound
+        | Error::Address(_)
+        | Error::InvalidField
+        | Error::ExcessData
+        | Error::IncorrectEndian
+        | Error::InvalidReply
+        | Error::MissingField
+        | Error::InvalidGUID
+        | Error::Unsupported
+        | Error::NameTaken
+        | Error::InvalidMatchRule
+        | Error::MissingParameter(_)
+        | Error::InvalidSerial
+        | Error::InterfaceExists(_, _)
+        | Error::Connection(_, _) => error.to_string(),
+        _ => "D-Bus error".to_owned(),
+    }
+}
+
 /// The one session bus connection, which the interface and the media adapter share.
 pub(super) async fn connect() -> zbus::Result<Connection> {
     Builder::session()
@@ -72,7 +114,8 @@ pub(super) async fn serve(connection: Connection, hub: Hub) {
                     .await,
             );
             log(&format!(
-                "{LOG_PREFIX}: cannot own {BUS_NAME} on the session bus: {error}"
+                "{LOG_PREFIX}: cannot own {BUS_NAME} on the session bus: {}",
+                failure(&error)
             ));
         }
     }
