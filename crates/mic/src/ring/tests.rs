@@ -150,6 +150,19 @@ fn a_quiet_output_waits_for_the_whole_window_and_any_unplayed_signal() {
 }
 
 #[test]
+fn a_resync_read_restarts_the_quiet_window() {
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
+    let mut quiet = vec![0.0; usize::try_from(SILENCE_FRAMES).unwrap()];
+    reader.read(Duration::ZERO, &mut quiet);
+    assert!(ring.output_silent());
+
+    resync.request();
+    reader.read(Duration::ZERO, &mut [0.0]);
+    assert!(!ring.output_silent());
+}
+
+#[test]
 fn a_dry_read_leaves_the_next_signal_unplayed() {
     let ring = Arc::new(Ring::new());
     let (mut reader, _) = Reader::new(Arc::clone(&ring), Arc::default());
