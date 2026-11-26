@@ -14,7 +14,7 @@ mod tests {
 
     use pods_pwrig::Server;
     use pods_samples::MODEL_NUMBER;
-    use pulseaudio::protocol::SinkState;
+    use pulseaudio::protocol::{CommandTag, SinkState};
 
     use super::support::audio::{Asked, FakeAudio, Recorder, Volumes};
     use super::support::pipewire::{node_name, start, wait_node};
@@ -114,6 +114,56 @@ mod tests {
         let before = audio.requests().len();
         rig.relink(&device);
         wait_for_read(&audio, before, &Asked::RecorderList);
+        assert_eq!(audio.writes(), [set.clone(), set]);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_channel_retry_sets_the_default_source_again() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
+        let pipewire = start(&rig);
+        link(&rig, &device);
+        wait_node(&pipewire);
+        wait_for_read(&audio, 0, &Asked::SourceList);
+        let source = node_name();
+        let set = Asked::DefaultSource {
+            name: source.clone(),
+        };
+        let before = audio.requests().len();
+        audio.add_source(&source);
+        wait_for_read(&audio, before, &Asked::RecorderList);
+        assert_eq!(audio.writes().as_slice(), std::slice::from_ref(&set));
+
+        // A closed channel keeps the device followed, so the redial reaches the follower as the same request.
+        rig.close_channel(&device);
+        rig.accept(&device);
+        rig.wait_filled();
+        wait_for("the default source set again", || {
+            (audio.writes().len() == 2).then_some(())
+        });
+        assert_eq!(audio.writes(), [set.clone(), set]);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_default_source_lost_with_its_connection_is_set_again() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Suspended);
+        let pipewire = start(&rig);
+        link(&rig, &device);
+        wait_node(&pipewire);
+        wait_for_read(&audio, 0, &Asked::SourceList);
+        let source = node_name();
+        let set = Asked::DefaultSource {
+            name: source.clone(),
+        };
+        audio.hold_at_reply(CommandTag::SetDefaultSource);
+        audio.add_source(&source);
+        wait_for_read(&audio, 0, &set);
+        audio.restart(Volumes::Kept);
+        audio.hold_replies(false);
+        wait_for("the default source set again", || {
+            (audio.writes().len() == 2).then_some(())
+        });
         assert_eq!(audio.writes(), [set.clone(), set]);
         rig.finish();
     }

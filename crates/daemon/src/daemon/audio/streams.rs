@@ -61,9 +61,10 @@ impl Follower<'_> {
             capture.sources = self.requests.watched(listed).await?;
             self.restore(connection, sink, stale).await?;
             if capture.sources.microphone.is_some() && !*capture.default_source_attempted {
-                *capture.default_source_attempted = true;
+                // Marked only once answered, so a connection lost mid-call asks again on the retry.
                 self.set_default_source(connection, stale, &capture.name)
                     .await?;
+                *capture.default_source_attempted = true;
             }
         }
         if reread_source || refresh.contains(SubscriptionMask::SOURCE_OUTPUT) {
