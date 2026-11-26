@@ -50,6 +50,12 @@ fn restart(chain: &mut Chain, now: Duration) {
 fn opens(reader: &mut Reader, now: Duration) {
     let mut heard = [0.0; QUANTUM];
     let ratio = reader.read(now, &mut heard);
+    let clamp = 1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION;
+    assert_eq!(
+        ratio.to_bits(),
+        clamp.to_bits(),
+        "the opening must catch up to live"
+    );
     let run = reader.ring.run();
     let first = i64::try_from(run).unwrap();
     let written = (0..).zip(0..).take(QUANTUM);
@@ -60,8 +66,6 @@ fn opens(reader: &mut Reader, now: Duration) {
     assert!(!silent(&heard));
     let opened: Vec<u32> = opened.into_iter().map(f32::to_bits).collect();
     assert_eq!(heard.map(f32::to_bits).to_vec(), opened);
-    let clamp = 1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION;
-    assert_eq!(ratio.to_bits(), clamp.to_bits());
 }
 
 #[test]
@@ -211,6 +215,28 @@ fn an_empty_previous_run_does_not_spend_the_new_spans_opening() {
     assert_eq!(reader.ring.run(), previous);
     assert_ne!(reader.ring.generation.load(Ordering::Acquire), generation);
     opens(&mut reader, next);
+}
+
+#[test]
+fn a_burst_before_the_resync_read_keeps_its_opening() {
+    let (mut chain, mut reader, resync) = chain(Arc::new(Counters::default())).unwrap();
+    let mut heard = [0.0; QUANTUM];
+    resync.request();
+    reader.read(Duration::ZERO, &mut heard);
+    chain.dictation_run();
+    chain.flush_dictation(Duration::ZERO);
+
+    let linked = Duration::from_millis(u64::from(DOAP_LATENCY_MS));
+    resync.request();
+    chain.dictation_run();
+    let mut frames = (0..=BURST).zip(tone());
+    chain.frames(linked, frames.by_ref().take(usize::from(BURST)));
+    reader.read(linked, &mut heard);
+    assert!(silent(&heard));
+
+    let steady = linked + PERIOD;
+    chain.frames(steady, frames);
+    opens(&mut reader, steady);
 }
 
 #[test]
