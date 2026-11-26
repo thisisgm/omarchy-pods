@@ -49,7 +49,8 @@ pub enum Event {
 
 /// Runs on the real time thread, so it never allocates, locks or panics; returns the rate ratio for the server's converter.
 pub trait Fill: Send {
-    fn fill(&mut self, out: &mut [f32]) -> f64;
+    /// `capacity` is the negotiated buffer size in frames, including space the current request did not use.
+    fn fill(&mut self, out: &mut [f32], capacity: usize) -> f64;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -572,7 +573,7 @@ extern "C" fn on_process(data: *mut c_void) {
     };
     // SAFETY: the buffer came from the stream, with its data mapped by the library.
     if let Some(frames) = unsafe { frames(buffer) } {
-        let ratio = process.fill.fill(frames.samples);
+        let ratio = process.fill.fill(frames.samples, frames.capacity);
         *frames.chunk = ffi::spa_chunk {
             offset: 0,
             size: frames.count.saturating_mul(STRIDE),
@@ -588,10 +589,11 @@ extern "C" fn on_process(data: *mut c_void) {
     unsafe { ffi::pw_stream_queue_buffer(process.stream, buffer) };
 }
 
-/// The part of a buffer `Fill` writes, and the chunk that tells the server how much it wrote.
+/// The part of a buffer `Fill` writes, its total capacity and the chunk that tells the server how much it wrote.
 struct Frames<'a> {
     samples: &'a mut [f32],
     count: u32,
+    capacity: usize,
     chunk: &'a mut ffi::spa_chunk,
 }
 
@@ -619,6 +621,7 @@ unsafe fn frames(buffer: &ffi::pw_buffer) -> Option<Frames<'_>> {
     Some(Frames {
         samples,
         count,
+        capacity: usize::try_from(held).ok()?,
         chunk,
     })
 }
@@ -638,7 +641,7 @@ mod tests {
     const HELD_BYTES: u32 = HELD * STRIDE;
     const RATIO: f64 = 1.001;
 
-    /// What `frames` gives for a buffer of `n_datas` blocks, the first `maxsize` bytes at `data` with a chunk or none: the samples and the count.
+    /// What `frames` gives for a buffer of `n_datas` blocks, the first `maxsize` bytes at `data` with a chunk or none: its slice length, count and capacity.
     #[expect(unsafe_code, reason = "runs the reader over a buffer made here")]
     fn read(
         data: *mut c_void,
@@ -646,7 +649,7 @@ mod tests {
         n_datas: u32,
         with_chunk: bool,
         requested: u64,
-    ) -> Option<(usize, u32)> {
+    ) -> Option<(usize, u32, usize)> {
         let mut chunk = ffi::spa_chunk {
             offset: 0,
             size: 0,
@@ -675,7 +678,8 @@ mod tests {
         };
         let buffer = buffer(&raw mut spa, requested);
         // SAFETY: every pointer is null or to a local that outlives the call, with `maxsize` bytes behind `data`.
-        unsafe { frames(&buffer) }.map(|frames| (frames.samples.len(), frames.count))
+        unsafe { frames(&buffer) }
+            .map(|frames| (frames.samples.len(), frames.count, frames.capacity))
     }
 
     fn buffer(spa: *mut ffi::spa_buffer, requested: u64) -> ffi::pw_buffer {
@@ -694,7 +698,7 @@ mod tests {
         let data = samples.as_mut_ptr().cast();
         for (requested, count) in [(0, HELD), (3, 3), (9, HELD), (u64::MAX, HELD)] {
             let given = read(data, HELD_BYTES, 1, true, requested);
-            let wanted = (usize::try_from(count).unwrap(), count);
+            let wanted = (usize::try_from(count).unwrap(), count, samples.len());
             assert_eq!(given, Some(wanted), "{requested} requested");
         }
     }

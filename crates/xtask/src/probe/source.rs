@@ -198,11 +198,13 @@ struct Held {
 }
 
 impl Fill for Held {
-    fn fill(&mut self, out: &mut [f32]) -> f64 {
+    fn fill(&mut self, out: &mut [f32], capacity: usize) -> f64 {
         let gone = self.measure.as_ref().map_or(0, |(_, counters)| {
             counters.span_gone_frames.load(Ordering::Relaxed)
         });
-        let ratio = self.reader.read(self.since.elapsed(), out);
+        let ratio = self
+            .reader
+            .read_for_converter(self.since.elapsed(), out, capacity);
         if let Some((span, counters)) = &self.measure {
             // The previous request set the converter's rate for the buffer it just requested.
             let ppm = f64::from_bits(self.seen.rate_ppm.load(Ordering::Relaxed));

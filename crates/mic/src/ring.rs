@@ -27,6 +27,8 @@ const STEER_PPM_PER_MS: f64 = 200.0;
 const STEER_MAX_PPM: f64 = 2000.0;
 /// Close 40 ms of missed playout plus 5 ms of margin per second.
 const CATCH_UP_RATIO: f64 = 1.045;
+/// The owner's limit on source audio played above the drift ratio after one stall.
+const CATCH_UP_MAX_MS: u16 = 1_000;
 /// Bring catch-up back into the drift range over the last 5 ms above the realignment bound.
 const CATCH_UP_TAPER_MS: f64 = 5.0;
 /// The most lag an opening can leave to steady steering.
@@ -395,6 +397,10 @@ pub struct Reader {
     edge: Option<i64>,
     /// The run the reader is catching up on.
     opening: Option<Opening>,
+    last_read: Option<Duration>,
+    catch_up_left: i64,
+    /// The converter applies a requested catch-up ratio to its next read.
+    catch_up_requested: bool,
 }
 
 /// The catch-up rate falls by a quarter of its excess per quantum as it spends its remaining lag budget.
@@ -442,13 +448,28 @@ impl Reader {
             linking: false,
             edge: None,
             opening: None,
+            last_read: None,
+            catch_up_left: 0,
+            catch_up_requested: false,
         };
         (reader, resync)
     }
 
-    /// Fills `out` with the frames due at `now`, at the level a recorder gets, and returns the rate ratio the consumer should run at.
+    /// Fills `out` with the frames due at `now`, at the level a recorder gets, and returns their playout ratio.
     pub fn read(&mut self, now: Duration, out: &mut [f32]) -> f64 {
+        self.read_at(now, out, None)
+    }
+
+    /// Reads for a converter that applies the ratio to its next buffer, which holds at most `capacity` frames.
+    pub fn read_for_converter(&mut self, now: Duration, out: &mut [f32], capacity: usize) -> f64 {
+        self.read_at(now, out, Some(i64::try_from(capacity).unwrap_or(i64::MAX)))
+    }
+
+    fn read_at(&mut self, now: Duration, out: &mut [f32], capacity: Option<i64>) -> f64 {
         let frames = i64::try_from(out.len()).unwrap_or(i64::MAX);
+        if std::mem::take(&mut self.catch_up_requested) {
+            self.catch_up_left = self.catch_up_left.saturating_sub(frames).max(0);
+        }
         let previous = self.ring.resync_from.swap(NO_RESYNC, Ordering::AcqRel);
         let resynced = previous != NO_RESYNC;
         if resynced {
@@ -457,6 +478,7 @@ impl Reader {
             (self.heard, self.was) = (None, Was::Gone);
             (self.linking, self.opening) = (true, None);
             self.previous_span_run = self.edge.map(|_| previous);
+            self.catch_up_left = 0;
             self.edge = Some(self.ring.link(now));
         }
         // A dry read can run ahead of the writer, so it only accounts for frames already written.
@@ -464,7 +486,7 @@ impl Reader {
         // The run is noted before its time is read, so the time is of that run or of one after it.
         let run = self.ring.run();
         let aim = self.aim(run, now, frames);
-        let ratio = self.fill(aim, frames, out);
+        let ratio = self.fill(aim, frames, out, capacity);
         // Last, over every sample handed out, so the sum of two fades is held under the ceiling too.
         let tally = level::apply(out);
         let played = aim.map_or(0, |_| self.next.min(written));
@@ -479,11 +501,23 @@ impl Reader {
 
     /// Stands the reader for a read of `frames` at `now` by the time of `run`, the run noted before, and gives what it stood by; none while the run has not told its time, or when another started since.
     fn aim(&mut self, run: u64, now: Duration, frames: i64) -> Option<Aim> {
+        let previous = self.last_read.replace(now);
         let generation = self.ring.generation.load(Ordering::Acquire);
         let target = self.ring.target(now)?;
         // A run that started since `run` was noted may have told the time just read, so the read stands by neither.
         if self.ring.run() != run || self.ring.generation.load(Ordering::Acquire) != generation {
             return None;
+        }
+        if self.heard != Some(run) {
+            self.catch_up_left = 0;
+        } else if let Some(last) = previous {
+            let elapsed = scaled(ns_of(now.saturating_sub(last)), RATE_HZ, NS_PER_SECOND);
+            let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
+            // Only a fresh callback gap can renew an exhausted budget while lag persists.
+            if elapsed.saturating_sub(frames) > bound {
+                self.catch_up_left =
+                    i64::from(CATCH_UP_MAX_MS).saturating_mul(i64::from(FRAMES_PER_MS));
+            }
         }
         let catch_up = self.stand(target.saturating_sub(frames), run, generation, now);
         Some(Aim {
@@ -495,7 +529,13 @@ impl Reader {
     }
 
     /// Hands out the frames from where the reader stands, those of the run it stood by and none of a run that started since, and gives the ratio.
-    fn fill(&mut self, aim: Option<Aim>, frames: i64, out: &mut [f32]) -> f64 {
+    fn fill(
+        &mut self,
+        aim: Option<Aim>,
+        frames: i64,
+        out: &mut [f32],
+        capacity: Option<i64>,
+    ) -> f64 {
         let told = aim.map(|aim| aim.run);
         let mut gone = 0_u64;
         for sample in &mut *out {
@@ -518,7 +558,7 @@ impl Reader {
             (Some(aim), None) => {
                 let catch_up =
                     aim.catch_up && self.was == Was::Sample && self.heard == Some(aim.run);
-                self.steer(aim.target, frames, catch_up)
+                self.steer(aim.target, frames, catch_up, capacity)
             }
         }
     }
@@ -696,7 +736,7 @@ impl Reader {
     }
 
     /// The ratio is 1 less a share of the smoothed distance, so a reader that is ahead asks for fewer frames a second.
-    fn steer(&mut self, target: i64, frames: i64, catch_up: bool) -> f64 {
+    fn steer(&mut self, target: i64, frames: i64, catch_up: bool, capacity: Option<i64>) -> f64 {
         let per_ms = f64::from(FRAMES_PER_MS);
         let ahead_ms = float_of(self.next.saturating_sub(target)) / per_ms;
         let smooth_frames = f64::from(STEER_SMOOTH_MS) * per_ms;
@@ -704,10 +744,23 @@ impl Reader {
         self.ahead_ms += (ahead_ms - self.ahead_ms) * share;
         let ppm = (self.ahead_ms * STEER_PPM_PER_MS).clamp(-STEER_MAX_PPM, STEER_MAX_PPM);
         let drift = 1.0 - ppm / PARTS_PER_MILLION;
-        if catch_up && ahead_ms < -f64::from(REALIGN_MS) {
+        // The next converter request may be larger than this read, up to the buffer capacity.
+        let reserved = capacity.unwrap_or(frames);
+        if catch_up
+            && ahead_ms < -f64::from(REALIGN_MS)
+            && (1..=self.catch_up_left).contains(&reserved)
+        {
             let excess = -ahead_ms - f64::from(REALIGN_MS);
             let share = (excess / CATCH_UP_TAPER_MS).min(1.0);
-            return drift.max(1.0 + (CATCH_UP_RATIO - 1.0) * share);
+            let ratio = 1.0 + (CATCH_UP_RATIO - 1.0) * share;
+            if ratio > drift {
+                if capacity.is_some() {
+                    self.catch_up_requested = true;
+                } else {
+                    self.catch_up_left = self.catch_up_left.saturating_sub(frames);
+                }
+                return ratio;
+            }
         }
         drift
     }

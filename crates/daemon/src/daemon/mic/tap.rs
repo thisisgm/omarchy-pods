@@ -212,8 +212,9 @@ pub(super) struct Feed {
 }
 
 impl Fill for Feed {
-    fn fill(&mut self, out: &mut [f32]) -> f64 {
-        self.reader.read(self.epoch.elapsed(), out)
+    fn fill(&mut self, out: &mut [f32], capacity: usize) -> f64 {
+        self.reader
+            .read_for_converter(self.epoch.elapsed(), out, capacity)
     }
 }
 

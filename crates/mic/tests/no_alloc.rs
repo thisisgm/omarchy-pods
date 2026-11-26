@@ -87,7 +87,12 @@ mod tests {
         loud.reader.read(now, &mut heard);
         let mut catch_up = 0.0;
         let measured = allocation_counter::measure(|| {
-            catch_up = black_box(loud.reader.read(now + READ_EVERY + MISSED, &mut heard));
+            let late = now + READ_EVERY + MISSED;
+            catch_up = black_box(loud.reader.read_for_converter(late, &mut heard, FRAMES));
+            black_box(
+                loud.reader
+                    .read_for_converter(late + READ_EVERY, &mut heard, FRAMES),
+            );
         });
         assert_eq!(measured.count_total, 0);
         assert!(
