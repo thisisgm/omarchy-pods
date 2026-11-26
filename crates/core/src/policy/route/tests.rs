@@ -93,7 +93,9 @@ fn streaming_dictation(recorders: Recorders) -> (Policy, State) {
     ] {
         drop(policy.step(&state, fact, Duration::ZERO));
     }
-    drop(policy.step(&state, Fact::Tick, Duration::from_millis(ROUTE_WAIT_MS)));
+    if let Some(deadline) = policy.edge.deadline() {
+        drop(policy.step(&state, Fact::Tick, deadline));
+    }
     let effects = policy.step(&state, Fact::Tick, STREAMING_AT);
     assert!(effects.contains(&Effect::Dictation(DictationRequest::Start)));
     let answered = Fact::Dictation(DictationFact::Answered);

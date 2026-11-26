@@ -20,8 +20,8 @@ use session::{Session, Stop};
 
 /// The delays between attempts to open the attribute channel.
 pub const BEARER_RETRY_MS: [u64; 3] = [750, 1500, 3000];
-/// Provisional minimum delay from setting `0x13` to START, based on sitting A.
-pub const MODE_SETTLE_MS: u64 = 150;
+/// Sitting C found 70 ms was the shortest wait that streamed 10 of 10 starts, so 90 ms leaves one 20 ms frame of margin.
+pub const MODE_SETTLE_MS: u64 = 90;
 /// The most START may wait for logind after mode settling.
 pub const INHIBIT_WAIT_MS: u64 = 100;
 /// The longest wait for the started score or first audio.
