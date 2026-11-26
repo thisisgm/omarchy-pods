@@ -42,8 +42,8 @@ pub const UPLINK_PERIOD_MS: u32 = 30;
 pub const JITTER_COVER_MS: u32 = 55;
 /// The latency the node states on both paths. The ring holds it on uplink and holds [`DOAP_LATENCY_MS`] on dictation.
 pub const NODE_LATENCY_MS: u32 = UPLINK_PERIOD_MS + JITTER_COVER_MS;
-/// The jitter the shorter dictation cadence can cover.
-const DOAP_JITTER_COVER_MS: u32 = 65;
+/// The jitter the shorter dictation cadence can cover; with a recorder's 20 ms quantum the hold must still end inside its 100 ms stop wait.
+const DOAP_JITTER_COVER_MS: u32 = 55;
 /// The delay the reader holds on the dictation path.
 pub const DOAP_LATENCY_MS: u32 = FRAME_MS + DOAP_JITTER_COVER_MS;
 /// The most the stated latency may be: a recorder caps the wait after its stop at 100 ms, and this limit stands 10 ms inside it.
@@ -217,8 +217,11 @@ impl Arrivals {
         let earliest = self.push(arrival);
         let stale = self.0.len().saturating_sub(DOAP_REANCHOR_PACKETS);
         let recent = self.0.range(stale..).copied().fold(arrival, i64::min);
-        let latency_ns = i64::from(DOAP_LATENCY_MS).saturating_mul(NS_PER_MS);
-        if recent.saturating_sub(earliest) > latency_ns {
+        let oldest_recent = self.0.get(stale).copied().unwrap_or(arrival);
+        let cover_ns = i64::from(DOAP_JITTER_COVER_MS).saturating_mul(NS_PER_MS);
+        // A queue draining after a stall lands each frame earlier than the one before it; a delay step does not.
+        let draining = arrival < oldest_recent;
+        if !draining && recent.saturating_sub(earliest) > cover_ns {
             drop(self.0.drain(..stale));
             return recent;
         }
