@@ -30,9 +30,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::task::Poll;
 
+use pods_core::link::SavedKeys;
 use pods_core::prefs::Prefs;
 use pods_core::status::to_status_line;
-use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_sys::l2cap;
 use tokio::runtime::Builder;
@@ -86,7 +86,7 @@ async fn serve(
     settings: PathBuf,
     loaded: Prefs,
     keys_file: PathBuf,
-    stored: Option<ProximityKeys>,
+    stored: Option<SavedKeys>,
 ) -> ExitCode {
     let mut stop = match signals::listen() {
         Ok(stop) => stop,

@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pods_core::command::{AdaptiveLevel, Command, CommandError, Outcome};
+use pods_core::link::SavedKeys;
 use pods_core::link::ladder::HANDSHAKE_STEP_TIMEOUT_MS;
 use pods_core::state::State;
 use pods_fake::pair;
@@ -306,9 +307,12 @@ fn the_monitor_wanted_at_start_reaches_the_watcher_behind_a_full_request_queue()
         }
         let refuse: Connector = Arc::new(|_| Err(ChannelError::Connect(Errno::HOSTDOWN)));
         let hub = Hub::new(link.clone(), State::default());
-        let keys = ProximityKeys {
-            identity: Key::from_bytes(IDENTITY_KEY),
-            payload: Key::from_bytes(PAYLOAD_KEY),
+        let keys = SavedKeys {
+            keys: ProximityKeys {
+                identity: Key::from_bytes(IDENTITY_KEY),
+                payload: Key::from_bytes(PAYLOAD_KEY),
+            },
+            device: None,
         };
         let (monitor, mut wanted) = watch::channel(false);
         let outlets = Outlets {

@@ -12,10 +12,13 @@ const IDENTITY_HEX: &str = "5ac30f9621e87b44d019a63e82f56cb7";
 
 const PAYLOAD_HEX: &str = "9d0471ea38cf568b12fe67a02db943c8";
 
-fn sample() -> ProximityKeys {
-    ProximityKeys {
-        identity: Key::from_bytes(IDENTITY_KEY),
-        payload: Key::from_bytes(PAYLOAD_KEY),
+fn sample() -> SavedKeys {
+    SavedKeys {
+        keys: ProximityKeys {
+            identity: Key::from_bytes(IDENTITY_KEY),
+            payload: Key::from_bytes(PAYLOAD_KEY),
+        },
+        device: None,
     }
 }
 
@@ -87,11 +90,16 @@ proptest! {
     }
 
     #[test]
-    fn any_pair_reads_back(identity in any::<[u8; KEY_LEN]>(), payload in any::<[u8; KEY_LEN]>()) {
-        let keys = ProximityKeys {
-            identity: Key::from_bytes(identity),
-            payload: Key::from_bytes(payload),
+    fn any_pair_reads_back(identity in any::<[u8; KEY_LEN]>(), payload in any::<[u8; KEY_LEN]>(), device in any::<[u8; ADDRESS_LEN]>()) {
+        let keys = SavedKeys {
+            keys: ProximityKeys {
+                identity: Key::from_bytes(identity),
+                payload: Key::from_bytes(payload),
+            },
+            device: Some(BdAddr::from(device)),
         };
-        prop_assert_eq!(parse(render(&keys).as_bytes()), Ok(keys));
+        let text = render(&keys);
+        prop_assert_eq!(text.capacity(), TEXT_CAPACITY);
+        prop_assert_eq!(parse(text.as_bytes()), Ok(keys));
     }
 }

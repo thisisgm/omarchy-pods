@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use pods_core::command::{Command, Outcome};
 use pods_core::link::{
-    Action, Call, DeviceAction, End, Event, Machine, Phase, STATE_POPULATED_LINE, Signal, Ticket,
-    phase_change_line,
+    Action, Call, DeviceAction, End, Event, Machine, Phase, STATE_POPULATED_LINE, SavedKeys,
+    Signal, Ticket, phase_change_line,
 };
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
@@ -27,7 +27,6 @@ use pods_core::state::{MicCounts, MicSpan, State};
 use pods_mic::{Counters, Resync};
 use pods_proto::addr::BdAddr;
 use pods_proto::doap::{doap_mode_off, doap_mode_on};
-use pods_proto::keys::ProximityKeys;
 use pods_proto::model::Model;
 use pods_proto::uplink::UplinkPacket;
 use pods_sys::l2cap::{Channel, ChannelError};
@@ -112,7 +111,7 @@ pub(super) struct Outlets {
     pub(super) notices: mpsc::Sender<Notice>,
     pub(super) prefs: watch::Sender<Prefs>,
     pub(super) audio: mpsc::Sender<AudioRequest>,
-    pub(super) keys: mpsc::Sender<ProximityKeys>,
+    pub(super) keys: mpsc::Sender<SavedKeys>,
     pub(super) media: media::Outlet,
     /// Whether the advert monitor is wanted; a watch, so the latest is never dropped, and each `true` registers it anew.
     pub(super) monitor: watch::Sender<bool>,
@@ -163,7 +162,7 @@ pub(super) async fn drive(
     requests: mpsc::Sender<Request>,
     connector: Connector,
     outlets: Outlets,
-    keys: Option<ProximityKeys>,
+    keys: Option<SavedKeys>,
 ) {
     let mut driver = Driver::new(hub, feedback, requests, connector, outlets, keys);
     for effect in driver.policy.start() {
@@ -240,7 +239,7 @@ impl Driver {
         requests: mpsc::Sender<Request>,
         connector: Connector,
         outlets: Outlets,
-        keys: Option<ProximityKeys>,
+        keys: Option<SavedKeys>,
     ) -> Self {
         Self {
             hub,
@@ -492,13 +491,11 @@ impl Driver {
             self.policy.advert(&mut next, sighting, now)
         } else {
             self.policy.apply(&mut next, &fact);
-            false
-        };
-        let worn_call = if connect && self.exit.is_none() {
-            self.machine.connect_when_worn(&mut next)
-        } else {
             None
         };
+        let worn_call = connect
+            .filter(|_| self.exit.is_none())
+            .and_then(|device| self.machine.connect_when_worn(&mut next, device));
         let mut effects = self.policy.step(&next, fact, now);
         if next != last {
             effects.extend(self.policy.step(&next, Fact::Changed, now));

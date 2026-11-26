@@ -63,6 +63,7 @@ pub(super) struct Monitors {
     /// The adapters that carry the manager interface.
     managers: Vec<String>,
     refuse: bool,
+    stall_registration: bool,
     apps: Vec<App>,
     devices: Vec<Advertised>,
     /// An address and its next advert, shown just ahead of the reply to the next `GetAll` of its device.
@@ -131,6 +132,11 @@ impl Bluez {
     /// While set, `RegisterMonitor` answers `org.bluez.Error.Failed`, as BlueZ does when it cannot make the application.
     pub(crate) fn refuse_monitors(&self, refuse: bool) {
         self.lock().monitors.refuse = refuse;
+    }
+
+    /// Lets each registration hit the daemon's call timeout without activating a monitor.
+    pub(crate) fn stall_monitor_registration(&self, stall: bool) {
+        self.lock().monitors.stall_registration = stall;
     }
 
     /// Every monitor whose `Activate` was sent, read through its application's object manager, in the order they were registered.
@@ -265,6 +271,7 @@ impl Monitors {
         match (member, known) {
             ("RegisterMonitor", Some(_)) => refusal(call, ALREADY_EXISTS),
             ("RegisterMonitor", None) if self.refuse => refusal(call, FAILED),
+            ("RegisterMonitor", None) if self.stall_registration => Answer::Send(Vec::new()),
             ("RegisterMonitor", None) => {
                 self.apps.push(App {
                     key: key.clone(),

@@ -11,10 +11,10 @@ use pods_proto::uplink::UplinkState;
 use pods_samples::uplink::{session_marker, state_marker};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY, keys_of};
 
-use super::sim::{Answer, Input, NO_ACTIONS, Sim, ms};
+use super::sim::{Answer, Input, NO_ACTIONS, Sim, addr, ms};
 use crate::command::tests::level;
 use crate::link::ladder::Attempt;
-use crate::link::{Phase, Signal};
+use crate::link::{Phase, SavedKeys, Signal};
 use crate::state::State;
 
 /// The longest random packet, one receive buffer.
@@ -418,7 +418,13 @@ fn the_keys_are_asked_on_each_metadata_and_a_reply_that_parses_is_signalled() {
         .skip(up)
         .map(|(_, signal)| signal)
         .collect();
-    assert_eq!(signals, [&Signal::Keys(keys)]);
+    assert_eq!(
+        signals,
+        [&Signal::Keys(SavedKeys {
+            keys,
+            device: Some(addr(0)),
+        })]
+    );
 
     sim.feed(Input::PeerCloses);
     sim.feed(Input::Wait(ms(1000)));
