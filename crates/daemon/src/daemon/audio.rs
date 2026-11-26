@@ -354,16 +354,14 @@ impl<'a> Follower<'a> {
                     Err(left) => left,
                 },
             };
+            self.publish_card_id(None);
             match left {
                 // The driver forgot the sink at the link's up, so it is told again even when unchanged.
                 Left::Request(request) if request == again => {
                     self.told = Told::Nothing;
                     self.volume.reset_stamp();
                 }
-                Left::Request(_) => {
-                    self.publish_card_id(None);
-                    return left;
-                }
+                Left::Request(_) => return left,
             }
         }
     }

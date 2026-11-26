@@ -22,7 +22,7 @@ mod tests {
     use pulseaudio::protocol::SinkState;
     use serde_json::{Value, json};
 
-    use super::support::audio::Volumes;
+    use super::support::audio::{Asked, Volumes};
     use super::support::pipewire::{
         daemon_states_latency, links_of, node_name, ready, record, start, wait_no_node, wait_node,
     };
@@ -128,6 +128,43 @@ mod tests {
         assert!(
             relinked.pointer(CARD_ID).is_none(),
             "the relinked node kept a card id: {relinked}"
+        );
+        audio.hold_replies(false);
+        wait_card_id(&pipewire, Some(NEXT_CARD_ID), &relinked);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn a_reopened_channel_labels_the_node_only_with_the_new_card_id() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Idle);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, FIRST_CARD_ID);
+        let pipewire = start(&rig);
+        link_heard(&rig, &device);
+        let node = wait_node(&pipewire);
+        wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+
+        rig.close_channel(&device);
+        wait_no_node(&pipewire);
+        // Hold the card events on the old connection and the card-list reply on the new one.
+        audio.hold_replies(true);
+        audio.remove_card(BLUETOOTH_CARD);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, NEXT_CARD_ID);
+        audio.hold_at_card_list();
+        let before = audio.requests().len();
+        rig.accept(&device);
+        rig.wait_filled();
+        wait_for("the reopened link's card read with its reply held", || {
+            audio.requests()[before..]
+                .contains(&Asked::CardList)
+                .then_some(())
+        });
+        wait_mic(&rig, "ready");
+        let relinked = wait_node(&pipewire);
+        assert_eq!(
+            relinked.pointer(CARD_ID),
+            None,
+            "the reopened channel's mic node kept a stale card id"
         );
         audio.hold_replies(false);
         wait_card_id(&pipewire, Some(NEXT_CARD_ID), &relinked);

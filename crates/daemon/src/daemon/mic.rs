@@ -92,8 +92,8 @@ pub(super) async fn run(
             Turn::Card => None,
         };
         let card = *cards.borrow_and_update();
-        adapter.update_card(card);
-        if let Some(fact) = fact
+        let card_fact = adapter.update_card(card).await;
+        if let Some(fact) = card_fact.or(fact)
             && inputs.send(Input::Mic(fact)).await.is_err()
         {
             break;
@@ -276,19 +276,35 @@ impl Adapter {
         }
     }
 
-    fn update_card(&mut self, card: Option<CardId>) {
-        let Some(opened) = self.opened.as_mut() else {
-            return;
-        };
+    async fn update_card(&mut self, card: Option<CardId>) -> Option<MicFact> {
+        let mut opened = self.opened.take()?;
         let card_id = card
             .filter(|(device, _)| Some(*device) == opened.device)
             .map(|(_, id)| id);
         if opened.card_id == card_id {
-            return;
+            self.opened = Some(opened);
+            return None;
         }
-        match opened.source.set_device_id(card_id) {
-            Ok(()) => opened.card_id = card_id,
-            Err(error) => log(&format!("mic: pw_stream_update_properties failed: {error}")),
+        let id = opened.id;
+        // Wait for the worker to return the source before serving another update or close.
+        let updated = spawn_blocking(move || {
+            match opened.source.set_device_id(card_id) {
+                Ok(()) => opened.card_id = card_id,
+                Err(error) => log(&format!("mic: pw_stream_update_properties failed: {error}")),
+            }
+            opened
+        })
+        .await;
+        match updated {
+            Ok(opened) => {
+                self.opened = Some(opened);
+                None
+            }
+            Err(error) => {
+                log(&format!("mic: card id update ended abnormally: {error}"));
+                self.tap.close(());
+                Some(self.retry(id))
+            }
         }
     }
 
