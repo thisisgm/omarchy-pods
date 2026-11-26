@@ -239,6 +239,10 @@ static CELLS: [(Kind, Event, Sent, Kind); 120] = {
 const COVERED: &str = "\
 a_worn_bud_brings_the_node_up_with_its_name_and_latency Closed Changed
 a_worn_bud_brings_the_node_up_with_its_name_and_latency Opening Opened
+stable_source_with_a3064_reported_and_a3063_saved Closed Changed
+stable_source_with_a3064_reported_and_a3063_saved Opening Opened
+stable_source_with_a3063_reported_and_a3064_saved Closed Changed
+stable_source_with_a3063_reported_and_a3064_saved Opening Opened
 no_property_of_the_node_holds_an_address_or_the_device_name Opening Opened
 the_first_recorder_starts_the_uplink_cold Up Streaming
 two_recorders_inside_the_linger_send_one_start_and_no_stop Recording Paused
