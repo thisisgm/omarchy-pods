@@ -741,9 +741,12 @@ mod tests {
         let mut at = Duration::ZERO;
         let mut fallbacks = 0;
         for _ in 0..DOAP_START_TRIES {
+            assert_eq!(fallbacks, 0);
+            assert_eq!(policy.edge.route(), Some(Route::Dictation));
             at = at.saturating_add(settle);
             let effects = policy.step(&state, Fact::Tick, at);
             assert!(effects.contains(&Effect::Dictation(DictationRequest::Start)));
+            fallbacks += effects.iter().filter(|effect| **effect == fallback).count();
             for fact in [DictationFact::Answered, DictationFact::Ended] {
                 let effects = policy.step(&state, Fact::Dictation(fact), at);
                 fallbacks += effects.iter().filter(|effect| **effect == fallback).count();
