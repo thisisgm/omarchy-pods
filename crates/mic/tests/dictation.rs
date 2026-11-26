@@ -33,6 +33,8 @@ mod tests {
 
     /// A frame of the tone past any a run here lands, so its bytes are not those a counter before it carried.
     const OTHER_FRAME: usize = 20;
+    // Read one ms past the frame deadline before the jittered notification lands.
+    const LATE_READ_PHASE_MS: u32 = 6;
 
     /// When the frame `step` frames after a run's first lands if it is on time.
     fn at(step: u32) -> Duration {
@@ -107,9 +109,13 @@ mod tests {
         /// Lands the next `frames` frames of the tone on time, each alone in its notification.
         fn land(&mut self, frames: u32) {
             for _ in 0..frames {
-                self.notify(at(self.step), STEADY_FRAMES);
-                self.step = self.step.saturating_add(1);
+                self.land_at(at(self.step));
             }
+        }
+
+        fn land_at(&mut self, now: Duration) {
+            self.notify(now, STEADY_FRAMES);
+            self.step = self.step.saturating_add(1);
         }
 
         /// `frames` frames never come: their counters and their times go by, and the twin conceals each.
@@ -130,10 +136,18 @@ mod tests {
 
         /// Lands the frames due by each read on time, a landing first where the two meet, and returns what the reads gave, joined.
         fn play(&mut self, reads: &[Duration]) -> Vec<f32> {
+            self.play_at(reads, at)
+        }
+
+        fn play_at(&mut self, reads: &[Duration], landing: impl Fn(u32) -> Duration) -> Vec<f32> {
             let mut tape = Vec::new();
             for &now in reads {
-                while at(self.step) <= now {
-                    self.land(1);
+                loop {
+                    let due = landing(self.step);
+                    if due > now {
+                        break;
+                    }
+                    self.land_at(due);
                 }
                 tape.extend(self.read(now, QUANTUM).0);
             }
@@ -208,6 +222,88 @@ mod tests {
         assert!(
             (level - f64::from(TONE_DBFS) - f64::from(MIC_GAIN_DB)).abs() <= TONE_SLACK_DB,
             "the tone peaks at {level} dBFS"
+        );
+    }
+
+    #[test]
+    fn arrival_jitter_up_to_65_ms_keeps_every_sample() {
+        const LATE_FRAME: u32 = 10;
+        for late_ms in [50, 60, 65] {
+            let mut stream = Stream::new();
+            stream.resync.request();
+            let from = at(5) + ms(LATE_READ_PHASE_MS);
+            let tape = stream.play_at(&reads(from, 20), |step| {
+                if step < LATE_FRAME {
+                    at(step)
+                } else {
+                    // Frames queued behind the late one arrive in order.
+                    at(step).max(at(LATE_FRAME) + ms(late_ms))
+                }
+            });
+            assert_eq!(counted(&stream.counters), [0; 4], "{late_ms} ms late");
+            let base = base_of(from);
+            assert_same(
+                &tape[FADE..],
+                &stream.twin.decoded[base + FADE..base + tape.len()],
+            );
+        }
+    }
+
+    fn assert_short_silence_after_step(late_ms: u32) {
+        const FIRST_LATE: u32 = 10;
+        const MAX_SILENCE_MS: u32 = 3 * FRAME_MS;
+        let mut stream = Stream::new();
+        stream.resync.request();
+        let read_count = FIRST_LATE.saturating_add(u32::try_from(ARRIVAL_WINDOW).unwrap());
+        let from = at(5).saturating_add(ms(LATE_READ_PHASE_MS));
+        let tape = stream.play_at(&reads(from, read_count), |step| {
+            if step < FIRST_LATE {
+                at(step)
+            } else {
+                at(step).saturating_add(ms(late_ms))
+            }
+        });
+        let longest = longest_silence(&tape);
+        assert!(
+            longest <= frames_in(ms(MAX_SILENCE_MS)),
+            "{late_ms} ms step produced {longest} consecutive zero samples (limit {})",
+            frames_in(ms(MAX_SILENCE_MS))
+        );
+    }
+
+    fn longest_silence(tape: &[f32]) -> usize {
+        tape.split(|&sample| sample != 0.0)
+            .map(<[f32]>::len)
+            .max()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_sustained_70_ms_step_keeps_silence_under_60_ms() {
+        assert_short_silence_after_step(70);
+    }
+
+    #[test]
+    fn a_sustained_90_ms_step_keeps_silence_under_60_ms() {
+        assert_short_silence_after_step(90);
+    }
+
+    #[test]
+    fn ordinary_jitter_keeps_the_early_arrival_anchor() {
+        const JITTER_MS: u32 = 20;
+        let mut stream = Stream::new();
+        stream.resync.request();
+        let from = at(5);
+        let tape = stream.play_at(&reads(from, 20), |step| match step {
+            0 | 4 => at(step),
+            1..=3 => at(step).checked_sub(ms(JITTER_MS)).unwrap(),
+            _ => at(step) + ms(JITTER_MS),
+        });
+        assert_eq!(counted(&stream.counters), [0; 4]);
+        let base = base_of(from + ms(JITTER_MS));
+        assert_same(
+            &tape[FADE..],
+            &stream.twin.decoded[base + FADE..base + tape.len()],
         );
     }
 
@@ -304,31 +400,37 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_has_not_told_its_time_is_not_played() {
-        const BURST: usize = 5;
+    fn a_late_recovery_burst_tells_the_new_runs_time() {
+        const BURST: usize = 2;
+        const STEP_MS: u32 = 100;
+        const MAX_RECOVERY_SILENCE_MS: u32 = 3 * FRAME_MS;
         let mut stream = Stream::new();
         stream.resync.request();
         assert!(!silent(&stream.play(&reads(at(5), 6))));
-        // Five frames in one notification under counters past the gap: a new run, and no steady notification to say when it plays.
-        stream.counter = stream.counter.wrapping_add(MAX_GAP_FRAMES + 1);
+        let first_missing = stream.step;
+        stream.lose(MAX_GAP_FRAMES + 1);
         stream.twin = Twin::new();
-        stream.notify(at(11), BURST);
-        // The first read holds the fall of the run that ended; the reader then passes the place of the new run's frames and hands out none of them.
-        stream.read(at(11), QUANTUM);
-        for step in 12..21 {
-            let (heard, ratio) = stream.read(at(step), QUANTUM);
-            assert!(
-                silent(&heard) && unsteered(ratio),
-                "the read at step {step}"
-            );
+        let recovery_step = stream.step + u32::try_from(BURST - 1).unwrap() + STEP_MS / FRAME_MS;
+        let recovery = at(recovery_step);
+        for now in reads(at(first_missing), recovery_step - first_missing) {
+            stream.read(now, QUANTUM);
         }
-        // Its next steady notification tells the time, and the read after it is handed the run.
-        stream.step = 21;
-        stream.land(1);
-        assert!(!silent(&stream.read(at(21), QUANTUM).0));
-        // The burst waited whole: a recorder that links now hears its five frames and the steady one as a fresh decoder gave them.
-        stream.assert_heard_as_decoded();
-        assert_eq!(counted(&stream.counters), [0; 4]);
+        // The hole and delay passed before recovery. Every notification from here carries two frames.
+        let mut resumed = Vec::new();
+        for (read, now) in reads(recovery, 12).into_iter().enumerate() {
+            if read.is_multiple_of(BURST) {
+                stream.notify(now, BURST);
+            }
+            let (heard, _) = stream.read(now, QUANTUM);
+            if now > recovery {
+                resumed.extend(heard);
+            }
+        }
+        let longest = longest_silence(&resumed);
+        assert!(
+            longest <= frames_in(ms(MAX_RECOVERY_SILENCE_MS)),
+            "batched recovery produced {longest} consecutive zero samples after arrival"
+        );
     }
 
     #[test]

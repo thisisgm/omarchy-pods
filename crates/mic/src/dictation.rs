@@ -140,13 +140,15 @@ impl Chain {
             u32::try_from(dropped).unwrap_or(u32::MAX),
             Ordering::Relaxed,
         );
-        // A burst stands ahead of the cadence and a repeat behind it; only a steady notification whose frame the run took tells its time, and the first one places the opening.
-        if (met, took) == (STEADY_FRAMES, STEADY_FRAMES) {
-            if staging {
-                self.place(now, true);
-            } else {
-                self.arrived(now);
-            }
+        let steady = (met, took) == (STEADY_FRAMES, STEADY_FRAMES);
+        if staging && steady {
+            self.place(now, true);
+        } else if steady {
+            let arrival = self.ring.arrival_at(now);
+            self.ring.publish(self.arrivals.push_dictation(arrival));
+        } else if !staging && took > 0 && self.arrivals.is_empty() {
+            // The first burst after a counter jump gives the new run its time.
+            self.arrived(now);
         }
     }
 

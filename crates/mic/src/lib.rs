@@ -43,7 +43,7 @@ pub const JITTER_COVER_MS: u32 = 55;
 /// The latency the node states on both paths. The ring holds it on uplink and holds [`DOAP_LATENCY_MS`] on dictation.
 pub const NODE_LATENCY_MS: u32 = UPLINK_PERIOD_MS + JITTER_COVER_MS;
 /// The jitter the shorter dictation cadence can cover.
-const DOAP_JITTER_COVER_MS: u32 = 45;
+const DOAP_JITTER_COVER_MS: u32 = 65;
 /// The delay the reader holds on the dictation path.
 pub const DOAP_LATENCY_MS: u32 = FRAME_MS + DOAP_JITTER_COVER_MS;
 /// The most the stated latency may be: a recorder caps the wait after its stop at 100 ms, and this limit stands 10 ms inside it.
@@ -58,6 +58,9 @@ const UNITS_PER_PACKET: u32 = 4;
 const MAX_GAP_UNITS: u32 = 2 * UNITS_PER_PACKET;
 /// About one second of packets: the earliest arrival in it is the pods' own cadence without the radio's delay.
 pub const ARRIVAL_WINDOW: usize = 32;
+// Three late steady notifications distinguish a delay step from a brief stall.
+const DOAP_REANCHOR_PACKETS: usize = 3;
+const NS_PER_MS: i64 = 1_000_000;
 const FRAMES_PER_MS: u16 = if RATE_HZ == 48_000 { 48 } else { 64 };
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const _: () = assert!(
@@ -208,6 +211,22 @@ impl Arrivals {
         }
         self.0.push_back(arrival);
         self.0.iter().copied().fold(arrival, i64::min)
+    }
+
+    fn push_dictation(&mut self, arrival: i64) -> i64 {
+        let earliest = self.push(arrival);
+        let stale = self.0.len().saturating_sub(DOAP_REANCHOR_PACKETS);
+        let recent = self.0.range(stale..).copied().fold(arrival, i64::min);
+        let latency_ns = i64::from(DOAP_LATENCY_MS).saturating_mul(NS_PER_MS);
+        if recent.saturating_sub(earliest) > latency_ns {
+            drop(self.0.drain(..stale));
+            return recent;
+        }
+        earliest
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
