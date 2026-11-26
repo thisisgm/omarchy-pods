@@ -332,8 +332,10 @@ mod tests {
 
     #[test]
     fn a_recording_to_the_captures_end_holds_its_last_unit_and_ends_in_silence() {
+        // An 85 ms cycle keeps a 60 ms driver stall from releasing two overdue cycles at once.
+        const TAIL_GRAPH_QUANTUM: u32 = 4096;
         let dir = tempfile::tempdir().unwrap();
-        let server = Server::start(dir.path());
+        let server = Server::start_with_quantum(dir.path(), TAIL_GRAPH_QUANTUM);
         let mut records = capture(SILENT_PACKETS + SHORT_PACKETS, on_time);
         let silent = vec![silent_unit(); usize::try_from(UNITS_PER_SDU).unwrap()];
         for (record, packet) in records.iter_mut().zip(0..SILENT_PACKETS) {
