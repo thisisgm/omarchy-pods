@@ -26,8 +26,8 @@ mod tests {
     use super::support::pipewire::{
         daemon_states_latency, links_of, node_name, ready, record, start, wait_no_node, wait_node,
     };
-    use super::support::rig::REAL_TIME_SLACK;
-    use super::support::settings::set;
+    use super::support::rig::{REAL_TIME_SLACK, Rig};
+    use super::support::settings::{plant_settings, set};
     use super::support::uplink::{
         assert_no_sink_call, link, link_heard, lose, mic, move_sink, read_up_to_now, rig_with,
         rig_with_audio, starts, stops, wait_mic, wait_restore, wait_starts, wait_stop,
@@ -234,6 +234,43 @@ mod tests {
         assert_eq!(rig.status()["mic_source"], node_name());
         rig.wait_logged(SOURCE_UP_LINE);
         rig.finish();
+    }
+
+    fn assert_stable_source(reported: &str, saved: &str) {
+        const SOURCE: &str = "omarchypods_input.a3063";
+        let mut rig = Rig::new();
+        // Plant the saved number as written by older versions, including the noncanonical number.
+        let settings = json!({
+            "version": 1,
+            "ear_detection": "one",
+            "notifications": true,
+            "microphone": "auto",
+            "mic_models": [saved],
+        });
+        plant_settings(rig.session(), settings.to_string().as_bytes());
+        let device = rig.add_pods(Profile {
+            model_number: reported.to_owned(),
+            ..Profile::default()
+        });
+        let pipewire = start(&rig);
+        rig.start();
+        link(&rig, &device);
+        let status = wait_mic(&rig, "ready");
+        assert_eq!(status["model_number"], reported, "{status}");
+        let node = pipewire.wait_node(SOURCE, HANG_LIMIT);
+        assert_eq!(node["info"]["props"]["node.name"], SOURCE);
+        assert_eq!(status["mic_source"], SOURCE, "{status}");
+        rig.finish();
+    }
+
+    #[test]
+    fn stable_source_with_a3064_reported_and_a3063_saved() {
+        assert_stable_source("A3064", "A3063");
+    }
+
+    #[test]
+    fn stable_source_with_a3063_reported_and_a3064_saved() {
+        assert_stable_source("A3063", "A3064");
     }
 
     #[test]
