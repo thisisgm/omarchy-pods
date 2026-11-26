@@ -13,6 +13,7 @@ use zbus::export::serde::Serialize;
 use zbus::names::OwnedUniqueName;
 use zbus::{Connection, DynamicType, Message, Variant, fdo};
 
+use super::dbus::failure;
 use super::link::Input;
 use super::log;
 
@@ -185,12 +186,12 @@ async fn list_players(session: &Connection) -> Result<Vec<String>, String> {
     let reply = within(call)
         .await
         .ok_or_else(|| format!("no answer within {PLAYER_CALL_TIMEOUT_MS} ms"))?
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failure(&error))?;
     // A `ListNames` reply: ["org.freedesktop.DBus", ":1.42", "org.mpris.MediaPlayer2.spotify"]
     let names: Vec<String> = reply
         .body()
         .deserialize()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| failure(&error))?;
     let mut players: Vec<String> = names
         .into_iter()
         .filter(|name| {

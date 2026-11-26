@@ -674,10 +674,9 @@ mod tests {
             (!failures.is_empty()).then_some(failures)
         });
         assert_eq!(failures.len(), 1);
-        assert!(
-            failures[0].contains("inhibitor refused"),
-            "missing logind error: {}",
-            failures[0]
+        assert_eq!(
+            failures[0],
+            format!("{INHIBIT_FAILED}: org.freedesktop.DBus.Error.AccessDenied")
         );
         fixture.finish();
     }
