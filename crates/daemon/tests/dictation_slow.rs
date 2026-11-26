@@ -8,13 +8,16 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pods_core::policy::dictation::{DOAP_STOP_ANSWER_MS, INHIBIT_WAIT_MS, MODE_SETTLE_MS};
+    use pods_core::policy::dictation::{
+        BEARER_RETRY_MS, DOAP_STOP_ANSWER_MS, INHIBIT_WAIT_MS, MODE_SETTLE_MS,
+    };
     use pods_proto::doap::{STOP_REASON_UNSOLICITED, doap_mode_off, doap_mode_on};
+    use pods_samples::uplink::START;
 
     use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, opening, ready_to_read, status};
     use super::support::logind::INHIBIT;
     use super::support::pipewire::{record, wait_no_node};
-    use super::support::recording::{assert_sounds, first_sound, frames, longest_zero_run};
+    use super::support::recording::{assert_sounds, first_sound, frames, longest_zero_run, marked};
     use super::support::sleep::{WATCHING, inhibitor_closed, logged, sleep, wake};
     use super::support::uplink::{assert_no_sink_call, lose};
     use super::support::{pause, wait_for, wait_within};
@@ -129,36 +132,61 @@ mod tests {
     }
 
     #[test]
-    fn the_channel_lost_mid_dictation_fades_and_arms_again() {
-        const MIN_SILENCE: Duration = Duration::from_millis(150);
+    fn the_channel_lost_mid_dictation_keeps_recording_on_the_uplink() {
+        const FIRST_RETRY: Duration = Duration::from_millis(BEARER_RETRY_MS[0]);
         let mut fixture = Fixture::new();
-        let doap = fixture.device.pods.doap();
+        let pods = &fixture.device.pods;
+        let doap = pods.doap();
+        pods.uplink().mark(u32::MAX);
         fixture.list(CAPTURE);
         let recorder = fixture.capture();
         fixture.streaming(1);
         ready_to_read(&recorder, AUDIO);
-        fixture.device.pods.hang_up_att();
-        status(&fixture.rig, "arming");
-        wait_for("the attribute service to be armed again", || {
-            (doap.selections() == 2).then_some(())
+        let lost_at = usize::try_from(recorder.frames_on_disk()).unwrap();
+        assert!(doap.streaming());
+        pods.hang_up_att();
+
+        let wire = wait_within("0x58 START after bearer loss", FIRST_RETRY, || {
+            let heard = pods.heard();
+            heard
+                .iter()
+                .any(|packet| packet.sdu == START)
+                .then_some(heard)
         });
-        fixture.streaming(2);
-        let resumed_at = usize::try_from(recorder.frames_on_disk()).unwrap();
-        let more = resumed_at.saturating_add(frames(AUDIO));
-        recorder.wait_frames(more, super::support::HANG_LIMIT);
-        let samples = recorder.finish();
-        assert_sounds(&samples, "");
-        let sound = &samples[first_sound(&samples)..];
+        let start = wire.iter().position(|packet| packet.sdu == START).unwrap();
         assert!(
-            longest_zero_run(sound) >= frames(MIN_SILENCE),
-            "no silent gap after bearer loss"
+            wire[..start]
+                .iter()
+                .any(|packet| packet.sdu == doap_mode_off()),
+            "0x58 START reached the pods before DoAP mode cleared"
         );
-        assert_sounds(&samples[resumed_at..], " after re-arming");
-        fixture.stopped(1);
+        status(&fixture.rig, "armed");
+        assert_eq!(doap.selections(), 2);
+        let rearmed_at = usize::try_from(recorder.frames_on_disk()).unwrap();
+        recorder.wait_frames(
+            rearmed_at.saturating_add(frames(AUDIO)),
+            super::support::HANG_LIMIT,
+        );
+        assert_eq!(doap.starts(), 1);
+        assert!(!doap.streaming());
+
+        let samples = recorder.finish();
+        assert_sounds(&samples[..lost_at], " before bearer loss");
+        assert!(
+            !marked(&samples[rearmed_at..]).is_empty(),
+            "the recorder did not receive the uplink's marked tone after re-arm"
+        );
+        let zeroes = longest_zero_run(&samples);
+        assert!(
+            zeroes < frames(FIRST_RETRY),
+            "a gap of {zeroes} zero samples after bearer loss"
+        );
+        fixture
+            .rig
+            .wait_logged("dictation: this recording takes the uplink");
         fixture
             .rig
             .wait_logged("dictation: bearer lost, arming again");
-        fixture.no_uplink();
         fixture.finish();
     }
 

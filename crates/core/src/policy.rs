@@ -300,7 +300,7 @@ impl Policy {
         self.mic.recording()
     }
 
-    /// A recording latched to dictation keeps that path while its bearer recovers.
+    /// Whether incoming uplink audio can reach the tap.
     #[must_use]
     pub fn mic_accepts_uplink(&self) -> bool {
         self.edge.route() != Some(Route::Dictation)
