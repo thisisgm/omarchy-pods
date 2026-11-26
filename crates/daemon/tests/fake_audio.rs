@@ -313,10 +313,8 @@ mod tests {
         watcher.nothing_for(QUIET);
         let stored: SinkInfo = writer.ask(&sink_info(&c_name(&name)));
         assert_eq!(stored.cvolume, stereo(volume_of(70)));
-        assert!(audio.requests().contains(&Asked::Volume {
-            name: name.clone(),
-            index: None,
-            percent: 70
+        assert!(audio.requests().iter().any(|asked| {
+            matches!(asked, Asked::Volume { name: sink, index: None, percent: 70, .. } if sink == &name)
         }));
 
         audio.set_volume(&name, 30);
