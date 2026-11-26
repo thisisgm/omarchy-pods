@@ -247,6 +247,12 @@ mod tests {
         assert_server_ratio(OPENING_RATIO, RATIO_TOLERANCE, true);
     }
 
+    #[test]
+    fn a_speech_catch_up_ratio_is_followed_without_clicks() {
+        const CATCH_UP_RATIO: f64 = 1.045;
+        assert_server_ratio(CATCH_UP_RATIO, RATIO_TOLERANCE, true);
+    }
+
     fn assert_server_ratio(ratio: f64, tolerance: f64, record_capture: bool) {
         const HZ: f64 = 1_000.0;
         const RESAMPLER_STEP_SLACK: f64 = 1.25;
