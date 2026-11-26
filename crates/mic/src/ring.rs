@@ -280,16 +280,17 @@ impl Ring {
         self.arrival.store(Some(earliest));
     }
 
-    /// The frame that should follow the last of a read at `now`: the sample whose time is the stated latency before; none while no packet of the run has landed.
-    fn target(&self, now: Duration) -> Option<i64> {
-        let latency = match self.path() {
+    /// The frame that should follow a read at `now` and the path that set its latency, once a packet has landed.
+    fn target(&self, now: Duration) -> Option<(i64, Path)> {
+        let path = self.path();
+        let latency = match path {
             Path::Uplink => NODE_LATENCY_MS,
             Path::Dictation => DOAP_LATENCY_MS,
         };
         let arrival = self.arrival.load()?;
         let latency = i64::from(latency).saturating_mul(NS_PER_MS);
         let played = ns_of(now).saturating_sub(arrival).saturating_sub(latency);
-        Some(scaled(played, RATE_HZ, NS_PER_SECOND))
+        Some((scaled(played, RATE_HZ, NS_PER_SECOND), path))
     }
 
     pub(crate) fn frame(&self, frame: i64) -> Frame {
@@ -350,6 +351,7 @@ struct Aim {
     target: i64,
     run: u64,
     generation: u64,
+    path: Path,
     catch_up: bool,
 }
 
@@ -393,7 +395,7 @@ pub struct Reader {
     ahead_ms: f64,
     /// A recorder linked and the reader has not been moved to a target since.
     linking: bool,
-    /// The clock at the first read after a recorder linked, in ns.
+    /// The recorder's link edge in ns, until it hears the new span's dictation stream.
     edge: Option<i64>,
     /// The run the reader is catching up on.
     opening: Option<Opening>,
@@ -477,7 +479,7 @@ impl Reader {
             (self.ended, self.earlier, self.left) = (Tail::NONE, Tail::NONE, Tail::NONE);
             (self.heard, self.was) = (None, Was::Gone);
             (self.linking, self.opening) = (true, None);
-            self.previous_span_run = self.edge.map(|_| previous);
+            self.previous_span_run = self.ring.edge.load().map(|_| previous);
             self.catch_up_left = 0;
             self.edge = Some(self.ring.link(now));
         }
@@ -503,9 +505,12 @@ impl Reader {
     fn aim(&mut self, run: u64, now: Duration, frames: i64) -> Option<Aim> {
         let previous = self.last_read.replace(now);
         let generation = self.ring.generation.load(Ordering::Acquire);
-        let target = self.ring.target(now)?;
+        let (target, path) = self.ring.target(now)?;
         // A run that started since `run` was noted may have told the time just read, so the read stands by neither.
-        if self.ring.run() != run || self.ring.generation.load(Ordering::Acquire) != generation {
+        if self.ring.path() != path
+            || self.ring.run() != run
+            || self.ring.generation.load(Ordering::Acquire) != generation
+        {
             return None;
         }
         if self.heard != Some(run) {
@@ -519,11 +524,12 @@ impl Reader {
                     i64::from(CATCH_UP_MAX_MS).saturating_mul(i64::from(FRAMES_PER_MS));
             }
         }
-        let catch_up = self.stand(target.saturating_sub(frames), run, generation, now);
+        let catch_up = self.stand(target.saturating_sub(frames), run, generation, path, now);
         Some(Aim {
             target,
             run,
             generation,
+            path,
             catch_up,
         })
     }
@@ -546,10 +552,12 @@ impl Reader {
                 .span_gone_frames
                 .fetch_add(gone, Ordering::Relaxed);
         }
-        if let (Some(previous), Some(aim)) = (self.previous_span_run, aim)
-            && previous != aim.generation
+        if let Some(aim) = aim
+            && aim.path == Path::Dictation
+            && self.previous_span_run != Some(aim.generation)
             && self.heard == Some(aim.run)
         {
+            self.edge = None;
             self.previous_span_run = None;
         }
         match (aim, self.opening) {
@@ -564,13 +572,10 @@ impl Reader {
     }
 
     /// Positions the read and indicates when retained audio needs to catch up by rate.
-    fn stand(&mut self, place: i64, run: u64, generation: u64, now: Duration) -> bool {
+    fn stand(&mut self, place: i64, run: u64, generation: u64, path: Path, now: Duration) -> bool {
         let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
         let first = i64::try_from(run).unwrap_or(i64::MAX);
-        // Only a recorder that has heard nothing since it linked still waits for what came before its edge.
-        let unheard = self
-            .previous_span_run
-            .map_or(self.heard.is_none(), |previous| previous != generation);
+        let unheard = self.previous_span_run != Some(generation) && self.heard != Some(run);
         if unheard && first < place && self.ring.opened_against(self.edge) {
             self.jump(first);
             let behind = scaled(place.saturating_sub(first), 1, u32::from(FRAMES_PER_MS));
@@ -616,8 +621,7 @@ impl Reader {
                 return false;
             }
             // A later dictation anchor can reach audio that has already been handed out.
-            let place = if off > 0 && self.heard == Some(run) && self.ring.path() == Path::Dictation
-            {
+            let place = if off > 0 && self.heard == Some(run) && path == Path::Dictation {
                 place.max(self.played)
             } else {
                 place
