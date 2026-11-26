@@ -9,6 +9,10 @@
 mod support;
 
 #[cfg(test)]
+#[path = "adverts/wear.rs"]
+mod wear;
+
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -16,8 +20,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_fake::Profile;
-    use pods_samples::Placed;
-    use pods_samples::advert::{Advert, HEADER_LEN, SEALED_LEN, advert_of};
+    use pods_samples::advert::{HEADER_LEN, SEALED_LEN, advert_of};
     use pods_trap::Answer;
     use rustix::io::Errno;
     use serde_json::{Value, json};
@@ -29,21 +32,14 @@ mod tests {
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
     use super::support::omarchy::{RECORDED_WITHIN, low_battery_notice};
     use super::support::players::PROPERTIES;
-    use super::support::rig::{Device, Rig, assert_gap};
+    use super::support::rig::{Rig, assert_gap};
     use super::support::sleep::logged;
     use super::support::{HANG_LIMIT, Proto1, do_request, outcome, pause, wait_for};
 
     /// The same pods with the case at 10 percent and not charging.
-    const LOW_CASE_HEADER: [u8; HEADER_LEN] = [
+    pub(super) const LOW_CASE_HEADER: [u8; HEADER_LEN] = [
         0x07, 0x19, 0x01, 0x27, 0x20, 0x62, 0x88, 0x01, 0x00, 0x00, 0x04,
     ];
-    const BOTH_OUT_HEADER: [u8; HEADER_LEN] = [
-        0x07, 0x19, 0x01, 0x27, 0x20, 0x20, 0x88, 0x47, 0x00, 0x00, 0x04,
-    ];
-    const IN_CASE_HEADER: [u8; HEADER_LEN] = [
-        0x07, 0x19, 0x01, 0x27, 0x20, 0x60, 0x88, 0x47, 0x08, 0x00, 0x04,
-    ];
-    const CONNECTION_AT: usize = 10;
     /// The primary byte of 75 percent and charging.
     const PRIMARY_75_CHARGING: u8 = 0xcb;
     const PRIMARY_AT: usize = 1;
@@ -56,14 +52,14 @@ mod tests {
     /// The decrypted case byte of 50 percent and not charging.
     const CASE_50: u8 = 0x32;
     /// The header byte of the case's tenths and charging flag.
-    const CASE_AT: usize = 7;
+    pub(super) const CASE_AT: usize = 7;
     /// The case charging at the unknown 15 tenths, so the case comes from the decrypted payload instead.
     const CASE_UNKNOWN: u8 = 0x4f;
     const OTHER_IDENTITY: [u8; 16] = [0x11; 16];
     /// The most an advert may take to reach the status document, polling included.
     const SEEN_WITHIN: Duration = Duration::from_secs(1);
     /// Long enough for a monitor call the daemon wrongly makes to reach the fake BlueZ.
-    const QUIET: Duration = Duration::from_millis(500);
+    pub(super) const QUIET: Duration = Duration::from_millis(500);
     /// The adapters offering monitors in the two adapter case.
     const ADAPTERS: usize = 2;
     /// The monitor calls of one try there: an unregistration and a registration on each adapter.
@@ -103,7 +99,7 @@ mod tests {
         rig
     }
 
-    fn wait_intake(rig: &Rig, word: &str) -> Value {
+    pub(super) fn wait_intake(rig: &Rig, word: &str) -> Value {
         rig.wait_status(&format!("advert_intake {word}"), |status| {
             status["advert_intake"] == word
         })
@@ -118,7 +114,7 @@ mod tests {
     }
 
     /// What an advert of `HEADER` and `PAYLOAD` from our pods sets.
-    fn filled() -> Value {
+    pub(super) fn filled() -> Value {
         json!({
             "advert_intake": "listening",
             "case": {"available": true, "charging": true, "level": 70},
@@ -130,7 +126,7 @@ mod tests {
     }
 
     /// The keys an advert sets, picked out of a whole status.
-    fn picked(status: &Value) -> Value {
+    pub(super) fn picked(status: &Value) -> Value {
         let keys = [
             "advert_intake",
             "case",
@@ -424,244 +420,6 @@ mod tests {
     }
 
     #[test]
-    fn a_wear_edge_connects_the_paired_device_through_bluez() {
-        let mut rig = keyed();
-        let device = rig.add_pods(Profile::default());
-        rig.start();
-        wait_intake(&rig, "listening");
-        let advert = ours(disconnected_worn_header(), PAYLOAD);
-        let advertiser = rig.bluez().advertise(&advert.address, &advert.data);
-        rig.wait_status("the advert in the status", |status| {
-            picked(status) == filled()
-        });
-        rig.no_dial_for(QUIET);
-        assert_eq!(rig.bluez().calls(), registration(rig.adapter()));
-        advertiser.update(&ours(BOTH_OUT_HEADER, PAYLOAD).data);
-        rig.wait_status("both buds out of ear", |status| {
-            status["right"]["in_ear"] == false
-        });
-        advertiser.update(&advert.data);
-        let connect = wait_for("BlueZ Connect after the wear edge", || wear_call(&rig));
-        assert_eq!(connect.object, device.path.0);
-        rig.wait_filled();
-        assert_eq!(logged(&mut rig, "link: connect when worn"), 1);
-        rig.finish();
-    }
-
-    fn disconnected_worn_header() -> [u8; HEADER_LEN] {
-        let mut header = HEADER;
-        header[CONNECTION_AT] = 0x00;
-        header
-    }
-
-    fn wear_call(rig: &Rig) -> Option<Call> {
-        rig.bluez()
-            .calls()
-            .into_iter()
-            .find(|call| call.method == DeviceMethod::Connect)
-    }
-
-    #[test]
-    fn a_wear_edge_does_not_connect_an_unpaired_device() {
-        let mut rig = keyed();
-        let device = rig.add_pods(Profile::default());
-        rig.bluez()
-            .set(&device.path, "Paired", OwnedVariant::from(false));
-        rig.start();
-        wait_intake(&rig, "listening");
-        let out = ours(BOTH_OUT_HEADER, PAYLOAD);
-        let advertiser = rig.bluez().advertise(&out.address, &out.data);
-        rig.wait_status("both buds out of ear", |status| {
-            status["right"]["available"] == true && status["right"]["in_ear"] == false
-        });
-        advertiser.update(&ours(disconnected_worn_header(), PAYLOAD).data);
-        rig.wait_logged("bluez: Connect failed: BlueZ did not confirm pairing");
-        assert!(wear_call(&rig).is_none());
-        assert_eq!(logged(&mut rig, "link: connect when worn"), 0);
-        rig.finish();
-    }
-
-    #[test]
-    fn a_wear_edge_reports_a_failed_paired_get() {
-        let mut rig = keyed();
-        let _device = rig.add_pods(Profile::default());
-        rig.start();
-        wait_intake(&rig, "listening");
-        let out = marked_out();
-        let advertiser = rig.bluez().advertise(&out.address, &out.data);
-        rig.wait_status("the out-of-ear advert", |status| {
-            picked(status)["case"]["level"] == 10
-        });
-        rig.bluez().fail_calls(true);
-        advertiser.update(&ours(disconnected_worn_header(), PAYLOAD).data);
-        let error = wait_for("the failed pairing check", || {
-            rig.daemon()
-                .log()
-                .lines()
-                .find_map(|line| line.strip_prefix("bluez: Connect failed: "))
-                .map(str::to_owned)
-        });
-        rig.bluez().fail_calls(false);
-        assert_eq!(error, "org.bluez.Error.Failed");
-        assert!(wear_call(&rig).is_none());
-        rig.finish();
-    }
-
-    #[test]
-    fn disconnect_sources_hold_auto_connect_until_the_case() {
-        use DisconnectSource::{BluezFirst, ChannelFirst, Command};
-        #[derive(Clone, Copy, Debug)]
-        enum DisconnectSource {
-            Command,
-            BluezFirst,
-            ChannelFirst,
-        }
-
-        for source in [Command, BluezFirst, ChannelFirst] {
-            let mut rig = keyed();
-            let device = rig.add_pods(Profile::default());
-            rig.start();
-            rig.link_up(&device);
-            rig.wait_filled();
-            assert!(
-                rig.status()["left"]["in_ear"] == true || rig.status()["right"]["in_ear"] == true
-            );
-            if matches!(source, Command) {
-                rig.disconnect();
-            } else {
-                if matches!(source, ChannelFirst) {
-                    rig.close_channel(&device);
-                    rig.wait_logged("link: up to backoff");
-                }
-                rig.bluez()
-                    .set(&device.path, "Connected", OwnedVariant::from(false));
-                if matches!(source, ChannelFirst) {
-                    rig.wait_logged("link: backoff to grace");
-                }
-            }
-            wait_intake(&rig, "listening");
-            let out = ours(BOTH_OUT_HEADER, PAYLOAD);
-            let advertiser = rig.bluez().advertise(&out.address, &out.data);
-            rig.wait_status("the out-of-ear advert", |status| {
-                picked(status)["case"]["level"] == 70 && status["right"]["in_ear"] == false
-            });
-            let worn = ours(disconnected_worn_header(), PAYLOAD);
-            advertiser.update(&worn.data);
-            rig.wait_status("the worn advert", |status| {
-                status["right"]["in_ear"] == true
-            });
-            if matches!(source, ChannelFirst) {
-                pause(QUIET);
-            } else {
-                rig.no_dial_for(QUIET);
-            }
-            assert!(
-                wear_call(&rig).is_none(),
-                "{source:?} disconnect must hold the wear edge"
-            );
-            advertiser.update(&ours(IN_CASE_HEADER, PAYLOAD).data);
-            rig.wait_status("the case advert", |status| status["lid_state"] == 1);
-            advertiser.update(&worn.data);
-            wait_for("the wear edge after the case", || wear_call(&rig));
-            rig.finish();
-        }
-    }
-
-    /// Both buds out with the case at 10 percent, a level the linked pods never report.
-    fn marked_out() -> Advert {
-        let mut header = BOTH_OUT_HEADER;
-        header[CASE_AT] = LOW_CASE_HEADER[CASE_AT];
-        ours(header, PAYLOAD)
-    }
-
-    fn unworn_link(rig: &mut Rig) -> Device {
-        let device = rig.add_pods(Profile::default());
-        rig.start();
-        rig.link_up(&device);
-        rig.wait_filled();
-        device.pods.set_ear(Placed::OutOfEar, Placed::OutOfEar);
-        rig.wait_status("both buds out", |status| {
-            status["left"]["in_ear"] == false && status["right"]["in_ear"] == false
-        });
-        device
-    }
-
-    fn connects(rig: &Rig) -> usize {
-        rig.bluez()
-            .calls()
-            .into_iter()
-            .filter(|call| call.method == DeviceMethod::Connect)
-            .count()
-    }
-
-    #[test]
-    fn an_unworn_disconnect_holds_only_from_the_command() {
-        for from_command in [true, false] {
-            let mut rig = keyed();
-            let device = unworn_link(&mut rig);
-            if from_command {
-                rig.disconnect();
-            } else {
-                rig.bluez()
-                    .set(&device.path, "Connected", OwnedVariant::from(false));
-            }
-            wait_intake(&rig, "listening");
-            let out = marked_out();
-            let advertiser = rig.bluez().advertise(&out.address, &out.data);
-            rig.wait_status("the out-of-ear advert", |status| {
-                picked(status)["case"]["level"] == 10
-            });
-            advertiser.update(&ours(disconnected_worn_header(), PAYLOAD).data);
-            if from_command {
-                rig.wait_status("the worn advert", |status| {
-                    status["right"]["in_ear"] == true
-                });
-                rig.no_dial_for(QUIET);
-                assert!(wear_call(&rig).is_none(), "the command holds");
-            } else {
-                wait_for("the wear edge after an unworn drop", || wear_call(&rig));
-            }
-            rig.finish();
-        }
-    }
-
-    #[test]
-    fn a_second_wear_edge_inside_the_cooldown_does_not_connect() {
-        let mut rig = keyed();
-        let device = rig.add_pods(Profile::default());
-        rig.start();
-        wait_intake(&rig, "listening");
-        let out = marked_out();
-        let advertiser = rig.bluez().advertise(&out.address, &out.data);
-        rig.wait_status("the out-of-ear advert", |status| {
-            picked(status)["case"]["level"] == 10
-        });
-        let worn = ours(disconnected_worn_header(), PAYLOAD);
-        advertiser.update(&worn.data);
-        wait_for("the first wear edge", || wear_call(&rig));
-        rig.wait_filled();
-        drop(advertiser);
-        device.pods.set_ear(Placed::OutOfEar, Placed::OutOfEar);
-        rig.wait_status("both buds out", |status| {
-            status["left"]["in_ear"] == false && status["right"]["in_ear"] == false
-        });
-        rig.bluez()
-            .set(&device.path, "Connected", OwnedVariant::from(false));
-        wait_intake(&rig, "listening");
-        let advertiser = rig.bluez().advertise(&out.address, &out.data);
-        rig.wait_status("the second out-of-ear advert", |status| {
-            picked(status)["case"]["level"] == 10
-        });
-        advertiser.update(&worn.data);
-        wait_for("the second worn advert or a second Connect", || {
-            (rig.status()["right"]["in_ear"] == true || connects(&rig) > 1).then_some(())
-        });
-        rig.no_dial_for(QUIET);
-        assert_eq!(connects(&rig), 1, "the second edge is inside the cooldown");
-        rig.finish();
-    }
-
-    #[test]
     fn discovery_is_never_started_and_powered_is_never_written() {
         let rig = listening();
         let advert = ours(HEADER, PAYLOAD);
@@ -689,7 +447,7 @@ mod tests {
     #[test]
     fn an_adapter_on_another_path_works() {
         let mut rig = Rig::new();
-        rig.session().store_sample_keys();
+        rig.session().store_sample_keys(None);
         let other = rig.bluez().add_adapter_at("hci7");
         rig.bluez().add_monitor_manager(&other);
         rig.start();
@@ -785,7 +543,7 @@ mod tests {
     #[test]
     fn no_manager_interface_reads_unavailable() {
         let mut rig = Rig::new();
-        rig.session().store_sample_keys();
+        rig.session().store_sample_keys(None);
         rig.start();
         wait_intake(&rig, "unavailable");
         pause(QUIET);

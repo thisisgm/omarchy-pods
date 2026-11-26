@@ -9,7 +9,7 @@ use pods_proto::model::{Product, product};
 use pods_proto::proximity::{self, ADVERT_LEN, ConnectionState, Lid};
 
 use super::Effect;
-use crate::link::Signal;
+use crate::link::{SavedKeys, Signal};
 use crate::state::{AdvertIntake, LidState, State};
 
 const CONNECT_COOLDOWN_MS: u64 = 30_000;
@@ -26,6 +26,8 @@ pub struct Sighting {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorFact {
     Registered,
+    /// Observation stopped while the monitor registers again.
+    Interrupted,
     /// No adapter offers advert monitors, or each registration was refused.
     Unavailable,
 }
@@ -34,6 +36,7 @@ impl MonitorFact {
     pub(super) const fn intake(self) -> AdvertIntake {
         match self {
             Self::Registered => AdvertIntake::Listening,
+            Self::Interrupted => AdvertIntake::Paused,
             Self::Unavailable => AdvertIntake::Unavailable,
         }
     }
@@ -42,7 +45,7 @@ impl MonitorFact {
 /// The monitor is wanted while keys are held and the link is not up.
 #[derive(Debug, Default)]
 pub(super) struct Adverts {
-    keys: Option<ProximityKeys>,
+    keys: Option<SavedKeys>,
     /// From `Signal::Up` to `Signal::Down`, so a channel retry with the device still connected reads adverts.
     link_up: bool,
     was_worn: Option<bool>,
@@ -52,7 +55,7 @@ pub(super) struct Adverts {
 }
 
 impl Adverts {
-    pub(super) fn new(keys: Option<ProximityKeys>) -> Self {
+    pub(super) fn new(keys: Option<SavedKeys>) -> Self {
         Self {
             keys,
             ..Self::default()
@@ -63,24 +66,28 @@ impl Adverts {
         self.keys.is_some() && !self.link_up
     }
 
-    pub(super) fn read(&mut self, state: &mut State, sighting: &Sighting, now: Duration) -> bool {
-        let Some(keys) = self.keys.as_ref().filter(|_| !self.link_up) else {
-            return false;
-        };
-        let Some((in_case, connection)) = read(state, keys, sighting) else {
-            return false;
-        };
+    pub(super) fn read(
+        &mut self,
+        state: &mut State,
+        sighting: &Sighting,
+        now: Duration,
+    ) -> Option<BdAddr> {
+        let saved = self.keys.as_ref().filter(|_| !self.link_up)?;
+        let (in_case, connection) = read(state, &saved.keys, sighting)?;
         if state.connected || state.advert_intake != AdvertIntake::Listening {
-            return false;
+            return None;
         }
+        let device = saved.device?;
         let worn = state.ear.any_in_ear();
         let edge = self.was_worn.replace(worn) == Some(false) && worn;
         self.clear_hold(worn, in_case, now);
-        edge && connection == ConnectionState::Disconnected
+        (edge
+            && connection == ConnectionState::Disconnected
             && !self.manual_hold
             && self.last_connect.is_none_or(|last| {
                 now.saturating_sub(last) >= Duration::from_millis(CONNECT_COOLDOWN_MS)
-            })
+            }))
+        .then_some(device)
     }
 
     pub(super) fn connect_attempted(&mut self, now: Duration) {

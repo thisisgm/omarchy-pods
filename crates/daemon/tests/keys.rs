@@ -17,10 +17,11 @@ mod tests {
     use std::str;
 
     use pods_fake::Profile;
+    use pods_proto::addr::BdAddr;
     use pods_samples::{CASE, Cell, IDENTITY_KEY, MODEL_NUMBER, PAYLOAD_KEY, RIGHT, host, keys_of};
 
     use super::support::bus::{BUS_NAME, INTERFACE, Listener, OBJECT_PATH, changes_rule};
-    use super::support::rig::{Device, Rig, connected};
+    use super::support::rig::{Device, Rig, connected, test_address};
     use super::support::uplink::keep_off;
     use super::support::{DIR_MODE, FILE_MODE, HANG_LIMIT, Session, wait_for};
 
@@ -66,12 +67,13 @@ mod tests {
     }
 
     /// The file as the daemon writes it.
-    fn file_text(identity: [u8; 16], payload: [u8; 16]) -> String {
-        format!(
-            "{{\"identity\":\"{}\",\"payload\":\"{}\"}}\n",
-            hex(&identity),
-            hex(&payload)
-        )
+    fn file_text(identity: [u8; 16], payload: [u8; 16], device: Option<BdAddr>) -> String {
+        let device = device.map_or_else(String::new, |device| {
+            format!(",\"device\":\"{}\"", hex(&device.octets()))
+        });
+        let identity = hex(&identity);
+        let payload = hex(&payload);
+        format!("{{\"identity\":\"{identity}\",\"payload\":\"{payload}\"{device}}}\n")
     }
 
     /// Padded with `=`, as `base64 -w0` prints it.
@@ -242,7 +244,10 @@ mod tests {
         );
         device.pods.send(&keys_of(IDENTITY_KEY, PAYLOAD_KEY));
         let path = rig.session().keys_file();
-        wait_keys_file(rig.session(), &file_text(IDENTITY_KEY, PAYLOAD_KEY));
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, FILE_MODE);
         // The state file made the directory at start; this checks the keys sit in an owner only one.
@@ -258,7 +263,10 @@ mod tests {
     fn the_same_keys_again_do_not_rewrite_the_file() {
         let (mut rig, device) = link(Rig::new(), keyed());
         let path = rig.session().keys_file();
-        wait_keys_file(rig.session(), &file_text(IDENTITY_KEY, PAYLOAD_KEY));
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
         let written = identity_of(&path);
         rig.disconnect();
         rig.relink(&device);
@@ -278,7 +286,7 @@ mod tests {
         let rig = Rig::new();
         plant_keys(
             rig.session(),
-            file_text(IDENTITY_KEY, PAYLOAD_KEY).as_bytes(),
+            file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(test_address(1))).as_bytes(),
         );
         let path = rig.session().keys_file();
         let planted = identity_of(&path);
@@ -299,11 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_pair_is_bound_when_the_device_answers() {
+        let rig = Rig::new();
+        plant_keys(
+            rig.session(),
+            file_text(IDENTITY_KEY, PAYLOAD_KEY, None).as_bytes(),
+        );
+        let (rig, device) = link(rig, keyed());
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
+        rig.finish();
+    }
+
+    #[test]
     fn a_stored_pair_others_can_read_is_made_owner_only_at_start() {
         let rig = Rig::new();
         plant_keys(
             rig.session(),
-            file_text(IDENTITY_KEY, PAYLOAD_KEY).as_bytes(),
+            file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(test_address(1))).as_bytes(),
         );
         let path = rig.session().keys_file();
         fs::set_permissions(&path, Permissions::from_mode(READABLE_MODE)).unwrap();
@@ -327,24 +350,33 @@ mod tests {
     fn a_different_pair_replaces_the_stored_one() {
         let rig = Rig::new();
         let other = (reversed(IDENTITY_KEY), reversed(PAYLOAD_KEY));
-        plant_keys(rig.session(), file_text(other.0, other.1).as_bytes());
+        plant_keys(rig.session(), file_text(other.0, other.1, None).as_bytes());
         let path = rig.session().keys_file();
         fs::set_permissions(&path, Permissions::from_mode(READABLE_MODE)).unwrap();
         let (rig, device) = link(rig, keyed());
-        wait_keys_file(rig.session(), &file_text(IDENTITY_KEY, PAYLOAD_KEY));
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             FILE_MODE
         );
         device.pods.send(&keys_of(other.0, other.1));
-        wait_keys_file(rig.session(), &file_text(other.0, other.1));
+        wait_keys_file(
+            rig.session(),
+            &file_text(other.0, other.1, Some(device.address)),
+        );
         rig.finish();
     }
 
     #[test]
     fn no_output_of_the_daemon_holds_key_bytes() {
         let (mut rig, device) = link(Rig::new(), keyed());
-        wait_keys_file(rig.session(), &file_text(IDENTITY_KEY, PAYLOAD_KEY));
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
         mark(&rig, &device, MARKS[0]);
         let listener = Listener::subscribe(rig.session_bus(), &changes_rule());
         let properties = "org.freedesktop.DBus.Properties";
@@ -404,7 +436,7 @@ mod tests {
     #[test]
     fn a_corrupt_keys_file_is_ignored() {
         let rig = Rig::new();
-        let whole = file_text(IDENTITY_KEY, PAYLOAD_KEY).into_bytes();
+        let whole = file_text(IDENTITY_KEY, PAYLOAD_KEY, None).into_bytes();
         let cut = &whole[..whole.len() / 2];
         plant_keys(rig.session(), cut);
         let (mut rig, _device) = link(rig, Profile::default());
@@ -424,8 +456,11 @@ mod tests {
     fn a_corrupt_keys_file_is_replaced_by_the_next_reply() {
         let rig = Rig::new();
         plant_keys(rig.session(), b"{\"identity\":\"zz\"}\n");
-        let (rig, _device) = link(rig, keyed());
-        wait_keys_file(rig.session(), &file_text(IDENTITY_KEY, PAYLOAD_KEY));
+        let (rig, device) = link(rig, keyed());
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
         rig.finish();
     }
 
@@ -448,7 +483,10 @@ mod tests {
         fs::remove_dir(&path).unwrap();
         rig.disconnect();
         rig.relink(&device);
-        wait_keys_file(rig.session(), &file_text(IDENTITY_KEY, PAYLOAD_KEY));
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
         rig.finish();
     }
 }

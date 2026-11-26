@@ -34,7 +34,7 @@ pub(crate) fn ours(header: [u8; HEADER_LEN], payload: [u8; SEALED_LEN]) -> Adver
 /// The rig with the keys stored and the manager served on its adapter; no daemon yet.
 pub(crate) fn keyed() -> Rig {
     let rig = Rig::new();
-    rig.session().store_sample_keys();
+    rig.session().store_sample_keys(None);
     rig.bluez().add_monitor_manager(rig.adapter());
     rig
 }

@@ -232,13 +232,16 @@ impl Session {
         }
     }
 
-    /// Stores the sample keys as the daemon writes them: `{"identity":"<32 hex digits>","payload":"<32 hex digits>"}` and a newline.
-    pub(crate) fn store_sample_keys(&self) {
-        let hex = |key: [u8; 16]| key.map(|byte| format!("{byte:02x}")).concat();
+    /// Stores sample proximity keys with an optional fixture device.
+    pub(crate) fn store_sample_keys(&self, device: Option<pods_proto::addr::BdAddr>) {
+        let hex_byte = |byte| format!("{byte:02x}");
+        let device = device.map_or_else(String::new, |device| {
+            format!(",\"device\":\"{}\"", device.octets().map(hex_byte).concat())
+        });
         let text = format!(
-            "{{\"identity\":\"{}\",\"payload\":\"{}\"}}\n",
-            hex(pods_samples::IDENTITY_KEY),
-            hex(pods_samples::PAYLOAD_KEY)
+            "{{\"identity\":\"{}\",\"payload\":\"{}\"{device}}}\n",
+            pods_samples::IDENTITY_KEY.map(hex_byte).concat(),
+            pods_samples::PAYLOAD_KEY.map(hex_byte).concat()
         );
         let path = self.keys_file();
         DirBuilder::new()

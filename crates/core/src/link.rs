@@ -11,11 +11,11 @@ use pods_proto::addr::BdAddr;
 use pods_proto::awareness::Awareness;
 use pods_proto::ear::EarReport;
 use pods_proto::handshake::Handshake;
-use pods_proto::keys::ProximityKeys;
 use pods_proto::packets::{HANDSHAKE, REQUEST_NOTIFICATIONS};
 use pods_proto::uplink::UplinkState;
 
 pub use commands::REPORT_HOLD_MS;
+pub use reports::SavedKeys;
 
 use crate::command::{self, Command, CommandError, Outcome};
 use crate::state::State;
@@ -122,7 +122,7 @@ pub enum Signal {
         down_at: Option<Duration>,
     },
     /// The pods answered the proximity keys request.
-    Keys(ProximityKeys),
+    Keys(SavedKeys),
     /// The pods said whether their uplink runs, which they also do before the link is up.
     Uplink(UplinkState),
     /// The pods reported a Conversation Awareness level.

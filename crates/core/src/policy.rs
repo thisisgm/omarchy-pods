@@ -13,10 +13,10 @@ mod sleep;
 
 use std::time::Duration;
 
-use pods_proto::keys::ProximityKeys;
+use pods_proto::addr::BdAddr;
 use pods_proto::uplink::UplinkState;
 
-use crate::link::Signal;
+use crate::link::{SavedKeys, Signal};
 use crate::state::{AdvertIntake, State};
 use adverts::Adverts;
 pub use adverts::{MonitorFact, Sighting};
@@ -63,7 +63,7 @@ pub enum Effect {
     Wake,
     Audio(AudioRequest),
     /// A pair the pods answered with; the driver hands it to the writer of `keys.json`.
-    StoreKeys(ProximityKeys),
+    StoreKeys(SavedKeys),
     Media(MediaRequest),
     /// Whether the BlueZ advert monitor is wanted; `true` again after a wake asks for it anew.
     Monitor(bool),
@@ -95,7 +95,7 @@ pub struct Policy {
 impl Policy {
     /// `keys` is the pair `keys.json` held at start.
     #[must_use]
-    pub fn new(keys: Option<ProximityKeys>) -> Self {
+    pub fn new(keys: Option<SavedKeys>) -> Self {
         Self {
             adverts: Adverts::new(keys),
             ..Self::default()
@@ -108,9 +108,14 @@ impl Policy {
         Vec::from_iter(self.adverts.wanted().then_some(Effect::Monitor(true)))
     }
 
-    /// Updates the state from an advert and reports whether a wear edge can connect.
+    /// Updates the state from an advert and returns the device a wear edge can connect.
     #[must_use]
-    pub fn advert(&mut self, state: &mut State, sighting: &Sighting, now: Duration) -> bool {
+    pub fn advert(
+        &mut self,
+        state: &mut State,
+        sighting: &Sighting,
+        now: Duration,
+    ) -> Option<BdAddr> {
         self.adverts.read(state, sighting, now)
     }
 
@@ -170,7 +175,10 @@ impl Policy {
         } else {
             None
         };
-        if matches!(fact, Fact::Monitor(MonitorFact::Unavailable)) {
+        if matches!(
+            fact,
+            Fact::Monitor(MonitorFact::Interrupted | MonitorFact::Unavailable)
+        ) {
             self.adverts.interrupt_wear_observation();
         }
         let mut effects = match fact {
