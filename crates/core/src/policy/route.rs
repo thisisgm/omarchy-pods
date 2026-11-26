@@ -82,7 +82,7 @@ mod tests {
     use pods_proto::uplink::UplinkState;
     use pods_samples::MODEL_NUMBER;
 
-    use super::super::dictation::MODE_SETTLE_MS;
+    use super::super::dictation::{BEARER_RETRY_MS, MODE_SETTLE_MS};
     use super::super::tests::device;
     use super::super::{
         AudioFact, DictationFact, DictationRequest, Effect, Fact, MicFact, MicRequest, OpenId,
@@ -90,7 +90,7 @@ mod tests {
     };
     use super::*;
     use crate::prefs::MicPref;
-    use crate::state::{AudioServer, MicDictation, Microphone};
+    use crate::state::{AudioServer, MicCode, MicDictation, Microphone};
 
     #[test]
     fn edge_cells() {
@@ -196,14 +196,58 @@ mod tests {
             assert!(!effects.contains(&start));
         }
         assert_eq!(policy.edge.route(), Some(Route::Dictation));
+    }
+
+    #[test]
+    fn a_lost_bearer_starts_the_uplink_in_the_same_step() {
+        let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
+        state.audio_server = AudioServer::Up;
+        let start = Effect::Uplink(UplinkRequest::Start);
+        let settled = Duration::from_millis(MODE_SETTLE_MS);
+        for fact in [
+            Fact::Audio(AudioFact::Headset(false)),
+            Fact::Audio(AudioFact::Recorders(DICTATION)),
+        ] {
+            assert!(!policy.step(&state, fact, Duration::ZERO).contains(&start));
+        }
+        let effects = policy.step(&state, Fact::Tick, settled);
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::Start)));
+        for fact in [DictationFact::Answered, DictationFact::FirstAudio] {
+            let effects = policy.step(&state, Fact::Dictation(fact), settled);
+            assert!(!effects.contains(&start));
+        }
+        assert!(policy.dictation_session_open());
+        assert!(!policy.mic_accepts_uplink());
+
         let lost = Fact::Dictation(DictationFact::BearerLost);
-        let effects = policy.step(&state, lost, Duration::ZERO);
+        let effects = policy.step(&state, lost, settled);
+        let uplink = effects
+            .iter()
+            .position(|effect| *effect == start)
+            .expect("BearerLost must send 0x58 START in the same policy step");
+        let mode_off = Effect::Dictation(DictationRequest::ModeOff);
+        assert!(effects[..uplink].contains(&mode_off));
         assert!(!policy.dictation.armed());
-        assert_eq!(policy.edge.route(), Some(Route::Dictation));
-        assert!(
-            !effects.contains(&start),
-            "a bearer loss inside a DoAP span"
-        );
+        assert!(!policy.dictation_session_open());
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+        assert!(policy.mic_recording());
+        assert!(policy.mic_accepts_uplink());
+
+        let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+        drop(policy.step(&state, running, settled));
+        let effects = policy.step(&state, Fact::Mic(MicFact::FirstAudio), settled);
+        assert!(effects.contains(&Effect::Log("mic: first audio after 0 ms".to_owned())));
+        policy.show_mic(&mut state);
+        assert_eq!(state.microphone.code(), MicCode::Recording);
+
+        let retry = settled.saturating_add(Duration::from_millis(BEARER_RETRY_MS[0]));
+        let effects = policy.step(&state, Fact::Tick, retry);
+        assert!(effects.contains(&Effect::Dictation(DictationRequest::Arm)));
+        let effects = policy.step(&state, Fact::Dictation(DictationFact::Armed), retry);
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+        assert!(policy.mic_accepts_uplink());
+        assert!(!policy.dictation_session_open());
+        assert!(!effects.contains(&Effect::Dictation(DictationRequest::Mode)));
     }
 
     #[test]

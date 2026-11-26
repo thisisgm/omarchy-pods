@@ -117,6 +117,15 @@ impl Dictation {
             if matches!(fact, Fact::Link(Signal::Down | Signal::Lost { .. })) {
                 self.session = Session::default();
             }
+            // The adapter closes the bearer before reporting its loss.
+            if route == Some(Route::Dictation)
+                && matches!(fact, Fact::Dictation(DictationFact::BearerLost))
+            {
+                effects.push(Effect::Log(
+                    "dictation: this recording takes the uplink".to_owned(),
+                ));
+                return true;
+            }
             return false;
         }
         let stop = if self.exiting {
