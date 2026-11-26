@@ -344,7 +344,7 @@ mod tests {
         }
         let length = span_of(usize::try_from(recorder.frames_on_disk() - ours).unwrap());
         let graph = span_at(pace.recorder.frames_on_disk() - paced, pace.recorder.rate());
-        // The 10-second hang limit leaves room for shared graph stalls under runner load.
+        // The hang limit leaves room for shared graph stalls under runner load.
         assert!(
             graph.abs_diff(wall) <= HANG_LIMIT,
             "the rig missed its timing: the graph gave a stock player {graph:?} over {wall:?}, so this run cannot judge the daemon"
