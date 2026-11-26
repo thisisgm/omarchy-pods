@@ -611,6 +611,27 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_bearer_during_the_uplink_stop_falls_back() {
+        use super::super::audio::SinkState;
+        use super::super::tests::sink_in;
+
+        let (mut policy, state) = waiting_for_recorders(CALL, Route::Uplink);
+        let running = Fact::Link(Signal::Uplink(UplinkState::Running));
+        drop(policy.step(&state, running, Duration::ZERO));
+        drop(policy.step(&state, sink_in(true, SinkState::Suspended), Duration::ZERO));
+        let list = Fact::Audio(AudioFact::Recorders(DICTATION));
+        let effects = policy.step(&state, list, Duration::ZERO);
+        assert!(effects.contains(&Effect::Uplink(UplinkRequest::Stop)));
+        assert_eq!(policy.edge.route(), Some(Route::Dictation));
+
+        let bearer = Fact::Dictation(DictationFact::BearerLost);
+        let effects = policy.step(&state, bearer, Duration::ZERO);
+        let fallback = Effect::Log("dictation: this recording takes the uplink".to_owned());
+        assert!(effects.contains(&fallback), "{effects:?}");
+        assert_eq!(policy.edge.route(), Some(Route::Uplink));
+    }
+
+    #[test]
     fn a_lost_bearer_starts_the_uplink_in_the_same_step() {
         let (mut policy, mut state) = waiting_for_recorders(DICTATION, Route::Dictation);
         state.audio_server = AudioServer::Up;
