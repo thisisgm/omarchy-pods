@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
 use super::{
-    Adapter, LOST, MIC_EVENT_QUEUE, MicRequest, PAUSED, STREAMING, Tap, Turn, next, watcher,
+    Adapter, LOST, MIC_EVENT_QUEUE, MicRequest, PAUSED, Request, STREAMING, Tap, Turn, Wanted,
+    next, watcher,
 };
 use crate::daemon::audio::AUDIO_RETRY_MS;
 
@@ -105,13 +106,14 @@ fn only_a_stream_start_moves_the_reader_to_its_target() {
 #[test]
 fn a_broken_library_ends_the_want_so_no_retry_follows() {
     let mut adapter = adapter();
-    adapter.wanted = Some((
-        OpenId::default(),
-        "node".to_owned(),
-        "description".to_owned(),
-    ));
+    adapter.wanted = Some(Wanted {
+        id: OpenId::default(),
+        name: "node".to_owned(),
+        description: "description".to_owned(),
+        device: None,
+    });
     assert_eq!(adapter.broken(&"the library failed"), MicFact::Broken);
-    assert_eq!(adapter.wanted, None);
+    assert!(adapter.wanted.is_none());
     // The call a retry turn makes: with nothing wanted it tries nothing, so no miss and no retry.
     let runtime = Builder::new_current_thread().build().unwrap();
     assert_eq!(runtime.block_on(adapter.open()), None);
@@ -121,23 +123,27 @@ fn a_broken_library_ends_the_want_so_no_retry_follows() {
 #[test]
 fn a_request_is_read_before_a_wake_already_waiting() {
     let runtime = Builder::new_current_thread().enable_time().build().unwrap();
-    let (requests_in, mut requests) = watch::channel(MicRequest::Close);
+    let (requests_in, mut requests) = watch::channel(Request::CLOSE);
+    let (_card_ids, mut cards) = watch::channel(None);
     let (wake, mut wakes) = mpsc::channel(1);
     wake.try_send(()).unwrap();
-    let open = MicRequest::Open {
-        id: OpenId::default(),
-        name: "node".to_owned(),
-        description: "description".to_owned(),
+    let open = Request {
+        node: MicRequest::Open {
+            id: OpenId::default(),
+            name: "node".to_owned(),
+            description: "description".to_owned(),
+        },
+        device: None,
     };
-    requests_in.send(MicRequest::Close).unwrap();
+    requests_in.send(Request::CLOSE).unwrap();
     requests_in.send(open.clone()).unwrap();
-    let turn = runtime.block_on(next(&mut requests, &mut wakes, None));
+    let turn = runtime.block_on(next(&mut requests, &mut wakes, &mut cards, None));
     assert!(matches!(turn, Turn::Request));
     assert_eq!(*requests.borrow_and_update(), open);
-    let turn = runtime.block_on(next(&mut requests, &mut wakes, None));
+    let turn = runtime.block_on(next(&mut requests, &mut wakes, &mut cards, None));
     assert!(matches!(turn, Turn::Woken));
     drop(requests_in);
-    let turn = runtime.block_on(next(&mut requests, &mut wakes, None));
+    let turn = runtime.block_on(next(&mut requests, &mut wakes, &mut cards, None));
     assert!(matches!(turn, Turn::Ended));
 }
 

@@ -5,6 +5,7 @@ use std::io::{self, ErrorKind};
 use std::iter;
 
 use pods_core::policy::audio::{Percent, SinkState};
+use pods_proto::addr::BdAddr;
 use pulseaudio::protocol::{
     ChannelVolume, Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SubscriptionMask, Volume,
     encode_descriptor, read_descriptor,
@@ -326,18 +327,26 @@ pub(super) fn wants_fast_capture(body: &[u8]) -> Result<bool, Malformed> {
     Ok(tags.0.is_empty() && hint)
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Cards {
+    pub(super) headset: bool,
+    pub(super) device_id: Option<u32>,
+}
+
 /// Card list at protocol 35, sample `L 0 t "card\0" L ffffffff N L 0 t "headset-head-unit\0" P N L 0`.
-pub(super) fn headset(body: &[u8], card: &[u8]) -> Result<bool, Malformed> {
+pub(super) fn cards(body: &[u8], card: &[u8], device: BdAddr) -> Result<Cards, Malformed> {
     let mut tags = Tags(body);
-    let mut active = false;
+    let mut cards = Cards::default();
     while !tags.0.is_empty() {
-        active |= card_uses_headset(&mut tags, card)?;
+        let found = read_card(&mut tags, card, device)?;
+        cards.headset |= found.headset;
+        cards.device_id = found.device_id.or(cards.device_id);
     }
-    Ok(active)
+    Ok(cards)
 }
 
 /// One card including its profiles and ports, sample `L 0 t "card\0" L ffffffff N L 1 t "off\0" N L 0 L 0 L 0 L 1 t "off\0" P N L 0`.
-fn card_uses_headset(tags: &mut Tags<'_>, card: &[u8]) -> Result<bool, Malformed> {
+fn read_card(tags: &mut Tags<'_>, card: &[u8], device: BdAddr) -> Result<Cards, Malformed> {
     tags.u32()?;
     let name = tags.string()?;
     tags.skip_n(BEFORE_CARD_PROFILES)?;
@@ -346,7 +355,25 @@ fn card_uses_headset(tags: &mut Tags<'_>, card: &[u8]) -> Result<bool, Malformed
     }
     let profile = tags.string()?;
     tags.expect(tag::PROPLIST)?;
-    tags.proplist(|_, _| {})?;
+    let mut address = None;
+    let mut device_id = None;
+    // PipeWire card properties, sample `api.bluez5.address=02:00:00:00:00:01` and `object.id=86`.
+    tags.proplist(|key, value| {
+        let value = value.strip_suffix(&[0]).unwrap_or(value);
+        match key {
+            b"api.bluez5.address" => {
+                address = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|text| text.parse().ok());
+            }
+            b"object.id" => {
+                device_id = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|text| text.parse().ok());
+            }
+            _ => {}
+        }
+    })?;
     for _ in 0..tags.u32()? {
         tags.skip_n(BEFORE_PORT_PROFILES)?;
         for _ in 0..tags.u32()? {
@@ -354,7 +381,14 @@ fn card_uses_headset(tags: &mut Tags<'_>, card: &[u8]) -> Result<bool, Malformed
         }
         tags.skip_n(AFTER_PORT_PROFILES)?;
     }
-    Ok(name == Some(card) && profile.is_some_and(|name| name.starts_with(HEADSET_PREFIX)))
+    Ok(Cards {
+        headset: name == Some(card) && profile.is_some_and(|name| name.starts_with(HEADSET_PREFIX)),
+        device_id: if address == Some(device) {
+            device_id
+        } else {
+            None
+        },
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -260,8 +260,10 @@ a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again
 a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again Up Streaming
 ";
 
-/// The tests of the source suites that no cell holds: the daemon's exit and its log.
-const OUTSIDE_THE_TABLE: [&str; 2] = [
+/// Source tests outside the node policy: card properties, daemon exit and log contents.
+const OUTSIDE_THE_TABLE: [&str; 4] = [
+    "bluetooth_card_appearing_late_labels_the_existing_mic_node",
+    "bluetooth_card_reconnecting_updates_the_same_mic_node",
     "exit_removes_the_node",
     "the_log_holds_no_address_and_no_name",
 ];

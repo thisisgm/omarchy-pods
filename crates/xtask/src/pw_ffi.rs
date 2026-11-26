@@ -18,7 +18,7 @@ const OUTPUT: &str = "../pw/src/ffi.rs";
 const FORMAT: &str = "../../rustfmt.toml";
 
 /// Every function `pods-pw` calls; the types they name come with them.
-const FUNCTIONS: [&str; 20] = [
+const FUNCTIONS: [&str; 21] = [
     "pw_init",
     "pw_thread_loop_new",
     "pw_thread_loop_start",
@@ -35,6 +35,7 @@ const FUNCTIONS: [&str; 20] = [
     "pw_stream_new",
     "pw_stream_destroy",
     "pw_stream_add_listener",
+    "pw_stream_update_properties",
     "pw_stream_connect",
     "pw_stream_disconnect",
     "pw_stream_dequeue_buffer",

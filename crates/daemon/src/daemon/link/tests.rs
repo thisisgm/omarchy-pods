@@ -11,7 +11,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use pods_core::link::End;
-use pods_core::policy::MicRequest;
 use pods_core::prefs::Prefs;
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
@@ -42,7 +41,7 @@ pub(in crate::daemon) fn unread_outlets() -> Outlets {
     let (keys, _unstored) = keys::queue();
     let (media, _unread) = media::queue();
     let (monitor, _unwatched) = watch::channel(false);
-    let (mic, _unread) = watch::channel(MicRequest::Close);
+    let (mic, _unread) = watch::channel(crate::daemon::mic::Request::CLOSE);
     Outlets {
         notices,
         prefs,

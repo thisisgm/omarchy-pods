@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::task::Poll;
 
-use pods_core::policy::MicRequest;
+use pods_core::policy::audio::AudioRequest;
 use pods_core::prefs::Prefs;
 use pods_core::status::to_status_line;
 use pods_proto::keys::ProximityKeys;
@@ -111,16 +111,16 @@ async fn serve(
     let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
     let (audio_requests, audio_queue) = audio::queue();
     let (media_requests, media_queue) = media::queue();
-    let (mic_requests, mic_watch) = watch::channel(MicRequest::Close);
+    let (mic_requests, mic_watch) = watch::channel(mic::Request::CLOSE);
     let tap = mic::Tap::new();
-    let dir = paths.runtime_dir.clone();
-    let source = tokio::spawn(mic::run(mic_watch, link.clone(), dir, Arc::clone(&tap)));
-    let adapter = tokio::spawn(audio::run(
-        link.clone(),
+    let (source, adapter) = start_audio_adapters(
+        &link,
         audio_queue,
+        mic_watch,
         paths.runtime_dir,
-        hub.subscribe(),
-    ));
+        &hub,
+        Arc::clone(&tap),
+    );
     let (keys, pairs) = keys::queue();
     let (monitor, monitor_wanted) = watch::channel(false);
     let (system_bus, sleep_bus) = watch::channel(None);
@@ -194,6 +194,32 @@ async fn serve(
         log(&format!("keys: the writer ended: {error}"));
     }
     code
+}
+
+fn start_audio_adapters(
+    link: &mpsc::Sender<link::Input>,
+    audio_queue: mpsc::Receiver<AudioRequest>,
+    mic_requests: watch::Receiver<mic::Request>,
+    runtime_dir: PathBuf,
+    hub: &Hub,
+    tap: Arc<mic::Tap>,
+) -> (JoinHandle<()>, JoinHandle<()>) {
+    let (card_id, cards) = watch::channel(None);
+    let source = tokio::spawn(mic::run(
+        mic_requests,
+        link.clone(),
+        runtime_dir.clone(),
+        tap,
+        cards,
+    ));
+    let adapter = tokio::spawn(audio::run(
+        link.clone(),
+        audio_queue,
+        runtime_dir,
+        hub.subscribe(),
+        card_id,
+    ));
+    (source, adapter)
 }
 
 async fn stop_bus(task: JoinHandle<()>) {

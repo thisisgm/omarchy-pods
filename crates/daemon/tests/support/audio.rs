@@ -6,6 +6,7 @@ mod lists;
 mod server;
 pub(crate) mod wire;
 
+use std::ffi::CString;
 use std::fs::{self, DirBuilder};
 use std::io::ErrorKind;
 use std::os::unix::fs::DirBuilderExt;
@@ -16,7 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pods_core::policy::audio::AUDIO_CALL_TIMEOUT_MS;
-use pulseaudio::protocol::{ChannelVolume, CommandTag, SinkState, SubscriptionMask, Volume};
+use pulseaudio::protocol::{ChannelVolume, CommandTag, Props, SinkState, SubscriptionMask, Volume};
 use rustix::net::{self, Shutdown};
 
 pub(crate) use capture::{Recorder, RecorderId};
@@ -199,7 +200,29 @@ impl FakeAudio {
     }
 
     pub(crate) fn add_card(&self, name: &str, profiles: &[FakeProfile], active: &str) {
-        self.change(|state| state.add_card(name, profiles, active));
+        self.change(|state| state.add_card(name, profiles, active, Props::new()));
+    }
+
+    pub(crate) fn add_bluetooth_card(&self, name: &str, address: &str, device_id: &str) {
+        let mut props = Props::new();
+        for (key, value) in [
+            (c"device.api", "bluez5"),
+            (c"api.bluez5.address", address),
+            (c"object.id", device_id),
+        ] {
+            props.set_bytes(key, CString::new(value).unwrap().as_bytes_with_nul());
+        }
+        let off = FakeProfile {
+            name: "off",
+            available: true,
+            sinks: 0,
+            sources: 0,
+        };
+        self.change(|state| state.add_card(name, &[off], "off", props));
+    }
+
+    pub(crate) fn remove_card(&self, name: &str) {
+        self.change(|state| state.remove_card(name));
     }
 
     pub(crate) fn active_profile(&self, card: &str) -> String {

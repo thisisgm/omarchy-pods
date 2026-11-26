@@ -288,6 +288,10 @@ unsafe extern "C" {
         events: *const pw_stream_events,
         data: *mut ::std::os::raw::c_void,
     );
+    pub fn pw_stream_update_properties(
+        stream: *mut pw_stream,
+        dict: *const spa_dict,
+    ) -> ::std::os::raw::c_int;
     pub fn pw_stream_connect(
         stream: *mut pw_stream,
         direction: spa_direction,

@@ -55,11 +55,26 @@ impl State {
         );
     }
 
-    pub(super) fn add_card(&mut self, name: &str, profiles: &[FakeProfile], active: &str) {
-        let index = self.cards.add(name, profiles, active);
+    pub(super) fn add_card(
+        &mut self,
+        name: &str,
+        profiles: &[FakeProfile],
+        active: &str,
+        props: Props,
+    ) {
+        let index = self.cards.add(name, profiles, active, props);
         self.announce(
             SubscriptionEventFacility::Card,
             SubscriptionEventType::New,
+            Some(index),
+        );
+    }
+
+    pub(super) fn remove_card(&mut self, name: &str) {
+        let index = self.cards.remove(name);
+        self.announce(
+            SubscriptionEventFacility::Card,
+            SubscriptionEventType::Removed,
             Some(index),
         );
     }

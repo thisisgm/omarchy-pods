@@ -599,6 +599,15 @@ impl Machine {
         self.phase
     }
 
+    #[must_use]
+    pub fn connected_device(&self) -> Option<BdAddr> {
+        if matches!(self.phase, Phase::Up { .. }) {
+            self.active
+        } else {
+            None
+        }
+    }
+
     /// Every phase change goes through here, so `connected` is true exactly in `Up`.
     fn enter(&mut self, state: &mut State, phase: Phase) {
         self.phase = phase;

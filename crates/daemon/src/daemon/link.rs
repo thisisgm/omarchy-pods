@@ -19,8 +19,8 @@ use pods_core::link::{
 use pods_core::policy::audio::{AudioFact, AudioRequest, server_after};
 use pods_core::policy::notices::Notice;
 use pods_core::policy::{
-    DictationFact, DictationRequest, Effect, Era, Fact, MicFact, MicRequest, MonitorFact,
-    PlayerOwner, Policy, Sighting, SleepEdge, UplinkRequest,
+    DictationFact, DictationRequest, Effect, Era, Fact, MicFact, MonitorFact, PlayerOwner, Policy,
+    Sighting, SleepEdge, UplinkRequest,
 };
 use pods_core::prefs::Prefs;
 use pods_core::state::{MicCounts, MicSpan, State};
@@ -113,7 +113,7 @@ pub(super) struct Outlets {
     /// Whether the advert monitor is wanted; a watch, so the latest is never dropped, and each `true` registers it anew.
     pub(super) monitor: watch::Sender<bool>,
     /// The latest source request; a watch, so turns of the setting while an open hangs never drop the last.
-    pub(super) mic: watch::Sender<MicRequest>,
+    pub(super) mic: watch::Sender<mic::Request>,
     /// The adapter of the link's attribute channel, started and ended with the control channel.
     pub(super) dictation: dictation::Outlet,
     pub(super) sleep_bus: sleep::Bus,
@@ -514,7 +514,9 @@ impl Driver {
                 }
                 self.send(request.sdu());
             }
-            Effect::Mic(request) => mic::offer(&self.outlets.mic, request),
+            Effect::Mic(request) => {
+                mic::offer(&self.outlets.mic, request, self.machine.connected_device());
+            }
             Effect::Dictation(DictationRequest::Mode) => {
                 self.send(&doap_mode_on());
                 if self.dictation_inhibitor.is_none() {
