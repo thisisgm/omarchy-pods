@@ -558,7 +558,7 @@ fn stopped_recording(
     let mut now = first;
     let mut written = 0;
     let (mut ratio, mut fraction) = (1.0, 0.0);
-    let mut fast_frames = 0;
+    let mut fast_frames = 0_usize;
     let drift = STEER_MAX_PPM / PARTS_PER_MILLION;
     let bound = i64::from(REALIGN_MS.saturating_mul(crate::FRAMES_PER_MS));
     let mut read = |reader: &mut Reader, now, tape: &mut Vec<f32>| {
@@ -574,7 +574,7 @@ fn stopped_recording(
         let count = whole as usize;
         let mut heard = [0.0; 2 * QUANTUM];
         if ratio > 1.0 + drift {
-            fast_frames += count;
+            fast_frames = fast_frames.saturating_add(count);
         }
         let capacity = heard.len();
         ratio = reader.read_for_converter(now, &mut heard[..count], capacity);
