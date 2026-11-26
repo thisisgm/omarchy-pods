@@ -310,6 +310,37 @@ fn a_burst_before_the_resync_read_keeps_its_opening() {
 }
 
 #[test]
+fn a_stray_uplink_sdu_does_not_spend_the_dictation_opening() {
+    use pods_samples::uplink::{STAMP_STEP, tone_unit};
+
+    const TONE_LINE: u16 = 15;
+    const TONE_LEVEL: u8 = 176;
+    const UNITS_PER_SDU: u32 = 4;
+    let (mut chain, mut reader, resync) = chain(Arc::new(Counters::default())).unwrap();
+    let mut heard = [0.0; QUANTUM];
+    resync.request();
+    reader.read(Duration::ZERO, &mut heard);
+    let unit = tone_unit(TONE_LINE, TONE_LEVEL);
+    let units = (0..UNITS_PER_SDU).map(|i| (i * STAMP_STEP, unit.as_slice()));
+    chain.sdu(Duration::ZERO, units);
+    let uplink = Duration::from_millis(u64::from(NODE_LATENCY_MS));
+    reader.read(uplink, &mut heard);
+    assert!(!silent(&heard));
+    assert_eq!(reader.heard, Some(reader.ring.run()));
+    for quanta in 1..=2 {
+        reader.read(uplink + PERIOD * quanta, &mut heard);
+    }
+    assert!(silent(&heard));
+
+    let now = uplink + PERIOD * 3;
+    restart(&mut chain, now);
+    opens(&mut reader, now);
+    let next = reader.next;
+    reader.read(now + PERIOD, &mut heard);
+    assert_eq!(reader.next, next + i64::try_from(QUANTUM).unwrap());
+}
+
+#[test]
 fn a_read_adds_what_the_level_met_to_the_counters_once() {
     /// Past the reader's fade in and before the last unit, which plays on backwards when the ring runs dry.
     const LOUD: [usize; 3] = [400, 401, 700];
@@ -458,7 +489,7 @@ fn steering_brings_a_late_reader_back_within_the_realign_bound() {
         let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
         ring.write((ring.end()..end).map(|_| SPEECH_FLOOR));
         let ratio = reader.read(now, &mut heard);
-        let target = ring.target(now).unwrap();
+        let (target, _) = ring.target(now).unwrap();
         let lag = Duration::from_nanos(
             u64::try_from(scaled((target - reader.next).abs(), NS_PER_SECOND, RATE_HZ)).unwrap(),
         );
@@ -505,7 +536,8 @@ fn stalled_speech_gets_at_most_one_second_of_fast_source_frames_per_stall() {
             } else {
                 reader.read(now, &mut heard)
             };
-            (ratio, ring.target(now).unwrap() - reader.next)
+            let (target, _) = ring.target(now).unwrap();
+            (ratio, target - reader.next)
         };
         read(now);
         let quantum = i64::try_from(QUANTUM).unwrap();
@@ -599,7 +631,8 @@ fn stopped_recording(
             (1.0 - drift..=STALL_RATIO_LIMIT).contains(&ratio),
             "{ratio}"
         );
-        let lag = ring.target(now).unwrap().saturating_sub(reader.next);
+        let (target, _) = ring.target(now).unwrap();
+        let lag = target.saturating_sub(reader.next);
         if lag <= bound {
             assert!(ratio <= 1.0 + drift, "{ratio} at {lag} frames of lag");
         }
@@ -745,7 +778,8 @@ fn a_quiet_span_clears_the_stall_without_losing_speech_at_stop() {
         reader.read(now, &mut heard);
         tape.extend(heard);
         if now == first + QUIET_END || now == release {
-            let lag = ring.target(now).unwrap().abs_diff(reader.next);
+            let (target, _) = ring.target(now).unwrap();
+            let lag = target.abs_diff(reader.next);
             assert!(
                 lag <= bound.unsigned_abs(),
                 "{lag} frames behind at {now:?}"
