@@ -313,6 +313,8 @@ pub struct Reader {
     fade: u16,
     /// The run of the last sample handed out since a recorder linked.
     heard: Option<u64>,
+    /// The exclusive end of the audio handed out in `heard`, even if the reader has since run dry.
+    played: i64,
     /// What still sounds of the last two ends of audio where the reader stood, and of the audio a jump left.
     ended: Tail,
     earlier: Tail,
@@ -364,6 +366,7 @@ impl Reader {
             was: Was::Gone,
             fade: 0,
             heard: None,
+            played: 0,
             ended: Tail::NONE,
             earlier: Tail::NONE,
             left: Tail::NONE,
@@ -460,8 +463,19 @@ impl Reader {
         }
         let off = self.next.saturating_sub(place);
         // A realign waits out the fall of the one before it, which a second would cut short.
-        if self.linking || (off.unsigned_abs() > bound.unsigned_abs() && !self.left.falling()) {
+        if self.linking {
             self.jump(place);
+        } else if off.unsigned_abs() > bound.unsigned_abs() && !self.left.falling() {
+            // A later dictation anchor can reach audio that has already been handed out.
+            let place = if off > 0 && self.heard == Some(run) && self.ring.path() == Path::Dictation
+            {
+                place.max(self.played)
+            } else {
+                place
+            };
+            if place != self.next {
+                self.jump(place);
+            }
         }
     }
 
@@ -520,6 +534,7 @@ impl Reader {
                 let gain = fade_in(self.fade);
                 self.fade = self.fade.saturating_add(1);
                 (self.was, self.heard) = (Was::Sample, Some(run));
+                self.played = self.next;
                 sample * gain
             }
             Frame::Dry { run } => {
