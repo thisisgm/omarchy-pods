@@ -13,13 +13,16 @@ mod tests {
     use pods_fake::doap::FRAME;
     use pods_proto::doap::{STOP_REASON_UNSOLICITED, doap_mode_off};
     use pods_samples::NAME;
+    use pods_samples::uplink::state_marker;
+    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::Recorder as Listed;
     use super::support::dictation::{
         CAPTURE, Fixture, HOST_STOP, NO_RECORDER, opening, ready_to_read, status, uplink,
     };
     use super::support::pipewire::record;
-    use super::support::uplink::assert_no_sink_call;
+    use super::support::recording::{assert_sounds, counts_after_leaving};
+    use super::support::uplink::{assert_no_sink_call, move_sink, read_up_to_now};
     use super::support::{HANG_LIMIT, pause, wait_for};
 
     const MAX_TAIL: Duration = Duration::from_millis(100);
@@ -173,6 +176,44 @@ mod tests {
         drop(recorder.finish());
         fixture.stopped(1);
         fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
+    fn an_unsolicited_uplink_marker_does_not_interrupt_a_doap_start() {
+        const MARKER_DELAY: Duration = Duration::from_millis(21);
+        const CAPTURE_SPAN: Duration = Duration::from_millis(300);
+
+        let mut fixture = Fixture::with_recorder_quantum();
+        let doap = fixture.device.pods.doap();
+        doap.hold_start(true);
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        fixture.start(1);
+        pause(MARKER_DELAY);
+        fixture.device.pods.send(&state_marker(true));
+        read_up_to_now(&fixture.rig, &fixture.device);
+        // A quiet sink releases any uplink STOP that the marker wrongly queued during playback.
+        move_sink(
+            &fixture.rig,
+            &fixture.audio,
+            &fixture.device,
+            SinkState::Suspended,
+        );
+        doap.release_start();
+        fixture.streaming(1);
+        ready_to_read(&recorder, CAPTURE_SPAN);
+
+        wait_past_att(&fixture);
+        fixture.no_uplink();
+        assert!(doap.stops().is_empty(), "DoAP STOP while recording");
+        assert_sounds(&recorder.finish(), " after the DoAP START");
+        fixture.stopped(1);
+        assert!(
+            !fixture.rig.daemon().log().contains("stop sent (dictation)"),
+            "the daemon logged a dictation stop while recording"
+        );
+        assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
         fixture.finish();
     }
 
