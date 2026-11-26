@@ -153,6 +153,83 @@ fn a_duck_dropped_on_a_non_default_sink_acknowledges_the_write() {
 }
 
 #[test]
+fn a_dropped_duck_acknowledges_the_write_after_a_finished_restore() {
+    on_paused_clock(async {
+        let (stream, mut server) = UnixStream::pair().unwrap();
+        let mut connection = Connection {
+            stream,
+            seq: 0,
+            pending: Vec::new(),
+        };
+        let replies = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (seq, _) = volume_command(&mut server).await;
+                server.write_all(&ack(seq)).await.unwrap();
+            }
+            server
+        });
+        let name = CString::new(OUTPUT).unwrap();
+        let original = sink_list(&[(&name, &[NORM])]);
+        let lowered = Percent::new(20).unwrap();
+        let ducked = sink_list(&[(&name, &[protocol_volume(lowered).as_u32()])]);
+        let device = DEVICE.parse().unwrap();
+        let mut volume = Volumes::default();
+        let mut stale = SubscriptionMask::empty();
+
+        let mut pending = VolumeWrite::queued(set_volume(lowered, 1));
+        volume
+            .apply(
+                device,
+                &mut pending,
+                &mut connection,
+                device_sink(&original, OUTPUT, Some(OUTPUT)).unwrap(),
+                &mut stale,
+            )
+            .await
+            .unwrap();
+        pending = VolumeWrite::queued(AudioRequest::RestoreVolume(
+            Percent::FULL,
+            VolumeStamp {
+                epoch: 0,
+                writes: 2,
+            },
+        ));
+        volume
+            .apply(
+                device,
+                &mut pending,
+                &mut connection,
+                device_sink(&ducked, OUTPUT, Some(OUTPUT)).unwrap(),
+                &mut stale,
+            )
+            .await
+            .unwrap();
+
+        let mut server = replies.await.unwrap();
+        assert_eq!(volume.saved.len(), 1);
+        let stamp = VolumeStamp {
+            epoch: 0,
+            writes: 3,
+        };
+        pending = VolumeWrite::queued(AudioRequest::SetVolume(lowered, stamp));
+        let observed = volume
+            .apply(
+                device,
+                &mut pending,
+                &mut connection,
+                device_sink(&original, OUTPUT, None).unwrap(),
+                &mut stale,
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(observed, Observed::Skipped(actual) if actual == stamp));
+        assert!(volume.saved.is_empty());
+        assert_no_volume_write(&mut server).await;
+    });
+}
+
+#[test]
 fn a_duck_replacing_a_queued_restore_keeps_the_original_channels() {
     on_paused_clock(async {
         let (stream, mut server) = UnixStream::pair().unwrap();
@@ -461,19 +538,25 @@ async fn check_new_sink(during: RequestDuring) {
             }
         );
 
+        let restore_stamp = VolumeStamp {
+            epoch: 1,
+            writes: 1,
+        };
         requests
             .try_send(AudioRequest::RestoreVolume(
                 replacement.volume,
-                VolumeStamp {
-                    epoch: 1,
-                    writes: 1,
-                },
+                restore_stamp,
             ))
             .unwrap();
         answer_command(&mut server, CommandTag::GetServerInfo).await;
         let (seq, _) = expect_command(&mut server, CommandTag::GetSinkInfoList).await;
         answer_sink_list(&mut server, seq, NEW_INDEX, HALF).await;
         assert_no_volume_write(&mut server).await;
+        let fact = facts.recv().await;
+        assert!(
+            matches!(fact, Some(Input::Audio(AudioFact::VolumeSkipped(stamp))) if stamp == restore_stamp),
+            "expected the skipped restore with {restore_stamp:?}, got {fact:?}"
+        );
 
         requests
             .try_send(AudioRequest::SetVolume(
