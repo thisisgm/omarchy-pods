@@ -226,9 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn arrival_jitter_up_to_65_ms_keeps_every_sample() {
+    fn arrival_jitter_within_the_cover_keeps_every_sample() {
         const LATE_FRAME: u32 = 10;
-        for late_ms in [50, 60, 65] {
+        let cover_ms = DOAP_LATENCY_MS - FRAME_MS;
+        for late_ms in [cover_ms - 10, cover_ms - 5, cover_ms] {
             let mut stream = Stream::new();
             stream.resync.request();
             let from = at(5) + ms(LATE_READ_PHASE_MS);
@@ -251,24 +252,34 @@ mod tests {
 
     fn assert_short_silence_after_step(late_ms: u32) {
         const FIRST_LATE: u32 = 10;
-        const MAX_SILENCE_MS: u32 = 3 * FRAME_MS;
-        let mut stream = Stream::new();
-        stream.resync.request();
-        let read_count = FIRST_LATE.saturating_add(u32::try_from(ARRIVAL_WINDOW).unwrap());
-        let from = at(5).saturating_add(ms(LATE_READ_PHASE_MS));
-        let tape = stream.play_at(&reads(from, read_count), |step| {
-            if step < FIRST_LATE {
-                at(step)
-            } else {
-                at(step).saturating_add(ms(late_ms))
-            }
-        });
-        let longest = longest_silence(&tape);
-        assert!(
-            longest <= frames_in(ms(MAX_SILENCE_MS)),
-            "{late_ms} ms step produced {longest} consecutive zero samples (limit {})",
-            frames_in(ms(MAX_SILENCE_MS))
-        );
+        // The three late frames the re-anchor waits for, and the read that meets the new anchor.
+        const MAX_SILENCE_MS: u32 = 4 * FRAME_MS;
+        // One underrun for each late notification the re-anchor waits for.
+        const MAX_UNDERRUNS: u32 = 3;
+        for phase_ms in (0..FRAME_MS).step_by(2) {
+            let mut stream = Stream::new();
+            stream.resync.request();
+            let read_count = FIRST_LATE.saturating_add(u32::try_from(ARRIVAL_WINDOW).unwrap());
+            let from = at(5).saturating_add(ms(phase_ms));
+            let tape = stream.play_at(&reads(from, read_count), |step| {
+                if step < FIRST_LATE {
+                    at(step)
+                } else {
+                    at(step).saturating_add(ms(late_ms))
+                }
+            });
+            let longest = longest_silence(&tape);
+            assert!(
+                longest <= frames_in(ms(MAX_SILENCE_MS)),
+                "{late_ms} ms step at phase {phase_ms} ms produced {longest} consecutive zero samples (limit {})",
+                frames_in(ms(MAX_SILENCE_MS))
+            );
+            let underruns = counted(&stream.counters)[3];
+            assert!(
+                underruns <= MAX_UNDERRUNS,
+                "{late_ms} ms step at phase {phase_ms} ms ran dry {underruns} times"
+            );
+        }
     }
 
     fn longest_silence(tape: &[f32]) -> usize {
@@ -279,13 +290,47 @@ mod tests {
     }
 
     #[test]
-    fn a_sustained_70_ms_step_keeps_silence_under_60_ms() {
-        assert_short_silence_after_step(70);
+    fn a_sustained_step_just_past_the_cover_is_re_anchored() {
+        assert_short_silence_after_step(DOAP_LATENCY_MS - FRAME_MS + 5);
     }
 
     #[test]
-    fn a_sustained_90_ms_step_keeps_silence_under_60_ms() {
+    fn a_sustained_step_inside_the_hold_is_re_anchored() {
+        assert_short_silence_after_step(DOAP_LATENCY_MS);
+    }
+
+    #[test]
+    fn a_sustained_90_ms_step_keeps_silence_under_80_ms() {
         assert_short_silence_after_step(90);
+    }
+
+    #[test]
+    fn a_stall_draining_one_frame_at_a_time_keeps_the_anchor() {
+        const FIRST_LATE: u32 = 10;
+        const STALL_MS: u32 = 150;
+        const DRAIN_MS: u32 = 10;
+        let mut stream = Stream::new();
+        stream.resync.request();
+        let from = at(5).saturating_add(ms(LATE_READ_PHASE_MS));
+        let tape = stream.play_at(&reads(from, 40), |step| {
+            let drained =
+                at(FIRST_LATE) + ms(STALL_MS) + ms(DRAIN_MS) * step.saturating_sub(FIRST_LATE);
+            if step < FIRST_LATE {
+                at(step)
+            } else {
+                at(step).max(drained)
+            }
+        });
+        let quanta: Vec<&[f32]> = tape.chunks(QUANTUM).collect();
+        let gap = quanta.iter().position(|read| silent(read)).unwrap();
+        let resumed = gap + quanta[gap..].iter().position(|read| !silent(read)).unwrap();
+        // Past the read that fades back in and the one that realigns, the reader plays where the run always stood.
+        let settled = (resumed + 2) * QUANTUM;
+        let base = base_of(from);
+        assert_same(
+            &tape[settled..],
+            &stream.twin.decoded[base + settled..base + tape.len()],
+        );
     }
 
     #[test]
@@ -431,6 +476,17 @@ mod tests {
             longest <= frames_in(ms(MAX_RECOVERY_SILENCE_MS)),
             "batched recovery produced {longest} consecutive zero samples after arrival"
         );
+        // The first batch sets the hold, so the run starts the hold less its two frames after the read that met it.
+        let after_batch = DOAP_LATENCY_MS - u32::try_from(BURST).unwrap() * FRAME_MS;
+        // The fade's first gain is zero, so the run starts one sample before the first sound.
+        let start = resumed.iter().take_while(|sample| **sample == 0.0).count() - 1;
+        assert_eq!(start, frames_in(ms(after_batch)));
+        assert_same(
+            &resumed[start + FADE..],
+            &stream.twin.decoded[FADE..resumed.len() - start],
+        );
+        // The hole runs the reader dry once, and nothing else is counted.
+        assert_eq!(counted(&stream.counters), [0, 0, 0, 1]);
     }
 
     #[test]

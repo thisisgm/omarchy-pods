@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn the_opening_catches_up_at_ten_percent_within_exit_bound() {
-        const OPENINGS: [(u32, u32); 3] = [(130, 125), (195, 180), (250, 245)];
+        const OPENINGS: [(u32, u32); 3] = [(130, 135), (195, 190), (250, 255)];
         const READS: usize = 400;
         // Allow one read at each boundary because the opening and exit are observed on quantum boundaries.
         const SLACK_QUANTA: u32 = 2;
@@ -693,8 +693,7 @@ mod tests {
 
     #[test]
     fn dictation_holds_doap_latency_while_uplink_holds_uplink_latency() {
-        // Dictation holds the same 85 ms already advertised by the node.
-        const _: () = assert!(DOAP_LATENCY_MS == NODE_LATENCY_MS && NODE_LATENCY_MS == 85);
+        const _: () = assert!(DOAP_LATENCY_MS == 75 && NODE_LATENCY_MS == 85);
         const STEADY_READS: usize = 3;
         const UPLINK_PACKETS: u32 = 10;
         let mut take = Take::new(0, None);
