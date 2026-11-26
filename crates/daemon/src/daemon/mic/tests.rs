@@ -155,3 +155,25 @@ fn the_outage_suite_waits_the_ladders_first_step() {
     let live = suite.lines().any(|line| line.trim() == copy);
     assert!(live, "tests/source.rs FIRST_RETRY is not {first} ms");
 }
+
+#[test]
+fn a_retry_wakes_after_the_audio_adapter_ends() {
+    let runtime = Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let (_requests_in, mut requests) = watch::channel(Request::CLOSE);
+    let (card_ids, mut cards) = watch::channel(None);
+    drop(card_ids);
+    let (_wake, mut wakes) = mpsc::channel(1);
+    let turn = runtime.block_on(async {
+        let [first, ..] = AUDIO_RETRY_MS;
+        let retry_at = Instant::now()
+            .checked_add(Duration::from_millis(first))
+            .unwrap();
+        // The retry wakes the same pending turn after the card watch has closed.
+        next(&mut requests, &mut wakes, &mut cards, Some(retry_at)).await
+    });
+    assert!(matches!(turn, Turn::Retry));
+}

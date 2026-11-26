@@ -22,6 +22,7 @@ mod tests {
     use pulseaudio::protocol::SinkState;
     use serde_json::{Value, json};
 
+    use super::support::audio::Volumes;
     use super::support::pipewire::{
         daemon_states_latency, links_of, node_name, ready, record, start, wait_no_node, wait_node,
     };
@@ -82,6 +83,54 @@ mod tests {
         audio.add_bluetooth_card("unrelated-bluetooth-card", OTHER_ADDRESS, "87");
         audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, FIRST_CARD_ID);
         wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+        // Left alone in the list, the other device's card must not label the node.
+        audio.remove_card(BLUETOOTH_CARD);
+        wait_card_id(&pipewire, None, &node);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn an_audio_server_outage_clears_the_card_id_until_the_server_returns() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Idle);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, FIRST_CARD_ID);
+        let pipewire = start(&rig);
+        link_heard(&rig, &device);
+        let node = wait_node(&pipewire);
+        wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+        audio.stop();
+        wait_card_id(&pipewire, None, &node);
+        audio.restart(Volumes::Kept);
+        wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+        rig.finish();
+    }
+
+    #[test]
+    fn a_relinked_node_carries_no_card_id_from_the_link_before() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Idle);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, FIRST_CARD_ID);
+        let pipewire = start(&rig);
+        link_heard(&rig, &device);
+        let node = wait_node(&pipewire);
+        wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+        lose(&rig, &device);
+        wait_no_node(&pipewire);
+        wait_for("the audio follower to leave", || {
+            (audio.clients() == 0).then_some(())
+        });
+        audio.remove_card(BLUETOOTH_CARD);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, NEXT_CARD_ID);
+        // The new card read must not mask a stale ID left by the previous follower.
+        audio.hold_at_card_list();
+        link(&rig, &device);
+        wait_mic(&rig, "ready");
+        let relinked = wait_node(&pipewire);
+        assert!(
+            relinked.pointer(CARD_ID).is_none(),
+            "the relinked node kept a card id: {relinked}"
+        );
+        audio.hold_replies(false);
+        wait_card_id(&pipewire, Some(NEXT_CARD_ID), &relinked);
         audio.assert_only_reads();
         rig.finish();
     }
