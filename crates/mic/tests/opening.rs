@@ -523,6 +523,8 @@ mod tests {
         assert_eq!(take.allocations, 0);
     }
 
+    mod opening_preroll;
+
     const SHORT_LEAD_MS: u32 = 300;
     const SILENT_BURST_FRAMES: usize = 12;
     const ACTIVE_BURST_FRAMES: usize = 4;

@@ -139,3 +139,42 @@ fn burst_only_short_dictation_plays_the_burst_when_flushed_at_stop() {
     fixture.no_uplink();
     fixture.finish();
 }
+
+#[test]
+fn two_dictations_keep_their_pre_roll_while_the_source_stays_running() {
+    const PLAYBACK_SPAN: Duration = Duration::from_secs(30);
+    const SILENT_FRAMES: u32 = 10;
+    const HELD_START: Duration = FRAME.saturating_mul(SILENT_FRAMES + 1);
+    const PLAY_OPENING: Duration = FRAME.saturating_mul(25);
+    let fixture = Fixture::with_recorder_quantum();
+    let playback = pace(&fixture.rig, &fixture.server, PLAYBACK_SPAN);
+    let doap = fixture.device.pods.doap();
+    for count in 1..=2 {
+        doap.hold_start(true);
+        doap.silent(SILENT_FRAMES);
+        doap.mark(MARK_FRAMES);
+        // With the source already running, listing the second recorder starts the DoAP deadline.
+        let listed = (count == 1).then(|| fixture.list(CAPTURE));
+        let recorder = fixture.capture();
+        let listed = listed.unwrap_or_else(|| fixture.list(CAPTURE));
+        wait_for("dictation mode set", || doap.mode_seen().then_some(()));
+        let mode = Instant::now();
+        if count == 1 {
+            // The extra graph link keeps the source Streaming across the break in Pulse's list.
+            fixture.server.link(&node_name(), playback.recorder.node());
+        }
+        fixture.start(count);
+        pause(HELD_START.saturating_sub(mode.elapsed()));
+        doap.release_start();
+        fixture.streaming(count);
+        pause(PLAY_OPENING);
+        let samples = recorder.finish();
+        assert_eq!(wait_node(&fixture.server)["info"]["state"], "running");
+        fixture.audio.remove_recorder(listed);
+        fixture.stopped(usize::try_from(count).unwrap());
+        assert_marks(&samples, 1, MARK_LENGTH, (0, None));
+    }
+    drop(playback);
+    fixture.no_uplink();
+    fixture.finish();
+}

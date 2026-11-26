@@ -25,8 +25,11 @@ const QUIET_PEAK: f32 = 0.005_623_413;
 const STEER_PPM_PER_MS: f64 = 200.0;
 /// Inaudible as pitch, and more than ten times the drift measured.
 const STEER_MAX_PPM: f64 = 2000.0;
-/// Close 40 ms of missed playout plus 5 ms of margin per second.
-const CATCH_UP_RATIO: f64 = 1.045;
+const CATCH_UP_BASE: u16 = 1_000;
+const CATCH_UP_FULL: u16 = 1_045;
+/// Close about 43 ms of missed playout per second of fast source audio.
+#[expect(clippy::as_conversions, reason = "a const context has no `From`")]
+const CATCH_UP_RATIO: f64 = CATCH_UP_FULL as f64 / CATCH_UP_BASE as f64;
 /// The owner's limit on source audio played above the drift ratio after one stall.
 const CATCH_UP_MAX_MS: u16 = 1_000;
 /// Bring catch-up back into the drift range over the last 5 ms above the realignment bound.
@@ -399,7 +402,7 @@ pub struct Reader {
     edge: Option<i64>,
     /// The run the reader is catching up on.
     opening: Option<Opening>,
-    last_read: Option<Duration>,
+    last_read: Option<(Duration, i64)>,
     catch_up_left: i64,
     /// The converter applies a requested catch-up ratio to its next read.
     catch_up_requested: bool,
@@ -503,7 +506,7 @@ impl Reader {
 
     /// Stands the reader for a read of `frames` at `now` by the time of `run`, the run noted before, and gives what it stood by; none while the run has not told its time, or when another started since.
     fn aim(&mut self, run: u64, now: Duration, frames: i64) -> Option<Aim> {
-        let previous = self.last_read.replace(now);
+        let previous = self.last_read.take();
         let generation = self.ring.generation.load(Ordering::Acquire);
         let (target, path) = self.ring.target(now)?;
         // A run that started since `run` was noted may have told the time just read, so the read stands by neither.
@@ -513,13 +516,19 @@ impl Reader {
         {
             return None;
         }
+        self.last_read = Some((now, target));
         if self.heard != Some(run) {
             self.catch_up_left = 0;
-        } else if let Some(last) = previous {
+        } else if let Some((last, previous_target)) = previous {
             let elapsed = scaled(ns_of(now.saturating_sub(last)), RATE_HZ, NS_PER_SECOND);
             let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
-            // Only a fresh callback gap can renew an exhausted budget while lag persists.
-            if elapsed.saturating_sub(frames) > bound {
+            let anchor_advance = target
+                .saturating_sub(previous_target)
+                .saturating_sub(elapsed);
+            // A late callback or an earlier DoAP anchor can leave the reader behind.
+            if elapsed.saturating_sub(frames) > bound
+                || (self.ring.path() == Path::Dictation && anchor_advance > bound)
+            {
                 self.catch_up_left =
                     i64::from(CATCH_UP_MAX_MS).saturating_mul(i64::from(FRAMES_PER_MS));
             }
@@ -635,12 +644,28 @@ impl Reader {
 
     /// Only cut sustained quiet, leaving quiet under both sides of the realignment fade.
     fn quiet_destination(&self, place: i64, run: u64) -> Option<i64> {
+        let (mut place, mut peak) = (place, QUIET_PEAK);
+        if self.ring.path() == Path::Dictation && self.ring.opened_against(self.ring.edge.load()) {
+            // At ratio r, a source frame closes 1 - 1/r frames of lag.
+            let recoverable = self
+                .catch_up_left
+                .saturating_mul(i64::from(CATCH_UP_FULL.saturating_sub(CATCH_UP_BASE)))
+                .checked_div(i64::from(CATCH_UP_FULL))
+                .unwrap_or(0);
+            let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
+            place = place.saturating_sub(bound).saturating_sub(recoverable);
+            // The first word can start below the steady quiet threshold, so only cut digital silence.
+            peak = f32::MIN_POSITIVE;
+        }
         let fade = i64::from(FADE_FRAMES);
+        if place.saturating_sub(self.next) < fade {
+            return None;
+        }
         let start = self.next.saturating_sub(fade);
         let end = place.saturating_add(fade);
         let quiet_end = (start..end)
             .find(|&at| {
-                !matches!(self.ring.frame_of(run, at), Frame::Sample { sample, .. } if sample.abs() < QUIET_PEAK)
+                !matches!(self.ring.frame_of(run, at), Frame::Sample { sample, .. } if sample.abs() < peak)
             })
             .unwrap_or(end);
         let to = quiet_end.saturating_sub(fade);
