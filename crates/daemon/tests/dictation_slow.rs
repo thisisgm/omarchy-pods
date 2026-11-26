@@ -52,27 +52,37 @@ mod tests {
 
     #[test]
     fn history_recorder_stays_click_free_across_opening_catchup_exit() {
+        use std::f64::consts::PI;
+
         use pods_fake::doap::FRAME;
+        use pods_mic::OPENING_MAX_PPM;
+        use pods_mic::level::MIC_GAIN_DB;
         use pods_pwrig::Recorder;
-        use pods_samples::opus::TONE_HZ;
+        use pods_samples::opus::{TONE_DBFS, TONE_HZ};
 
         use super::support::pipewire::node_name;
         use super::support::recording::{counts_after_leaving, frames_at as at_rate, largest_step};
 
         const SPEECH: Duration = Duration::from_secs(3);
         const DECODER_SETTLE: Duration = FRAME.saturating_mul(2);
-        const STEP_TOLERANCE: f64 = 1.30;
+        const PARTS_PER_MILLION: f64 = 1_000_000.0;
+        // Allow for the decoder and resampler's deviation from a pure sine.
+        const STEP_TOLERANCE: f64 = 1.20;
         let mut fixture = Fixture::new();
+        let node = node_name();
+        let dir = fixture.rig.session().dir.path();
+        let history = Recorder::history(&fixture.server, &node, &dir.join("history.wav"));
+        let witness = Recorder::program(&fixture.server, &node, &dir.join("witness.wav"));
+        // Both 48 kHz recorders must be linked before the listed capture starts DoAP.
+        fixture.server.link(&node, history.node());
+        fixture.server.link(&node, witness.node());
         fixture.list(CAPTURE);
         let recorder = fixture.capture();
-        let node = node_name();
-        let wave = fixture.rig.session().dir.path().join("history.wav");
-        let history = Recorder::history(&fixture.server, &node, &wave);
-        fixture.server.link(&node, history.node());
         fixture.streaming(1);
         pause(SPEECH);
         let rate = history.rate();
-        let samples = history.finish();
+        let history_samples = history.finish();
+        let witness_samples = witness.finish();
         let capture = recorder.finish();
         fixture.stopped(1);
         let (behind, caught_up) = opening(&mut fixture);
@@ -82,25 +92,38 @@ mod tests {
         );
         let caught_up = caught_up.expect("the reader never caught up");
         assert_sounds(&capture, "");
-        let zeroes = longest_zero_run(&samples);
-        assert!(
-            zeroes < usize::try_from(rate / TONE_HZ).unwrap(),
-            "a gap of {zeroes} zero samples"
-        );
-        let first = first_sound(&samples);
-        let steady_start = samples.len() - at_rate(AUDIO, rate);
+        let underruns = counts_after_leaving(&fixture.rig).underruns;
+        assert_eq!(underruns, 0);
         let catch_up = Duration::from_millis(u64::from(caught_up));
-        // Use the first sound as the opening's start on the recorder clock.
         assert!(
-            first + at_rate(catch_up, rate) < steady_start,
-            "catch-up after {caught_up} ms overlaps the steady window"
+            catch_up > DECODER_SETTLE,
+            "catch-up after {caught_up} ms overlaps decoder settle"
         );
-        let start = first + at_rate(DECODER_SETTLE, rate);
-        let steady = &samples[steady_start..];
-        let bound = f64::from(largest_step(steady)) * STEP_TOLERANCE;
-        let step = largest_step(&samples[start..]);
-        assert!(f64::from(step) <= bound, "step {step} exceeds {bound}");
-        assert_eq!(counts_after_leaving(&fixture.rig).underruns, 0);
+        let recordings = [("history", &history_samples), ("witness", &witness_samples)];
+        let [history_step, witness_step] = recordings.map(|(name, samples)| {
+            let zeroes = longest_zero_run(samples);
+            assert!(
+                zeroes < usize::try_from(rate / TONE_HZ).unwrap(),
+                "{name} has a gap of {zeroes} zero samples"
+            );
+            // First sound anchors opening on each recorder's clock.
+            let first = first_sound(samples);
+            let last = samples.iter().rposition(|&sample| sample != 0).unwrap();
+            assert!(
+                first + at_rate(catch_up + AUDIO, rate) <= last,
+                "{name} lacks {AUDIO:?} of tone after catch-up at {caught_up} ms"
+            );
+            largest_step(&samples[first + at_rate(DECODER_SETTLE, rate)..])
+        });
+        let peak = 10_f64.powf(f64::from(TONE_DBFS + MIC_GAIN_DB) / 20.0) * f64::from(i16::MAX);
+        let fastest_tone = f64::from(TONE_HZ) * (1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION);
+        let bound = 2.0 * (PI * fastest_tone / f64::from(rate)).sin() * peak * STEP_TOLERANCE;
+        // A missed quantum in one recorder can also make a large step.
+        assert!(
+            f64::from(history_step.min(witness_step)) <= bound,
+            "history step {history_step} and witness step {witness_step} exceed {bound:.1} (opening {behind} ms behind, caught up after {caught_up} ms, underruns {underruns}, largest DoAP gap {:?})",
+            fixture.device.pods.doap().largest_gap()
+        );
         fixture.no_uplink();
         fixture.finish();
     }
