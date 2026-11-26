@@ -6,6 +6,7 @@ mod support;
 
 #[cfg(test)]
 mod tests {
+    mod dictation_fallback;
     mod dictation_opening;
 
     use std::fs;
@@ -433,40 +434,6 @@ mod tests {
         fixture.stopped(1);
         assert!(!dictation_marks(&samples).is_empty(), "missing DoAP audio");
         assert_eq!(doap.starts(), 1);
-        assert_eq!(starts(&fixture.device).len(), 1);
-        fixture.finish();
-    }
-
-    #[test]
-    fn dictation_records_uplink_after_two_unanswered_starts() {
-        use pods_fake::uplink::PERIOD;
-
-        use super::support::recording::marked;
-        use super::support::uplink::starts;
-
-        let mut fixture = Fixture::new();
-        let doap = fixture.device.pods.doap();
-        doap.hold_start(true);
-        fixture.list(CAPTURE);
-        let recorder = fixture.capture();
-        uplink(&fixture);
-        assert_eq!(doap.starts(), 2);
-        assert!(!doap.streaming());
-        assert_eq!(fixture.mode_writes(), 2);
-        wait_for("dictation mode cleared", || {
-            (!doap.mode_seen()).then_some(())
-        });
-
-        fixture.device.pods.uplink().mark(MARK_FRAMES);
-        pause(PERIOD.saturating_mul(MARK_FRAMES).saturating_add(MAX_TAIL));
-        let samples = recorder.finish();
-        fixture
-            .rig
-            .wait_logged("dictation: this recording takes the uplink");
-        assert!(
-            !marked(&samples).is_empty(),
-            "missing fallback uplink audio"
-        );
         assert_eq!(starts(&fixture.device).len(), 1);
         fixture.finish();
     }

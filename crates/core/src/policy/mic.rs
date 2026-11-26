@@ -243,7 +243,7 @@ impl Mic {
 
     pub(super) fn set_route(&mut self, route: Option<Route>, dictation: &Dictation, state: &State) {
         self.route = route;
-        self.dictation = if dictation.active() {
+        self.dictation = if dictation.active() || dictation.clearing_mode() {
             DictationActivity::Active
         } else if dictation.armed() {
             DictationActivity::Armed
@@ -585,6 +585,16 @@ impl Mic {
             let after = now.saturating_sub(sent).as_millis();
             effects.push(Effect::Log(format!("{FIRST_AUDIO_PREFIX}{after} ms")));
         }
+        self.phase = match self.phase {
+            Phase::Starting { tried, .. } => Phase::Running(Hold::Wanted, Watch::new(tried, now)),
+            Phase::Stopped(_) | Phase::Restoring { .. } => {
+                if matches!(self.phase, Phase::Restoring { .. }) {
+                    effects.push(Effect::Audio(AudioRequest::CancelRestore));
+                }
+                Phase::Running(Hold::Late, Watch::new(Try::FIRST, now))
+            }
+            phase @ (Phase::Running(..) | Phase::Stopping { .. }) => phase,
+        };
     }
 
     /// The stall check: while the uplink is wanted, a count that did not move is a try gone unanswered, as `unanswered` counts one.

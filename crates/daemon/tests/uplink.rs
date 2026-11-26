@@ -18,6 +18,7 @@ mod tests {
     };
     use pods_core::prefs::{MAX_CONFIRMED_MODELS, PrefsError};
     use pods_fake::Profile;
+    use pods_samples::uplink::state_marker;
     use pods_samples::{MODEL_NUMBER, Placed};
     use serde_json::json;
 
@@ -29,7 +30,7 @@ mod tests {
         START_ANSWER, STOP_ANSWER, all_tries, kept_models, link, lose, mic, put_in, read_up_to_now,
         rig_with, starts, stops, take_out, wait_kept_models, wait_mic, wait_starts, wait_stop,
     };
-    use super::support::{Session, wait_for};
+    use super::support::{HANG_LIMIT, Session, wait_for};
 
     /// Well inside `START_ANSWER_MS` after the START, so a held START is still unanswered at its end.
     const STILL_STARTING: Duration = Duration::from_millis(START_ANSWER_MS / 3);
@@ -243,10 +244,12 @@ mod tests {
             &(STOP_ANSWER..),
         );
         wait_mic(&rig, "off");
+        // Only the stale STOP marker reaches the next START.
+        device.pods.uplink().stall(HANG_LIMIT);
         set(rig.session(), "microphone", "always");
         put_in(&rig, &device);
         wait_starts(&device, 2);
-        device.pods.uplink().release_stop();
+        device.pods.send(&state_marker(false));
         read_up_to_now(&rig, &device);
         assert_eq!(stops(&device).len(), 1, "{:?}", device.pods.heard());
         assert_eq!(mic(&rig), "starting");

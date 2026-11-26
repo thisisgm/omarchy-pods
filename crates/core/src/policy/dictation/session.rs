@@ -211,6 +211,12 @@ impl Session {
             }
             _ if after >= Duration::from_millis(DOAP_START_ANSWER_MS) => {
                 log(effects, "dictation: start not confirmed");
+                request(
+                    effects,
+                    DictationRequest::Stop {
+                        reason: STOP_REASON_HOST,
+                    },
+                );
                 if owed.is_some() {
                     mode_off(effects)
                 } else if tried < DOAP_START_TRIES {

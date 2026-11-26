@@ -82,6 +82,7 @@ pub enum DictationFact {
 pub struct Dictation {
     arm: Arm,
     session: Session,
+    mode_off_until: Option<Duration>,
     asleep: bool,
     exiting: bool,
 }
@@ -89,6 +90,10 @@ pub struct Dictation {
 impl Dictation {
     #[must_use]
     pub fn step(&mut self, state: &State, fact: &Fact, now: Duration) -> Vec<Effect> {
+        let link_down = matches!(fact, Fact::Link(Signal::Down | Signal::Lost { .. }));
+        if link_down || self.mode_off_until.is_some_and(|at| now >= at) {
+            self.mode_off_until = None;
+        }
         if let Fact::Sleep(edge) = fact {
             self.asleep = *edge == SleepEdge::Sleeping;
         }
@@ -112,33 +117,51 @@ impl Dictation {
         route: Option<Route>,
         effects: &mut Vec<Effect>,
     ) -> bool {
-        if !self.armed() {
+        let first_effect = effects.len();
+        let link_down = matches!(fact, Fact::Link(Signal::Down | Signal::Lost { .. }));
+        let fallback = if self.armed() {
+            let stop = if self.exiting {
+                Some(Stop::Exit)
+            } else if self.asleep {
+                Some(Stop::Sleep)
+            } else if route != Some(Route::Dictation) {
+                Some(Stop::Left)
+            } else {
+                None
+            };
+            let fallback = self.session.step(fact, now, stop, effects);
+            if self.exiting && !self.active() {
+                effects.extend(self.arm.step(enabled(state), &Fact::Exit, now));
+            }
+            fallback
+        } else {
             self.session.reset(effects);
-            if matches!(fact, Fact::Link(Signal::Down | Signal::Lost { .. })) {
+            if link_down {
                 self.session = Session::default();
             }
             // The adapter closes the bearer before reporting its loss.
-            return route == Some(Route::Dictation)
-                && matches!(fact, Fact::Dictation(DictationFact::BearerLost));
-        }
-        let stop = if self.exiting {
-            Some(Stop::Exit)
-        } else if self.asleep {
-            Some(Stop::Sleep)
-        } else if route != Some(Route::Dictation) {
-            Some(Stop::Left)
-        } else {
-            None
+            route == Some(Route::Dictation)
+                && matches!(fact, Fact::Dictation(DictationFact::BearerLost))
         };
-        let fallback = self.session.step(fact, now, stop, effects);
-        if self.exiting && !self.active() {
-            effects.extend(self.arm.step(enabled(state), &Fact::Exit, now));
+        if state.connected && !link_down {
+            for effect in effects.iter().skip(first_effect) {
+                if *effect == Effect::Dictation(DictationRequest::ModeOff) {
+                    self.mode_off_until =
+                        Some(now.saturating_add(Duration::from_millis(MODE_SETTLE_MS)));
+                } else if *effect == Effect::Dictation(DictationRequest::Mode) {
+                    self.mode_off_until = None;
+                }
+            }
         }
         fallback
     }
 
     pub(super) fn active(&self) -> bool {
         self.session.code().is_some()
+    }
+
+    pub(super) fn clearing_mode(&self) -> bool {
+        self.mode_off_until.is_some()
     }
 
     pub(super) fn set_inhibit_pending(&mut self, pending: bool) {
@@ -151,6 +174,7 @@ impl Dictation {
             .deadline()
             .into_iter()
             .chain(self.session.deadline())
+            .chain(self.mode_off_until)
             .min()
     }
 
