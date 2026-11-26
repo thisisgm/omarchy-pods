@@ -21,6 +21,9 @@ const QUEUE: usize = 2;
 
 const QUEUE_FULL: &str = "keys: the writer is behind; this pair is not stored";
 
+const DEVICE_UNREADABLE: &str =
+    "keys: the saved device is not 12 hex digits; wear connect waits for the next key reply";
+
 const IDENTITY: &str = "identity";
 
 const PAYLOAD: &str = "payload";
@@ -128,7 +131,7 @@ fn push_entry(text: &mut String, name: &str, bytes: &[u8]) {
     text.push('"');
 }
 
-// Sample input: `{"identity":"5ac30f9621e87b44d019a63e82f56cb7","payload":"9d0471ea38cf568b12fe67a02db943c8"}`.
+// Sample input: `{"identity":"5ac30f9621e87b44d019a63e82f56cb7","payload":"9d0471ea38cf568b12fe67a02db943c8","device":"0a1b2c3d4e5f"}`, device optional.
 fn parse(bytes: &[u8]) -> Result<SavedKeys, FileError> {
     let Ok(Value::Object(mut fields)) = serde_json::from_slice(bytes) else {
         return Err(FileError::NotAnObject);
@@ -136,7 +139,12 @@ fn parse(bytes: &[u8]) -> Result<SavedKeys, FileError> {
     // Both taken before either is checked, so a refused identity never drops the payload digits unwiped.
     let identity = hex_field::<KEY_LEN>(fields.remove(IDENTITY));
     let payload = hex_field::<KEY_LEN>(fields.remove(PAYLOAD));
-    let device = hex_field::<ADDRESS_LEN>(fields.remove(DEVICE)).map(|bytes| BdAddr::from(*bytes));
+    let device_field = fields.remove(DEVICE);
+    let device_present = device_field.is_some();
+    let device = hex_field::<ADDRESS_LEN>(device_field).map(|bytes| BdAddr::from(*bytes));
+    if device_present && device.is_none() {
+        log(DEVICE_UNREADABLE);
+    }
     Ok(SavedKeys {
         keys: ProximityKeys {
             identity: Key::from_bytes(*identity.ok_or(FileError::Identity)?),

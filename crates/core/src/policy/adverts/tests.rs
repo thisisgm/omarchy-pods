@@ -80,14 +80,26 @@ fn only_a_disconnected_wear_edge_asks_to_connect() {
     for connection in [0x04, 0x05, 0x06, 0x07, 0x09, 0xff, 0x00] {
         assert!(policy.advert(&mut state, &out_of_ear(false), now).is_none());
         assert_eq!(
-            policy
-                .advert(&mut state, &worn_with_connection(connection), now)
-                .is_some(),
-            connection == 0x00,
+            policy.advert(&mut state, &worn_with_connection(connection), now),
+            (connection == 0x00).then_some(device()),
             "wear edge with connection byte {connection:#04x}"
         );
         assert!(state.ear.any_in_ear());
     }
+}
+
+#[test]
+fn legacy_keys_read_adverts_without_asking_to_connect() {
+    let legacy = SavedKeys {
+        device: None,
+        ..keys()
+    };
+    let mut policy = Policy::new(Some(legacy));
+    let mut state = applied(&policy, &Fact::Monitor(MonitorFact::Registered));
+    let mut see = |advert, ms| see_advert(&mut policy, &mut state, advert, ms);
+    assert!(!see(out_of_ear(false), 0));
+    assert!(!see(ours(), 1), "no saved device to connect");
+    assert!(state.ear.any_in_ear(), "the advert is still read");
 }
 
 #[test]
@@ -206,22 +218,24 @@ fn an_open_case_clears_the_hold_only_with_both_buds_charging() {
 
 #[test]
 fn a_monitor_gap_forgets_the_wear_seen_before_it() {
-    let (mut policy, mut state) = listening();
-    assert!(
-        policy
-            .advert(&mut state, &out_of_ear(false), Duration::ZERO)
-            .is_none()
-    );
-    let gap = Fact::Monitor(MonitorFact::Unavailable);
-    policy.apply(&mut state, &gap);
-    drop(policy.step(&state, gap, Duration::ZERO));
-    policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
-    assert!(
-        policy
-            .advert(&mut state, &ours(), Duration::from_millis(1))
-            .is_none(),
-        "no edge across the gap"
-    );
+    for gap in [MonitorFact::Unavailable, MonitorFact::Interrupted] {
+        let (mut policy, mut state) = listening();
+        assert!(
+            policy
+                .advert(&mut state, &out_of_ear(false), Duration::ZERO)
+                .is_none()
+        );
+        let gap = Fact::Monitor(gap);
+        policy.apply(&mut state, &gap);
+        drop(policy.step(&state, gap, Duration::ZERO));
+        policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
+        assert!(
+            policy
+                .advert(&mut state, &ours(), Duration::from_millis(1))
+                .is_none(),
+            "no edge across the gap"
+        );
+    }
 }
 
 #[test]
