@@ -7,14 +7,16 @@ use std::time::Duration;
 use pods_samples::opus::tone;
 
 use super::{
-    Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Path, REALIGN_MS,
-    RING_SAMPLES, Reader, Ring, SILENCE_FRAMES, SILENCE_PEAK, UNIT_FRAMES, fade_in, ns_of, scaled,
+    FADE_FRAMES, Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Path, QUIET_PEAK,
+    REALIGN_MS, RING_SAMPLES, Reader, Ring, SILENCE_FRAMES, SILENCE_PEAK, UNIT_FRAMES, fade_in,
+    ns_of, scaled,
 };
 use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, RATE_HZ, chain, level};
 
 /// One read, 20 ms at the node's rate.
 const QUANTUM: usize = 1280;
 const PERIOD: Duration = Duration::from_millis(20);
+const SPEECH_FLOOR: f32 = 0.02;
 /// The frames of the stream's burst; the steady frame after them has this counter and places them.
 const BURST: u16 = 5;
 /// A frame that landed at zero is read out the stated latency later, so a read one frame after that finds the run dry.
@@ -355,7 +357,7 @@ fn a_late_read_keeps_every_frame(late_period: Duration) {
         .saturating_mul(QUANTUM);
     let samples: Vec<_> = (1_u16..)
         .take(sample_count)
-        .map(|frame| f32::from(frame) * SAMPLE_STEP)
+        .map(|frame| SPEECH_FLOOR + f32::from(frame) * SAMPLE_STEP)
         .collect();
     for (path, latency) in [
         (Path::Uplink, NODE_LATENCY_MS),
@@ -453,7 +455,7 @@ fn steering_brings_a_late_reader_back_within_the_realign_bound() {
     let mut heard = [0.0; QUANTUM];
     let mut read = |now: Duration| {
         let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
-        ring.write((ring.end()..end).map(|_| 0.0));
+        ring.write((ring.end()..end).map(|_| SPEECH_FLOOR));
         let ratio = reader.read(now, &mut heard);
         let target = ring.target(now).unwrap();
         let lag = Duration::from_nanos(
@@ -488,7 +490,7 @@ fn a_recorder_that_keeps_pulling_after_stop_gets_the_whole_stalled_dictation() {
     let samples: Vec<_> = (1_u16..=u16::MAX)
         .cycle()
         .take(frames_at(stop))
-        .map(|frame| f32::from(frame) * SAMPLE_STEP)
+        .map(|frame| SPEECH_FLOOR + f32::from(frame) * SAMPLE_STEP)
         .collect();
     let ring = Arc::new(Ring::new());
     let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
@@ -537,4 +539,117 @@ fn a_recorder_that_keeps_pulling_after_stop_gets_the_whole_stalled_dictation() {
             .zip(expected)
             .all(|(heard, expected)| heard.to_bits() == expected.to_bits())
     );
+}
+
+#[test]
+fn a_quiet_span_clears_the_stall_without_losing_speech_at_stop() {
+    const STALL_AT: Duration = Duration::from_millis(400);
+    const LATE_PERIOD: Duration = Duration::from_millis(200);
+    const QUIET_START: Duration = Duration::from_millis(680);
+    const QUIET_END: Duration = Duration::from_millis(980);
+    const RELEASE: Duration = Duration::from_millis(1300);
+    const RECORDER_TAIL: Duration = Duration::from_millis(100);
+    const QUIET: f32 = 0.003;
+    const SAMPLE_STEP: f32 = 0.000_001;
+    let first = Duration::from_millis(u64::from(DOAP_LATENCY_MS)) + PERIOD;
+    let release = first + RELEASE;
+    let frames_at = |now| usize::try_from(scaled(ns_of(now), RATE_HZ, NS_PER_SECOND)).unwrap();
+    let quiet = frames_at(QUIET_START)..frames_at(QUIET_END);
+    let mut samples: Vec<_> = (1_u16..=u16::MAX)
+        .cycle()
+        .take(frames_at(release))
+        .map(|frame| SPEECH_FLOOR + f32::from(frame) * SAMPLE_STEP)
+        .collect();
+    let quiet_frames = f32::from(u16::try_from(quiet.len()).unwrap());
+    for (sample, at) in samples[quiet].iter_mut().zip(0_u16..) {
+        *sample = QUIET - 2.0 * QUIET * f32::from(at) / quiet_frames;
+    }
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
+    ring.start_run(Path::Dictation);
+    ring.publish(0);
+    resync.request();
+
+    let mut tape = Vec::new();
+    let mut heard = [0.0; QUANTUM];
+    let mut now = first;
+    let mut written = 0;
+    let bound = i64::from(REALIGN_MS) * i64::from(crate::FRAMES_PER_MS);
+    while now <= release {
+        let end = frames_at(now);
+        ring.write(samples[written..end].iter().copied());
+        written = end;
+        reader.read(now, &mut heard);
+        tape.extend(heard);
+        if now == first + QUIET_END || now == release {
+            let lag = ring.target(now).unwrap().abs_diff(reader.next);
+            assert!(
+                lag <= bound.unsigned_abs(),
+                "{lag} frames behind at {now:?}"
+            );
+        }
+        let interval = if now == first + STALL_AT {
+            LATE_PERIOD
+        } else {
+            PERIOD
+        };
+        now = now.saturating_add(interval);
+    }
+    assert_eq!(written, samples.len());
+    ring.finish();
+    let stated_latency = Duration::from_millis(u64::from(NODE_LATENCY_MS));
+    let deadline = release + stated_latency.min(RECORDER_TAIL);
+    while now <= deadline && !reader.read_all() {
+        reader.read(now, &mut heard);
+        tape.extend(heard);
+        now = now.saturating_add(PERIOD);
+    }
+    assert!(reader.read_all(), "the recorder ran out of tail time");
+    let trailing = usize::try_from(reader.next.saturating_sub(ring.end())).unwrap();
+    tape.truncate(tape.len().saturating_sub(trailing));
+
+    for (sample, fade) in samples.iter_mut().zip(0_u16..=FADE_FRAMES) {
+        *sample *= fade_in(fade);
+    }
+    let mut threshold = [QUIET_PEAK];
+    level::apply(&mut threshold);
+    level::apply(&mut samples);
+    let speech = |samples: &[f32]| {
+        samples
+            .iter()
+            .filter(|sample| sample.abs() >= threshold[0])
+            .map(|sample| sample.to_bits())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        speech(&tape) == speech(&samples),
+        "speech was lost or replayed"
+    );
+    let largest_step = |samples: &[f32], limit: f32| {
+        samples
+            .windows(2)
+            .filter(|pair| pair.iter().all(|sample| sample.abs() < limit))
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max)
+    };
+    assert!(
+        largest_step(&tape, f32::INFINITY) <= largest_step(&samples, f32::INFINITY),
+        "a step"
+    );
+    assert!(
+        largest_step(&tape, threshold[0]) <= largest_step(&samples, threshold[0]),
+        "a step in the quiet span"
+    );
+}
+
+#[test]
+fn a_quiet_cut_leaves_a_fade_before_the_first_nonquiet_frame() {
+    let ring = Arc::new(Ring::new());
+    let (mut reader, _) = Reader::new(Arc::clone(&ring), Arc::default());
+    let fade = i64::from(FADE_FRAMES);
+    let peak_at = 4 * fade;
+    let place = 6 * fade;
+    ring.write((0..place + fade).map(|at| if at == peak_at { QUIET_PEAK } else { 0.0 }));
+    reader.next = fade;
+    assert_eq!(reader.quiet_destination(place, 0), Some(peak_at - fade));
 }

@@ -13,6 +13,8 @@ mod tests {
     use std::hint::black_box;
     use std::time::Duration;
 
+    use pods_samples::uplink::silent_unit;
+
     use super::support::*;
 
     /// A quarter of a millisecond a read.
@@ -56,5 +58,24 @@ mod tests {
         // The counter does count in this binary: one vector is one allocation.
         let control = allocation_counter::measure(|| drop(black_box(vec![0_u8; FRAMES])));
         assert_eq!(control.count_total, 1);
+    }
+
+    #[test]
+    fn a_quiet_cut_never_allocates() {
+        let mut rig = Rig::new();
+        let silence = vec![silent_unit(); usize::try_from(UNITS_PER_PACKET).unwrap()];
+        for at in on_time(0..PACKETS) {
+            rig.send(at, &silence);
+        }
+        let mut heard = [0.0; FRAMES];
+        let now = landing(4);
+        rig.resync.request();
+        rig.reader.read(now, &mut heard);
+        let mut ratio = 0.0;
+        let measured = allocation_counter::measure(|| {
+            ratio = black_box(rig.reader.read(now + READ_EVERY + MISSED, &mut heard));
+        });
+        assert_eq!(measured.count_total, 0);
+        assert!(unsteered(ratio), "the reader kept the gap, ratio {ratio}");
     }
 }
