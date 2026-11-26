@@ -77,5 +77,15 @@ mod tests {
         });
         assert_eq!(measured.count_total, 0);
         assert!(unsteered(ratio), "the reader kept the gap, ratio {ratio}");
+
+        // Over the tone the same late read keeps the gap, so only the quiet cut returns the nominal rate.
+        let mut loud = Rig::new();
+        for at in on_time(0..PACKETS) {
+            loud.land(at);
+        }
+        loud.resync.request();
+        loud.reader.read(now, &mut heard);
+        let kept = loud.reader.read(now + READ_EVERY + MISSED, &mut heard);
+        assert!(!unsteered(kept), "the tone was cut, ratio {kept}");
     }
 }
