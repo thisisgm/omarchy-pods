@@ -14,18 +14,19 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_core::policy::mic::{
-        START_TRIES, STOP_SLEEP_LINE, STOP_WAITS_LINE, STOPPED_BY_THE_PODS_LINE, start_sent_line,
-        unanswered_line,
+        START_TRIES, STOP_SLEEP_LINE, STOP_WAITS_LINE, STOPPED_BY_THE_PODS_LINE, UPLINK_STALL_MS,
+        start_sent_line, unanswered_line,
     };
     use pods_fake::Profile;
+    use pods_pwrig::Recorder;
     use pods_samples::uplink::{session_marker, state_marker};
     use pods_samples::{MODEL_NUMBER, Placed};
     use pulseaudio::protocol::SinkState;
 
     use super::support::audio::wire::{card_named, sink_named};
-    use super::support::audio::{Asked, FakeAudio, FakeProfile};
-    use super::support::pipewire::{record, start};
-    use super::support::recording::wait_packets;
+    use super::support::audio::{Asked, FakeAudio, FakeProfile, Recorder as Listed};
+    use super::support::pipewire::{node_name, record, start, wait_node};
+    use super::support::recording::{assert_sounds, frames_at, wait_packets};
     use super::support::rig::{Device, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::settings::set;
     use super::support::sleep::{logged, sleep, wake};
@@ -190,6 +191,54 @@ mod tests {
             (0, 0),
             "sink suspends and resumes after unsolicited marker pairs"
         );
+    }
+
+    #[test]
+    fn a_call_after_an_unsolicited_uplink_marker_starts_on_try_one() {
+        const STALL: Duration = Duration::from_millis(UPLINK_STALL_MS);
+        const CAPTURE_SPAN: Duration = Duration::from_millis(300);
+
+        let (mut rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Running);
+        let pipewire = start(&rig);
+        let source = node_name();
+        audio.add_source(&source);
+        link_heard(&rig, &device);
+        wait_node(&pipewire);
+        wait_mic(&rig, "ready");
+        audio.add_recorder(&source, Listed::Program);
+        rig.wait_logged("mic: recorders (dictation 0, other 1)");
+        let file = rig.session().dir.path().join("call.wav");
+        let recorder = Recorder::program(&pipewire, &source, &file);
+        pipewire.wait_node(recorder.node(), HANG_LIMIT);
+
+        device.pods.send(&state_marker(true));
+        read_up_to_now(&rig, &device);
+        pause(STALL);
+        assert!(
+            starts(&device).is_empty(),
+            "START before the recorder linked"
+        );
+
+        let linked = Instant::now();
+        pipewire.link(&source, recorder.node());
+        let first = &wait_starts(&device, 1)[0];
+        assert_gap(
+            "uplink START after the recorder linked",
+            linked,
+            first.at,
+            &(Duration::ZERO..=REAL_TIME_SLACK),
+        );
+        wait_packets(&device.pods.uplink(), 1);
+        let capture_frames = frames_at(CAPTURE_SPAN, recorder.rate());
+        let held = usize::try_from(recorder.frames_on_disk()).unwrap();
+        recorder.wait_frames(held.saturating_add(capture_frames), HANG_LIMIT);
+        assert_sounds(&recorder.finish(), " after the uplink START");
+        assert_eq!(starts(&device).len(), 1, "STARTs sent by the daemon");
+        assert_eq!(logged(&mut rig, &start_sent_line(1)), 1);
+        let log = rig.daemon().log();
+        assert!(!log.contains("mic: stalled"), "uplink stalled: {log}");
+        assert_eq!(start_failures(&rig), 0);
+        rig.finish();
     }
 
     fn hold_card_read(audio: &FakeAudio, device: &Device) {
