@@ -320,12 +320,19 @@ mod tests {
         wait_stop(&device);
         let (_, resumed) = wait_restore(&audio, &device);
         rig.wait_logged(STOP_UNCONFIRMED_LINE);
+        let uplink = device.pods.uplink();
+        // The old run ends without audio that could confirm the new START.
+        uplink.stall(HANG_LIMIT);
         put_in(&rig, &device);
         let asked = Instant::now();
         set(rig.session(), "microphone", "always");
         let second = wait_starts(&device, 2)[1].at;
         assert!(second > resumed, "the START before the resume");
-        device.pods.uplink().release_stop();
+        uplink.stop_unasked();
+        wait_within("the old uplink to end", HANG_LIMIT, || {
+            (!uplink.running()).then_some(())
+        });
+        uplink.stall(Duration::ZERO);
         let third = wait_starts(&device, 3)[2].at;
         assert_gap(
             "the next try after always was set",

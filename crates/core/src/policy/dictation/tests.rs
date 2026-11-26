@@ -743,46 +743,4 @@ fn a_refusal_with_another_reason_is_logged() {
     );
 }
 
-#[test]
-fn a_refusal_on_the_last_try_falls_back() {
-    use DictationRequest::{Mode, ModeOff, Start};
-    use MicDictation::Starting;
-
-    let refused = DictationFact::Refused {
-        reason: pods_proto::doap::STOP_REASON_UNSOLICITED,
-    };
-    session_table([
-        (1506, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (1596, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (
-            1597,
-            Fact::Dictation(refused.clone()),
-            None,
-            Some(Starting),
-            Some(Mode),
-            false,
-        ),
-        (1687, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (
-            1688,
-            Fact::Dictation(refused.clone()),
-            None,
-            None,
-            Some(ModeOff),
-            true,
-        ),
-        (1689, Fact::Tick, Some(Stop::Left), None, None, false),
-        (1690, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (1780, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (2280, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (2370, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (
-            2371,
-            Fact::Dictation(refused),
-            None,
-            None,
-            Some(ModeOff),
-            true,
-        ),
-    ]);
-}
+mod fallback;

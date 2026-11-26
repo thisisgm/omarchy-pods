@@ -7,6 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use pods_samples::uplink::START;
 use pods_samples::{Cell, Placed};
 use pods_sys::l2cap::{self, Channel, ChannelError, Received};
 use rustix::io::Errno;
@@ -564,7 +565,9 @@ impl Shared {
                     sdu: sdu.to_vec(),
                 });
                 if model::answers(fault) {
-                    state.uplink.on_host(id, sdu, at);
+                    if sdu != START || !state.doap.mode_active(at) {
+                        state.uplink.on_host(id, sdu, at);
+                    }
                     state.doap.on_control(id, sdu, at);
                 }
                 state.model.on_host(fault, sdu)

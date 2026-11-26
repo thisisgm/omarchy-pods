@@ -18,12 +18,11 @@ fn a_lost_bearer_before_the_doap_start_takes_the_uplink() {
 
     let lost = Fact::Dictation(DictationFact::BearerLost);
     let effects = policy.step(&state, lost, Duration::ZERO);
-    let uplink = effects
-        .iter()
-        .position(|effect| *effect == start)
-        .expect("BearerLost before the DoAP START must still send 0x58 START");
     let mode_off = Effect::Dictation(DictationRequest::ModeOff);
-    assert!(effects[..uplink].contains(&mode_off));
+    assert!(effects.contains(&mode_off));
+    assert!(!effects.contains(&start));
+    let settled = Duration::from_millis(MODE_SETTLE_MS);
+    assert!(policy.step(&state, Fact::Tick, settled).contains(&start));
     assert!(!policy.dictation_session_open());
     assert_eq!(policy.edge.route(), Some(Route::Uplink));
 }

@@ -269,6 +269,7 @@ pub(crate) struct Machine {
     stall: Option<Duration>,
     next_counter: u16,
     mic: Option<Mic>,
+    mode_off_at: Option<(usize, Instant)>,
     run: Option<Run>,
     /// Every open attribute channel with the descriptors the host wrote on it.
     lines: Vec<(usize, Vec<u16>)>,
@@ -335,6 +336,7 @@ impl Machine {
             stall: None,
             next_counter: 0,
             mic: None,
+            mode_off_at: None,
             run: None,
             lines: Vec::new(),
             owed: VecDeque::new(),
@@ -348,11 +350,17 @@ impl Machine {
         }
     }
 
-    /// A frame the host sent on control channel `line` at `now`; only the mode is this service's.
+    /// Sample control frame `04 00 04 00 09 00 13 02 00 00 00` clears `DoAP` mode.
     pub(crate) fn on_control(&mut self, line: usize, sdu: &[u8], now: Instant) {
         let on = sdu == setting(DOAP_MODE, 1);
+        if sdu == setting(DOAP_MODE, 2) && self.mic.as_ref().is_none_or(|mic| mic.control == line) {
+            (self.mic, self.run, self.held) = (None, None, None);
+            self.mode_off_at = Some((line, now));
+            return;
+        }
         match &mut self.mic {
             None if on => {
+                self.mode_off_at = None;
                 self.mic = Some(Mic {
                     control: line,
                     since: now,
@@ -365,11 +373,16 @@ impl Machine {
                 // corner: assumed until measured on hardware, a second mode write requires settling but keeps what the microphone heard.
                 mic.mode_set_at = now;
             }
-            Some(mic) if mic.control == line && sdu == setting(DOAP_MODE, 2) => {
-                (self.mic, self.run, self.held) = (None, None, None);
-            }
             _ => {}
         }
+    }
+
+    /// Assume clearing the mode takes the same time as setting it.
+    pub(crate) fn mode_active(&self, now: Instant) -> bool {
+        self.mic.is_some()
+            || self
+                .mode_off_at
+                .is_some_and(|(_, at)| now.saturating_duration_since(at) < MODE_SETTLE)
     }
 
     /// An attribute channel opened as `line`.
@@ -381,6 +394,9 @@ impl Machine {
     pub(crate) fn closed(&mut self, line: usize) {
         if self.mic.as_ref().is_some_and(|mic| mic.control == line) {
             (self.mic, self.run, self.held) = (None, None, None);
+        }
+        if self.mode_off_at.is_some_and(|(control, _)| control == line) {
+            self.mode_off_at = None;
         }
         if self.run.as_ref().is_some_and(|run| run.line == line) {
             self.run = None;

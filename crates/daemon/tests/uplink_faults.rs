@@ -590,6 +590,7 @@ mod tests {
         let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
         let uplink = device.pods.uplink();
         uplink.hold_running_markers();
+        uplink.stall(HANG_LIMIT);
         link_heard(&rig, &device);
         wait_starts(&device, 1);
         wait_for("the pods' uplink to run", || uplink.running().then_some(()));

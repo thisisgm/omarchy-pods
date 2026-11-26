@@ -627,6 +627,7 @@ fn a_late_answer_to_an_earlier_restore_leaves_the_next_one_restoring() {
 }
 
 mod faults;
+mod first_audio;
 mod linger;
 mod ownership;
 mod stall;
