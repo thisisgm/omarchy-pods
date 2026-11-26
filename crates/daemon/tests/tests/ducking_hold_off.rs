@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use super::super::support::pause;
-use super::super::support::rig::REAL_TIME_SLACK;
+use super::super::support::rig::{REAL_TIME_SLACK, not_before};
 use super::{
     Asked, DICTATION, Device, ENDED, FakeAudio, LOWERED, Recorder, Rig, SAVED, STARTED,
     assert_writes, finish, node_name, recording_ready, sink_named, speak, wait_volume,
@@ -11,10 +11,16 @@ use super::{
 
 const MUFFLE_RELEASE: Duration = Duration::from_millis(1500);
 const SPEECH_START: Duration = Duration::from_millis(200);
+const LATE_SPEECH: Duration = Duration::from_millis(900);
 const SHORT_SPEECH: Duration = Duration::from_millis(500);
 const QUIET_AFTER_RELEASE: Duration = Duration::from_millis(500);
 
-fn start_speech_after_unlink(rig: &mut Rig, device: &Device, audio: &FakeAudio) -> Instant {
+fn start_speech_after_unlink(
+    rig: &mut Rig,
+    device: &Device,
+    audio: &FakeAudio,
+    speech_at: Duration,
+) -> Instant {
     let id = audio.add_recorder(&node_name(), Recorder::Named(DICTATION));
     rig.wait_logged("mic: recorders (dictation 1, other 0)");
     assert_writes(audio, device, &[]);
@@ -22,10 +28,11 @@ fn start_speech_after_unlink(rig: &mut Rig, device: &Device, audio: &FakeAudio) 
     let unlink = Instant::now();
     audio.remove_recorder(id);
     rig.wait_logged("mic: recorders (dictation 0, other 0)");
+    pause(speech_at.saturating_sub(unlink.elapsed()));
     speak(rig, device, STARTED);
-    // Allow scheduling slack around SPEECH_START and still deliver it inside MUFFLE_RELEASE.
+    // Allow scheduling slack around speech_at and still deliver it inside MUFFLE_RELEASE.
     assert!(
-        unlink.elapsed() <= SPEECH_START.saturating_add(REAL_TIME_SLACK),
+        unlink.elapsed() <= speech_at.saturating_add(REAL_TIME_SLACK),
         "the daemon processed speech {:?} after recorder unlink",
         unlink.elapsed()
     );
@@ -35,7 +42,7 @@ fn start_speech_after_unlink(rig: &mut Rig, device: &Device, audio: &FakeAudio) 
 #[test]
 fn post_recording_hold_off_defers_ongoing_speech() {
     let (mut rig, device, audio, _pipewire) = recording_ready();
-    let unlink = start_speech_after_unlink(&mut rig, &device, &audio);
+    let unlink = start_speech_after_unlink(&mut rig, &device, &audio, SPEECH_START);
 
     // Timestamp the first write against the earliest possible MUFFLE_RELEASE deadline.
     let writes = audio.wait_writes(1, MUFFLE_RELEASE.saturating_add(REAL_TIME_SLACK));
@@ -55,7 +62,7 @@ fn post_recording_hold_off_defers_ongoing_speech() {
 #[test]
 fn post_recording_hold_off_discards_speech_that_ends_early() {
     let (mut rig, device, audio, _pipewire) = recording_ready();
-    let unlink = start_speech_after_unlink(&mut rig, &device, &audio);
+    let unlink = start_speech_after_unlink(&mut rig, &device, &audio, SPEECH_START);
 
     // Leave time for an immediate write and allow 300 ms after SHORT_SPEECH within MUFFLE_RELEASE.
     pause(SHORT_SPEECH);
@@ -69,4 +76,25 @@ fn post_recording_hold_off_discards_speech_that_ends_early() {
     assert_eq!(audio.volume(&sink_named(device.address)), SAVED);
     finish(rig, &audio);
     assert_writes(&audio, &device, &[]);
+}
+
+#[test]
+fn post_recording_hold_off_counts_from_the_recorder_unlink() {
+    let (mut rig, device, audio, _pipewire) = recording_ready();
+    let unlink = start_speech_after_unlink(&mut rig, &device, &audio, LATE_SPEECH);
+
+    let writes = audio.wait_writes(1, MUFFLE_RELEASE.saturating_add(REAL_TIME_SLACK));
+    let [Asked::Volume { at, .. }] = writes.as_slice() else {
+        panic!("expected one sink volume write, got {writes:?}");
+    };
+    let elapsed = at.saturating_duration_since(unlink);
+    // A deadline counted from speech start lands near LATE_SPEECH plus MUFFLE_RELEASE, after this range ends.
+    assert!(
+        not_before(MUFFLE_RELEASE).contains(&elapsed),
+        "sink volume written {elapsed:?} after recorder unlink, outside {:?}",
+        not_before(MUFFLE_RELEASE)
+    );
+    wait_volume(&audio, &device, LOWERED);
+    finish(rig, &audio);
+    assert_writes(&audio, &device, &[LOWERED, SAVED]);
 }
