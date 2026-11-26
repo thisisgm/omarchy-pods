@@ -240,7 +240,7 @@ A reply carries the request's `id` and `ok`.
   sending the handoff STOP.
   The daemon suppresses 0x58 START from that mode write through session teardown.
   The daemon requests a logind sleep delay lock when it sets DoAP mode.
-  START follows the 150 ms mode settle once the lock attempt has resolved.
+  START follows the 90 ms mode settle once the lock attempt has resolved.
   A refusal, error or missing system bus counts as a resolved attempt.
   If the request is still pending 100 ms after the settle, START proceeds and
   the daemon logs the timeout once for that request. A granted lock, even if

@@ -125,6 +125,16 @@ mod tests {
         }
     }
 
+    fn stream_history_opening(fixture: &Fixture) {
+        // Keep enough pre-roll to force catch-up across the rig's 2048-frame quantum.
+        const OPENING_PRE_ROLL: Duration = pods_fake::doap::FRAME.saturating_mul(8);
+        let mode = mode_set_at(fixture);
+        fixture.start(1);
+        pause(OPENING_PRE_ROLL.saturating_sub(mode.elapsed()));
+        fixture.device.pods.doap().release_start();
+        fixture.streaming(1);
+    }
+
     #[test]
     fn history_recorder_stays_click_free_across_opening_catchup_exit() {
         use pods_fake::doap::FRAME;
@@ -146,6 +156,7 @@ mod tests {
         // Allow for the decoder and resampler's deviation from a pure sine.
         const STEP_TOLERANCE: f64 = 1.20;
         let mut fixture = Fixture::new();
+        fixture.device.pods.doap().hold_start(true);
         let node = node_name();
         let dir = fixture.rig.session().dir.path();
         let history = Recorder::history(&fixture.server, &node, &dir.join("history.wav"));
@@ -164,7 +175,7 @@ mod tests {
         let control_start = usize::try_from(stock_recorder.frames_on_disk()).unwrap();
         fixture.list(CAPTURE);
         let recorder = fixture.capture();
-        fixture.streaming(1);
+        stream_history_opening(&fixture);
         pause(SPEECH);
         let history_samples = history.finish();
         let witness_samples = witness.finish();

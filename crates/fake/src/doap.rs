@@ -16,8 +16,8 @@ use crate::serve::Shared;
 
 /// The audio one frame holds, which is the time between two frames.
 pub const FRAME: Duration = Duration::from_millis(20);
-/// Sitting A refused START at 0 ms and accepted it at 100 ms, the shortest successful wait measured.
-pub const MODE_SETTLE: Duration = Duration::from_millis(100);
+/// Sitting C found 70 ms was the shortest wait that streamed all ten starts.
+pub const MODE_SETTLE: Duration = Duration::from_millis(70);
 /// The frames the microphone keeps, 1.6 s: what a start can still send of the time before it.
 pub const KEPT_FRAMES: usize = 80;
 /// The frames a start sends at once and how many go in a notification, until a test sets others; as a Mac was seen to get them.

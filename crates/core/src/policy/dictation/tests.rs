@@ -11,8 +11,8 @@ const ARM: &[DictationRequest] = &[DictationRequest::Arm];
 const CLOSE: &[DictationRequest] = &[DictationRequest::Close];
 
 #[test]
-fn the_provisional_mode_settle_time_is_150_ms() {
-    assert_eq!(MODE_SETTLE_MS, 150);
+fn the_mode_settle_time_is_90_ms() {
+    assert_eq!(MODE_SETTLE_MS, 90);
 }
 
 #[test]
@@ -556,10 +556,10 @@ fn session_cells() {
     let sleep = Some(Stop::Sleep);
     session_table([
         (0, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (149, Fact::Tick, None, Some(Starting), None, false),
-        (150, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (89, Fact::Tick, None, Some(Starting), None, false),
+        (90, Fact::Tick, None, Some(Starting), Some(Start), false),
         (
-            160,
+            100,
             Fact::Dictation(FirstAudio),
             None,
             Some(Streaming),
@@ -567,21 +567,21 @@ fn session_cells() {
             false,
         ),
         (
-            161,
+            101,
             Fact::Dictation(Answered),
             None,
             Some(Streaming),
             None,
             false,
         ),
-        (200, Fact::Tick, left, Some(Stopping), Some(stop), false),
-        (699, Fact::Tick, left, Some(Stopping), None, false),
-        (700, Fact::Tick, left, None, Some(ModeOff), false),
-        (701, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (851, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (852, Fact::Tick, exit, Some(Stopping), None, false),
+        (140, Fact::Tick, left, Some(Stopping), Some(stop), false),
+        (639, Fact::Tick, left, Some(Stopping), None, false),
+        (640, Fact::Tick, left, None, Some(ModeOff), false),
+        (641, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (731, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (732, Fact::Tick, exit, Some(Stopping), None, false),
         (
-            853,
+            733,
             Fact::Dictation(Answered),
             exit,
             Some(Stopping),
@@ -589,18 +589,18 @@ fn session_cells() {
             false,
         ),
         (
-            854,
+            734,
             Fact::Dictation(Ended),
             exit,
             None,
             Some(ModeOff),
             false,
         ),
-        (855, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (1005, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (1006, Fact::Tick, sleep, Some(Stopping), None, false),
+        (735, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (825, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (826, Fact::Tick, sleep, Some(Stopping), None, false),
         (
-            1505,
+            1325,
             Fact::Dictation(Answered),
             sleep,
             Some(Stopping),
@@ -608,7 +608,7 @@ fn session_cells() {
             false,
         ),
         (
-            1506,
+            1326,
             Fact::Dictation(Ended),
             sleep,
             None,
@@ -639,10 +639,10 @@ fn session_end_cells() {
             false,
         ),
         (1, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (151, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (152, Fact::Tick, left, Some(Stopping), None, false),
+        (91, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (92, Fact::Tick, left, Some(Stopping), None, false),
         (
-            153,
+            93,
             Fact::Dictation(Refused {
                 reason: STOP_REASON_UNSOLICITED,
             }),
@@ -651,10 +651,10 @@ fn session_end_cells() {
             Some(ModeOff),
             false,
         ),
-        (154, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (304, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (94, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (184, Fact::Tick, None, Some(Starting), Some(Start), false),
         (
-            305,
+            185,
             Fact::Dictation(Answered),
             None,
             Some(Streaming),
@@ -662,7 +662,7 @@ fn session_end_cells() {
             false,
         ),
         (
-            306,
+            186,
             Fact::Dictation(PodEvent(Event::SiriCancel)),
             left,
             None,
@@ -753,31 +753,31 @@ fn a_refusal_on_the_last_try_falls_back() {
     };
     session_table([
         (1506, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (1656, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (1596, Fact::Tick, None, Some(Starting), Some(Start), false),
         (
-            1657,
+            1597,
             Fact::Dictation(refused.clone()),
             None,
             Some(Starting),
             Some(Mode),
             false,
         ),
-        (1807, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (1687, Fact::Tick, None, Some(Starting), Some(Start), false),
         (
-            1808,
+            1688,
             Fact::Dictation(refused.clone()),
             None,
             None,
             Some(ModeOff),
             true,
         ),
-        (1809, Fact::Tick, Some(Stop::Left), None, None, false),
-        (1810, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (1960, Fact::Tick, None, Some(Starting), Some(Start), false),
-        (2460, Fact::Tick, None, Some(Starting), Some(Mode), false),
-        (2610, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (1689, Fact::Tick, Some(Stop::Left), None, None, false),
+        (1690, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (1780, Fact::Tick, None, Some(Starting), Some(Start), false),
+        (2280, Fact::Tick, None, Some(Starting), Some(Mode), false),
+        (2370, Fact::Tick, None, Some(Starting), Some(Start), false),
         (
-            2611,
+            2371,
             Fact::Dictation(refused),
             None,
             None,

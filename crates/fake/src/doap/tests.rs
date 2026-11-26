@@ -52,11 +52,14 @@ fn start(machine: &mut Machine, now: Instant) -> Vec<Vec<u8>> {
 fn start_needs_settle_time_after_mode_and_mode_off_disables_it() {
     let (mut machine, since) = armed();
     let refusal = sample::stopped(&TABLE, REASON_UNASKED);
-    let settled = since + ms(100);
     assert_eq!(start(&mut machine, since), [refusal]);
-    assert_eq!(start(&mut machine, since + ms(99)), [refusal]);
-    assert_eq!(start(&mut machine, settled)[0], sample::score(&TABLE));
+    assert_eq!(start(&mut machine, since + ms(69)), [refusal]);
+    assert_eq!(
+        start(&mut machine, since + ms(70))[0],
+        sample::score(&TABLE)
+    );
 
+    let settled = since + ms(100);
     machine.on_att(ATT, &host::stop(&TABLE, REASON_HOST), settled);
     assert_eq!(start(&mut machine, settled)[0], sample::score(&TABLE));
     machine.on_att(ATT, &host::stop(&TABLE, REASON_HOST), settled);
