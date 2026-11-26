@@ -560,6 +560,39 @@ mod tests {
     }
 
     #[test]
+    fn a_skip_from_an_old_epoch_cannot_cancel_a_duck() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 80, 1, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(15, 1, 1)]);
+        let skipped = Fact::Audio(AudioFact::VolumeSkipped(VolumeStamp {
+            epoch: 0,
+            writes: 1,
+        }));
+        assert_eq!(ducking.step(&state, &skipped), []);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(80, 1, 2)]);
+    }
+
+    #[test]
+    fn a_matching_skip_settles_a_pending_restore() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+
+        assert_eq!(ducking.step(&state, &sink(1, 80, 0, 0)), []);
+        assert_eq!(ducking.step(&state, &STARTED), [set(15, 0, 1)]);
+        assert_eq!(ducking.step(&state, &sink(1, 15, 0, 1)), []);
+        assert_eq!(ducking.step(&state, &ENDED), [restore(80, 0, 2)]);
+        let skipped = Fact::Audio(AudioFact::VolumeSkipped(VolumeStamp {
+            epoch: 0,
+            writes: 2,
+        }));
+        assert_eq!(ducking.step(&state, &skipped), []);
+        assert!(matches!(ducking.conversation, super::Conversation::Idle));
+        assert!(ducking.pending_volume.is_none());
+    }
+
+    #[test]
     fn recording_release_defers_a_duck_until_the_muffle_fades() {
         use crate::policy::Policy;
 
@@ -584,6 +617,65 @@ mod tests {
                 assert_eq!(policy.step(&state, STARTED, at(1600)), [set(15, 0, 1)]);
             }
         }
+    }
+
+    fn defer_duck(ducking: &mut Ducking, state: &State) -> Duration {
+        let up = Fact::Link(Signal::Up { device: device() });
+        let started_at = Duration::from_millis(1);
+        assert_eq!(ducking.step(state, &up), []);
+        assert_eq!(ducking.step(state, &sink(1, 80, 0, 0)), []);
+        assert_eq!(
+            ducking.step(state, &Fact::Audio(AudioFact::Recording(true))),
+            []
+        );
+        assert_eq!(
+            ducking.step(state, &Fact::Audio(AudioFact::Recording(false))),
+            []
+        );
+        assert_eq!(ducking.step_at(state, &STARTED, started_at), []);
+        let deadline = ducking.deadline().expect("the duck should be deferred");
+        assert!(deadline > started_at);
+        deadline
+    }
+
+    #[test]
+    fn link_down_cancels_a_deferred_duck_across_reconnect() {
+        let mut state = connected();
+        let mut ducking = Ducking::default();
+        let deadline = defer_duck(&mut ducking, &state);
+        let before_deadline = deadline.saturating_sub(Duration::from_millis(1));
+
+        state.connected = false;
+        assert_eq!(
+            ducking.step_at(&state, &Fact::Link(Signal::Down), before_deadline),
+            []
+        );
+        state.connected = true;
+        let up = Fact::Link(Signal::Up { device: device() });
+        assert_eq!(ducking.step_at(&state, &up, before_deadline), []);
+        assert_eq!(
+            ducking.step_at(&state, &sink(1, 80, 1, 0), before_deadline),
+            []
+        );
+        assert_eq!(ducking.step_at(&state, &Fact::Tick, deadline), []);
+    }
+
+    #[test]
+    fn following_a_different_device_cancels_a_deferred_duck() {
+        let state = connected();
+        let mut ducking = Ducking::default();
+        let deadline = defer_duck(&mut ducking, &state);
+        let before_deadline = deadline.saturating_sub(Duration::from_millis(1));
+
+        let up = Fact::Link(Signal::Up {
+            device: "02:00:00:00:00:02".parse().unwrap(),
+        });
+        assert_eq!(ducking.step_at(&state, &up, before_deadline), []);
+        assert_eq!(
+            ducking.step_at(&state, &sink(2, 80, 1, 0), before_deadline),
+            []
+        );
+        assert_eq!(ducking.step_at(&state, &Fact::Tick, deadline), []);
     }
 
     #[test]
