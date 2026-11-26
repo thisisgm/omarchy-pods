@@ -9,6 +9,7 @@ mod support;
 
 #[cfg(test)]
 mod tests {
+    mod ducking_hold_off;
     mod ducking_refresh;
 
     use std::rc::Rc;
@@ -158,6 +159,7 @@ mod tests {
                     name,
                     index: Some(_),
                     percent,
+                    ..
                 } = write
                 else {
                     panic!("a write other than indexed sink volume");

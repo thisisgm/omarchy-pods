@@ -710,6 +710,7 @@ fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<Strin
                 name,
                 index: *device_index,
                 percent: percent_of(loudest(volume)),
+                at: Instant::now(),
             })
         }
         Command::Subscribe(mask) => Asked::Subscribe { mask: *mask },
