@@ -168,6 +168,41 @@ mod tests {
     }
 
     #[test]
+    fn paired_doap_notifications_open_while_the_recorder_is_linked() {
+        const BURST_FRAMES: u32 = 10;
+        const BURST_PER_NOTIFICATION: u32 = 5;
+        const HELD_START: Duration = FRAME.saturating_mul(BURST_FRAMES);
+        const CAPTURE_SPAN: Duration = Duration::from_millis(450);
+
+        let fixture = Fixture::with_recorder_quantum();
+        let doap = fixture.device.pods.doap();
+        doap.burst(BURST_FRAMES, BURST_PER_NOTIFICATION);
+        doap.pair_notifications();
+        doap.hold_start(true);
+        fixture.list(CAPTURE);
+        let recorder = fixture.capture();
+        wait_for("dictation mode set", || doap.mode_seen().then_some(()));
+        let mode = Instant::now();
+        fixture.start(1);
+        pause(HELD_START.saturating_sub(mode.elapsed()));
+        let released = Instant::now();
+        doap.release_start();
+        fixture.streaming(1);
+        pause(CAPTURE_SPAN.saturating_sub(released.elapsed()));
+        let samples = recorder.finish();
+        fixture.stopped(1);
+        assert_sounds(
+            &samples,
+            &format!(
+                " within {} ms of releasing the DoAP START",
+                CAPTURE_SPAN.as_millis()
+            ),
+        );
+        fixture.no_uplink();
+        fixture.finish();
+    }
+
+    #[test]
     fn a_dictation_recorder_starts_doap_and_never_the_uplink() {
         let fixture = Fixture::new();
         fixture.list(CAPTURE);

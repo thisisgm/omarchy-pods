@@ -19,6 +19,8 @@ pub const MAX_GAP_FRAMES: u16 = 4;
 pub const STEADY_FRAMES: usize = 1;
 /// 1.6 s of the burst that opens a stream, which was measured at 63 frames; a longer one is placed when the stage is full.
 pub const PREROLL_STAGE_FRAMES: usize = 80;
+/// Sitting A's longest K2 burst took 259 ms; 280 ms covers it with one 20 ms frame to spare.
+const PREROLL_STAGE_TIME: Duration = Duration::from_millis(280);
 /// Keep this much leading silence for the recorder's voice activity detector.
 const SILENCE_COLLAR_FRAMES: usize = 3;
 const SILENCE_RMS_DBFS: f64 = -58.0;
@@ -69,8 +71,14 @@ pub(crate) struct Dictation {
     resampler: Option<Resampler>,
     /// The frame the resampler made last.
     resampled: Vec<f32>,
-    /// The frames of the burst that opens a stream, by counter, held until a steady notification places them; none once they are placed.
-    stage: Option<Vec<(u16, Vec<u8>)>>,
+    /// The opening held for placement; none once it is placed.
+    stage: Option<Stage>,
+}
+
+#[derive(Debug)]
+struct Stage {
+    first_at: Option<Duration>,
+    frames: Vec<(u16, Vec<u8>)>,
 }
 
 impl Dictation {
@@ -110,7 +118,10 @@ impl Chain {
     /// A new run of the dictation stream, as `reset` is one of the uplink, with its opening staged; the caller opens every start of the stream with it, for a counter that starts again behind the last one reads as a repeat and writes nothing.
     pub fn dictation_run(&mut self) {
         self.new_run();
-        self.dictation.stage = Some(Vec::with_capacity(PREROLL_STAGE_FRAMES));
+        self.dictation.stage = Some(Stage {
+            first_at: None,
+            frames: Vec::with_capacity(PREROLL_STAGE_FRAMES),
+        });
     }
 
     fn new_run(&mut self) {
@@ -141,12 +152,20 @@ impl Chain {
             Ordering::Relaxed,
         );
         let steady = (met, took) == (STEADY_FRAMES, STEADY_FRAMES);
-        if staging && steady {
-            self.place(now, true);
+        if staging {
+            let expired = self
+                .dictation
+                .stage
+                .as_ref()
+                .and_then(|stage| stage.first_at)
+                .is_some_and(|first| now.saturating_sub(first) >= PREROLL_STAGE_TIME);
+            if steady || (took > 0 && expired) {
+                self.place(now, steady);
+            }
         } else if steady {
             let arrival = self.ring.arrival_at(now);
             self.ring.publish(self.arrivals.push_dictation(arrival));
-        } else if !staging && took > 0 && self.arrivals.is_empty() {
+        } else if took > 0 && self.arrivals.is_empty() {
             // The first burst after a counter jump gives the new run its time.
             self.arrived(now);
         }
@@ -165,13 +184,14 @@ impl Chain {
                     .fetch_add(1, Ordering::Relaxed);
                 return false;
             }
-            Place::NewRun => stage.clear(),
+            Place::NewRun => stage.frames.clear(),
         }
         self.dictation.expected = Some(counter.wrapping_add(1));
         // One byte past the cap is kept, so the decoder still refuses a frame that came too long.
         let held = data.get(..=MAX_OPUS_FRAME_BYTES).unwrap_or(data);
-        stage.push((counter, held.to_vec()));
-        if stage.len() == PREROLL_STAGE_FRAMES {
+        stage.first_at.get_or_insert(now);
+        stage.frames.push((counter, held.to_vec()));
+        if stage.frames.len() == PREROLL_STAGE_FRAMES {
             self.place(now, steady);
         }
         true
@@ -187,7 +207,7 @@ impl Chain {
 
     /// Anchors the last staged frame at `now` and places those inside the opening's reach.
     fn place(&mut self, now: Duration, steady_last: bool) {
-        let Some(staged) = self.dictation.stage.take() else {
+        let Some(Stage { frames: staged, .. }) = self.dictation.stage.take() else {
             return;
         };
         let Some(&(last, _)) = staged.last() else {

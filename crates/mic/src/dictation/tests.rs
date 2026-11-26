@@ -158,7 +158,7 @@ fn a_staged_frame_that_came_too_long_is_still_refused_when_placed() {
     chain.frames(Duration::ZERO, [(0, plain), (1, &long[..])].into_iter());
     // The stage holds no more of it than tells it came too long.
     let staged = chain.dictation.stage.as_ref().unwrap();
-    assert_eq!(staged[1].1.len(), MAX_OPUS_FRAME_BYTES + 1);
+    assert_eq!(staged.frames[1].1.len(), MAX_OPUS_FRAME_BYTES + 1);
     chain.frames(Duration::ZERO, iter::once((2, plain)));
     assert!(chain.dictation.stage.is_none());
     let counted = [&counters.decode_errors, &counters.concealed];
