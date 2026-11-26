@@ -19,6 +19,8 @@ const _: () = assert!(
 );
 /// Half a period: more than steady steering leaves standing, less than one missed cycle of a 20 ms recorder.
 const REALIGN_MS: u16 = 15;
+/// A -45 dBFS peak in decoded audio, before the recorder's gain.
+const QUIET_PEAK: f32 = 0.005_623_413;
 /// A standing distance of about 0.9 ms holds the drift measured, 172 parts per million.
 const STEER_PPM_PER_MS: f64 = 200.0;
 /// Inaudible as pitch, and more than ten times the drift measured.
@@ -554,7 +556,7 @@ impl Reader {
         if self.linking {
             self.jump(place);
         } else if off.unsigned_abs() > bound.unsigned_abs() && !self.left.falling() {
-            // A late callback keeps the current run's unread audio and steers through the backlog.
+            // Keep unread speech in the current run even when the callback is late.
             if off < 0 && self.heard == Some(run) {
                 let oldest = self.ring.oldest().max(first).min(place);
                 if oldest > self.next {
@@ -563,6 +565,8 @@ impl Reader {
                         .span_gone_frames
                         .fetch_add(gone, Ordering::Relaxed);
                     self.jump(oldest);
+                } else if let Some(to) = self.quiet_destination(place, run) {
+                    self.jump(to);
                 }
                 return;
             }
@@ -577,6 +581,20 @@ impl Reader {
                 self.jump(place);
             }
         }
+    }
+
+    /// Only cut sustained quiet, leaving quiet under both sides of the realignment fade.
+    fn quiet_destination(&self, place: i64, run: u64) -> Option<i64> {
+        let fade = i64::from(FADE_FRAMES);
+        let start = self.next.saturating_sub(fade);
+        let end = place.saturating_add(fade);
+        let quiet_end = (start..end)
+            .find(|&at| {
+                !matches!(self.ring.frame_of(run, at), Frame::Sample { sample, .. } if sample.abs() < QUIET_PEAK)
+            })
+            .unwrap_or(end);
+        let to = quiet_end.saturating_sub(fade);
+        (to.saturating_sub(self.next) >= fade && self.ring.run() == run).then_some(to)
     }
 
     /// Records the time to reach the opening's exit bound.
