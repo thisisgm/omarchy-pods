@@ -1,7 +1,7 @@
 #[test]
 fn a_wear_edge_reports_a_failed_paired_get() {
     let mut rig = keyed();
-    let _device = rig.add_pods(Profile::default());
+    let _device = wear_pods(&mut rig);
     rig.start();
     wait_intake(&rig, "listening");
     let out = marked_out();
@@ -27,7 +27,7 @@ fn a_wear_edge_reports_a_failed_paired_get() {
 #[test]
 fn a_wear_edge_omits_the_path_from_a_standard_dbus_error() {
     let mut rig = keyed();
-    let _device = rig.add_pods(Profile::default());
+    let _device = wear_pods(&mut rig);
     rig.start();
     wait_intake(&rig, "listening");
     let out = marked_out();
