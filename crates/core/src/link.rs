@@ -4,6 +4,7 @@ mod commands;
 mod devices;
 pub mod ladder;
 mod reports;
+mod wear;
 
 use std::time::Duration;
 
@@ -20,8 +21,8 @@ pub use reports::SavedKeys;
 use crate::command::{self, Command, CommandError, Outcome};
 use crate::state::State;
 use ladder::{
-    ABSENT_GRACE_MS, Attempt, FIRST_RETRY_MS, HANDSHAKE_STEP_TIMEOUT_MS, HELD_DELAYS_MS, KNOWN_MAX,
-    NOTIFY_REREQUEST_MS, PARKED_RETRY_MS,
+    ABSENT_GRACE_MS, Attempt, FIRST_RETRY_MS, HANDSHAKE_STEP_TIMEOUT_MS, KNOWN_MAX,
+    NOTIFY_REREQUEST_MS, held_delay, parked,
 };
 
 /// Names one client command so its answer finds the client again.
@@ -230,28 +231,13 @@ impl Machine {
         let mut actions = self.answer_written(state, event);
         let reacted = self.react(state, event, now);
         let down = !matches!(self.phase, Phase::Up { .. } | Phase::Stopped);
-        if !self.held || !down {
-            self.ear_at_link_down = EarReport::default();
-        } else if was_up {
-            self.ear_at_link_down = ear;
-        }
+        self.record_wear_at_link_down(was_up, down, ear);
         // A shutdown signals nothing, as it signals no `Lost` either.
         if was_up && down {
             actions.push(Action::Signal(Signal::Down));
         }
         actions.extend(reacted);
         actions
-    }
-
-    /// Checks wear at the last live control link before processing a BlueZ device disconnect.
-    #[must_use]
-    pub fn unrequested_down_while_worn(&self, device: BdAddr, state: &State) -> bool {
-        let ear = if matches!(self.phase, Phase::Up { .. }) {
-            state.ear
-        } else {
-            self.ear_at_link_down
-        };
-        self.is_active(device) && self.user_disconnects == 0 && ear.any_in_ear()
     }
 
     #[expect(
@@ -786,20 +772,6 @@ impl Machine {
         if self.is_active(device) {
             self.active = None;
         }
-    }
-}
-
-/// The wait after failed held attempt `attempt`, `None` once the held ladder is spent.
-fn held_delay(attempt: u32) -> Option<u64> {
-    let index = usize::try_from(attempt).ok()?.checked_sub(1)?;
-    HELD_DELAYS_MS.get(index).copied()
-}
-
-/// The held ladder is spent or a parked attempt failed: count the failure and park.
-fn parked(state: &mut State, now: Duration) -> Phase {
-    raise(&mut state.counters.reconnect_failures);
-    Phase::Parked {
-        until: after(now, PARKED_RETRY_MS),
     }
 }
 
