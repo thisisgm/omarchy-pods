@@ -1,6 +1,8 @@
 //! One stream source node: its loop, context, core and stream, and the three callbacks the library runs.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+mod properties;
+
+use std::ffi::{CStr, c_char, c_void};
 use std::io;
 use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::path::Path;
@@ -13,6 +15,7 @@ use std::time::Duration;
 use rustix::net::{self, AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 
 use crate::{ffi, pod};
+use properties::{N_PROPERTIES, Properties};
 
 /// A local socket answers in milliseconds; two seconds is a stuck server.
 pub const PW_OPEN_MS: u64 = 2000;
@@ -23,13 +26,6 @@ const LOOP_NAME: &CStr = c"pods-pw";
 const NO_TARGET: u32 = u32::MAX;
 /// The bytes of one mono float frame.
 const STRIDE: u32 = 4;
-const PROPERTIES: usize = 6;
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    reason = "`TryFrom` is not const, and the count is six"
-)]
-const N_PROPERTIES: u32 = PROPERTIES as u32;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Spec<'a> {
@@ -154,30 +150,6 @@ impl Source {
         }
     }
 
-    /// Updates the Bluetooth card ID without replacing the node.
-    #[expect(unsafe_code, reason = "updates the stream under its loop's lock")]
-    pub fn set_device_id(&self, id: Option<u32>) -> io::Result<()> {
-        let value = id.map(|id| id.to_string()).map(CString::new).transpose()?;
-        let item = ffi::spa_dict_item {
-            key: c"omarchypods.device.id".as_ptr(),
-            // The server merges node properties, so omission would keep the last card ID.
-            value: value.as_deref().unwrap_or(c"").as_ptr(),
-        };
-        let dict = ffi::spa_dict {
-            flags: 0,
-            n_items: 1,
-            items: &raw const item,
-        };
-        let _lock = Locked::take(self.thread_loop.0);
-        // SAFETY: the lock is held, and the live stream copies the dictionary before returning.
-        let result =
-            unsafe { ffi::pw_stream_update_properties(self.stream.raw.as_ptr(), &raw const dict) };
-        if result < 0 {
-            return Err(io::Error::from_raw_os_error(result.saturating_neg()));
-        }
-        Ok(())
-    }
-
     /// The cycles in which the server's converter gave no area to steer through, so the ratio `Fill` returned went nowhere.
     #[must_use]
     pub fn unsteered(&self) -> u64 {
@@ -208,29 +180,6 @@ impl Pod {
 
     fn as_ptr(&self) -> *const ffi::spa_pod {
         self.0.as_ptr().cast()
-    }
-}
-
-/// The node's properties as the C strings the library copies; the name comes first.
-struct Properties([(&'static CStr, CString); PROPERTIES]);
-
-impl Properties {
-    fn new(spec: &Spec<'_>) -> Result<Self, OpenError> {
-        let owned = |key: &'static CStr, text: &str| {
-            let text = CString::new(text).map_err(|error| OpenError::Library {
-                call: "pw_properties_new_dict",
-                error: io::Error::new(io::ErrorKind::InvalidInput, format!("{key:?}: {error}")),
-            })?;
-            Ok((key, text))
-        };
-        Ok(Self([
-            owned(c"node.name", spec.name)?,
-            (c"media.class", c"Audio/Source".to_owned()),
-            owned(c"node.description", spec.description)?,
-            (c"node.virtual", c"false".to_owned()),
-            owned(c"priority.session", &spec.priority.to_string())?,
-            (c"node.slow-resume", c"true".to_owned()),
-        ]))
     }
 }
 

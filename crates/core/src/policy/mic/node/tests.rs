@@ -261,8 +261,9 @@ a_recorder_kept_through_a_stop_by_the_pods_starts_again_only_when_it_links_again
 ";
 
 /// Source tests outside the node policy: card properties, daemon exit and log contents.
-const OUTSIDE_THE_TABLE: [&str; 6] = [
+const OUTSIDE_THE_TABLE: [&str; 7] = [
     "a_relinked_node_carries_no_card_id_from_the_link_before",
+    "a_reopened_channel_labels_the_node_only_with_the_new_card_id",
     "an_audio_server_outage_clears_the_card_id_until_the_server_returns",
     "bluetooth_card_appearing_late_labels_the_existing_mic_node",
     "bluetooth_card_reconnecting_updates_the_same_mic_node",
