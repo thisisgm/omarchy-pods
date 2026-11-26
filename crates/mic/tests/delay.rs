@@ -188,13 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn a_reader_off_its_target_realigns_with_no_step() {
-        const MISSED: Duration = Duration::from_millis(25);
+    fn a_reader_ahead_of_its_target_realigns_with_no_step() {
+        const EARLY: Duration = Duration::from_millis(17);
         let mut rig = Rig::new();
         rig.resync.request();
         let from = FIRST + period() * 3;
         let mut times = reads(from, 10);
-        times.extend(reads(from + QUANTUM_TIME * 10 + MISSED, 10));
+        times.extend(reads((from + QUANTUM_TIME * 10).saturating_sub(EARLY), 10));
         let tape = rig.play(&on_time(0..30), &times);
 
         let expected = |read: usize| {
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn the_sum_of_a_fade_out_and_a_fade_in_never_passes_the_ceiling() {
-        const MISSED: Duration = Duration::from_millis(25);
+        const EARLY: Duration = Duration::from_millis(17);
         /// A tone that decodes just under full scale, so after the gain both sides of the realign stand far over the knee.
         const FULL_LEVEL: u8 = 195;
         let ceiling = 10_f32.powf(LIMIT_CEILING_DBFS / 20.0);
@@ -236,7 +236,7 @@ mod tests {
         rig.resync.request();
         let from = FIRST + period() * 3;
         let mut times = reads(from, 10);
-        times.extend(reads(from + QUANTUM_TIME * 10 + MISSED, 10));
+        times.extend(reads((from + QUANTUM_TIME * 10).saturating_sub(EARLY), 10));
         let mut tape = Vec::new();
         for &now in &times {
             tape.extend(rig.read(now, QUANTUM).0);
@@ -265,28 +265,34 @@ mod tests {
 
     #[test]
     fn a_second_realign_waits_for_the_first_to_fade() {
-        const MISSED: Duration = Duration::from_millis(25);
+        // Eight 2 ms reads in a catch-up burst put the cursor past the 15 ms realign bound.
+        const BURST_READS: usize = 8;
         for lag_ms in 0..8 {
             let mut rig = Rig::new();
             for at in on_time(0..8) {
                 rig.land(at);
             }
             rig.resync.request();
-            let mut now = landing(5) + ms(lag_ms);
+            let now = landing(5) + ms(lag_ms);
+            let target = due(now);
             let mut tape = rig.read(now, QUANTUM).0;
-            let mut times = Vec::new();
-            // A consumer that takes 2 ms at a time misses 25 ms, twice in a row.
-            for late in [MISSED, MISSED].into_iter().chain([Duration::ZERO; 5]) {
-                now += ms(2) + late;
-                times.push(now);
+            for _ in 0..BURST_READS {
                 tape.extend(rig.read(now, SHORT).0);
             }
-            let heard = |read: usize| &tape[QUANTUM + read * SHORT..][..SHORT];
-            let owed = |read: usize| &rig.decoded[due(times[read]) - SHORT..due(times[read])];
-            // The first realign fades for 320 frames, so the second comes at read 3: past that fade read 2 still runs on from read 0, and read 6 is past the second.
-            let (clear, on) = (FADE - SHORT * 2, due(times[0]) + SHORT);
-            assert_same(&heard(2)[clear..], &rig.decoded[on + clear..on + SHORT]);
-            assert_same(heard(6), owed(6));
+            // The first jump left a fall in progress, so even a full read at the same time must continue.
+            let (deferred, _) = rig.read(now, QUANTUM);
+            let clear = FADE - SHORT;
+            assert_same(
+                &deferred[clear..],
+                &rig.decoded[target + clear..target + QUANTUM],
+            );
+            tape.extend(deferred);
+            // The fall is over, so the next read jumps back; three more short reads clear the new fade.
+            for read in 0..=3 {
+                tape.extend(rig.read(after(now, ms(2), read), SHORT).0);
+            }
+            let end = target + 3 * SHORT;
+            assert_same(&tape[tape.len() - SHORT..], &rig.decoded[end - SHORT..end]);
             assert!(
                 largest_step(&tape) <= largest_step(&levelled(&rig.decoded)),
                 "a step, {lag_ms} ms"
@@ -315,20 +321,16 @@ mod tests {
         assert_shaped(&heard[200..200 + unit], dry);
         assert!(silent(&heard[200 + unit..]));
 
-        // Two packets land on time, a recorder links 128 frames into the first, and its next read comes 25 ms late: a jump 128 frames into the fade in.
+        // A short first read followed by a full read in the same cycle jumps back 128 frames into the fade in.
         let mut rig = Rig::new();
         rig.land(FIRST);
         rig.land(landing(1));
         rig.resync.request();
-        let linked = FIRST + ms(JITTER_COVER_MS + 2);
-        let late = linked + QUANTUM_TIME + ms(25);
-        drop(rig.read(linked, QUANTUM));
-        let (heard, _) = rig.read(late, QUANTUM);
-        let from = due(late) - QUANTUM;
-        let left = |at: usize| {
-            let behind = 127_usize.checked_sub(at);
-            behind.map_or(0.0, |frame| written(&rig, frame)) * fall(at, FADE) * rise(128)
-        };
+        let linked = landing(1) + ms(NODE_LATENCY_MS - 2);
+        drop(rig.read(linked, SHORT));
+        let (heard, _) = rig.read(linked, QUANTUM);
+        let from = due(linked) - QUANTUM;
+        let left = |at: usize| rig.decoded[due(linked) - 1 - at] * fall(at, FADE) * rise(SHORT);
         let joined = (0..FADE).map(|at| rig.decoded[from + at] * rise(at) + left(at));
         assert_shaped(&heard[..FADE], joined);
         assert_same(&heard[FADE..], &rig.decoded[from + FADE..from + QUANTUM]);

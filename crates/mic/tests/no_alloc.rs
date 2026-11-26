@@ -22,7 +22,7 @@ mod tests {
     const PACKETS: u32 = 8;
     /// The reads before the consumer comes late, the reads from there until a recorder links, and the reads after: 2.5 s in all.
     const STRETCHES: [u32; 3] = [200, 200, 9600];
-    /// How late the consumer comes once, which is further than a reader may stand from its target.
+    /// How late the consumer comes once, past the realign bound.
     const MISSED: Duration = Duration::from_millis(25);
 
     #[test]
@@ -49,7 +49,7 @@ mod tests {
             }
         });
         assert_eq!(reading.count_total, 0);
-        // Every read before the link held audio, on both sides of the realign; the reads after it met audio and then the end of it, one dry stretch.
+        // Every read before the link held audio despite the stall; the reads after it met audio and then one dry stretch.
         assert_eq!(loud[..2], STRETCHES[..2]);
         assert!(loud[2] > 0 && loud[2] < STRETCHES[2], "{loud:?}");
         assert_eq!(Rig::count(&rig.counters.underruns), 1);

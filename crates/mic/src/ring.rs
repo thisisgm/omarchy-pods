@@ -17,7 +17,7 @@ const _: () = assert!(
             * FRAMES_PER_MS as u64
             <= RING_SAMPLES
 );
-/// Half a period: more than steering leaves standing, less than one missed cycle of a 20 ms recorder.
+/// Half a period: more than steady steering leaves standing, less than one missed cycle of a 20 ms recorder.
 const REALIGN_MS: u16 = 15;
 /// A standing distance of about 0.9 ms holds the drift measured, 172 parts per million.
 const STEER_PPM_PER_MS: f64 = 200.0;
@@ -157,6 +157,13 @@ impl Ring {
     /// The frame after the last one written.
     pub(crate) fn end(&self) -> i64 {
         i64::try_from(self.written.load(Ordering::Relaxed)).unwrap_or(i64::MAX)
+    }
+
+    /// The oldest index the writer has not lapped, allowing for its unpublished unit.
+    fn oldest(&self) -> i64 {
+        let capacity = i64::try_from(RING_SAMPLES).unwrap_or(i64::MAX);
+        self.end()
+            .saturating_sub(capacity.saturating_sub(i64::from(UNIT_FRAMES)))
     }
 
     /// Never waits, and overwrites the oldest; the index is shown at least every unit, which is as far past it as the reader's lap check lets the writer be.
@@ -547,6 +554,18 @@ impl Reader {
         if self.linking {
             self.jump(place);
         } else if off.unsigned_abs() > bound.unsigned_abs() && !self.left.falling() {
+            // A late callback keeps the current run's unread audio and steers through the backlog.
+            if off < 0 && self.heard == Some(run) {
+                let oldest = self.ring.oldest().max(first).min(place);
+                if oldest > self.next {
+                    let gone = u64::try_from(oldest.saturating_sub(self.next)).unwrap_or(0);
+                    self.counters
+                        .span_gone_frames
+                        .fetch_add(gone, Ordering::Relaxed);
+                    self.jump(oldest);
+                }
+                return;
+            }
             // A later dictation anchor can reach audio that has already been handed out.
             let place = if off > 0 && self.heard == Some(run) && self.ring.path() == Path::Dictation
             {

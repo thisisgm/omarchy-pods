@@ -154,13 +154,15 @@ mod tests {
                 ((1.0 - MAX_STEER, 1.0), low)
             };
             assert_eq!((low, high), expected, "slow: {slow}");
-            // The drift ends in a jump, where the smoothing starts again from nothing: that read is asked for no other rate.
             let at_clamp = |ratio: &f64| ratio.to_bits() == clamp.to_bits();
             let clamped = ratios.iter().position(at_clamp).unwrap();
-            assert!(
-                ratios[clamped..].iter().any(|&ratio| unsteered(ratio)),
-                "slow: {slow}"
-            );
+            if slow {
+                // The consumer ignores steering, so a reader behind stays at the clamp to keep the audio.
+                assert!(ratios[clamped..].iter().all(at_clamp));
+            } else {
+                // A backward jump resets smoothing and asks for the nominal rate.
+                assert!(ratios[clamped..].iter().any(|&ratio| unsteered(ratio)));
+            }
         }
     }
 }

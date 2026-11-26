@@ -7,10 +7,10 @@ use std::time::Duration;
 use pods_samples::opus::tone;
 
 use super::{
-    Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Reader, Ring, SILENCE_FRAMES,
-    SILENCE_PEAK, UNIT_FRAMES, fade_in, scaled,
+    Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Path, REALIGN_MS,
+    RING_SAMPLES, Reader, Ring, SILENCE_FRAMES, SILENCE_PEAK, UNIT_FRAMES, fade_in, ns_of, scaled,
 };
-use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, chain, level};
+use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, RATE_HZ, chain, level};
 
 /// One read, 20 ms at the node's rate.
 const QUANTUM: usize = 1280;
@@ -338,4 +338,138 @@ fn a_read_adds_what_the_level_met_to_the_counters_once() {
     reader.read(now.saturating_add(PERIOD), &mut heard);
     assert!(!silent(&heard));
     assert_eq!(counted(), [3, 2]);
+}
+
+fn a_late_read_keeps_every_frame(late_period: Duration) {
+    const NORMAL_READS: usize = 6;
+    const SAMPLE_STEP: f32 = 0.000_001;
+    let late_quanta = usize::try_from(
+        late_period
+            .as_nanos()
+            .checked_div(PERIOD.as_nanos())
+            .unwrap(),
+    )
+    .unwrap();
+    let sample_count = NORMAL_READS
+        .saturating_add(late_quanta)
+        .saturating_mul(QUANTUM);
+    let samples: Vec<_> = (1_u16..)
+        .take(sample_count)
+        .map(|frame| f32::from(frame) * SAMPLE_STEP)
+        .collect();
+    for (path, latency) in [
+        (Path::Uplink, NODE_LATENCY_MS),
+        (Path::Dictation, DOAP_LATENCY_MS),
+    ] {
+        let counters = Arc::new(Counters::default());
+        let ring = Arc::new(Ring::new());
+        let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::clone(&counters));
+        ring.start_run(path);
+        ring.publish(0);
+        resync.request();
+        let mut now = Duration::from_millis(u64::from(latency));
+        let mut written = 0;
+        let mut elapsed_quanta = 0_usize;
+        let mut expected = samples.clone();
+        for (sample, fade) in expected.iter_mut().zip(0_u16..) {
+            *sample *= fade_in(fade);
+        }
+        level::apply(&mut expected);
+        for (read, expected) in expected.as_chunks::<QUANTUM>().0.iter().enumerate() {
+            let (interval, quanta) = if read == 1 {
+                (late_period, late_quanta)
+            } else {
+                (PERIOD, 1)
+            };
+            now = now.saturating_add(interval);
+            elapsed_quanta = elapsed_quanta.saturating_add(quanta);
+            let end = elapsed_quanta.saturating_mul(QUANTUM).min(samples.len());
+            ring.write(samples[written..end].iter().copied());
+            written = end;
+            let mut heard = [0.0; QUANTUM];
+            reader.read(now, &mut heard);
+            assert!(
+                heard
+                    .iter()
+                    .zip(expected)
+                    .all(|(heard, expected)| heard.to_bits() == expected.to_bits()),
+                "{path:?} read {read} at {now:?} after a {late_period:?} interval: cursor {}",
+                reader.next
+            );
+        }
+        assert_eq!(written, samples.len());
+        assert!(reader.read_all());
+        assert_eq!(counters.span_gone_frames.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.underruns.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[test]
+fn a_read_after_60_ms_hands_out_every_frame_once_in_order() {
+    a_late_read_keeps_every_frame(Duration::from_millis(60));
+}
+
+#[test]
+fn a_read_after_200_ms_hands_out_every_frame_once_in_order() {
+    a_late_read_keeps_every_frame(Duration::from_millis(200));
+}
+
+#[test]
+fn a_lapped_reader_counts_only_the_frames_the_writer_overwrote() {
+    let counters = Arc::new(Counters::default());
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::clone(&counters));
+    let quantum = i64::try_from(QUANTUM).unwrap();
+    let mut heard = [0.0; QUANTUM];
+    ring.write((0..quantum).map(|_| 0.0));
+    ring.publish(0);
+    resync.request();
+    let first = Duration::from_millis(u64::from(NODE_LATENCY_MS)) + PERIOD;
+    reader.read(first, &mut heard);
+
+    let lost = quantum;
+    let end = quantum + lost + i64::try_from(RING_SAMPLES).unwrap() - i64::from(UNIT_FRAMES);
+    ring.write((quantum..end).map(|_| 0.0));
+    let now = Duration::from_millis(u64::from(NODE_LATENCY_MS))
+        + Duration::from_nanos(u64::try_from(scaled(end, NS_PER_SECOND, RATE_HZ)).unwrap());
+    reader.read(now, &mut heard);
+    assert_eq!(reader.next, quantum + lost + quantum);
+    assert_eq!(
+        counters.span_gone_frames.load(Ordering::Relaxed),
+        u64::try_from(lost).unwrap()
+    );
+}
+
+#[test]
+fn steering_brings_a_late_reader_back_within_the_realign_bound() {
+    const LATE_PERIOD: Duration = Duration::from_millis(200);
+    // At 2000 ppm the nominal clock loses 2 ms of lag per second, with time left for the smoothed rate to settle.
+    const RECOVERY: Duration = Duration::from_secs(100);
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
+    ring.publish(0);
+    resync.request();
+    let mut now = Duration::from_millis(u64::from(NODE_LATENCY_MS)) + PERIOD;
+    let mut heard = [0.0; QUANTUM];
+    let mut read = |now: Duration| {
+        let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
+        ring.write((ring.end()..end).map(|_| 0.0));
+        let ratio = reader.read(now, &mut heard);
+        let target = ring.target(now).unwrap();
+        let lag = Duration::from_nanos(
+            u64::try_from(scaled((target - reader.next).abs(), NS_PER_SECOND, RATE_HZ)).unwrap(),
+        );
+        (ratio, lag)
+    };
+    read(now);
+    now += LATE_PERIOD;
+    let (mut ratio, mut lag) = read(now);
+    let bound = Duration::from_millis(u64::from(REALIGN_MS));
+    assert!(lag > bound, "late read left only {lag:?} of backlog");
+    let deadline = now + RECOVERY;
+    while lag > bound && now < deadline {
+        now += PERIOD.div_f64(ratio);
+        (ratio, lag) = read(now);
+    }
+    assert!(lag <= bound && now <= deadline, "{lag:?} of lag at {now:?}");
 }
