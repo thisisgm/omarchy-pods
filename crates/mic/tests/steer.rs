@@ -113,7 +113,6 @@ mod tests {
 
     #[test]
     fn the_ratio_is_one_before_any_arrival_and_stays_inside_its_bounds() {
-        const CATCH_UP_LIMIT: f64 = 1.045;
         // The distance is smoothed over two seconds of frames: one read 10 ms late asks for 20 parts per million more, not 2000.
         let mut late = Rig::new();
         for at in on_time(0..7) {
@@ -146,16 +145,11 @@ mod tests {
                 ratios.push(rig.read(now, QUANTUM).1);
                 now += every;
             }
-            // Slow pulls pass through the drift clamp before catch-up, and fast pulls stay in the drift range.
+            // Slow pulls accumulate lag without a stall, so both directions stay in the drift range.
             let low = ratios.iter().copied().fold(1.0, f64::min);
             let high = ratios.iter().copied().fold(1.0, f64::max);
             let (expected, clamp) = if slow {
-                assert!(
-                    ratios
-                        .iter()
-                        .any(|ratio| ratio.to_bits() == (1.0 + MAX_STEER).to_bits())
-                );
-                ((1.0, CATCH_UP_LIMIT), high)
+                ((1.0, 1.0 + MAX_STEER), high)
             } else {
                 ((1.0 - MAX_STEER, 1.0), low)
             };
@@ -163,7 +157,7 @@ mod tests {
             let at_clamp = |ratio: &f64| ratio.to_bits() == clamp.to_bits();
             let clamped = ratios.iter().position(at_clamp).unwrap();
             if slow {
-                // The consumer ignores steering, so catch-up remains at its ceiling.
+                // The consumer ignores steering, so drift remains at its ceiling.
                 assert!(ratios[clamped..].iter().all(at_clamp));
             } else {
                 // A backward jump resets smoothing and asks for the nominal rate.

@@ -70,7 +70,7 @@ mod tests {
             clippy::cast_possible_truncation,
             reason = "a value inside full scale, as the float the node sends"
         )]
-        fn fill(&mut self, out: &mut [f32]) -> f64 {
+        fn fill(&mut self, out: &mut [f32], _capacity: usize) -> f64 {
             for sample in out {
                 let seconds = f64::from(self.frame) / f64::from(RATE);
                 *sample = ((TAU * self.hz * seconds).sin() * AMPLITUDE) as f32;
@@ -90,7 +90,7 @@ mod tests {
     }
 
     impl Fill for Counted {
-        fn fill(&mut self, out: &mut [f32]) -> f64 {
+        fn fill(&mut self, out: &mut [f32], _capacity: usize) -> f64 {
             const RAMP_CYCLES: u32 = 4;
             self.tone.fill(out);
             let half = SETTLE_CYCLES + COUNTED_CYCLES;
@@ -121,7 +121,7 @@ mod tests {
     struct Named(SyncSender<String>);
 
     impl Fill for Named {
-        fn fill(&mut self, out: &mut [f32]) -> f64 {
+        fn fill(&mut self, out: &mut [f32], _capacity: usize) -> f64 {
             out.fill(0.0);
             self.0.try_send(thread_name()).unwrap_or(());
             1.0

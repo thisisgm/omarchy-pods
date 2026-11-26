@@ -60,7 +60,7 @@ mod tests {
     struct Silence;
 
     impl Fill for Silence {
-        fn fill(&mut self, out: &mut [f32]) -> f64 {
+        fn fill(&mut self, out: &mut [f32], _capacity: usize) -> f64 {
             CALLBACK_THREAD.with(|flag| flag.set(true));
             if ALLOCATE_ONCE.swap(false, Ordering::Relaxed) {
                 drop(black_box(Box::new(0_u8)));

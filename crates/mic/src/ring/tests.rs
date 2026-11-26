@@ -17,6 +17,7 @@ use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, RATE_HZ
 const QUANTUM: usize = 1280;
 const PERIOD: Duration = Duration::from_millis(20);
 const SPEECH_FLOOR: f32 = 0.02;
+const STALL_RATIO_LIMIT: f64 = 1.045;
 /// The frames of the stream's burst; the steady frame after them has this counter and places them.
 const BURST: u16 = 5;
 /// A frame that landed at zero is read out the stated latency later, so a read one frame after that finds the run dry.
@@ -211,7 +212,7 @@ fn a_dictation_placed_inside_a_read_is_not_played_by_it_and_opens_on_the_next() 
         due.all(|at| matches!(reader.ring.frame(at), Frame::Sample { run, .. } if run == started))
     );
     let mut heard = [1.0; QUANTUM];
-    reader.fill(Some(aim), frames, &mut heard);
+    reader.fill(Some(aim), frames, &mut heard, None);
     // The read stood by the time of the run before, so it has no place for a frame of this one.
     assert!(silent(&heard));
     opens(&mut reader, now + PERIOD);
@@ -231,7 +232,7 @@ fn a_dictation_placed_as_a_read_takes_its_time_is_not_stood_by_and_opens_on_the_
     let counted = &reader.counters.opening_behind_ms;
     assert_eq!(counted.load(Ordering::Relaxed), 0);
     let mut heard = [1.0; QUANTUM];
-    reader.fill(aim, frames, &mut heard);
+    reader.fill(aim, frames, &mut heard, None);
     assert!(silent(&heard));
     opens(&mut reader, now + PERIOD);
 }
@@ -444,7 +445,8 @@ fn a_lapped_reader_counts_only_the_frames_the_writer_overwrote() {
 
 #[test]
 fn steering_brings_a_late_reader_back_within_the_realign_bound() {
-    const LATE_PERIOD: Duration = Duration::from_millis(200);
+    // Ruling A gives one second of fast audio, enough to recover from this 60 ms stall.
+    const LATE_PERIOD: Duration = Duration::from_millis(60);
     const RECOVERY: Duration = Duration::from_secs(5);
     let ring = Arc::new(Ring::new());
     let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
@@ -475,6 +477,56 @@ fn steering_brings_a_late_reader_back_within_the_realign_bound() {
     assert!(lag <= bound && now <= deadline, "{lag:?} of lag at {now:?}");
 }
 
+#[test]
+fn stalled_speech_gets_at_most_one_second_of_fast_source_frames_per_stall() {
+    const LATE_PERIOD: Duration = Duration::from_millis(200);
+    const FAST_AUDIO: Duration = Duration::from_secs(1);
+    let max_fast_frames = scaled(ns_of(FAST_AUDIO), RATE_HZ, NS_PER_SECOND);
+    let drift = STEER_MAX_PPM / PARTS_PER_MILLION;
+    let bound = i64::from(REALIGN_MS) * i64::from(crate::FRAMES_PER_MS);
+    for (path, latency) in [
+        (Path::Dictation, DOAP_LATENCY_MS),
+        (Path::Uplink, NODE_LATENCY_MS),
+    ] {
+        let ring = Arc::new(Ring::new());
+        let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
+        ring.start_run(path);
+        ring.publish(0);
+        resync.request();
+        let mut now = Duration::from_millis(u64::from(latency)) + PERIOD;
+        let mut heard = [0.0; QUANTUM];
+        let mut read = |now: Duration| {
+            let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
+            ring.write((ring.end()..end).map(|_| SPEECH_FLOOR));
+            let ratio = reader.read(now, &mut heard);
+            (ratio, ring.target(now).unwrap() - reader.next)
+        };
+        read(now);
+        let quantum = i64::try_from(QUANTUM).unwrap();
+        for stall in 1..=2 {
+            now += LATE_PERIOD;
+            for spent in (0..max_fast_frames).step_by(QUANTUM) {
+                let (ratio, lag) = read(now);
+                assert!(lag > bound, "{path:?}, stall {stall}, lag {lag}");
+                assert!(
+                    ratio > 1.0 + drift && ratio <= STALL_RATIO_LIMIT,
+                    "{path:?}, stall {stall}, ratio {ratio} after {spent} fast frames"
+                );
+                now += PERIOD.div_f64(ratio);
+            }
+            for _ in 0..max_fast_frames / quantum {
+                let (ratio, lag) = read(now);
+                assert!(lag > bound, "{path:?}, stall {stall}, lag {lag}");
+                assert!(
+                    ratio <= 1.0 + drift,
+                    "{path:?}, stall {stall}, ratio {ratio} after {max_fast_frames} fast frames"
+                );
+                now += PERIOD.div_f64(ratio);
+            }
+        }
+    }
+}
+
 /// Follows the converter's request size per 20 ms pull and returns queued frames at release and at the tail deadline.
 fn stopped_recording(
     path: Path,
@@ -485,7 +537,6 @@ fn stopped_recording(
     const STALL_AT: Duration = Duration::from_millis(400);
     const RECORDER_TAIL: Duration = Duration::from_millis(100);
     const SAMPLE_STEP: f32 = 0.000_001;
-    const RATIO_LIMIT: f64 = 1.05;
     let first = Duration::from_millis(u64::from(latency_ms)).saturating_add(PERIOD);
     let stalled = first.saturating_add(STALL_AT);
     let stop = stalled
@@ -507,6 +558,7 @@ fn stopped_recording(
     let mut now = first;
     let mut written = 0;
     let (mut ratio, mut fraction) = (1.0, 0.0);
+    let mut fast_frames = 0;
     let drift = STEER_MAX_PPM / PARTS_PER_MILLION;
     let bound = i64::from(REALIGN_MS.saturating_mul(crate::FRAMES_PER_MS));
     let mut read = |reader: &mut Reader, now, tape: &mut Vec<f32>| {
@@ -521,9 +573,16 @@ fn stopped_recording(
         )]
         let count = whole as usize;
         let mut heard = [0.0; 2 * QUANTUM];
-        ratio = reader.read(now, &mut heard[..count]);
+        if ratio > 1.0 + drift {
+            fast_frames += count;
+        }
+        let capacity = heard.len();
+        ratio = reader.read_for_converter(now, &mut heard[..count], capacity);
         tape.extend_from_slice(&heard[..count]);
-        assert!((1.0 - drift..=RATIO_LIMIT).contains(&ratio), "{ratio}");
+        assert!(
+            (1.0 - drift..=STALL_RATIO_LIMIT).contains(&ratio),
+            "{ratio}"
+        );
         let lag = ring.target(now).unwrap().saturating_sub(reader.next);
         if lag <= bound {
             assert!(ratio <= 1.0 + drift, "{ratio} at {lag} frames of lag");
@@ -552,6 +611,10 @@ fn stopped_recording(
         now = now.saturating_add(PERIOD);
     }
     assert!(reader.read_all());
+    assert!(
+        fast_frames <= usize::try_from(RATE_HZ).unwrap(),
+        "{fast_frames} fast frames"
+    );
     let mut expected = samples;
     for (sample, fade) in expected.iter_mut().zip(0_u16..=u16::MAX) {
         *sample *= fade_in(fade);
@@ -574,18 +637,20 @@ fn a_60_ms_stall_preserves_speech_through_the_recorder_deadline() {
         (Path::Dictation, DOAP_LATENCY_MS),
         (Path::Uplink, NODE_LATENCY_MS),
     ] {
-        let (queued, missed) = stopped_recording(
-            path,
-            latency,
-            Duration::from_millis(60),
-            Duration::from_secs(1),
-        );
-        assert_eq!(missed, 0, "{path:?}, {queued} queued at release");
-        writeln!(
-            io::stderr(),
-            "{path:?} after 60 ms: queued {queued}, missed {missed}"
-        )
-        .unwrap();
+        for seconds in [1, 3] {
+            let (queued, missed) = stopped_recording(
+                path,
+                latency,
+                Duration::from_millis(60),
+                Duration::from_secs(seconds),
+            );
+            writeln!(
+                io::stderr(),
+                "{path:?} after 60 ms: at {seconds} s queued {queued}, missed {missed}"
+            )
+            .unwrap();
+            assert_eq!(missed, 0, "{path:?}, {queued} queued at release");
+        }
     }
 }
 
@@ -593,11 +658,11 @@ fn a_60_ms_stall_preserves_speech_through_the_recorder_deadline() {
 fn a_200_ms_stall_preserves_speech_and_bounds_the_remaining_tail() {
     use std::io::{self, Write};
 
-    // DoAP ceilings in frames, just above the measured 13,441, 6,753, 7,681 and 993.
-    const QUEUED_AT_ONE_SECOND: usize = 13_504;
-    const MISSED_AT_ONE_SECOND: usize = 6_820;
-    const QUEUED_AT_THREE_SECONDS: usize = 7_760;
-    const MISSED_AT_THREE_SECONDS: usize = 1_100;
+    // Ruling A caps fast audio at 1 s per stall. DoAP ceilings allow 1 ms above the measured frame counts.
+    const QUEUED_AT_ONE_SECOND: usize = 13_725;
+    const MISSED_AT_ONE_SECOND: usize = 7_312;
+    const QUEUED_AT_THREE_SECONDS: usize = 13_469;
+    const MISSED_AT_THREE_SECONDS: usize = 7_056;
     let stall = Duration::from_millis(200);
     for (path, latency) in [
         (Path::Dictation, DOAP_LATENCY_MS),
