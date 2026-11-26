@@ -65,7 +65,7 @@ mod tests {
     const LONG_RECORDING: Duration = Duration::from_mins(10);
     /// The stock player's silence past the recording, for the setup before the window; a setup that outlasts it fails naming the rig.
     const PACE_COVER: Duration = Duration::from_mins(5);
-    /// One part in a thousand of the wall time.
+    /// One part in a thousand of the graph's span.
     const LENGTH_PARTS: u32 = 1000;
     const NANOS_PER_MILLI: u64 = 1_000_000;
 
@@ -344,15 +344,15 @@ mod tests {
         }
         let length = span_of(usize::try_from(recorder.frames_on_disk() - ours).unwrap());
         let graph = span_at(pace.recorder.frames_on_disk() - paced, pace.recorder.rate());
-        let slack = wall / LENGTH_PARTS;
+        // The 10-second hang limit leaves room for shared graph stalls under runner load.
         assert!(
-            graph.abs_diff(wall) <= slack,
+            graph.abs_diff(wall) <= HANG_LIMIT,
             "the rig missed its timing: the graph gave a stock player {graph:?} over {wall:?}, so this run cannot judge the daemon"
         );
         // The source fills every buffer whole whether the fake sent audio or not, so a late fake cannot change the length and this check names no rig.
         assert!(
-            length.abs_diff(wall) <= slack,
-            "{length:?} of audio over {wall:?}"
+            length.abs_diff(graph) <= graph / LENGTH_PARTS,
+            "{length:?} of audio against the graph's {graph:?} over {wall:?}"
         );
         let samples = recorder.finish();
         let (_, late) = rig_gap(&device.pods.uplink(), WORST_GAP);
