@@ -250,7 +250,8 @@ mod tests {
         }
     }
 
-    fn assert_short_silence_after_step(late_ms: u32) {
+    /// Steps the frames from the tenth on by `late_ms`, each a further `jitter_ms` late in turn, across every 2 ms read phase.
+    fn assert_short_silence_after_step(late_ms: u32, jitter_ms: &[u32]) {
         const FIRST_LATE: u32 = 10;
         // The three late frames the re-anchor waits for, and the read that meets the new anchor.
         const MAX_SILENCE_MS: u32 = 4 * FRAME_MS;
@@ -265,7 +266,9 @@ mod tests {
                 if step < FIRST_LATE {
                     at(step)
                 } else {
-                    at(step).saturating_add(ms(late_ms))
+                    let turn = usize::try_from(step).unwrap();
+                    let jitter = jitter_ms[turn.checked_rem(jitter_ms.len()).unwrap()];
+                    at(step).saturating_add(ms(late_ms.saturating_add(jitter)))
                 }
             });
             let longest = longest_silence(&tape);
@@ -291,17 +294,25 @@ mod tests {
 
     #[test]
     fn a_sustained_step_just_past_the_cover_is_re_anchored() {
-        assert_short_silence_after_step(DOAP_LATENCY_MS - FRAME_MS + 5);
+        assert_short_silence_after_step(DOAP_LATENCY_MS - FRAME_MS + 5, &[0]);
     }
 
     #[test]
     fn a_sustained_step_inside_the_hold_is_re_anchored() {
-        assert_short_silence_after_step(DOAP_LATENCY_MS);
+        assert_short_silence_after_step(DOAP_LATENCY_MS, &[0]);
     }
 
     #[test]
     fn a_sustained_90_ms_step_keeps_silence_under_80_ms() {
-        assert_short_silence_after_step(90);
+        assert_short_silence_after_step(90, &[0]);
+    }
+
+    #[test]
+    fn a_sustained_step_with_small_jitter_is_re_anchored() {
+        // Late by 1, 3 and 0 ms in turn, so the newest of three often lands earlier than the oldest.
+        const JITTER_MS: [u32; 3] = [1, 3, 0];
+        assert_short_silence_after_step(DOAP_LATENCY_MS - FRAME_MS + 5, &JITTER_MS);
+        assert_short_silence_after_step(DOAP_LATENCY_MS, &JITTER_MS);
     }
 
     #[test]
