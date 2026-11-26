@@ -51,7 +51,13 @@ async fn follow_a_silent_server() -> Following {
     let (inputs, facts) = mpsc::channel(FACTS);
     let (requests, asked) = queue();
     let state = watch::channel(State::default()).1;
-    let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+    let adapter = tokio::spawn(run(
+        inputs,
+        asked,
+        dir.path().to_path_buf(),
+        state,
+        watch::channel(None).0,
+    ));
     let device = DEVICE.parse().unwrap();
     requests
         .send(AudioRequest::Follow(Some(device)))

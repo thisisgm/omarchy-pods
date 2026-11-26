@@ -371,7 +371,13 @@ async fn follow(held: CommandTag, named: State) -> Following {
     let (inputs, facts) = mpsc::channel(FACTS);
     let (requests, asked) = queue();
     let state = watch::channel(named).1;
-    tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+    tokio::spawn(run(
+        inputs,
+        asked,
+        dir.path().to_path_buf(),
+        state,
+        watch::channel(None).0,
+    ));
     let following = Following {
         requests,
         facts,
@@ -429,7 +435,13 @@ fn heard_from(held: CommandTag, lists: &CStr) -> Vec<CommandTag> {
         let (inputs, mut facts) = mpsc::channel(FACTS);
         let (requests, asked) = queue();
         let (_hub, state) = watch::channel(named);
-        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        let adapter = tokio::spawn(run(
+            inputs,
+            asked,
+            dir.path().to_path_buf(),
+            state,
+            watch::channel(None).0,
+        ));
         let device = DEVICE.parse().unwrap();
         requests
             .send(AudioRequest::Follow(Some(device)))
@@ -486,7 +498,13 @@ fn a_restore_asked_inside_an_earlier_one_is_answered_after_it_with_its_own_id() 
         let (inputs, mut facts) = mpsc::channel(FACTS);
         let (requests, asked) = queue();
         let state = watch::channel(State::default()).1;
-        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        let adapter = tokio::spawn(run(
+            inputs,
+            asked,
+            dir.path().to_path_buf(),
+            state,
+            watch::channel(None).0,
+        ));
         let device = DEVICE.parse().unwrap();
         requests
             .send(AudioRequest::Follow(Some(device)))
@@ -534,7 +552,13 @@ fn a_refused_read_of_the_record_streams_holds_back_no_restore() {
         let (inputs, mut facts) = mpsc::channel(FACTS);
         let (requests, asked) = queue();
         let (_hub, state) = watch::channel(named);
-        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        let adapter = tokio::spawn(run(
+            inputs,
+            asked,
+            dir.path().to_path_buf(),
+            state,
+            watch::channel(None).0,
+        ));
         let device = DEVICE.parse().unwrap();
         // Queued together, so the restore is owed at the first read of the server.
         requests
@@ -565,7 +589,13 @@ fn a_refused_card_list_after_a_miss_tells_the_server_down_again() {
         let (inputs, mut facts) = mpsc::channel(FACTS);
         let (requests, asked) = queue();
         let state = watch::channel(State::default()).1;
-        let adapter = tokio::spawn(run(inputs, asked, dir.path().to_path_buf(), state));
+        let adapter = tokio::spawn(run(
+            inputs,
+            asked,
+            dir.path().to_path_buf(),
+            state,
+            watch::channel(None).0,
+        ));
         requests
             .send(AudioRequest::Follow(Some(DEVICE.parse().unwrap())))
             .await

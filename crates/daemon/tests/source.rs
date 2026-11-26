@@ -17,6 +17,7 @@ mod tests {
     };
     use pods_fake::Profile;
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ};
+    use pods_pwrig::Server;
     use pods_samples::{MODEL_NUMBER, NAME, Placed};
     use pulseaudio::protocol::SinkState;
     use serde_json::{Value, json};
@@ -41,6 +42,65 @@ mod tests {
     const DESCRIPTION: &str = "AirPods Pro 3 Microphone";
     /// The first step of `AUDIO_RETRY_MS` in `src/daemon/audio.rs`, tied by a test beside the adapter.
     const FIRST_RETRY: Duration = Duration::from_millis(250);
+    const CARD_ID: &str = "/info/props/omarchypods.device.id";
+    const PODS_ADDRESS: &str = "02:00:00:00:00:01";
+    const OTHER_ADDRESS: &str = "02:00:00:00:00:02";
+    const BLUETOOTH_CARD: &str = "test-bluetooth-card";
+    const FIRST_CARD_ID: &str = "86";
+    const NEXT_CARD_ID: &str = "91";
+
+    fn wait_card_id(pipewire: &Server, expected: Option<&str>, node: &Value) {
+        let what = format!("the mic node to show Bluetooth card id {expected:?}");
+        wait_for(&what, || {
+            let current = wait_node(pipewire);
+            assert_eq!(current["id"], node["id"], "the mic node was replaced");
+            assert_eq!(
+                current["info"]["props"]["object.serial"], node["info"]["props"]["object.serial"],
+                "the mic node was replaced with a recycled id"
+            );
+            // pw-dump renders decimal property strings as JSON numbers.
+            let matches = match (current.pointer(CARD_ID), expected) {
+                (None, None) => true,
+                (Some(value), None) => value.as_str() == Some(""),
+                (Some(value), Some(expected)) => {
+                    value.as_str() == Some(expected)
+                        || value.as_u64().is_some_and(|id| expected.parse() == Ok(id))
+                }
+                _ => false,
+            };
+            matches.then_some(())
+        });
+    }
+
+    #[test]
+    fn bluetooth_card_appearing_late_labels_the_existing_mic_node() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Idle);
+        let pipewire = start(&rig);
+        link_heard(&rig, &device);
+        let node = wait_node(&pipewire);
+        assert!(node.pointer(CARD_ID).is_none());
+        audio.add_bluetooth_card("unrelated-bluetooth-card", OTHER_ADDRESS, "87");
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, FIRST_CARD_ID);
+        wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+        audio.assert_only_reads();
+        rig.finish();
+    }
+
+    #[test]
+    fn bluetooth_card_reconnecting_updates_the_same_mic_node() {
+        let (rig, device, audio) = rig_with_audio("auto", &[MODEL_NUMBER], SinkState::Idle);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, FIRST_CARD_ID);
+        let pipewire = start(&rig);
+        link_heard(&rig, &device);
+        let node = wait_node(&pipewire);
+        wait_card_id(&pipewire, Some(FIRST_CARD_ID), &node);
+        audio.remove_card(BLUETOOTH_CARD);
+        wait_card_id(&pipewire, None, &node);
+        audio.add_bluetooth_card(BLUETOOTH_CARD, PODS_ADDRESS, NEXT_CARD_ID);
+        wait_card_id(&pipewire, Some(NEXT_CARD_ID), &node);
+        audio.assert_only_reads();
+        rig.finish();
+    }
 
     fn latency_ns() -> u64 {
         u64::from(NODE_LATENCY_MS).saturating_mul(NANOS_PER_MILLI)

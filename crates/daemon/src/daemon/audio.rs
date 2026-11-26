@@ -37,6 +37,9 @@ use wire::{Frame, Malformed, Message, PROTOCOL_VERSION, read_frame, take_frame, 
 /// The driver asks once per link signal, and the adapter takes each request at once.
 pub(super) const REQUEST_QUEUE: usize = 8;
 
+/// The Bluetooth link and its card's `PipeWire` object ID.
+pub(super) type CardId = (BdAddr, u32);
+
 /// A restarted server is read again within 10 s, so the largest gap is 5 s, which repeats; runs only while a device is followed.
 pub(super) const AUDIO_RETRY_MS: [u64; 5] = [250, 500, 1000, 2000, 5000];
 
@@ -99,6 +102,7 @@ pub(super) async fn run(
     mut requests: mpsc::Receiver<AudioRequest>,
     runtime_dir: PathBuf,
     state: watch::Receiver<State>,
+    card_id: watch::Sender<Option<CardId>>,
 ) {
     let socket = runtime_dir.join(SOCKET);
     let mut followed = None;
@@ -107,7 +111,8 @@ pub(super) async fn run(
         let request = match followed {
             None => requests.recv().await,
             Some(device) => {
-                let mut session = Follower::new(&inputs, &mut requests, device, state.clone());
+                let mut session =
+                    Follower::new(&inputs, &mut requests, device, state.clone(), &card_id);
                 session.volume.saved = saved;
                 let Left::Request(request) = session.follow(&socket).await;
                 saved = session.volume.saved;
@@ -293,6 +298,7 @@ struct Follower<'a> {
     prefix: Vec<u8>,
     /// Never logged: it holds the device's address.
     card: Vec<u8>,
+    card_id: &'a watch::Sender<Option<CardId>>,
     told: Told,
     volume: Volumes,
     /// Attempts failed since the server was last read, which picks the step of the ladder.
@@ -312,6 +318,7 @@ impl<'a> Follower<'a> {
         queue: &'a mut mpsc::Receiver<AudioRequest>,
         device: BdAddr,
         state: watch::Receiver<State>,
+        card_id: &'a watch::Sender<Option<CardId>>,
     ) -> Self {
         Self {
             inputs,
@@ -323,6 +330,7 @@ impl<'a> Follower<'a> {
             device,
             prefix: sink_prefix(device).into_bytes(),
             card: card_name(device).into_bytes(),
+            card_id,
             told: Told::Nothing,
             volume: Volumes::default(),
             misses: 0,
@@ -352,13 +360,17 @@ impl<'a> Follower<'a> {
                     self.told = Told::Nothing;
                     self.volume.reset_stamp();
                 }
-                Left::Request(_) => return left,
+                Left::Request(_) => {
+                    self.publish_card_id(None);
+                    return left;
+                }
             }
         }
     }
 
     /// Tells the loss once an outage, answers a restore asked meanwhile as owed unless its suspend went out, and waits out the ladder's step.
     async fn retry(&mut self, lost: Lost) -> Result<(), Left> {
+        self.publish_card_id(None);
         if self.misses == 0 {
             log(&format!("audio: the audio server is down: {lost}"));
         }
@@ -495,6 +507,17 @@ impl<'a> Follower<'a> {
         }
     }
 
+    fn publish_card_id(&self, device_id: Option<u32>) {
+        let next = device_id.map(|id| (self.device, id));
+        self.card_id.send_if_modified(|card_id| {
+            if *card_id == next {
+                return false;
+            }
+            *card_id = next;
+            true
+        });
+    }
+
     async fn refresh_capture(
         &mut self,
         connection: &mut Connection,
@@ -503,9 +526,11 @@ impl<'a> Follower<'a> {
     ) -> Result<bool, Ended> {
         let headset = if refresh.contains(SubscriptionMask::CARD) {
             let listed = connection.call(&Command::GetCardInfoList, stale, |body| {
-                wire::headset(body, &self.card)
+                wire::cards(body, &self.card, self.device)
             });
-            self.requests.watched(listed).await?
+            let cards = self.requests.watched(listed).await?;
+            self.publish_card_id(cards.device_id);
+            cards.headset
         } else {
             self.headset.unwrap_or_default()
         };

@@ -322,7 +322,8 @@ fn a_volume_wake_keeps_a_card_change_read_during_a_call() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let mut follower = Follower::new(&inputs, &mut queue, device, state);
+        let (card_id, _cards) = watch::channel(None);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state, &card_id);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             notify_change(&mut server, SubscriptionEventFacility::Card, CARD_INDEX).await;
@@ -361,7 +362,8 @@ fn a_missing_sink_retry_does_not_duck_the_replacement() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let mut follower = Follower::new(&inputs, &mut queue, device, state);
+        let (card_id, _cards) = watch::channel(None);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state, &card_id);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -404,7 +406,8 @@ fn two_missing_sink_refusals_drop_only_the_pending_write() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let mut follower = Follower::new(&inputs, &mut queue, device, state);
+        let (card_id, _cards) = watch::channel(None);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state, &card_id);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -465,7 +468,8 @@ fn a_volume_write_refused_for_another_reason_disconnects() {
         let (requests, mut queue) = queue();
         let state = watch::channel(State::default()).1;
         let device = DEVICE.parse().unwrap();
-        let mut follower = Follower::new(&inputs, &mut queue, device, state);
+        let (card_id, _cards) = watch::channel(None);
+        let mut follower = Follower::new(&inputs, &mut queue, device, state, &card_id);
         let check = tokio::spawn(async move {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
@@ -503,7 +507,8 @@ async fn check_new_sink(during: RequestDuring) {
     let (requests, mut queue) = queue();
     let state = watch::channel(State::default()).1;
     let device = DEVICE.parse().unwrap();
-    let mut follower = Follower::new(&inputs, &mut queue, device, state);
+    let (card_id, _cards) = watch::channel(None);
+    let mut follower = Follower::new(&inputs, &mut queue, device, state, &card_id);
     let check = tokio::spawn(async move {
         let mut server = open_with_sink(&listener, &mut facts).await;
 

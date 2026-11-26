@@ -18,6 +18,7 @@ struct Card {
     name: String,
     profiles: Vec<FakeProfile>,
     active: &'static str,
+    props: Props,
 }
 
 #[derive(Default)]
@@ -52,7 +53,7 @@ impl Card {
         CardInfo {
             index: self.index,
             name: CString::new(self.name.as_str()).unwrap(),
-            props: Props::new(),
+            props: self.props.clone(),
             owner_module_index: None,
             driver: None,
             ports: Vec::new(),
@@ -64,7 +65,13 @@ impl Card {
 
 impl Cards {
     /// The new card's index.
-    pub(super) fn add(&mut self, name: &str, profiles: &[FakeProfile], active: &str) -> u32 {
+    pub(super) fn add(
+        &mut self,
+        name: &str,
+        profiles: &[FakeProfile],
+        active: &str,
+        props: Props,
+    ) -> u32 {
         assert!(self.find(name).is_none(), "a second card named {name}");
         let active = offered(profiles, active)
             .unwrap_or_else(|| panic!("{name} offers no profile {active}"));
@@ -75,8 +82,18 @@ impl Cards {
             name: name.to_owned(),
             profiles: profiles.to_vec(),
             active,
+            props,
         });
         index
+    }
+
+    pub(super) fn remove(&mut self, name: &str) -> u32 {
+        let position = self
+            .known
+            .iter()
+            .position(|card| card.name == name)
+            .unwrap_or_else(|| panic!("no card named {name}"));
+        self.known.remove(position).index
     }
 
     pub(super) fn active(&self, name: &str) -> &'static str {

@@ -12,12 +12,13 @@ use std::time::Duration;
 
 use pods_core::policy::{MicFact, MicRequest, OpenId};
 use pods_mic::{NODE_LATENCY_MS, RATE_HZ, Resync};
+use pods_proto::addr::BdAddr;
 use pods_pw::{Event, OpenError, Source, Spec};
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::{Instant, sleep_until, timeout};
 
-use super::audio::AUDIO_RETRY_MS;
+use super::audio::{AUDIO_RETRY_MS, CardId};
 use super::link::{Input, STOP_WAIT_MS};
 use super::log;
 pub(super) use tap::Tap;
@@ -41,19 +42,33 @@ const ADAPTER_GONE: &str = "mic: the adapter has ended; request dropped";
 const OPEN_FAILED: &str = "mic: source could not open: ";
 const REFUSED_CONFIG: &str = "the decoder refused the uplink's configuration";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Request {
+    node: MicRequest,
+    device: Option<BdAddr>,
+}
+
+impl Request {
+    pub(super) const CLOSE: Self = Self {
+        node: MicRequest::Close,
+        device: None,
+    };
+}
+
 /// Replaces the request the adapter has not read yet, so the latest is the one served; an ended adapter drops it with a log line.
-pub(super) fn offer(requests: &watch::Sender<MicRequest>, request: MicRequest) {
-    if requests.send(request).is_err() {
+pub(super) fn offer(requests: &watch::Sender<Request>, node: MicRequest, device: Option<BdAddr>) {
+    if requests.send(Request { node, device }).is_err() {
         log(ADAPTER_GONE);
     }
 }
 
 /// Serves the requests until the driver drops their sender, then takes the node off the server.
 pub(super) async fn run(
-    mut requests: watch::Receiver<MicRequest>,
+    mut requests: watch::Receiver<Request>,
     inputs: mpsc::Sender<Input>,
     runtime_dir: PathBuf,
     tap: Arc<Tap>,
+    mut cards: watch::Receiver<Option<CardId>>,
 ) {
     let (wake, mut wakes) = mpsc::channel(MIC_EVENT_QUEUE);
     let mut adapter = Adapter {
@@ -66,7 +81,7 @@ pub(super) async fn run(
         retry_at: None,
     };
     loop {
-        let fact = match next(&mut requests, &mut wakes, adapter.retry_at).await {
+        let fact = match next(&mut requests, &mut wakes, &mut cards, adapter.retry_at).await {
             Turn::Request => {
                 let request = requests.borrow_and_update().clone();
                 adapter.serve(request).await
@@ -74,7 +89,10 @@ pub(super) async fn run(
             Turn::Ended => break,
             Turn::Woken => adapter.woken().await,
             Turn::Retry => adapter.open().await,
+            Turn::Card => None,
         };
+        let card = *cards.borrow_and_update();
+        adapter.update_card(card);
         if let Some(fact) = fact
             && inputs.send(Input::Mic(fact)).await.is_err()
         {
@@ -107,12 +125,14 @@ enum Turn {
     Ended,
     Woken,
     Retry,
+    Card,
 }
 
-/// The next request, wake or retry, the driver's requests first.
+/// The next request, wake, retry or card update, the driver's requests first.
 async fn next(
-    requests: &mut watch::Receiver<MicRequest>,
+    requests: &mut watch::Receiver<Request>,
     wakes: &mut mpsc::Receiver<()>,
+    cards: &mut watch::Receiver<Option<CardId>>,
     retry_at: Option<Instant>,
 ) -> Turn {
     let mut retry = pin!(async move {
@@ -122,6 +142,7 @@ async fn next(
         }
     });
     let mut changed = pin!(requests.changed());
+    let mut card_changed = pin!(cards.changed());
     poll_fn(|context| {
         if let Poll::Ready(changed) = changed.as_mut().poll(context) {
             return Poll::Ready(changed.map_or(Turn::Ended, |()| Turn::Request));
@@ -129,6 +150,9 @@ async fn next(
         // The adapter holds a sender of its own wakes, so that queue never closes.
         if let Poll::Ready(Some(())) = wakes.poll_recv(context) {
             return Poll::Ready(Turn::Woken);
+        }
+        if let Poll::Ready(Ok(())) = card_changed.as_mut().poll(context) {
+            return Poll::Ready(Turn::Card);
         }
         retry.as_mut().poll(context).map(|()| Turn::Retry)
     })
@@ -142,6 +166,16 @@ struct Opened {
     events: Arc<AtomicU8>,
     /// What the driver was last told.
     recording: bool,
+    device: Option<BdAddr>,
+    card_id: Option<u32>,
+}
+
+#[derive(Clone)]
+struct Wanted {
+    id: OpenId,
+    name: String,
+    description: String,
+    device: Option<BdAddr>,
 }
 
 struct Adapter {
@@ -149,7 +183,7 @@ struct Adapter {
     tap: Arc<Tap>,
     wake: mpsc::Sender<()>,
     /// The open last asked for, with its node's name and description, until a close.
-    wanted: Option<(OpenId, String, String)>,
+    wanted: Option<Wanted>,
     opened: Option<Opened>,
     /// Failed tries since the node was last up or asked for, which pick the ladder's step.
     misses: usize,
@@ -158,15 +192,20 @@ struct Adapter {
 
 impl Adapter {
     /// An open replaces whatever source the adapter holds; a close ends the source and its retries.
-    async fn serve(&mut self, request: MicRequest) -> Option<MicFact> {
+    async fn serve(&mut self, request: Request) -> Option<MicFact> {
         self.close().await;
-        match request {
+        match request.node {
             MicRequest::Open {
                 id,
                 name,
                 description,
             } => {
-                self.wanted = Some((id, name, description));
+                self.wanted = Some(Wanted {
+                    id,
+                    name,
+                    description,
+                    device: request.device,
+                });
                 self.misses = 0;
                 self.open().await
             }
@@ -181,7 +220,12 @@ impl Adapter {
     /// Tries the node asked for; the library blocks, so the try runs off the runtime.
     async fn open(&mut self) -> Option<MicFact> {
         self.retry_at = None;
-        let (id, name, description) = self.wanted.clone()?;
+        let Wanted {
+            id,
+            name,
+            description,
+            device,
+        } = self.wanted.clone()?;
         let Some((chain, feed, resync)) = self.tap.chain() else {
             return Some(self.broken(&REFUSED_CONFIG));
         };
@@ -209,6 +253,8 @@ impl Adapter {
                     source,
                     events,
                     recording: false,
+                    device,
+                    card_id: None,
                 });
                 Some(MicFact::Up(id))
             }
@@ -221,6 +267,22 @@ impl Adapter {
             Ok(Err(error @ OpenError::Library { .. })) => Some(self.broken(&error)),
             // A panic inside the binding is the library failing too.
             Err(panicked) => Some(self.broken(&panicked)),
+        }
+    }
+
+    fn update_card(&mut self, card: Option<CardId>) {
+        let Some(opened) = self.opened.as_mut() else {
+            return;
+        };
+        let card_id = card
+            .filter(|(device, _)| Some(*device) == opened.device)
+            .map(|(_, id)| id);
+        if opened.card_id == card_id {
+            return;
+        }
+        match opened.source.set_device_id(card_id) {
+            Ok(()) => opened.card_id = card_id,
+            Err(error) => log(&format!("mic: pw_stream_update_properties failed: {error}")),
         }
     }
 

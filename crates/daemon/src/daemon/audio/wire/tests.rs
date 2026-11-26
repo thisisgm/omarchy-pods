@@ -532,20 +532,22 @@ fn the_headset_reader_walks_ports_and_matches_only_the_named_cards_active_profil
         profiles: Vec::new(),
         active_profile: Some(active_profile.to_owned()),
     };
-    let cards = vec![
+    let listed = vec![
         card(FIRST_INDEX, c"speakers", c"a2dp-sink", vec![port]),
         card(SEQ, c"headphones", c"headset-head-unit", Vec::new()),
     ];
-    let packet = reply(&cards);
+    let packet = reply(&listed);
     let bytes = body(&packet);
-    assert_eq!(headset(bytes, b"headphones"), Ok(true));
-    assert_eq!(headset(bytes, b"speakers"), Ok(false));
-    assert_eq!(headset(bytes, b"head"), Ok(false));
+    let device = BdAddr::from([0; 6]);
+    let headset = |name: &[u8]| cards(bytes, name, device).map(|cards| cards.headset);
+    assert_eq!(headset(b"headphones"), Ok(true));
+    assert_eq!(headset(b"speakers"), Ok(false));
+    assert_eq!(headset(b"head"), Ok(false));
     assert_eq!(
-        headset(&bytes[..bytes.len().saturating_sub(1)], b"speakers"),
+        cards(&bytes[..bytes.len().saturating_sub(1)], b"speakers", device),
         Err(Malformed::Cut)
     );
-    assert_eq!(headset(&[], b"headphones"), Ok(false));
+    assert_eq!(cards(&[], b"headphones", device), Ok(Cards::default()));
 }
 
 proptest! {
@@ -562,7 +564,7 @@ proptest! {
         if wants_fast_capture(&bytes) == Ok(true) {
             prop_assert!(bytes.windows(FAST_CAPTURE.len()).any(|key| key == FAST_CAPTURE));
         }
-        if headset(&bytes, b"card") == Ok(true) {
+        if cards(&bytes, b"card", BdAddr::from([0; 6])).is_ok_and(|cards| cards.headset) {
             prop_assert!(bytes.windows(HEADSET_PREFIX.len()).any(|prefix| prefix == HEADSET_PREFIX));
         }
         let read: Vec<_> = sinks(&bytes).collect();

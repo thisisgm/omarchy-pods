@@ -94,17 +94,17 @@ impl OpenError {
 #[derive(Debug)]
 pub struct Source {
     unsteered: Arc<AtomicU64>,
-    _stream: Stream,
+    stream: Stream,
     _core: Core,
     _context: Context,
-    _thread_loop: ThreadLoop,
+    thread_loop: ThreadLoop,
 }
 
 #[expect(
     unsafe_code,
     reason = "a source is opened on one thread and dropped on another"
 )]
-// SAFETY: after `open` the pointers are used only by `Drop`, under the loop's lock, which is how the library lets any thread use them.
+// SAFETY: after `open` the pointers are used under the loop's lock, which lets any thread use them.
 unsafe impl Send for Source {}
 
 impl Source {
@@ -138,10 +138,10 @@ impl Source {
             let stream = Stream::connect(&core, &properties, &params, fill, steering, watch)?;
             Self {
                 unsteered,
-                _stream: stream,
+                stream,
                 _core: core,
                 _context: context,
-                _thread_loop: thread_loop,
+                thread_loop,
             }
         };
         // The sender lives in the callbacks until it has sent, so the only error here is the bound.
@@ -152,6 +152,30 @@ impl Source {
                 Err(OpenError::NoServer(io::ErrorKind::TimedOut.into()))
             }
         }
+    }
+
+    /// Updates the Bluetooth card ID without replacing the node.
+    #[expect(unsafe_code, reason = "updates the stream under its loop's lock")]
+    pub fn set_device_id(&self, id: Option<u32>) -> io::Result<()> {
+        let value = id.map(|id| id.to_string()).map(CString::new).transpose()?;
+        let item = ffi::spa_dict_item {
+            key: c"omarchypods.device.id".as_ptr(),
+            // The server merges node properties, so omission would keep the last card ID.
+            value: value.as_deref().unwrap_or(c"").as_ptr(),
+        };
+        let dict = ffi::spa_dict {
+            flags: 0,
+            n_items: 1,
+            items: &raw const item,
+        };
+        let _lock = Locked::take(self.thread_loop.0);
+        // SAFETY: the lock is held, and the live stream copies the dictionary before returning.
+        let result =
+            unsafe { ffi::pw_stream_update_properties(self.stream.raw.as_ptr(), &raw const dict) };
+        if result < 0 {
+            return Err(io::Error::from_raw_os_error(result.saturating_neg()));
+        }
+        Ok(())
     }
 
     /// The cycles in which the server's converter gave no area to steer through, so the ratio `Fill` returned went nowhere.
