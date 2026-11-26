@@ -1,7 +1,7 @@
 //! Support tests: which device `connect`, `disconnect` and `forget` act on, and what each asks of BlueZ.
 
 use super::ladders::PARKED_AT_MS;
-use super::sim::{Answer, Input, NO_ACTIONS, Sim, millis, ms};
+use super::sim::{Answer, Input, NO_ACTIONS, Sim, addr, millis, ms};
 use crate::command::{Command, CommandError, Outcome};
 use crate::link::ladder::{Attempt, HELD_DELAYS_MS};
 use crate::link::{DeviceAction, Phase};
@@ -357,4 +357,16 @@ fn a_disconnect_still_holds_the_dial_when_bluez_repeats_that_the_pods_are_connec
     assert_eq!(sim.machine.phase(), Phase::Idle);
     assert_eq!(sim.state.device_name, "");
     sim.check_all_tickets_resolved_once();
+}
+
+#[test]
+fn a_wear_connect_dials_only_the_tracked_device() {
+    let mut sim = up_named();
+    sim.feed(Input::Down(0));
+    assert_eq!(sim.machine.connect_when_worn(&mut sim.state, addr(1)), None);
+    let worn = sim.machine.connect_when_worn(&mut sim.state, addr(0));
+    assert_eq!(
+        worn.map(|(device, call)| (device, call.action)),
+        Some((addr(0), DeviceAction::Connect))
+    );
 }

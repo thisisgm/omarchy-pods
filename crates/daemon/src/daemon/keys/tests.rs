@@ -83,6 +83,16 @@ fn an_oversized_short_or_wrong_key_is_refused() {
     }
 }
 
+#[test]
+fn an_unreadable_device_keeps_the_keys() {
+    for device in ["\"zz\"", "\"0a1b2c3d4e\"", "1"] {
+        let text = format!(
+            "{{\"identity\":\"{IDENTITY_HEX}\",\"payload\":\"{PAYLOAD_HEX}\",\"device\":{device}}}\n"
+        );
+        assert_eq!(parse(text.as_bytes()), Ok(sample()), "{text}");
+    }
+}
+
 proptest! {
     #[test]
     fn arbitrary_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {

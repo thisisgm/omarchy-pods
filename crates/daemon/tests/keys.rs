@@ -29,6 +29,9 @@ mod tests {
 
     const CANNOT_WRITE: &str = "keys: cannot write";
 
+    const DEVICE_UNREADABLE: &str =
+        "keys: the saved device is not 12 hex digits; wear connect waits for the next key reply";
+
     /// Left bud levels no profile starts with; each arrives in the status after every packet sent before it was handled.
     const MARKS: [u8; 2] = [42, 43];
 
@@ -318,6 +321,23 @@ mod tests {
             rig.session(),
             &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
         );
+        rig.finish();
+    }
+
+    #[test]
+    fn an_unreadable_saved_device_is_named_and_bound_again() {
+        let rig = Rig::new();
+        let bad_device =
+            file_text(IDENTITY_KEY, PAYLOAD_KEY, None).replace("\"}", "\",\"device\":\"zz\"}");
+        plant_keys(rig.session(), bad_device.as_bytes());
+        let (mut rig, device) = link(rig, keyed());
+        wait_keys_file(
+            rig.session(),
+            &file_text(IDENTITY_KEY, PAYLOAD_KEY, Some(device.address)),
+        );
+        let log = rig.daemon().log();
+        let lines: Vec<&str> = log.lines().filter(|line| line.contains("keys:")).collect();
+        assert_eq!(lines, [DEVICE_UNREADABLE], "{log}");
         rig.finish();
     }
 

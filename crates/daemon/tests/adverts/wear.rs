@@ -1,5 +1,7 @@
 //! Connect-when-worn through the daemon and fake BlueZ.
 
+use std::fmt::Write as _;
+use std::fs;
 use std::time::Duration;
 
 use pods_fake::Profile;
@@ -60,8 +62,10 @@ fn wear_does_not_connect_a_different_paired_device_after_restart() {
     rig.start();
     rig.link_up(&first);
     rig.wait_filled();
-    wait_for("the first pair's persisted keys", || {
-        rig.session().keys_file().is_file().then_some(())
+    let bound = format!("\"device\":\"{}\"", hex(&first.address.octets()));
+    wait_for("the first pair's keys bound to it", || {
+        let text = fs::read_to_string(rig.session().keys_file()).ok()?;
+        text.contains(&bound).then_some(())
     });
     assert!(rig.stop(HANG_LIMIT).success());
     rig.bluez().remove(&first.path);
@@ -114,6 +118,14 @@ fn disconnected_worn_header() -> [u8; HEADER_LEN] {
     let mut header = HEADER;
     header[CONNECTION_AT] = 0x00;
     header
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut text = String::new();
+    for byte in bytes {
+        write!(text, "{byte:02x}").unwrap();
+    }
+    text
 }
 
 fn wear_call(rig: &Rig) -> Option<Call> {
@@ -293,6 +305,7 @@ fn an_unworn_disconnect_holds_only_from_the_command() {
 
 #[test]
 fn a_monitor_release_keeps_the_manual_disconnect_hold() {
+    /// Past core's 10 s `MANUAL_HOLD_CLEAR_MS`, so a kept out-of-ear time would clear the hold.
     const PAST_HOLD: Duration = Duration::from_secs(11);
 
     let mut rig = keyed();
