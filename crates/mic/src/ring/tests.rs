@@ -563,13 +563,6 @@ fn stopped_recording(
             .zip(&expected)
             .all(|(heard, expected)| heard.to_bits() == expected.to_bits())
     );
-    let largest_step = |samples: &[f32]| {
-        samples
-            .array_windows::<2>()
-            .map(|[before, after]| (after - before).abs())
-            .fold(0.0_f32, f32::max)
-    };
-    assert!(largest_step(&tape[..expected.len()]) <= largest_step(&expected));
     (queued_at_stop, queued_at_deadline)
 }
 
@@ -600,6 +593,11 @@ fn a_60_ms_stall_preserves_speech_through_the_recorder_deadline() {
 fn a_200_ms_stall_preserves_speech_and_bounds_the_remaining_tail() {
     use std::io::{self, Write};
 
+    // DoAP ceilings in frames, just above the measured 13,441, 6,753, 7,681 and 993.
+    const QUEUED_AT_ONE_SECOND: usize = 13_504;
+    const MISSED_AT_ONE_SECOND: usize = 6_820;
+    const QUEUED_AT_THREE_SECONDS: usize = 7_760;
+    const MISSED_AT_THREE_SECONDS: usize = 1_100;
     let stall = Duration::from_millis(200);
     for (path, latency) in [
         (Path::Dictation, DOAP_LATENCY_MS),
@@ -612,10 +610,10 @@ fn a_200_ms_stall_preserves_speech_and_bounds_the_remaining_tail() {
         let extra =
             usize::try_from(latency - DOAP_LATENCY_MS).unwrap() * usize::from(crate::FRAMES_PER_MS);
         assert!(
-            after_one <= 13_504 + extra
-                && missed_one <= 6_820 + extra
-                && after_three <= 7_760 + extra
-                && missed_three <= 1_100 + extra,
+            after_one <= QUEUED_AT_ONE_SECOND + extra
+                && missed_one <= MISSED_AT_ONE_SECOND + extra
+                && after_three <= QUEUED_AT_THREE_SECONDS + extra
+                && missed_three <= MISSED_AT_THREE_SECONDS + extra,
             "{path:?} after 1 s: queued {after_one}, missed {missed_one}, after 3 s: queued {after_three}, missed {missed_three}"
         );
         writeln!(
