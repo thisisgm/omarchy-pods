@@ -7,9 +7,9 @@ use std::time::Duration;
 use pods_samples::opus::tone;
 
 use super::{
-    FADE_FRAMES, Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Path, QUIET_PEAK,
-    REALIGN_MS, RING_SAMPLES, Reader, Ring, SILENCE_FRAMES, SILENCE_PEAK, STEER_MAX_PPM, UNIT_FRAMES,
-    fade_in, ns_of, scaled,
+    FADE_FRAMES, Frame, Moment, NS_PER_SECOND, OPENING_MAX_PPM, PARTS_PER_MILLION, Path,
+    QUIET_PEAK, REALIGN_MS, RING_SAMPLES, Reader, Ring, SILENCE_FRAMES, SILENCE_PEAK,
+    STEER_MAX_PPM, UNIT_FRAMES, fade_in, ns_of, scaled,
 };
 use crate::{Chain, Counters, DOAP_LATENCY_MS, FRAME_MS, NODE_LATENCY_MS, RATE_HZ, chain, level};
 
@@ -484,9 +484,11 @@ fn stalled_speech_gets_at_most_one_second_of_fast_source_frames_per_stall() {
     let max_fast_frames = scaled(ns_of(FAST_AUDIO), RATE_HZ, NS_PER_SECOND);
     let drift = STEER_MAX_PPM / PARTS_PER_MILLION;
     let bound = i64::from(REALIGN_MS) * i64::from(crate::FRAMES_PER_MS);
-    for (path, latency) in [
-        (Path::Dictation, DOAP_LATENCY_MS),
-        (Path::Uplink, NODE_LATENCY_MS),
+    for (path, latency, converter) in [
+        (Path::Dictation, DOAP_LATENCY_MS, false),
+        (Path::Uplink, NODE_LATENCY_MS, false),
+        (Path::Dictation, DOAP_LATENCY_MS, true),
+        (Path::Uplink, NODE_LATENCY_MS, true),
     ] {
         let ring = Arc::new(Ring::new());
         let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
@@ -498,28 +500,42 @@ fn stalled_speech_gets_at_most_one_second_of_fast_source_frames_per_stall() {
         let mut read = |now: Duration| {
             let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
             ring.write((ring.end()..end).map(|_| SPEECH_FLOOR));
-            let ratio = reader.read(now, &mut heard);
+            let ratio = if converter {
+                reader.read_for_converter(now, &mut heard, QUANTUM)
+            } else {
+                reader.read(now, &mut heard)
+            };
             (ratio, ring.target(now).unwrap() - reader.next)
         };
         read(now);
         let quantum = i64::try_from(QUANTUM).unwrap();
-        for stall in 1..=2 {
+        for stall in 1..=3 {
             now += LATE_PERIOD;
             for spent in (0..max_fast_frames).step_by(QUANTUM) {
                 let (ratio, lag) = read(now);
-                assert!(lag > bound, "{path:?}, stall {stall}, lag {lag}");
+                assert!(
+                    lag > bound,
+                    "{path:?}, converter {converter}, stall {stall}, lag {lag}"
+                );
                 assert!(
                     ratio > 1.0 + drift && ratio <= STALL_RATIO_LIMIT,
-                    "{path:?}, stall {stall}, ratio {ratio} after {spent} fast frames"
+                    "{path:?}, converter {converter}, stall {stall}, ratio {ratio} after {spent} fast frames"
                 );
                 now += PERIOD.div_f64(ratio);
             }
+            // The third stall lands while the second's last fast read is still charged, and must start a full budget.
+            if stall == 2 {
+                continue;
+            }
             for _ in 0..max_fast_frames / quantum {
                 let (ratio, lag) = read(now);
-                assert!(lag > bound, "{path:?}, stall {stall}, lag {lag}");
+                assert!(
+                    lag > bound,
+                    "{path:?}, converter {converter}, stall {stall}, lag {lag}"
+                );
                 assert!(
                     ratio <= 1.0 + drift,
-                    "{path:?}, stall {stall}, ratio {ratio} after {max_fast_frames} fast frames"
+                    "{path:?}, converter {converter}, stall {stall}, ratio {ratio} after {max_fast_frames} fast frames"
                 );
                 now += PERIOD.div_f64(ratio);
             }
