@@ -48,6 +48,11 @@ impl<'server> Recorder<'server> {
         Self::start(server, target, file, ("test-recorder", HISTORY.1))
     }
 
+    /// Records the stock player at the history rate beside both daemon recorders.
+    pub fn control(server: &'server Server, target: &str, file: &Path) -> Self {
+        Self::start(server, target, file, ("stock-player-control", HISTORY.1))
+    }
+
     fn start(
         server: &'server Server,
         target: &str,

@@ -30,19 +30,28 @@ const MICROS_PER_SECOND: u64 = 1_000_000;
 /// The node name the stock player takes.
 const PLAYER: &str = "pw-play";
 
-/// A stock player's silence recorded beside the daemon's node: the pace of the graph itself, which a loaded runner can slow.
+/// A stock player and its recorder on the same graph as the daemon's node.
 pub(crate) struct Pace<'server> {
     pub(crate) player: Process<'server>,
     pub(crate) recorder: Recorder<'server>,
 }
 
-/// Starts the player on `span` of silence and Superwhisper's second recorder on it.
+/// Starts the player on `span` of silence to measure the graph's pace.
 pub(crate) fn pace<'server>(rig: &Rig, server: &'server Server, span: Duration) -> Pace<'server> {
+    record_stock_player(rig, server, RECORDER_RATE, &vec![0_i16; frames(span)])
+}
+
+/// Records the given WAV through the stock player and a separate 48 kHz recorder.
+pub(crate) fn record_stock_player<'server>(
+    rig: &Rig,
+    server: &'server Server,
+    rate: u32,
+    samples: &[i16],
+) -> Pace<'server> {
     let dir = rig.session().dir.path();
-    let silence = vec![0_i16; frames(span)];
     let file = dir.join("pace.wav");
-    write_wav(&file, RECORDER_RATE, &silence);
-    let recorder = Recorder::history(server, PLAYER, &dir.join("pace-recorded.wav"));
+    write_wav(&file, rate, samples);
+    let recorder = Recorder::control(server, PLAYER, &dir.join("pace-recorded.wav"));
     let player = server.play(&file);
     server.link(PLAYER, recorder.node());
     Pace { player, recorder }
