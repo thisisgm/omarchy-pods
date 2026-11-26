@@ -90,9 +90,9 @@ mod tests {
     }
 
     impl Fill for Counted {
-        fn fill(&mut self, out: &mut [f32], _capacity: usize) -> f64 {
+        fn fill(&mut self, out: &mut [f32], capacity: usize) -> f64 {
             const RAMP_CYCLES: u32 = 4;
-            self.tone.fill(out);
+            self.tone.fill(out, capacity);
             let half = SETTLE_CYCLES + COUNTED_CYCLES;
             let asked = u64::try_from(out.len()).unwrap();
             if (SETTLE_CYCLES..half).contains(&self.cycle) {
