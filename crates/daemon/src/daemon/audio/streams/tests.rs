@@ -6,6 +6,7 @@ use crate::daemon::audio::wire::fixture::{ChannelVolume, Props, SourceInfo, Sour
 use proptest::collection::vec;
 use proptest::prelude::*;
 
+use super::super::wire::protocol::tags::TagError;
 use super::super::wire::tests::{body, reply};
 use super::*;
 
@@ -174,13 +175,17 @@ fn more_streams_than_a_count_holds_read_as_its_most() {
 fn a_list_cut_anywhere_inside_a_stream_is_malformed() {
     let list = stream_list(&[stream_on(MICROPHONE_INDEX, Some("superwhisper-capture"))]);
     for cut in 1..list.len() {
-        assert_eq!(counted(&list[..cut]), Err(Malformed::Cut), "cut at {cut}");
+        assert_eq!(
+            counted(&list[..cut]),
+            Err(Malformed::Field(TagError::Cut)),
+            "cut at {cut}"
+        );
     }
     let sources = source_list();
     let cut = &sources[..sources.len() - 1];
     assert_eq!(
         source_index(cut, MICROPHONE.to_bytes()),
-        Err(Malformed::Cut)
+        Err(Malformed::Field(TagError::Cut))
     );
 }
 

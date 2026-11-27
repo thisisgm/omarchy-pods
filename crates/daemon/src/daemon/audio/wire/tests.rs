@@ -15,6 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 
+use super::protocol::{MAX_CHANNELS, tag};
 use super::*;
 
 /// Unlike `NO_ENTITY`, so a reader that swaps a refusal's sequence and code is seen.
@@ -262,10 +263,13 @@ fn message_tells_replies_refusals_events_and_the_rest_apart() {
     write_command_message(&mut other, SEQ, &Command::GetServerInfo).unwrap();
     assert_eq!(message(&stripped(&other)), Ok(Message::Other));
 
-    assert_eq!(message(&Frame(Vec::new())), Err(Malformed::Cut));
+    assert_eq!(
+        message(&Frame(Vec::new())),
+        Err(Malformed::Field(TagError::Cut))
+    );
     assert_eq!(
         message(&Frame(vec![tag::STRING, 0])),
-        Err(Malformed::Tag(tag::STRING))
+        Err(Malformed::Field(TagError::Tag(tag::STRING)))
     );
 }
 
@@ -351,7 +355,7 @@ fn the_auth_reply_grants_its_version_without_the_memory_flags() {
         use_shm: true,
     };
     assert_eq!(auth_version(body(&reply(&granted))), Ok(PROTOCOL_VERSION));
-    assert_eq!(auth_version(&[]), Err(Malformed::Cut));
+    assert_eq!(auth_version(&[]), Err(Malformed::Field(TagError::Cut)));
 }
 
 #[test]
@@ -377,7 +381,7 @@ fn the_default_sink_is_read_from_the_server_info() {
     }
     assert_eq!(
         default_sink(&named_body[..INSIDE_SERVER_NAME]),
-        Err(Malformed::Cut)
+        Err(Malformed::Field(TagError::Cut))
     );
 }
 
@@ -449,18 +453,18 @@ fn a_malformed_sink_ends_the_walk() {
         [Err(Malformed::Nameless)]
     );
     assert_eq!(
-        Tags(&[tag::CVOLUME, 0]).volume(),
-        Err(Malformed::NoChannels)
+        Tags::new(&[tag::CVOLUME, 0]).volume(),
+        Err(Malformed::Field(TagError::NoChannels))
     );
-    assert_eq!(Tags(b"?").skip(), Err(Malformed::Tag(b'?')));
+    assert_eq!(Tags::new(b"?").skip(), Err(TagError::Tag(b'?')));
 }
 
 #[test]
 fn a_volume_with_more_than_the_maximum_channels_is_refused() {
     let too_many = u8::try_from(MAX_CHANNELS.saturating_add(1)).unwrap();
     assert_eq!(
-        Tags(&[tag::CVOLUME, too_many]).volume(),
-        Err(Malformed::TooManyChannels(too_many))
+        Tags::new(&[tag::CVOLUME, too_many]).volume(),
+        Err(Malformed::Field(TagError::TooManyChannels(too_many)))
     );
 }
 
@@ -476,13 +480,22 @@ fn a_property_value_declared_past_the_frame_is_cut_without_reading_it() {
         &past,
     ]
     .concat();
-    assert_eq!(Tags(&huge).skip(), Err(Malformed::Cut));
+    assert_eq!(Tags::new(&huge).skip(), Err(TagError::Cut));
+}
+
+#[test]
+fn reply_properties_use_the_arbitrary_field_length() {
+    let mismatched = b"Ptkey\0L\0\0\0\x02x\0\0\0\x01vN";
+    assert_eq!(
+        Tags::new(mismatched).property(b"key"),
+        Ok(Some(b"v".as_slice()))
+    );
 }
 
 #[test]
 fn a_property_list_inside_a_property_list_is_refused() {
     let nested = [tag::PROPLIST, tag::PROPLIST, tag::STRING_NULL];
-    assert_eq!(Tags(&nested).skip(), Err(Malformed::Tag(tag::PROPLIST)));
+    assert_eq!(Tags::new(&nested).skip(), Err(TagError::Tag(tag::PROPLIST)));
 }
 
 #[test]
@@ -506,7 +519,7 @@ fn the_hint_requires_a_complete_client_list_with_an_exact_true_value() {
     assert_eq!(wants_fast_capture(bytes), Ok(true));
     assert_eq!(
         wants_fast_capture(&bytes[..bytes.len().saturating_sub(1)]),
-        Err(Malformed::Cut)
+        Err(Malformed::Field(TagError::Cut))
     );
     assert_eq!(wants_fast_capture(&[]), Ok(false));
 }
@@ -540,7 +553,7 @@ fn the_headset_reader_walks_ports_and_matches_only_the_named_cards_active_profil
     assert_eq!(headset(b"head"), Ok(false));
     assert_eq!(
         cards(&bytes[..bytes.len().saturating_sub(1)], b"speakers", device),
-        Err(Malformed::Cut)
+        Err(Malformed::Field(TagError::Cut))
     );
     assert_eq!(cards(&[], b"headphones", device), Ok(Cards::default()));
 }

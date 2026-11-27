@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::ffi::CStr;
 use std::fmt;
 use std::io::{self, ErrorKind};
 use std::iter;
@@ -13,9 +14,6 @@ use tokio::net::UnixStream;
 
 /// A card list is a few kilobytes; a larger frame ends the connection.
 pub(super) const AUDIO_FRAME_MAX: usize = 262_144;
-
-/// Format, channel count and a 4 byte rate.
-const SAMPLE_SPEC_LEN: usize = 6;
 
 /// Server name and version, user name, host name and sample spec, before the default sink.
 const BEFORE_DEFAULT_SINK: usize = 5;
@@ -63,10 +61,12 @@ use protocol as native;
 pub(super) mod fixture;
 
 pub(super) use protocol::PROTOCOL_VERSION;
+use protocol::tags::TagError;
+pub(super) use protocol::tags::Tags;
 use protocol::{
     CONTROL_CHANNEL, ChannelVolume, Command, CommandTag, DESCRIPTOR_SIZE, Descriptor,
-    EVENT_SEQUENCE, FACILITY_MASK, MAX_CHANNELS, SubscriptionEventFacility, SubscriptionEventType,
-    SubscriptionMask, Volume, field_length, protocol_version, read_descriptor, tag,
+    EVENT_SEQUENCE, FACILITY_MASK, SubscriptionEventFacility, SubscriptionEventType,
+    SubscriptionMask, Volume, field_length, protocol_version, read_descriptor,
 };
 
 /// What is wrong with the server's bytes.
@@ -74,11 +74,8 @@ use protocol::{
 pub(super) enum Malformed {
     Oversized(u32),
     StreamData(u32),
-    Cut,
-    Tag(u8),
+    Field(TagError),
     Nameless,
-    NoChannels,
-    TooManyChannels(u8),
 }
 
 impl fmt::Display for Malformed {
@@ -88,14 +85,15 @@ impl fmt::Display for Malformed {
                 write!(f, "a frame of {length} bytes, past {AUDIO_FRAME_MAX}")
             }
             Self::StreamData(channel) => write!(f, "stream data on channel {channel}"),
-            Self::Cut => f.write_str("a value cut short"),
-            Self::Tag(tag) => write!(f, "an unexpected tag 0x{tag:02x}"),
+            Self::Field(error) => error.fmt(f),
             Self::Nameless => f.write_str("a sink with no name"),
-            Self::NoChannels => f.write_str("a volume of no channels"),
-            Self::TooManyChannels(count) => {
-                write!(f, "a volume of {count} channels, past {MAX_CHANNELS}")
-            }
         }
+    }
+}
+
+impl From<TagError> for Malformed {
+    fn from(error: TagError) -> Self {
+        Self::Field(error)
     }
 }
 
@@ -158,7 +156,7 @@ fn payload_length(descriptor: &[u8; DESCRIPTOR_SIZE]) -> Result<usize, Malformed
         length, channel, ..
     } = read_descriptor(&mut descriptor.as_slice())
         .ok()
-        .ok_or(Malformed::Cut)?;
+        .ok_or(TagError::Cut)?;
     if channel != CONTROL_CHANNEL {
         return Err(Malformed::StreamData(channel));
     }
@@ -187,14 +185,17 @@ pub(super) enum Message<'a> {
 
 /// A frame's command, its sequence and what follows; sample `L 00000002 L 00000005` then the values: the answer to request 5.
 pub(super) fn message(frame: &Frame) -> Result<Message<'_>, Malformed> {
-    let mut tags = Tags(&frame.0);
+    let mut tags = Tags::new(&frame.0);
     let number = tags.u32()?;
     if number == CommandTag::SubscribeEvent.number() {
         return Ok(Message::Event(event(tags)));
     }
     let seq = tags.u32()?;
     Ok(match number {
-        number if number == CommandTag::Reply.number() => Message::Reply { seq, body: tags.0 },
+        number if number == CommandTag::Reply.number() => Message::Reply {
+            seq,
+            body: tags.remaining(),
+        },
         number if number == CommandTag::Error.number() => Message::Refused {
             seq,
             code: tags.u32()?,
@@ -210,7 +211,7 @@ fn event(mut tags: Tags<'_>) -> Option<SubscriptionMask> {
     }
     let flags = tags.u32().ok()?;
     tags.u32().ok()?;
-    if !tags.0.is_empty() {
+    if !tags.is_empty() {
         return None;
     }
     SubscriptionEventType::from_number(flags & !FACILITY_MASK)?;
@@ -219,28 +220,28 @@ fn event(mut tags: Tags<'_>) -> Option<SubscriptionMask> {
 
 /// The version an auth reply grants, its high half being memory flags; sample `L 40 00 00 23`: 35 with memfd.
 pub(super) fn auth_version(body: &[u8]) -> Result<u16, Malformed> {
-    Tags(body).u32().map(protocol_version)
+    Ok(protocol_version(Tags::new(body).u32()?))
 }
 
 /// The default sink's name in a server info reply; sample `t "pulse\0" t "15\0" t "me\0" t "box\0" a 03 02 0000bb80 t "bluez_output.02_00_00_00_00_01.1\0"`.
 pub(super) fn default_sink(body: &[u8]) -> Result<Option<&[u8]>, Malformed> {
-    let mut tags = Tags(body);
+    let mut tags = Tags::new(body);
     tags.skip_n(BEFORE_DEFAULT_SINK)?;
-    tags.string()
+    Ok(tags.string()?.map(CStr::to_bytes))
 }
 
 /// Client list at protocol 35, sample `L 0 t "Recorder\0" L ffffffff N P t "session.fast-capture-start\0" L 00000005 x 00000005 "true\0" N`.
 pub(super) fn wants_fast_capture(body: &[u8]) -> Result<bool, Malformed> {
-    let mut tags = Tags(body);
+    let mut tags = Tags::new(body);
     let mut hint = false;
     for _ in 0..MAX_CLIENTS {
-        if tags.0.is_empty() {
+        if tags.is_empty() {
             break;
         }
         tags.skip_n(BEFORE_CLIENT_PROPERTIES)?;
         hint |= tags.property(FAST_CAPTURE)? == Some(b"true");
     }
-    Ok(tags.0.is_empty() && hint)
+    Ok(tags.is_empty() && hint)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -251,9 +252,9 @@ pub(super) struct Cards {
 
 /// Card list at protocol 35, sample `L 0 t "card\0" L ffffffff N L 0 t "headset-head-unit\0" P N L 0`.
 pub(super) fn cards(body: &[u8], card: &[u8], device: BdAddr) -> Result<Cards, Malformed> {
-    let mut tags = Tags(body);
+    let mut tags = Tags::new(body);
     let mut cards = Cards::default();
-    while !tags.0.is_empty() {
+    while !tags.is_empty() {
         let found = read_card(&mut tags, card, device)?;
         cards.headset |= found.headset;
         cards.device_id = found.device_id.or(cards.device_id);
@@ -270,13 +271,12 @@ fn read_card(tags: &mut Tags<'_>, card: &[u8], device: BdAddr) -> Result<Cards, 
         tags.skip_n(PROFILE_FIELDS)?;
     }
     let profile = tags.string()?;
-    tags.expect(tag::PROPLIST)?;
     let mut address = None;
     let mut device_id = None;
     // PipeWire card properties, sample `api.bluez5.address=02:00:00:00:00:01` and `object.id=86`.
-    tags.proplist(|key, value| {
+    tags.properties(|key, _, value| {
         let value = value.strip_suffix(&[0]).unwrap_or(value);
-        match key {
+        match key.to_bytes() {
             b"api.bluez5.address" => {
                 address = std::str::from_utf8(value)
                     .ok()
@@ -289,6 +289,7 @@ fn read_card(tags: &mut Tags<'_>, card: &[u8], device: BdAddr) -> Result<Cards, 
             }
             _ => {}
         }
+        Ok(())
     })?;
     for _ in 0..tags.u32()? {
         tags.skip_n(BEFORE_PORT_PROFILES)?;
@@ -298,7 +299,8 @@ fn read_card(tags: &mut Tags<'_>, card: &[u8], device: BdAddr) -> Result<Cards, 
         tags.skip_n(AFTER_PORT_PROFILES)?;
     }
     Ok(Cards {
-        headset: name == Some(card) && profile.is_some_and(|name| name.starts_with(HEADSET_PREFIX)),
+        headset: name.map(CStr::to_bytes) == Some(card)
+            && profile.is_some_and(|name| name.to_bytes().starts_with(HEADSET_PREFIX)),
         device_id: if address == Some(device) {
             device_id
         } else {
@@ -319,118 +321,30 @@ pub(super) struct Sink<'a> {
 
 /// The sinks of a list reply to its end, the first malformed one ending the walk; sample: one `Tags::sink` after another.
 pub(super) fn sinks(body: &[u8]) -> impl Iterator<Item = Result<Sink<'_>, Malformed>> {
-    let mut tags = Tags(body);
+    let mut tags = Tags::new(body);
     iter::from_fn(move || {
-        if tags.0.is_empty() {
+        if tags.is_empty() {
             return None;
         }
         let sink = tags.sink();
         if sink.is_err() {
-            tags = Tags(&[]);
+            tags = Tags::new(&[]);
         }
         Some(sink)
     })
 }
 
-/// A walk over a tagstruct, borrowing property values only after checking their lengths.
-pub(super) struct Tags<'a>(pub(super) &'a [u8]);
-
 impl<'a> Tags<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8], Malformed> {
-        let (taken, rest) = self.0.split_at_checked(count).ok_or(Malformed::Cut)?;
-        self.0 = rest;
-        Ok(taken)
-    }
-
-    fn byte(&mut self) -> Result<u8, Malformed> {
-        let (&byte, rest) = self.0.split_first().ok_or(Malformed::Cut)?;
-        self.0 = rest;
-        Ok(byte)
-    }
-
-    fn raw_u32(&mut self) -> Result<u32, Malformed> {
-        let (&bytes, rest) = self.0.split_first_chunk().ok_or(Malformed::Cut)?;
-        self.0 = rest;
-        Ok(u32::from_be_bytes(bytes))
-    }
-
-    fn expect(&mut self, wanted: u8) -> Result<(), Malformed> {
-        match self.byte()? {
-            got if got == wanted => Ok(()),
-            got => Err(Malformed::Tag(got)),
-        }
-    }
-
-    pub(super) fn u32(&mut self) -> Result<u32, Malformed> {
-        self.expect(tag::U32)?;
-        self.raw_u32()
-    }
-
-    fn u8(&mut self) -> Result<u8, Malformed> {
-        self.expect(tag::U8)?;
-        self.byte()
-    }
-
-    /// One boolean tag; sample `1` for true or `0` for false.
-    pub(super) fn boolean(&mut self) -> Result<bool, Malformed> {
-        match self.byte()? {
-            tag::TRUE => Ok(true),
-            tag::FALSE => Ok(false),
-            got => Err(Malformed::Tag(got)),
-        }
-    }
-
-    /// Without its closing NUL, a null string being `None`; sample `t "pulse\0"` or `N`.
-    fn string(&mut self) -> Result<Option<&'a [u8]>, Malformed> {
-        match self.byte()? {
-            tag::STRING_NULL => Ok(None),
-            tag::STRING => self.c_string().map(Some),
-            got => Err(Malformed::Tag(got)),
-        }
-    }
-
-    /// The bytes to the first NUL, which is consumed; sample `pulse\0`.
-    fn c_string(&mut self) -> Result<&'a [u8], Malformed> {
-        let end = self
-            .0
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(Malformed::Cut)?;
-        let text = self.take(end)?;
-        self.take(1)?;
-        Ok(text)
-    }
-
-    /// A length then that many bytes; sample `0000000b "Audio/Sink\0"`.
-    fn arbitrary(&mut self) -> Result<&'a [u8], Malformed> {
-        let length = self.raw_u32()?;
-        // corner: a length past the address space is past the frame too, so the take fails
-        self.take(usize::try_from(length).unwrap_or(usize::MAX))
-    }
-
     /// The channels' mean, half up, a boosted sink reading full; sample `v 02 00008000 00010000`: 75.
     #[expect(
         clippy::arithmetic_side_effects,
-        reason = "255 channels of a u32 sum in a u64, a u32 times 100 fits a u64, and neither divisor is zero"
+        reason = "the checked channel count is positive and a u32 times 100 fits in u64"
     )]
     fn volume(&mut self) -> Result<(Percent, ChannelVolume), Malformed> {
-        self.expect(tag::CVOLUME)?;
-        let channels = self.byte()?;
-        if channels == 0 {
-            return Err(Malformed::NoChannels);
-        }
-        if usize::from(channels) > MAX_CHANNELS {
-            return Err(Malformed::TooManyChannels(channels));
-        }
-        let mut volumes = ChannelVolume::empty();
-        let mut sum = 0_u64;
-        for _ in 0..channels {
-            let raw = self.raw_u32()?;
-            sum += u64::from(raw);
-            volumes.push(Volume::from_u32_clamped(raw));
-        }
+        let (volumes, sum) = self.channels()?;
+        let channels = u64::try_from(volumes.channels().len()).map_err(|_error| TagError::Cut)?;
         let norm = u64::from(Volume::NORM.as_u32());
-        let percent = (sum / u64::from(channels) * FULL + norm / 2) / norm;
+        let percent = (sum / channels * FULL + norm / 2) / norm;
         let percent = u8::try_from(percent)
             .ok()
             .and_then(Percent::new)
@@ -447,56 +361,16 @@ impl<'a> Tags<'a> {
         })
     }
 
-    /// Key, length and value triples to a null key, each key and value shown to `see`; sample `t "media.class\0" L 0000000b x 0000000b "Audio/Sink\0" N`.
-    fn proplist(&mut self, mut see: impl FnMut(&'a [u8], &'a [u8])) -> Result<(), Malformed> {
-        while let Some(key) = self.string()? {
-            self.u32()?;
-            self.expect(tag::ARBITRARY)?;
-            see(key, self.arbitrary()?);
-        }
-        Ok(())
-    }
-
-    /// A property list's value under `key`, without its closing NUL; sample `P t "node.name\0" L 00000004 x 00000004 "mpv\0" N` under `node.name`: `mpv`.
+    /// Sample: `P t "node.name\0" L 00000004 x 00000004 "mpv\0" N` gives `mpv` under `node.name`.
     pub(super) fn property(&mut self, key: &[u8]) -> Result<Option<&'a [u8]>, Malformed> {
-        self.expect(tag::PROPLIST)?;
         let mut found = None;
-        self.proplist(|name, value| {
-            if name == key {
+        self.properties(|name, _, value| {
+            if name.to_bytes() == key {
                 found = Some(value.strip_suffix(&[0]).unwrap_or(value));
             }
+            Ok(())
         })?;
         Ok(found)
-    }
-
-    /// One value of any tag, a property list or a format walked flat so no input nests; sample `L 00000005` or `t "name\0"`.
-    fn skip(&mut self) -> Result<(), Malformed> {
-        let length = match self.byte()? {
-            tag::STRING => return self.c_string().map(|_| ()),
-            tag::ARBITRARY => return self.arbitrary().map(|_| ()),
-            tag::PROPLIST => return self.proplist(|_, _| {}),
-            tag::FORMAT_INFO => {
-                self.u8()?;
-                self.expect(tag::PROPLIST)?;
-                return self.proplist(|_, _| {});
-            }
-            tag::STRING_NULL | tag::TRUE | tag::FALSE => 0,
-            tag::U8 => size_of::<u8>(),
-            tag::U32 | tag::VOLUME => size_of::<u32>(),
-            tag::U64 | tag::S64 | tag::USEC | tag::TIMEVAL => size_of::<u64>(),
-            tag::SAMPLE_SPEC => SAMPLE_SPEC_LEN,
-            tag::CHANNEL_MAP => usize::from(self.byte()?),
-            tag::CVOLUME => usize::from(self.byte()?).saturating_mul(size_of::<u32>()),
-            got => return Err(Malformed::Tag(got)),
-        };
-        self.take(length).map(|_| ())
-    }
-
-    pub(super) fn skip_n(&mut self, count: usize) -> Result<(), Malformed> {
-        for _ in 0..count {
-            self.skip()?;
-        }
-        Ok(())
     }
 
     /// One sink of a list at protocol 35; sample `L 0 t "bluez_output.02_00_00_00_00_01.1\0" N a m L v 02 8000.. 8000.. 0 L N U N L P N U V L L L L 0 N B 0`.
@@ -518,7 +392,7 @@ impl<'a> Tags<'a> {
         self.skip_n(usize::from(formats))?;
         Ok(Sink {
             index,
-            name,
+            name: name.to_bytes(),
             volume,
             channels,
             monitor_index,
