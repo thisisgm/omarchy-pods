@@ -565,6 +565,7 @@ impl Shared {
                     sdu: sdu.to_vec(),
                 });
                 if model::answers(fault) {
+                    // corner: assumed until measured on hardware, the pods ignore an uplink START while the DoAP mode is set or clearing.
                     if sdu != START || !state.doap.mode_active(at) {
                         state.uplink.on_host(id, sdu, at);
                     }

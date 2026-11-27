@@ -52,6 +52,7 @@ fn the_first_uplink_start_after_two_refusals_records_audio() {
     fixture.list(CAPTURE);
     let recorder = fixture.capture();
     uplink(&fixture);
+    assert_eq!(fixture.device.pods.doap().starts(), 2);
     fixture.device.pods.uplink().mark(MARK_FRAMES);
     pause(PERIOD.saturating_mul(MARK_FRAMES).saturating_add(MAX_TAIL));
     let samples = recorder.finish();

@@ -137,3 +137,44 @@ fn a_timed_out_start_then_a_refusal_on_the_last_try_falls_back() {
         assert_eq!(session.code(), status, "at {ms} ms");
     }
 }
+
+#[test]
+fn a_timed_out_start_with_a_stop_owed_sends_host_stop_then_mode_off() {
+    use DictationRequest::{Mode, ModeOff, Start};
+    use MicDictation::{Starting, Stopping};
+
+    const START: u64 = MODE_SETTLE_MS;
+    const LEFT: u64 = START + 1;
+    const TIMED_OUT: u64 = START + DOAP_START_ANSWER_MS;
+
+    let host_stop = DictationRequest::Stop {
+        reason: pods_proto::doap::STOP_REASON_HOST,
+    };
+    let left = Some(Stop::Left);
+    let mut session = Session::default();
+    for (ms, why, status, wanted) in [
+        (0, None, Some(Starting), vec![Mode]),
+        (START, None, Some(Starting), vec![Start]),
+        (LEFT, left, Some(Stopping), vec![]),
+        (TIMED_OUT - 1, left, Some(Stopping), vec![]),
+        (TIMED_OUT, left, None, vec![host_stop, ModeOff]),
+    ] {
+        let mut effects = Vec::new();
+        assert!(
+            !session.step(&Fact::Tick, Duration::from_millis(ms), why, &mut effects),
+            "at {ms} ms"
+        );
+        let sent: Vec<_> = effects
+            .into_iter()
+            .filter_map(|effect| {
+                if let Effect::Dictation(request) = effect {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(sent, wanted, "at {ms} ms");
+        assert_eq!(session.code(), status, "at {ms} ms");
+    }
+}
