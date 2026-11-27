@@ -165,18 +165,22 @@ impl Server {
 
     /// Suspends the private graph driver while the caller runs `while_stopped`.
     pub fn while_stopped(&self, while_stopped: impl FnOnce()) {
-        let process = self.process.borrow();
-        let pid = process
-            .as_ref()
-            .map(Pid::from_child)
-            .expect("private PipeWire server must be running");
         struct Resume(Pid);
         impl Drop for Resume {
             fn drop(&mut self) {
-                let _ = kill_process(self.0, Signal::CONT);
+                if let Err(error) = kill_process(self.0, Signal::CONT) {
+                    assert!(std::thread::panicking(), "resume private PipeWire: {error}");
+                }
             }
         }
-        kill_process(pid, Signal::STOP).expect("pause the private PipeWire server");
+
+        let process = self.process.borrow();
+        let child = process
+            .as_ref()
+            .unwrap_or_else(|| panic!("private PipeWire server must be running"));
+        let pid = Pid::from_child(child);
+        kill_process(pid, Signal::STOP)
+            .unwrap_or_else(|error| panic!("pause private PipeWire: {error}"));
         let _resume = Resume(pid);
         while_stopped();
     }

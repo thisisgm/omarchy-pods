@@ -30,7 +30,7 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
     const PLAY_WORD: Duration = Duration::from_millis(350);
     const CHECK_QUIET: Duration = FRAME;
     const MARK_GUARD: Duration = Duration::from_millis(5);
-    const MIN_QUIET_DBFS: f64 = -41.0;
+    const MIN_QUIET_DBFS: f64 = -37.5;
 
     let fixture = Fixture::with_recorder_quantum();
     let doap = fixture.device.pods.doap();
@@ -59,8 +59,9 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
         .max_by_key(|mark| mark.len())
         .expect("no opening word recorded")
         .start;
-    let quiet_end = mark - frames(MARK_GUARD);
-    let quiet = &samples[quiet_end - frames(CHECK_QUIET)..quiet_end];
+    let quiet_end = mark.checked_sub(frames(MARK_GUARD)).unwrap();
+    let quiet_start = quiet_end.checked_sub(frames(CHECK_QUIET)).unwrap();
+    let quiet = &samples[quiet_start..quiet_end];
     let level = rms_dbfs(
         quiet
             .iter()
@@ -85,11 +86,11 @@ fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
     const PER_NOTIFICATION: u32 = 3;
     const LEADING: u32 = 13;
     const FIRST_WORD: u32 = 2;
-    const RELEASE: Duration = Duration::from_millis(313);
+    const RELEASE: Duration = Duration::from_millis(317);
     const STALL: Duration = Duration::from_millis(67);
     const MARK_AT: Duration = Duration::from_millis(1_510);
     const PLAY_WORD: Duration = Duration::from_millis(240);
-    const TAIL_DEADLINE: Duration = Duration::from_millis(1_293);
+    const TAIL_DEADLINE: Duration = Duration::from_millis(1_277);
 
     let fixture = Fixture::with_recorder_quantum();
     let doap = fixture.device.pods.doap();
@@ -114,8 +115,8 @@ fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
     let marks = dictation_marks(&samples);
     assert_eq!(marks.len(), 2, "{marks:?}");
     assert_marks(&samples[marks[0].end..], 1, MARK_LENGTH, (0, None));
-    // The words span 1,300 ms in the input. The deadline requires recovering at least 7 ms.
-    let tail = span_of(marks[1].end - marks[0].start);
+    // The words span 1,300 ms in the input, or less on the recorder clock once the reader catches up.
+    let tail = span_of(marks[1].end.checked_sub(marks[0].start).unwrap());
     writeln!(io::stderr(), "tail ends at {tail:?}, marks {marks:?}").unwrap();
     assert!(
         tail <= TAIL_DEADLINE,
