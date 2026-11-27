@@ -63,6 +63,23 @@ inline bool hasAttemptRemaining(int completedAttempts, int maximumAttempts)
     return completedAttempts < std::max(0, maximumAttempts);
 }
 
+// Every silent link logged here answered on the first fresh socket, so two covers a slow pair without looping on a dead one.
+inline constexpr int silentLinkReopenLimit = 2;
+
+enum class SilentLinkStep { ResendHandshake, ReopenSocket, GiveUp };
+
+// Re-sending on the same socket has never revived a silent link; a new socket to the same pair always has.
+inline SilentLinkStep nextSilentLinkStep(int handshakesResent, int socketsReopened)
+{
+    if (hasAttemptRemaining(handshakesResent, statusHandshakeResendLimit)) {
+        return SilentLinkStep::ResendHandshake;
+    }
+    if (hasAttemptRemaining(socketsReopened, silentLinkReopenLimit)) {
+        return SilentLinkStep::ReopenSocket;
+    }
+    return SilentLinkStep::GiveUp;
+}
+
 class Session
 {
 public:

@@ -803,10 +803,20 @@ private slots:
                 return;
             }
             const QString address = m_deviceInfo->bluetoothAddress();
-            if (!ControlReconnect::hasAttemptRemaining(m_handshakesResent,
-                                                       ControlReconnect::statusHandshakeResendLimit)) {
-                LOG_ERROR("AirPods " << address << " sent no battery or ear status after "
-                          << (m_handshakesResent + 1) << " handshakes, restart librepods to recover");
+            switch (ControlReconnect::nextSilentLinkStep(m_handshakesResent, m_silentLinkReopens)) {
+            case ControlReconnect::SilentLinkStep::ResendHandshake:
+                break;
+            case ControlReconnect::SilentLinkStep::ReopenSocket:
+                ++m_silentLinkReopens;
+                LOG_WARN("AirPods " << address << " sent no battery or ear status after "
+                         << (m_handshakesResent + 1) << " handshakes, opening a new control link ("
+                         << m_silentLinkReopens << "/" << ControlReconnect::silentLinkReopenLimit << ")");
+                handleControlSocketLoss(QBluetoothDeviceInfo(QBluetoothAddress(address), m_lastAirPodsName, 0),
+                                        socket, QStringLiteral("no battery or ear status"));
+                return;
+            case ControlReconnect::SilentLinkStep::GiveUp:
+                LOG_ERROR("AirPods " << address << " sent no battery or ear status on "
+                          << (m_silentLinkReopens + 1) << " control links, restart librepods to recover");
                 return;
             }
             ++m_handshakesResent;
@@ -822,6 +832,7 @@ private slots:
     {
         rememberAirPodsDevice(address, name);
         m_disconnectFinalized = false;
+        m_silentLinkReopens = 0;
 
         QBluetoothDeviceInfo device(QBluetoothAddress(address), name, 0);
         const bool recovering = m_controlRecovery.isActive();
@@ -1373,6 +1384,7 @@ private slots:
         else if (data.size() == 8 && data.startsWith(AirPodsPackets::Parse::EAR_DETECTION))
         {
             m_controlStatusSeen = true;
+            m_silentLinkReopens = 0;
             m_deviceInfo->getEarDetection()->parseData(data);
             mediaController->handleEarDetection(m_deviceInfo->getEarDetection());
         }
@@ -1380,6 +1392,7 @@ private slots:
         else if ((data.size() == 22 || data.size() == 12) && data.startsWith(AirPodsPackets::Parse::BATTERY_STATUS))
         {
             m_controlStatusSeen = true;
+            m_silentLinkReopens = 0;
             m_deviceInfo->getBattery()->parsePacket(data);
             m_deviceInfo->updateBatteryStatus();
             LOG_INFO("Battery status: " << m_deviceInfo->batteryStatus());
@@ -1705,6 +1718,8 @@ private:
     // Recovery keeps the previous link's DeviceInfo, so only a report on the current socket proves it is talking.
     bool m_controlStatusSeen = false;
     int m_handshakesResent = 0;
+    // Counts fresh sockets per BlueZ connection, so the ladder in armControlStatusWatchdog cannot loop.
+    int m_silentLinkReopens = 0;
     QSettings *m_settings;
     AutoStartManager *m_autoStartManager;
     int m_retryAttempts = 3;

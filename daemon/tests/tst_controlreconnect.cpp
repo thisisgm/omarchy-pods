@@ -28,6 +28,23 @@ private slots:
         QVERIFY(!ControlReconnect::hasAttemptRemaining(0, 0));
     }
 
+    // The regression: after three unanswered handshakes the daemon stopped, and the link stayed dead until a restart.
+    void silentLinkReopensAfterHandshakesThenGivesUp()
+    {
+        using ControlReconnect::SilentLinkStep;
+        using ControlReconnect::nextSilentLinkStep;
+        const int resends = ControlReconnect::statusHandshakeResendLimit;
+        const int reopens = ControlReconnect::silentLinkReopenLimit;
+
+        QCOMPARE(nextSilentLinkStep(0, 0), SilentLinkStep::ResendHandshake);
+        QCOMPARE(nextSilentLinkStep(resends - 1, 0), SilentLinkStep::ResendHandshake);
+        QCOMPARE(nextSilentLinkStep(resends, 0), SilentLinkStep::ReopenSocket);
+        QCOMPARE(nextSilentLinkStep(resends, reopens - 1), SilentLinkStep::ReopenSocket);
+        QCOMPARE(nextSilentLinkStep(resends, reopens), SilentLinkStep::GiveUp);
+        // A fresh socket starts its own handshake count, and the reopen budget still caps the loop.
+        QCOMPARE(nextSilentLinkStep(0, reopens), SilentLinkStep::ResendHandshake);
+    }
+
     void watchdogStaysSilentUnlessBluezStillHoldsTheDevice()
     {
         // Pods merely away: BlueZ said not connected, so the ladder must not be restarted every tick.
