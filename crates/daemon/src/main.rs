@@ -107,6 +107,7 @@ fn print_state_dir() -> ExitCode {
 
 fn report_parse_error(error: &ParseError) -> ExitCode {
     let message = error.message().as_bytes();
+    // A failed write to the terminal has nowhere left to be reported.
     match error.kind() {
         ParseErrorKind::DisplayHelp | ParseErrorKind::DisplayVersion => {
             drop(io::stdout().lock().write_all(message));
