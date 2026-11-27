@@ -84,8 +84,15 @@ Deno.test('Pro 2 Omarchy layout: modes, Adaptive slider gating, switches, 3-stat
     const caseRow = ext._batteries.find(b => b.key === 'case');
     assertEq(leftRow.meta.text, 'In ear', 'left meta');
     assert(!leftRow.fill.has_style_class_name('pods-meter-low'), 'left not low');
+    assertEq(leftRow.fill.style, 'background-color: rgba(255, 255, 255, 0.88);', 'dark theme foreground fill');
     assert(rightRow.fill.has_style_class_name('pods-meter-low'), 'right <=20% gets low class');
+    assertEq(rightRow.fill.style, null, 'low battery uses CSS red class instead of inline foreground');
     assertEq(caseRow.meta.text, 'Charging', 'case charging meta');
+
+    // Theme switch to light foreground updates battery fill dynamically.
+    ext._device._fg = {red: 46, green: 52, blue: 54};
+    ext._device.emit('style-changed');
+    assertEq(leftRow.fill.style, 'background-color: rgba(46, 52, 54, 0.88);', 'light theme foreground fill');
 
     // Clicking Adaptive sends SetNoiseMode("adaptive").
     ext._modes[2].button.emit('clicked');
@@ -167,7 +174,7 @@ Deno.test('Pro 2 Omarchy layout: modes, Adaptive slider gating, switches, 3-stat
     }
     assertEq(oneBudSwitch.toggle.state, false, 'failed setter reverts switch to last daemon status');
 
-    // Full teardown leaves zero watches, subscriptions, timers, or connected signals.
+    // Full teardown leaves zero watches, subscriptions, timers, signals, or actor refs.
     const indicator = ext._indicator;
     ext.disable();
     assert(indicator.destroyed, 'indicator destroyed');
@@ -175,6 +182,10 @@ Deno.test('Pro 2 Omarchy layout: modes, Adaptive slider gating, switches, 3-stat
     assertEq(harness.state.subscriptions.size, 0, 'subscriptions cleared on disable');
     assertEq(harness.state.timers.size, 0, 'timers cleared on disable');
     assertEq(harness.connectedSignalCount(), 0, 'all actor signals disconnected on disable');
+    for (const [key, value] of Object.entries(ext)) {
+        if (key.startsWith('_'))
+            assert(value === null || value === 0 || value === false, `leaked field ${key} after disable`);
+    }
 });
 
 Deno.test('Plain AirPods hide noise modes (including Off), Max uses Headphones row, away/empty/invalid states', () => {
@@ -227,7 +238,7 @@ Deno.test('Plain AirPods hide noise modes (including Off), Max uses Headphones r
     const headsetRow = ext._batteries.find(b => b.key === 'headset');
     assert(headsetRow.line.visible, 'headset row visible');
     assertEq(headsetRow.line.children[1].x_align, 'start', 'meter track anchored flush-left');
-    assertEq(headsetRow.fill.width, 62, 'headset meter rounded pixel width (42% of 148)');
+    assertEq(headsetRow.fill.width, 77, 'headset meter rounded pixel width (42% of 184)');
 
     // Disconnected with case battery stays visible as NOT CONNECTED with lid state and controls hidden.
     harness.emitStatus(makeStatus({

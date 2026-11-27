@@ -15,6 +15,7 @@ const PROPERTIES = 'org.freedesktop.DBus.Properties';
 const REPLY_TIMEOUT_MS = 5000;
 const SLIDER_DELAY_MS = 180;
 const METER_WIDTH = 148;
+const HEADSET_METER_WIDTH = 184;
 const LOW_BATTERY_PERCENT = 20;
 const MODES = [
     ['Off', 'off', 'supports_noise_off', 0],
@@ -68,6 +69,10 @@ export default class PodsExtension extends Extension {
         panelBox.add_child(this._percentage);
         this._indicator.add_child(panelBox);
         this._buildMenu();
+        this._connect(this._device, 'style-changed', () => {
+            if (this._status)
+                this._render(this._status);
+        });
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
         this._watch = Gio.bus_watch_name(Gio.BusType.SESSION, BUS_NAME, Gio.BusNameWatcherFlags.NONE,
@@ -76,7 +81,9 @@ export default class PodsExtension extends Extension {
 
     disable() {
         Gio.bus_unwatch_name(this._watch);
+        this._watch = 0;
         this._clearOwner();
+        this._rendering = false;
         for (const [actor, id] of this._signals)
             actor.disconnect(id);
         this._signals = null;
@@ -100,6 +107,7 @@ export default class PodsExtension extends Extension {
         this._slider = null;
         this._switchSep = null;
         this._earSep = null;
+        this._earButton = null;
         this._earRow = null;
         this._earValue = null;
     }
@@ -155,13 +163,14 @@ export default class PodsExtension extends Extension {
             });
             const fill = new St.Bin({style_class: 'pods-meter-fill'});
             const track = new St.BoxLayout({
-                style_class: 'pods-meter-track',
+                style_class: key === 'headset' ? 'pods-meter-track pods-meter-track-wide' : 'pods-meter-track',
                 x_align: Clutter.ActorAlign.START,
                 y_align: Clutter.ActorAlign.CENTER,
             });
             track.add_child(fill);
             const percent = new St.Label({style_class: 'pods-battery-pct', y_align: Clutter.ActorAlign.CENTER});
             const meta = new St.Label({style_class: 'pods-battery-meta', y_align: Clutter.ActorAlign.CENTER});
+            meta.visible = key !== 'headset';
             line.add_child(name);
             line.add_child(track);
             line.add_child(percent);
@@ -391,6 +400,12 @@ export default class PodsExtension extends Extension {
         }
     }
 
+    _meterFillStyle() {
+        const node = this._device?.peek_theme_node?.();
+        const fg = node?.get_foreground_color?.();
+        return fg ? `background-color: rgba(${fg.red}, ${fg.green}, ${fg.blue}, 0.88);` : null;
+    }
+
     _render(state) {
         const available = BATTERIES.some(([key]) => state[key]?.available);
         this._indicator.visible = state.connected || available;
@@ -400,6 +415,7 @@ export default class PodsExtension extends Extension {
         }
         const variant = state.is_headset ? 'max' : state.is_pro_series ? 'pro' : 'buds';
         this._panelIcon.gicon = this._headerIcon.gicon = this._icons[variant];
+        this._panelIcon.opacity = state.connected ? 255 : 150;
         this._headerIcon.opacity = state.connected ? 255 : 120;
         const buds = (state.is_headset ? [state.headset] : [state.left, state.right])
             .filter(cell => cell?.available);
@@ -409,35 +425,43 @@ export default class PodsExtension extends Extension {
         this._connection.text = state.connected ? 'CONNECTED' : 'NOT CONNECTED';
 
         this._batterySection.visible = available;
+        const fillStyle = this._meterFillStyle();
         for (const {key, line, fill, percent, meta} of this._batteries) {
             const cell = state[key];
             const show = state.is_headset ? key === 'headset' && !!cell?.available : key !== 'headset' && !!cell?.available;
             line.visible = show;
             if (show) {
                 const level = Math.max(0, Math.min(100, cell.level));
+                const width = key === 'headset' ? HEADSET_METER_WIDTH : METER_WIDTH;
                 percent.text = `${level}%`;
-                fill.width = Math.round(METER_WIDTH * level / 100);
+                fill.width = Math.round(width * level / 100);
                 const low = level <= LOW_BATTERY_PERCENT && !cell.charging;
-                if (low)
+                if (low) {
+                    fill.style = null;
                     fill.add_style_class_name('pods-meter-low');
-                else
+                } else {
                     fill.remove_style_class_name('pods-meter-low');
+                    fill.style = fillStyle;
+                }
                 meta.text = podMeta(key, cell, state.lid_state);
             }
         }
 
         let anyMode = false;
-        for (const {row, text, check, capability, value} of this._modes) {
+        for (const {row, button, text, check, capability, value} of this._modes) {
             const show = !!(state.connected && state.supports_noise_control && state[capability]);
             row.visible = show;
             if (show)
                 anyMode = true;
             const active = state.noise_mode === value;
             check.visible = active;
-            if (active)
+            if (active) {
+                button.add_style_class_name('pods-mode-selected');
                 text.add_style_class_name('pods-mode-active');
-            else
+            } else {
+                button.remove_style_class_name('pods-mode-selected');
                 text.remove_style_class_name('pods-mode-active');
+            }
         }
         this._modeHeader.visible = anyMode;
         this._adaptiveRow.visible = !!(state.connected && state.supports_adaptive && state.noise_mode === 3);

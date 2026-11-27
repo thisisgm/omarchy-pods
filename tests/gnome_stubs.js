@@ -99,7 +99,12 @@ class Label extends SignalEmitter {
     constructor(props = {}) {
         super();
         this.text = '';
+        this._fg = {red: 255, green: 255, blue: 255};
         Object.assign(this, props);
+    }
+
+    peek_theme_node() {
+        return {get_foreground_color: () => this._fg};
     }
 }
 
