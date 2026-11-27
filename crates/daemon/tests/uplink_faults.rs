@@ -590,6 +590,7 @@ mod tests {
         let (rig, device, audio) = rig_with_audio("always", &[MODEL_NUMBER], SinkState::Running);
         let uplink = device.pods.uplink();
         uplink.hold_running_markers();
+        // No audio may confirm the START before its held running marker.
         uplink.stall(HANG_LIMIT);
         link_heard(&rig, &device);
         wait_starts(&device, 1);
