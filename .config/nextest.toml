@@ -30,6 +30,14 @@ binary_id(=xtask::probe_source_live)
 '''
 test-group = 'realtime-audio'
 
+# A test that retried a proven rig miss and passed still shows its first attempt's evidence.
+[[profile.default.overrides]]
+filter = '''
+(binary_id(=librepods::dictation_slow) & test(=tests::history_recorder_stays_click_free_across_opening_catchup_exit)) |
+(binary_id(=pods-pw::source) & test(ratio_is_followed))
+'''
+success-output = 'final'
+
 # Offline DSP and codec oracles compete for CPU with the PipeWire graph.
 [[profile.default.overrides]]
 filter = '''
