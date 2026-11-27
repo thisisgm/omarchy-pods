@@ -7,6 +7,7 @@ mod support;
 #[cfg(test)]
 mod tests {
     mod dictation_fallback;
+    mod dictation_late_uplink;
     mod dictation_opening;
 
     use std::fs;
