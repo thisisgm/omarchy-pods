@@ -364,73 +364,6 @@ fn steering_brings_a_late_reader_back_within_the_realign_bound() {
     assert!(lag <= bound && now <= deadline, "{lag:?} of lag at {now:?}");
 }
 
-#[test]
-fn stalled_speech_gets_at_most_one_second_of_fast_source_frames_per_stall() {
-    const LATE_PERIOD: Duration = Duration::from_millis(200);
-    const FAST_AUDIO: Duration = Duration::from_secs(1);
-    let max_fast_frames = scaled(ns_of(FAST_AUDIO), RATE_HZ, NS_PER_SECOND);
-    let drift = STEER_MAX_PPM / PARTS_PER_MILLION;
-    let bound = i64::from(REALIGN_MS) * i64::from(crate::FRAMES_PER_MS);
-    for (path, latency, converter) in [
-        (Path::Dictation, DOAP_LATENCY_MS, false),
-        (Path::Uplink, NODE_LATENCY_MS, false),
-        (Path::Dictation, DOAP_LATENCY_MS, true),
-        (Path::Uplink, NODE_LATENCY_MS, true),
-    ] {
-        let ring = Arc::new(Ring::new());
-        let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
-        ring.start_run(path);
-        ring.publish(0);
-        resync.request();
-        let mut now = Duration::from_millis(u64::from(latency)) + PERIOD;
-        let mut heard = [0.0; QUANTUM];
-        let mut read = |now: Duration| {
-            let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
-            ring.write((ring.end()..end).map(|_| SPEECH_FLOOR));
-            let ratio = if converter {
-                reader.read_for_converter(now, &mut heard, QUANTUM)
-            } else {
-                reader.read(now, &mut heard)
-            };
-            let (target, _) = ring.target(now).unwrap();
-            (ratio, target - reader.next)
-        };
-        read(now);
-        let quantum = i64::try_from(QUANTUM).unwrap();
-        for stall in 1..=3 {
-            now += LATE_PERIOD;
-            for spent in (0..max_fast_frames).step_by(QUANTUM) {
-                let (ratio, lag) = read(now);
-                assert!(
-                    lag > bound,
-                    "{path:?}, converter {converter}, stall {stall}, lag {lag}"
-                );
-                assert!(
-                    ratio > 1.0 + drift && ratio <= STALL_RATIO_LIMIT,
-                    "{path:?}, converter {converter}, stall {stall}, ratio {ratio} after {spent} fast frames"
-                );
-                now += PERIOD.div_f64(ratio);
-            }
-            // The third stall lands while the second's last fast read is still charged, and must start a full budget.
-            if stall == 2 {
-                continue;
-            }
-            for _ in 0..max_fast_frames / quantum {
-                let (ratio, lag) = read(now);
-                assert!(
-                    lag > bound,
-                    "{path:?}, converter {converter}, stall {stall}, lag {lag}"
-                );
-                assert!(
-                    ratio <= 1.0 + drift,
-                    "{path:?}, converter {converter}, stall {stall}, ratio {ratio} after {max_fast_frames} fast frames"
-                );
-                now += PERIOD.div_f64(ratio);
-            }
-        }
-    }
-}
-
 /// Follows the converter's request size per 20 ms pull and returns queued frames at release and at the tail deadline.
 fn stopped_recording(
     path: Path,
@@ -707,4 +640,5 @@ fn a_quiet_cut_leaves_a_fade_before_the_first_nonquiet_frame() {
     assert_eq!(reader.quiet_destination(place, 0), Some(peak_at - fade));
 }
 
+mod catch_up;
 mod opening;
