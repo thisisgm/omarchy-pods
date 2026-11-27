@@ -7,16 +7,18 @@ use pods_aac::Decoder as AacDecoder;
 
 use super::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};
 
+// The fence hands on `last_frame` whole, so both crates must count one frame alike.
+#[expect(clippy::as_conversions, reason = "a const context has no `From`")]
+const _: () = assert!(pods_aac::SAMPLES_PER_UNIT == SAMPLES_PER_UNIT as usize);
+
 pub struct Decoder {
     aac: AacDecoder,
-    #[cfg(test)]
-    frame: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Decoded<'a> {
     Samples(&'a [f32]),
-    /// The decoder refused what it was given, or gave other than one frame of samples.
+    /// The decoder refused what it was given.
     Error,
     Panic,
 }
@@ -28,35 +30,22 @@ impl Decoder {
         let aac = catch_unwind(|| AacDecoder::with_config(&EXPECTED_CONFIG));
         Some(Self {
             aac: aac.ok()?.ok()?,
-            #[cfg(test)]
-            frame: Vec::new(),
         })
     }
 
     pub fn unit(&mut self, unit: &[u8]) -> Decoded<'_> {
-        let aac = &mut self.aac;
-        match catch_unwind(AssertUnwindSafe(|| aac.decode(unit).map(<[f32]>::len))) {
-            Ok(Ok(len)) if len == usize::from(SAMPLES_PER_UNIT) => {
-                Decoded::Samples(self.aac.last_frame())
-            }
-            Ok(_) => Decoded::Error,
-            Err(_) => Decoded::Panic,
-        }
+        self.fenced(|aac| aac.decode(unit).map(|_| ()))
     }
 
-    /// One call into the decoder; a call that panicked leaves the decoder as the panic left it.
-    #[cfg(test)]
+    /// One call into the decoder, whose frame is then `last_frame`; a call that panicked leaves the decoder as the panic left it.
     pub(crate) fn fenced(
         &mut self,
-        call: impl FnOnce(&mut AacDecoder) -> Option<Vec<f32>>,
+        call: impl FnOnce(&mut AacDecoder) -> Result<(), pods_aac::Error>,
     ) -> Decoded<'_> {
         let aac = &mut self.aac;
         match catch_unwind(AssertUnwindSafe(|| call(aac))) {
-            Ok(Some(samples)) if samples.len() == usize::from(SAMPLES_PER_UNIT) => {
-                self.frame = samples;
-                Decoded::Samples(&self.frame)
-            }
-            Ok(_) => Decoded::Error,
+            Ok(Ok(())) => Decoded::Samples(self.aac.last_frame()),
+            Ok(Err(_)) => Decoded::Error,
             Err(_) => Decoded::Panic,
         }
     }

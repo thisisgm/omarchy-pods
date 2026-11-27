@@ -12,10 +12,7 @@ const ROOT_SIZE: usize = 1 << ROOT_BITS;
 /// Flag bit in a packed LUT entry indicating a secondary table redirect rather than a leaf symbol.
 const SUBTABLE_FLAG: u32 = 1 << 31;
 
-/// Two-level flat prefix-code table.
-///
-/// Leaf entry encoding: `(symbol << 8) | bit_length`.
-/// Redirect entry encoding: `SUBTABLE_FLAG | (subtable_offset << 8) | subtable_bits`.
+/// Two-level prefix-code table: a leaf is `(symbol << 8) | bit_length`, a redirect `SUBTABLE_FLAG | (offset << 8) | bits`.
 pub(crate) struct HuffTable {
     root: [u32; ROOT_SIZE],
     sub: Vec<u32>,

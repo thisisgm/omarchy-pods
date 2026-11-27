@@ -49,9 +49,7 @@ impl BitWriter {
     }
 }
 
-/// Emits one signed 4-tuple using ISO/IEC 14496-3 Table 4.A.2 (codebook 1, values in `-1..=1`).
-///
-/// Values outside `-1..=1` are clamped into `-1..=1`.
+/// Emits one codebook 1 quad (ISO/IEC 14496-3 Table 4.A.2); fixture values outside `-1..=1` are clamped.
 pub fn emit_cb1_quad(quad: [i32; 4], bits: &mut BitWriter) {
     let mut index = 0_usize;
     for value in quad {

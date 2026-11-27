@@ -70,4 +70,43 @@ fn a_comparison_no_frame_could_judge_names_no_offset_and_keeps_its_other_rows() 
     assert_eq!(found[1], ("offset_units", REFUSED, NO_OFFSET));
     let values: Vec<&str> = found.iter().map(|(_, value, _)| *value).collect();
     assert_eq!(values, ["7", REFUSED, "inf", "1"]);
+
+    for row in quality_rows(&candidate, &oracle, FRAME, &compared) {
+        assert_eq!(
+            (row.value.as_str(), row.note.as_str()),
+            (REFUSED, NO_OFFSET)
+        );
+    }
+}
+
+#[test]
+fn the_quality_rows_lay_the_candidate_at_the_compared_offset_and_refuse_without_a_comparison() {
+    // Every oracle frame differs, and the candidate holds them one unit late with one sample 1 LSB off.
+    let oracle: Vec<f32> = (1_u8..=8)
+        .flat_map(|unit| [f32::from(unit) / 16.0, f32::from(unit) / -16.0, 0.0, 0.0])
+        .collect();
+    let mut candidate = vec![0.0_f32; FRAME];
+    candidate.extend_from_slice(&oracle);
+    candidate[FRAME] += compare::tests::ONE_LSB;
+    let compared = compare(&candidate, &oracle, FRAME).map_err(|error| error.to_string());
+    assert_eq!(
+        compared.as_ref().map(|found| found.offset_units),
+        Ok(Some(1))
+    );
+
+    let rows = quality_rows(&candidate, &oracle, FRAME, &compared);
+    // 32 samples lie on the oracle, one of them 1 LSB off.
+    let rms = f64::from(compare::tests::ONE_LSB) / 32.0_f64.sqrt();
+    assert_eq!(rows[0].key, "rms_error");
+    assert_eq!(rows[0].value, format!("{rms:.3e}"));
+    assert_eq!(rows[1].key, "snr_db");
+    let snr: f64 = rows[1].value.parse().unwrap();
+    assert!(snr.is_finite() && snr > 0.0, "{snr}");
+
+    for row in quality_rows(&candidate, &oracle, FRAME, &Err("no decode".to_owned())) {
+        assert_eq!(
+            (row.value.as_str(), row.note.as_str()),
+            (REFUSED, "no decode")
+        );
+    }
 }

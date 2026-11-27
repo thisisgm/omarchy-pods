@@ -2,10 +2,7 @@
 
 use crate::Error;
 
-/// Fast MSB-first bit reader over a byte slice.
-///
-/// Tracks exact remaining input bits separately from the 64-bit prefetch buffer so trailing
-/// zero padding in the register never masks a truncated bitstream.
+/// MSB-first bit reader that counts unread input bits apart from its buffer, so zero padding never hides truncation.
 #[derive(Debug, Clone)]
 pub(crate) struct BitReader<'a> {
     data: &'a [u8],
@@ -29,12 +26,6 @@ impl<'a> BitReader<'a> {
         reader
     }
 
-    /// Exact number of unread bits remaining in the underlying slice.
-    #[must_use]
-    pub(crate) fn bits_left(&self) -> usize {
-        self.bits_left
-    }
-
     /// Refills the top of `self.buf` so at least 56 bits are available whenever input permits.
     #[inline]
     pub(crate) fn refill(&mut self) {
@@ -49,8 +40,7 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    /// Peeks the next `n` bits (`1..=32`) MSB-aligned into the lowest `n` bits of a `u32`.
-    /// Missing bits past EOF read as zero; callers validate consumption against `bits_left`.
+    /// Peeks the next `n` bits (`1..=32`); bits past the end read as zero, and `consume` refuses them.
     #[inline]
     #[must_use]
     pub(crate) fn peek_padded(&mut self, n: u32) -> u32 {

@@ -25,7 +25,10 @@ pub(crate) const BAND_EDGES: [usize; NUM_SWB + 1] = [
 /// Size of the precomputed `|q|^(4/3)` inverse-quantization lookup table.
 pub(crate) const IQ_LUT_LEN: usize = 1025;
 
-/// Formula-derived tables initialized once per process, before any hot-path decode.
+/// Scalefactor whose gain is exactly 1 at float scale: the spec's offset of 100 plus 60 for the `2^-15` normalization.
+const SF_UNIT_GAIN: f64 = 160.0;
+
+/// Formula-derived tables, built once per process when the first `Decoder::new` calls [`math`], before any decode.
 pub(crate) struct MathTables {
     /// `2^(0.25 * (sf - 160))` for `sf in 0..=255` (ISO/IEC 14496-3 Clause 4.6.2.3.3, normalized by `1/32768 = 2^-15`).
     pub(crate) sf_gain: [f64; 256],
@@ -35,14 +38,13 @@ pub(crate) struct MathTables {
 
 static MATH_TABLES: LazyLock<MathTables> = LazyLock::new(|| {
     let mut sf_gain = [0.0_f64; 256];
-    for (sf, slot) in sf_gain.iter_mut().enumerate() {
-        let exp = (f64::from(u16::try_from(sf).unwrap_or(0)) - 160.0) * 0.25;
-        *slot = exp.exp2();
+    for (sf, slot) in (0_u16..).zip(sf_gain.iter_mut()) {
+        let exponent = (f64::from(sf) - SF_UNIT_GAIN) * 0.25;
+        *slot = exponent.exp2();
     }
     let mut iq_pow43 = [0.0_f64; IQ_LUT_LEN];
-    for (q, slot) in iq_pow43.iter_mut().enumerate() {
-        let qf = f64::from(u16::try_from(q).unwrap_or(0));
-        *slot = qf.powf(4.0 / 3.0);
+    for (q, slot) in (0_u16..).zip(iq_pow43.iter_mut()) {
+        *slot = f64::from(q).powf(4.0 / 3.0);
     }
     MathTables { sf_gain, iq_pow43 }
 });

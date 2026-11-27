@@ -1,6 +1,4 @@
-//! Normative ER AAC-ELD 480-sample low-delay synthesis window (ISO/IEC 14496-3 Clause 4.6.11.3.4, Table 4.184).
-//!
-//! The full 4*M = 1920-sample synthesis window has 1800 nonzero coefficients followed by 120 trailing zeros.
+//! ER AAC-ELD 480 low-delay synthesis window (ISO/IEC 14496-3 Clause 4.6.11.3.4): 1800 coefficients of the 1920-sample window, the last 120 are zero.
 
 /// First 1800 samples of the 1920-sample ELD-480 synthesis window; indices 1800..1920 are identically zero.
 #[expect(

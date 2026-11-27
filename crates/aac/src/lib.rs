@@ -1,10 +1,4 @@
-//! Clean-room MIT ER AAC-ELD decoder for the AirPods 0x58 uplink microphone configuration.
-//!
-//! Decodes exclusively `EXPECTED_CONFIG = [0xf8, 0xe6, 0x30, 0x00]`:
-//! - ISO/IEC 14496-3 Clause 1.6.2.1 `AudioSpecificConfig`: AOT 39 (ER AAC-ELD),
-//!   sampling frequency index 3 (48 kHz declared), channel configuration 1 (mono), `epConfig = 0`.
-//! - ISO/IEC 14496-3 Clause 4.5.1.1 `ELDSpecificConfig`: `frameLengthFlag = 1` (480 samples),
-//!   all error resilience flags 0, `ldSbrPresentFlag = 0`, `eldExtType = ELDEXT_TERM (0)`.
+//! Clean-room MIT ER AAC-ELD decoder for the one AirPods uplink microphone configuration, [`EXPECTED_CONFIG`].
 
 #![forbid(unsafe_code)]
 
@@ -21,7 +15,7 @@ use std::fmt;
 use bits::BitReader;
 use filterbank::Filterbank;
 
-/// The single `AudioSpecificConfig` this decoder accepts (ER AAC-ELD, mono, 480 samples, 48 kHz).
+/// The only `AudioSpecificConfig` accepted: AOT 39, 48 kHz, mono, 480-sample frames, no resilience, SBR, extension or `epConfig`.
 pub const EXPECTED_CONFIG: [u8; 4] = [0xf8, 0xe6, 0x30, 0x00];
 
 /// Decoded PCM samples produced per access unit.
@@ -29,6 +23,9 @@ pub const SAMPLES_PER_UNIT: usize = 480;
 
 /// Maximum accepted access unit byte length (AirPods L2CAP units cap at 255 bytes; 4096 leaves margin for synthetic tests).
 pub const MAX_UNIT_BYTES: usize = 4096;
+
+/// Starting state of the PNS noise generator, shared by [`Decoder::new`] and [`Decoder::reset`].
+const PNS_SEED: u32 = 0x1f2e_3d4c;
 
 /// Errors returned by [`Decoder::with_config`] and [`Decoder::decode`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,15 +105,15 @@ impl Decoder {
             filterbank: Filterbank::new(),
             spec: [0.0; SAMPLES_PER_UNIT],
             output: [0.0; SAMPLES_PER_UNIT],
-            pns_seed: 0x1f2e_3d4c,
+            pns_seed: PNS_SEED,
         }
     }
 
-    /// Parses an ISO/IEC 14496-3 `AudioSpecificConfig` and constructs a decoder if and only if
-    /// it specifies ER AAC-ELD (AOT 39), 48 kHz (index 3), mono (1), 480-sample frames,
-    /// zero resilience flags, no LD-SBR, no ELD extensions, and `epConfig = 0`.
+    /// Builds a decoder when `config` is exactly [`EXPECTED_CONFIG`], the only configuration decoded.
     pub fn with_config(config: &[u8]) -> Result<Self, Error> {
-        validate_config(config)?;
+        if config != EXPECTED_CONFIG {
+            return Err(Error::UnsupportedConfig);
+        }
         Ok(Self::new())
     }
 
@@ -124,12 +121,10 @@ impl Decoder {
     pub fn reset(&mut self) {
         self.filterbank.reset();
         self.output.fill(0.0);
-        self.pns_seed = 0x1f2e_3d4c;
+        self.pns_seed = PNS_SEED;
     }
 
-    /// Decodes one raw ER AAC-ELD access unit into 480 mono `f32` PCM samples.
-    ///
-    /// Performs zero heap allocations. On error, filterbank overlap state is left untouched.
+    /// Decodes one access unit into 480 mono samples without allocating; a parse error leaves the overlap untouched.
     pub fn decode(&mut self, unit: &[u8]) -> Result<&[f32], Error> {
         if unit.is_empty() {
             return Err(Error::EmptyUnit);
@@ -146,12 +141,14 @@ impl Decoder {
         }
         self.filterbank.synthesize(&self.spec, &mut self.output);
         if !self.output.iter().all(|s| s.is_finite()) {
+            // The overlap already holds this frame, so start clean rather than carry it into the next three.
+            self.reset();
             return Err(Error::NonFiniteOutput);
         }
         Ok(&self.output)
     }
 
-    /// Returns the 480-sample buffer written by the most recent successful [`Self::decode`] call.
+    /// Returns the 480 samples of the last successful [`Self::decode`], or silence after a reset.
     #[must_use]
     pub fn last_frame(&self) -> &[f32] {
         &self.output
@@ -162,66 +159,6 @@ impl Default for Decoder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Validates ISO/IEC 14496-3 Clauses 1.6.2.1 (`AudioSpecificConfig`) and 4.5.1.1 (`ELDSpecificConfig`).
-fn validate_config(config: &[u8]) -> Result<(), Error> {
-    if config.len() != EXPECTED_CONFIG.len() {
-        return Err(Error::UnsupportedConfig);
-    }
-    let mut reader = BitReader::new(config);
-    // GetAudioObjectType() (Table 1.16): 5-bit escape 31 + 6-bit ext => 32 + 7 = 39 (ER AAC-ELD).
-    let aot_base = reader.read_bits(5).ok().ok_or(Error::UnsupportedConfig)?;
-    let aot = if aot_base == 31 {
-        let ext = reader.read_bits(6).ok().ok_or(Error::UnsupportedConfig)?;
-        32_u32.wrapping_add(ext)
-    } else {
-        aot_base
-    };
-    if aot != 39 {
-        return Err(Error::UnsupportedConfig);
-    }
-    // samplingFrequencyIndex (Table 1.18): 3 = 48,000 Hz.
-    let sf_index = reader.read_bits(4).ok().ok_or(Error::UnsupportedConfig)?;
-    if sf_index != 3 {
-        return Err(Error::UnsupportedConfig);
-    }
-    // channelConfiguration (Table 1.19): 1 = mono.
-    let channel_config = reader.read_bits(4).ok().ok_or(Error::UnsupportedConfig)?;
-    if channel_config != 1 {
-        return Err(Error::UnsupportedConfig);
-    }
-    // ELDSpecificConfig (Table 4.180):
-    // frameLengthFlag = 1 (480 samples), resilience flags = 000, ldSbrPresentFlag = 0.
-    let frame_length_flag = reader.read_bool().ok().ok_or(Error::UnsupportedConfig)?;
-    let section_resilience = reader.read_bool().ok().ok_or(Error::UnsupportedConfig)?;
-    let sf_resilience = reader.read_bool().ok().ok_or(Error::UnsupportedConfig)?;
-    let spectral_resilience = reader.read_bool().ok().ok_or(Error::UnsupportedConfig)?;
-    let ld_sbr_present = reader.read_bool().ok().ok_or(Error::UnsupportedConfig)?;
-    if !frame_length_flag
-        || section_resilience
-        || sf_resilience
-        || spectral_resilience
-        || ld_sbr_present
-    {
-        return Err(Error::UnsupportedConfig);
-    }
-    // eldExtType loop terminated immediately by ELDEXT_TERM (0x0).
-    let eld_ext_type = reader.read_bits(4).ok().ok_or(Error::UnsupportedConfig)?;
-    if eld_ext_type != 0 {
-        return Err(Error::UnsupportedConfig);
-    }
-    // epConfig (Table 1.15 for AOT 39): 0 (no error protection layer).
-    let ep_config = reader.read_bits(2).ok().ok_or(Error::UnsupportedConfig)?;
-    if ep_config != 0 {
-        return Err(Error::UnsupportedConfig);
-    }
-    // Trailing alignment bits must be zero.
-    let trailing = reader.read_bits(2).ok().ok_or(Error::UnsupportedConfig)?;
-    if trailing != 0 || reader.bits_left() != 0 {
-        return Err(Error::UnsupportedConfig);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

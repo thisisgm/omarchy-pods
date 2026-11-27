@@ -1,8 +1,4 @@
-//! Fast ER AAC-ELD 480-sample low-delay synthesis filterbank (ISO/IEC 14496-3 Clause 4.6.11.3.4).
-//!
-//! Computes the 480-point IMDCT-LD in `f64` via a DCT-IV reduction to a 240-point Good-Thomas
-//! Prime Factor FFT (`240 = 16 * 3 * 5`, pairwise coprime, zero inter-stage twiddles), followed
-//! by the 4-frame (1920-sample, 1800 nonzero) ELD-480 synthesis window and overlap-add.
+//! ER AAC-ELD 480 synthesis (ISO/IEC 14496-3 Clause 4.6.11.3.4): `f64` DCT-IV via a 240-point Good-Thomas FFT, then the 1800-tap window.
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 use std::sync::LazyLock;
@@ -190,9 +186,7 @@ impl Filterbank {
         }
     }
 
-    /// Expands the 480-point DCT-IV into the 960-sample ELD IMDCT half-period (`n0 = 840.5`).
-    ///
-    /// The second 960 samples satisfy `x[n + 960] = -x[n]`.
+    /// Expands the DCT-IV into the first 960 IMDCT samples (`n0 = 840.5`); the next 960 are `x[n + 960] = -x[n]`.
     fn expand_eld_imdct(&mut self) {
         let (seg0, rest) = self.imdct_half.split_at_mut(120);
         let (seg1, seg2) = rest.split_at_mut(M);
@@ -296,9 +290,7 @@ fn fft3_strided(re: &mut [f64; P], im: &mut [f64; P], start: usize) {
 /// 5-point positive-exponent Winograd DFT (`exp(+i * 2*pi/5 * k * m)`) on an array of length 5.
 #[inline]
 fn fft5_contiguous(re: &mut [f64; 5], im: &mut [f64; 5]) {
-    // cos(2*pi/5) = (sqrt(5)-1)/4, cos(4*pi/5) = -(sqrt(5)+1)/4
-    // c1 = (cos(2pi/5) + cos(4pi/5))/2 = -1/4
-    // c2 = (cos(2pi/5) - cos(4pi/5))/2 = sqrt(5)/4
+    // C2 = (cos(2pi/5) - cos(4pi/5)) / 2 = sqrt(5)/4; the matching sum term is the exact -1/4 below.
     const C2: f64 = 0.559_016_994_374_947_5;
     const S1: f64 = 0.951_056_516_295_153_5; // sin(2*pi/5)
     const S2: f64 = 0.587_785_252_292_473_1; // sin(4*pi/5)

@@ -3,7 +3,6 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
-use pods_aac::Decoder as AacDecoder;
 use pods_mic::EXPECTED_CONFIG;
 use pods_mic::decode::{Decoded, Decoder};
 
@@ -11,7 +10,7 @@ use pods_mic::decode::{Decoded, Decoder};
 pub(crate) const SLOW_CALL: Duration = Duration::from_millis(100);
 
 /// What the microphone chain's decoder says of a unit it gives no frame for; it keeps no reason.
-const REFUSED_UNIT: &str = "the decoder refused the unit, or gave other than one frame";
+const REFUSED_UNIT: &str = "the decoder refused the unit";
 
 /// One call of a decoder: a unit in, what it made of it out.
 type Call = Box<dyn FnMut(&[u8]) -> UnitResult>;
@@ -28,23 +27,13 @@ pub(crate) struct Candidate {
 }
 
 impl Candidate {
-    /// The microphone chain's decoder where the configuration is the one it takes; for any other, the same library told so. Or the reason the configuration was refused.
+    /// The microphone chain's decoder, or the reason a configuration other than the one it takes is refused.
     pub(crate) fn new(config: [u8; 4]) -> Result<Self, String> {
-        if config == EXPECTED_CONFIG {
-            return Self::of_the_chain();
+        if config != EXPECTED_CONFIG {
+            return Err(format!(
+                "pods-aac decodes only the configuration {EXPECTED_CONFIG:02x?}, not {config:02x?}"
+            ));
         }
-        let built = catch_unwind(|| AacDecoder::with_config(&config));
-        let mut decoder = built
-            .map_err(|_panic| "the decoder panicked on the configuration".to_owned())?
-            .map_err(|error| error.to_string())?;
-        let call = Box::new(move |unit: &[u8]| match decoder.decode(unit) {
-            Ok(samples) => UnitResult::Samples(samples.to_vec()),
-            Err(error) => UnitResult::Error(error.to_string()),
-        });
-        Ok(Self { call })
-    }
-
-    fn of_the_chain() -> Result<Self, String> {
         let mut decoder = Decoder::new().ok_or("the decoder refused its own configuration")?;
         let call = Box::new(move |unit: &[u8]| match decoder.unit(unit) {
             Decoded::Samples(samples) => UnitResult::Samples(samples.to_vec()),
