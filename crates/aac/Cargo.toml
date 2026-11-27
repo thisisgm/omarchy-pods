@@ -1,0 +1,17 @@
+[package]
+name = "pods-aac"
+description = "Clean-room MIT ER AAC-ELD (480-sample mono, 48 kHz) decoder and minimal synthetic test unit writer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+allocation-counter.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true
