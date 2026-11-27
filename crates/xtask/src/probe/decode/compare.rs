@@ -180,5 +180,84 @@ pub(crate) fn compare(
     })
 }
 
+/// Sample-level accuracy metrics between a candidate decode and an oracle decode at a given unit offset.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct QualityMetrics {
+    pub(crate) frames: usize,
+    pub(crate) max_abs: f64,
+    pub(crate) max_lsb: f64,
+    pub(crate) rms_error: f64,
+    pub(crate) snr_db: f64,
+}
+
+/// Computes max abs error, max LSB, RMS error, and SNR (dB) of `candidate` against `oracle` at `offset_units`.
+#[must_use]
+pub(crate) fn quality_metrics(
+    candidate: &[f32],
+    oracle: &[f32],
+    samples_per_unit: usize,
+    offset_units: i32,
+) -> QualityMetrics {
+    let mut frames = 0_usize;
+    let mut max_abs = 0.0_f64;
+    let mut err_sq = 0.0_f64;
+    let mut sig_sq = 0.0_f64;
+    let mut count = 0_u64;
+    let b_units = oracle.len().checked_div(samples_per_unit).unwrap_or(0);
+    for index in 0..b_units {
+        let Some(offset_isize) = isize::try_from(offset_units).ok() else {
+            break;
+        };
+        let Some(in_a) = index.checked_add_signed(offset_isize) else {
+            continue;
+        };
+        let (Some(a_frame), Some(b_frame)) = (
+            frame(candidate, in_a, samples_per_unit),
+            frame(oracle, index, samples_per_unit),
+        ) else {
+            continue;
+        };
+        frames = frames.saturating_add(1);
+        for (&a, &b) in a_frame.iter().zip(b_frame) {
+            let af = f64::from(a);
+            let bf = f64::from(b);
+            let diff = (af - bf).abs();
+            max_abs = if diff.is_finite() {
+                max_abs.max(diff)
+            } else {
+                f64::INFINITY
+            };
+            err_sq += diff * diff;
+            sig_sq += bf * bf;
+            count = count.saturating_add(1);
+        }
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "sample count to f64 for RMS denominator"
+    )]
+    let denom = count as f64;
+    let rms_error = if count > 0 {
+        (err_sq / denom).sqrt()
+    } else {
+        0.0
+    };
+    let snr_db = if err_sq == 0.0 {
+        f64::INFINITY
+    } else if sig_sq == 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        10.0 * (sig_sq / err_sq).log10()
+    };
+    QualityMetrics {
+        frames,
+        max_abs,
+        max_lsb: max_abs * LSB_PER_FULL_SCALE,
+        rms_error,
+        snr_db,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests;
