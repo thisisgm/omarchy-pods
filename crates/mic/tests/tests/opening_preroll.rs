@@ -1,5 +1,7 @@
 use std::io::{self, Write};
 
+use pods_mic::{DOAP_LATENCY_MS, OPENING_EXIT_MS};
+
 use super::{
     BURST_FRAMES, COLLAR_FRAMES, FADE, FRAME_MS, QUANTUM, RATE_HZ, Rig, SHORT_LEAD_MS, STEADY,
     Take, after, assert_same, bytes, decoded, frame_frames, frames_in, head, iter, linked, ms,
@@ -143,6 +145,75 @@ fn a_stalled_reader_in_a_short_opening_catches_up_without_dropping_audio() {
     assert!(
         steady(*take.ratios.last().unwrap()),
         "reader must return to steady steering after catching up"
+    );
+    assert_bounded_catch_up(&take);
+    assert_eq!(Rig::count(&take.counters.underruns), 0);
+}
+
+#[test]
+fn a_late_opening_anchor_inside_the_realign_bound_catches_up_before_the_tail() {
+    const SILENT: usize = 10;
+    const SPOKEN_READS: usize = 25;
+    // 11 frames split 5, 5, 1 place the anchor 13 ms late, inside REALIGN_MS, and the first steady frame advances it.
+    const ANCHOR_LATE_MS: u32 = 13;
+    let placed = STEADY.saturating_sub(ms(FRAME_MS - ANCHOR_LATE_MS));
+    let mut burst_frames = vec![silence(); SILENT];
+    burst_frames.push(tone_onset());
+    let mut take = Take::new(0, None);
+    // Phased so the first read after placement lands before STEADY, while the late anchor still holds.
+    let first_read = placed + ms(2);
+    take.play(
+        Vec::new(),
+        linked(first_read, SHORT_LEAD_MS),
+        head(SHORT_LEAD_MS) / QUANTUM,
+    );
+    for (index, chunk) in burst_frames.chunks(BURST_FRAMES).enumerate() {
+        let offset = index.saturating_mul(BURST_FRAMES);
+        let counters = (offset..).map(|counter| u16::try_from(counter).unwrap());
+        take.chain
+            .frames(placed, counters.zip(chunk.iter().copied()));
+    }
+    take.lands = (0..SPOKEN_READS)
+        .map(|index| {
+            let at = after(STEADY, ms(FRAME_MS), u32::try_from(index).unwrap());
+            (at, vec![burst_frames.len().saturating_add(index)])
+        })
+        .collect();
+    take.go_on(SPOKEN_READS);
+
+    let mut script = burst_frames;
+    script.extend(iter::repeat_n(bytes(0, None), SPOKEN_READS));
+    let twin = decoded(&script);
+    let kept_start = (SILENT - COLLAR_FRAMES) * frame_frames();
+    let word = &twin[SILENT * frame_frames()..(SILENT + 3) * frame_frames()];
+    let found = places(&take.tape, word);
+    assert_eq!(
+        found.len(),
+        1,
+        "the opening word must stay intact across the anchor correction"
+    );
+    let audio_start = found[0] - COLLAR_FRAMES * frame_frames();
+    let expected_len = take.tape.len() - audio_start;
+    assert_same(
+        &take.tape[audio_start + FADE..],
+        &twin[kept_start + FADE..kept_start + expected_len],
+    );
+    // The lag must close near the opening exit before the recorder's tail deadline.
+    let kept_before_steady = u32::try_from(COLLAR_FRAMES + 1).unwrap() + 1;
+    let arrival = STEADY
+        .checked_sub(ms(kept_before_steady * FRAME_MS))
+        .unwrap();
+    let last_now = *take.times.last().unwrap();
+    let target = i64::try_from(frames_in(
+        last_now.checked_sub(arrival + ms(DOAP_LATENCY_MS)).unwrap(),
+    ))
+    .unwrap();
+    let (next, _) = take.reader.read_ends();
+    let lag = target.saturating_sub(next);
+    let max_lag = i64::try_from(frames_in(ms(u32::from(OPENING_EXIT_MS) + 1))).unwrap();
+    assert!(
+        lag <= max_lag,
+        "reader stayed {lag} frames behind target at the tail (limit {max_lag} frames)"
     );
     assert_bounded_catch_up(&take);
     assert_eq!(Rig::count(&take.counters.underruns), 0);

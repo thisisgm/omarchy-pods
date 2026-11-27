@@ -4,6 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
+mod catch_up;
+mod opening;
+
+use opening::opening_ratio;
+
 use super::conceal::{FADE_FRAMES, Tail, UNIT_FRAMES, fade_in};
 use super::dictation::{FRAME_MS, PREROLL_STAGE_FRAMES};
 use super::{Counters, DOAP_LATENCY_MS, FRAMES_PER_MS, NODE_LATENCY_MS, NS_PER_MS, RATE_HZ, level};
@@ -30,9 +35,9 @@ const CATCH_UP_FULL: u16 = 1_045;
 /// Close about 43 ms of missed playout per second of fast source audio.
 #[expect(clippy::as_conversions, reason = "a const context has no `From`")]
 const CATCH_UP_RATIO: f64 = CATCH_UP_FULL as f64 / CATCH_UP_BASE as f64;
-/// The owner's limit on source audio played above the drift ratio after one stall.
+/// The limit on source audio played above the drift ratio for one stall or anchor correction.
 const CATCH_UP_MAX_MS: u16 = 1_000;
-/// Bring catch-up back into the drift range over the last 5 ms above the realignment bound.
+/// Bring catch-up back into the drift range over the last 5 ms above its lag floor.
 const CATCH_UP_TAPER_MS: f64 = 5.0;
 /// The most lag an opening can leave to steady steering.
 pub const OPENING_EXIT_MS: u16 = 2;
@@ -404,31 +409,10 @@ pub struct Reader {
     opening: Option<Opening>,
     last_read: Option<(Duration, i64)>,
     catch_up_left: i64,
+    /// The lag floor in ms for the active catch-up.
+    catch_up_floor: u16,
     /// The converter applies a requested catch-up ratio to its next read.
     catch_up_requested: bool,
-}
-
-/// The catch-up rate falls by a quarter of its excess per quantum as it spends its remaining lag budget.
-fn opening_ratio(behind: i64, frames: i64) -> f64 {
-    let exit = i64::from(OPENING_EXIT_MS.saturating_mul(FRAMES_PER_MS));
-    let distance = float_of(behind.saturating_sub(exit)) / float_of(frames.max(1));
-    if distance <= 0.0 {
-        return 1.0;
-    }
-    let max_excess = OPENING_MAX_PPM / PARTS_PER_MILLION;
-    let step = max_excess / f64::from(OPENING_RAMP_QUANTA);
-    let mut budget = 0.0;
-    for quantum in 1..=OPENING_RAMP_QUANTA {
-        let excess = step * f64::from(quantum);
-        // A quantum at ratio r closes 1 - 1/r quanta of lag.
-        let closure = excess / (1.0 + excess);
-        if distance <= budget + closure {
-            let share = (distance - budget) / closure;
-            return 1.0 + step * (f64::from(quantum.saturating_sub(1)) + share);
-        }
-        budget += closure;
-    }
-    1.0 + max_excess
 }
 
 impl Reader {
@@ -455,6 +439,7 @@ impl Reader {
             opening: None,
             last_read: None,
             catch_up_left: 0,
+            catch_up_floor: REALIGN_MS,
             catch_up_requested: false,
         };
         (reader, resync)
@@ -484,6 +469,7 @@ impl Reader {
             (self.linking, self.opening) = (true, None);
             self.previous_span_run = self.ring.edge.load().map(|_| previous);
             self.catch_up_left = 0;
+            self.catch_up_floor = REALIGN_MS;
             self.edge = Some(self.ring.link(now));
         }
         // A dry read can run ahead of the writer, so it only accounts for frames already written.
@@ -517,22 +503,7 @@ impl Reader {
             return None;
         }
         self.last_read = Some((now, target));
-        if self.heard != Some(run) {
-            self.catch_up_left = 0;
-        } else if let Some((last, previous_target)) = previous {
-            let elapsed = scaled(ns_of(now.saturating_sub(last)), RATE_HZ, NS_PER_SECOND);
-            let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
-            let anchor_advance = target
-                .saturating_sub(previous_target)
-                .saturating_sub(elapsed);
-            // A late callback or an earlier DoAP anchor can leave the reader behind.
-            if elapsed.saturating_sub(frames) > bound
-                || (self.ring.path() == Path::Dictation && anchor_advance > bound)
-            {
-                self.catch_up_left =
-                    i64::from(CATCH_UP_MAX_MS).saturating_mul(i64::from(FRAMES_PER_MS));
-            }
-        }
+        self.arm_catch_up(run, now, target, frames, previous);
         let catch_up = self.stand(target.saturating_sub(frames), run, generation, path, now);
         Some(Aim {
             target,
@@ -638,6 +609,13 @@ impl Reader {
             if place != self.next {
                 self.jump(place);
             }
+        } else if place.saturating_sub(self.next)
+            > i64::from(self.catch_up_floor.saturating_mul(FRAMES_PER_MS))
+            && self.heard == Some(run)
+            && self.catch_up_left > 0
+            && !self.left.falling()
+        {
+            return true;
         }
         false
     }
@@ -775,11 +753,9 @@ impl Reader {
         let drift = 1.0 - ppm / PARTS_PER_MILLION;
         // The next converter request may be larger than this read, up to the buffer capacity.
         let reserved = capacity.unwrap_or(frames);
-        if catch_up
-            && ahead_ms < -f64::from(REALIGN_MS)
-            && (1..=self.catch_up_left).contains(&reserved)
-        {
-            let excess = -ahead_ms - f64::from(REALIGN_MS);
+        let floor = f64::from(self.catch_up_floor);
+        if catch_up && ahead_ms < -floor && (1..=self.catch_up_left).contains(&reserved) {
+            let excess = -ahead_ms - floor;
             let share = (excess / CATCH_UP_TAPER_MS).min(1.0);
             let ratio = 1.0 + (CATCH_UP_RATIO - 1.0) * share;
             if ratio > drift {
@@ -790,6 +766,9 @@ impl Reader {
                 }
                 return ratio;
             }
+        } else if ahead_ms >= -floor {
+            self.catch_up_left = 0;
+            self.catch_up_floor = REALIGN_MS;
         }
         drift
     }
