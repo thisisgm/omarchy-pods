@@ -346,13 +346,13 @@ mod tests {
                     summary,
                     "",
                     "Off",
-                    "Noise Cancellation",
                     "Transparency",
                     "Adaptive",
+                    "Noise Cancellation",
                     "",
                     "Conversation Awareness",
-                    "Ear Detection",
-                    "One-Bud ANC"
+                    "One-Bud ANC",
+                    "Ear Detection"
                 ]
             );
             assert!(!bool::try_from(&*menu[0].1["enabled"]).unwrap());

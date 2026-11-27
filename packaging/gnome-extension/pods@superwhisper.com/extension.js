@@ -14,19 +14,49 @@ const PODS = 'com.superwhisper.Pods1';
 const PROPERTIES = 'org.freedesktop.DBus.Properties';
 const REPLY_TIMEOUT_MS = 5000;
 const SLIDER_DELAY_MS = 180;
-const BATTERY_TRACK_WIDTH = 64;
+const METER_WIDTH = 148;
+const LOW_BATTERY_PERCENT = 20;
 const MODES = [
     ['Off', 'off', 'supports_noise_off', 0],
-    ['ANC', 'anc', 'supports_noise_control', 1],
-    ['Trans.', 'transparency', 'supports_noise_control', 2],
-    ['Adapt.', 'adaptive', 'supports_adaptive', 3],
+    ['Transparency', 'transparency', 'supports_noise_control', 2],
+    ['Adaptive', 'adaptive', 'supports_adaptive', 3],
+    ['Noise Cancellation', 'anc', 'supports_noise_control', 1],
 ];
-const BATTERIES = [['left', 'L'], ['right', 'R'], ['case', 'Case'], ['headset', 'Headset']];
+const BATTERIES = [
+    ['left', 'Left'],
+    ['right', 'Right'],
+    ['case', 'Case'],
+    ['headset', 'Headphones'],
+];
+const EAR_MODES = [
+    ['Pause when one is out', 'one'],
+    ['Pause when both are out', 'both'],
+    ['Never pause', 'off'],
+];
+const LID_LABELS = ['Open', 'Closed'];
+
+function vbox(props = {}) {
+    return new St.BoxLayout({
+        layout_manager: new Clutter.BoxLayout({orientation: Clutter.Orientation.VERTICAL}),
+        ...props,
+    });
+}
+
+function podMeta(key, cell, lidState) {
+    if (key === 'case')
+        return LID_LABELS[lidState] ?? (cell?.charging ? 'Charging' : '');
+    if (cell?.charging)
+        return 'Charging';
+    if (cell?.in_ear)
+        return 'In ear';
+    return '';
+}
 
 export default class PodsExtension extends Extension {
     enable() {
         this._signals = [];
         this._indicator = new PanelMenu.Button(0, 'Pods');
+        this._indicator.menu.box.add_style_class_name('pods-menu');
         this._indicator.hide();
         this._icons = {};
         for (const variant of ['buds', 'pro', 'max'])
@@ -61,72 +91,132 @@ export default class PodsExtension extends Extension {
         this._headerIcon = null;
         this._device = null;
         this._connection = null;
-        this._batteryRow = null;
-        this._modeRow = null;
+        this._batterySection = null;
+        this._batterySep = null;
+        this._modeHeader = null;
+        this._modeRows = null;
         this._adaptiveRow = null;
-        this._adaptiveLabel = null;
+        this._adaptivePercent = null;
         this._slider = null;
+        this._switchSep = null;
+        this._earSep = null;
+        this._earRow = null;
+        this._earValue = null;
     }
 
     _connect(actor, signal, callback) {
         this._signals.push([actor, actor.connect(signal, callback)]);
     }
 
-    _row(child) {
-        const row = new PopupMenu.PopupBaseMenuItem({activate: false, can_focus: false, hover: false});
+    _row(child, styleClass = 'pods-item') {
+        const row = new PopupMenu.PopupBaseMenuItem({
+            activate: false,
+            can_focus: false,
+            hover: false,
+            style_class: styleClass,
+        });
         child.x_expand = true;
         row.add_child(child);
         this._indicator.menu.addMenuItem(row);
         return row;
     }
 
+    _separator() {
+        const sep = new PopupMenu.PopupSeparatorMenuItem();
+        sep.add_style_class_name('pods-separator');
+        this._indicator.menu.addMenuItem(sep);
+        return sep;
+    }
+
     _buildMenu() {
         const header = new St.BoxLayout({style_class: 'pods-header'});
-        this._headerIcon = new St.Icon({icon_size: 32});
+        this._headerIcon = new St.Icon({icon_size: 36, style_class: 'pods-hero-icon'});
         this._device = new St.Label({style_class: 'pods-device'});
-        this._connection = new St.Label();
-        const details = new St.BoxLayout({
-            layout_manager: new Clutter.BoxLayout({orientation: Clutter.Orientation.VERTICAL}),
+        this._connection = new St.Label({style_class: 'pods-subtitle'});
+        const details = vbox({
+            style_class: 'pods-header-text',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
         });
         details.add_child(this._device);
         details.add_child(this._connection);
         header.add_child(this._headerIcon);
         header.add_child(details);
-        this._row(header);
+        this._row(header, 'pods-header-row');
 
-        const batteryStrip = new St.BoxLayout({style_class: 'pods-batteries'});
+        const batteryBox = vbox({style_class: 'pods-section'});
+        batteryBox.add_child(new St.Label({text: 'BATTERY', style_class: 'pods-section-title'}));
         this._batteries = BATTERIES.map(([key, label]) => {
-            const column = new St.BoxLayout({
-                layout_manager: new Clutter.BoxLayout({orientation: Clutter.Orientation.VERTICAL}),
+            const line = new St.BoxLayout({style_class: 'pods-battery-row', y_align: Clutter.ActorAlign.CENTER});
+            const name = new St.Label({
+                text: label,
+                style_class: key === 'headset' ? 'pods-battery-label pods-battery-wide' : 'pods-battery-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const fill = new St.Bin({style_class: 'pods-meter-fill'});
+            const track = new St.BoxLayout({
+                style_class: 'pods-meter-track',
+                x_align: Clutter.ActorAlign.START,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            track.add_child(fill);
+            const percent = new St.Label({style_class: 'pods-battery-pct', y_align: Clutter.ActorAlign.CENTER});
+            const meta = new St.Label({style_class: 'pods-battery-meta', y_align: Clutter.ActorAlign.CENTER});
+            line.add_child(name);
+            line.add_child(track);
+            line.add_child(percent);
+            line.add_child(meta);
+            batteryBox.add_child(line);
+            return {key, line, fill, percent, meta};
+        });
+        this._batterySection = this._row(batteryBox, 'pods-section-row');
+        this._batterySep = this._separator();
+
+        const modeHeading = new St.Label({text: 'LISTENING MODE', style_class: 'pods-section-title'});
+        this._modeHeader = this._row(modeHeading, 'pods-section-head-row');
+        this._modeRows = [];
+        this._modes = MODES.map(([label, word, capability, value]) => {
+            const content = new St.BoxLayout({style_class: 'pods-mode-content', x_expand: true});
+            const text = new St.Label({
+                text: label,
+                style_class: 'pods-mode-label',
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const check = new St.Icon({
+                icon_name: 'object-select-symbolic',
+                style_class: 'pods-check',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            content.add_child(text);
+            content.add_child(check);
+            const button = new St.Button({
+                child: content,
+                style_class: 'pods-row-button',
+                can_focus: true,
                 x_expand: true,
             });
-            const percent = new St.Label();
-            const progress = new St.Bin({style_class: 'pods-progress'});
-            const track = new St.BoxLayout({style_class: 'pods-track', x_align: Clutter.ActorAlign.START});
-            track.add_child(progress);
-            column.add_child(new St.Label({text: label}));
-            column.add_child(percent);
-            column.add_child(track);
-            batteryStrip.add_child(column);
-            return {key, column, percent, progress};
-        });
-        this._batteryRow = this._row(batteryStrip);
-
-        const modes = new St.BoxLayout({style_class: 'pods-modes'});
-        this._modes = MODES.map(([label, word, capability, value]) => {
-            const button = new St.Button({label, style_class: 'button pods-mode', can_focus: true, x_expand: true});
             this._connect(button, 'clicked', () => this._set('SetNoiseMode', '(s)', word));
-            modes.add_child(button);
-            return {button, capability, value};
+            const row = this._row(button, 'pods-compact-row');
+            this._modeRows.push(row);
+            return {row, button, text, check, capability, value};
         });
-        this._modeRow = this._row(modes);
 
-        const adaptive = new St.BoxLayout({
-            layout_manager: new Clutter.BoxLayout({orientation: Clutter.Orientation.VERTICAL}),
+        const adaptive = vbox({style_class: 'pods-adaptive-box'});
+        const adaptiveHead = new St.BoxLayout({style_class: 'pods-adaptive-head'});
+        adaptiveHead.add_child(new St.Label({
+            text: 'Adaptive noise',
+            style_class: 'pods-adaptive-title',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        this._adaptivePercent = new St.Label({
+            style_class: 'pods-adaptive-pct',
+            y_align: Clutter.ActorAlign.CENTER,
         });
-        this._adaptiveLabel = new St.Label();
+        adaptiveHead.add_child(this._adaptivePercent);
         this._slider = new Slider(0);
-        this._slider.accessible_name = 'Adaptive Noise';
+        this._slider.accessible_name = 'Adaptive noise';
         this._connect(this._slider, 'drag-begin', () => {
             this._dragging = true;
             this._cancelSlider();
@@ -146,25 +236,72 @@ export default class PodsExtension extends Extension {
                 return GLib.SOURCE_REMOVE;
             });
         });
-        adaptive.add_child(this._adaptiveLabel);
+        adaptive.add_child(adaptiveHead);
         adaptive.add_child(this._slider);
-        this._adaptiveRow = this._row(adaptive);
+        this._adaptiveRow = this._row(adaptive, 'pods-adaptive-row');
 
+        this._switchSep = this._separator();
         this._switches = [
-            this._switch('Conversation Awareness', 'conversational_awareness', 'supports_conversational_awareness',
+            this._switch('Conversation Awareness', 'Lower the volume when you start talking',
+                'conversational_awareness', 'supports_conversational_awareness',
                 enabled => this._set('SetConversationalAwareness', '(b)', enabled)),
-            this._switch('Ear Detection', 'ear_detection_behavior', null,
-                enabled => this._set('SetEarDetection', '(s)', enabled ? 'one' : 'off')),
-            this._switch('One-Bud ANC', 'one_bud_anc_mode', 'supports_one_bud_anc',
+            this._switch('One-Bud ANC', 'Keep noise cancellation on with one pod in',
+                'one_bud_anc_mode', 'supports_one_bud_anc',
                 enabled => this._set('SetOneBudAnc', '(b)', enabled)),
         ];
+
+        this._earSep = this._separator();
+        const earContent = new St.BoxLayout({style_class: 'pods-ear-content', x_expand: true});
+        earContent.add_child(new St.Label({
+            text: 'Ear detection',
+            style_class: 'pods-ear-title',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        }));
+        this._earValue = new St.Label({
+            style_class: 'pods-ear-value',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        earContent.add_child(this._earValue);
+        const earButton = new St.Button({
+            child: earContent,
+            style_class: 'pods-row-button',
+            can_focus: true,
+            x_expand: true,
+        });
+        this._connect(earButton, 'clicked', () => {
+            const current = Number.isInteger(this._status?.ear_detection_behavior)
+                ? this._status.ear_detection_behavior
+                : 0;
+            const next = (current + 1) % EAR_MODES.length;
+            this._set('SetEarDetection', '(s)', EAR_MODES[next][1]);
+        });
+        this._earButton = earButton;
+        this._earRow = this._row(earButton, 'pods-compact-row');
     }
 
-    _switch(label, key, capability, action) {
-        const item = new PopupMenu.PopupSwitchMenuItem(label, false);
-        this._connect(item, 'toggled', (_item, enabled) => action(enabled));
-        this._indicator.menu.addMenuItem(item);
-        return {item, key, capability};
+    _switch(title, caption, key, capability, action) {
+        const box = new St.BoxLayout({style_class: 'pods-toggle-content', x_expand: true});
+        const labels = vbox({style_class: 'pods-toggle-labels', x_expand: true, y_align: Clutter.ActorAlign.CENTER});
+        labels.add_child(new St.Label({text: title, style_class: 'pods-toggle-title'}));
+        labels.add_child(new St.Label({text: caption, style_class: 'pods-toggle-caption'}));
+        const toggle = new PopupMenu.Switch(false);
+        toggle.y_align = Clutter.ActorAlign.CENTER;
+        box.add_child(labels);
+        box.add_child(toggle);
+        const button = new St.Button({
+            child: box,
+            style_class: 'pods-row-button pods-toggle-button',
+            can_focus: true,
+            x_expand: true,
+        });
+        this._connect(button, 'clicked', () => {
+            const next = !toggle.state;
+            toggle.state = next;
+            action(next);
+        });
+        const row = this._row(button, 'pods-compact-row');
+        return {row, button, toggle, key, capability};
     }
 
     _cancelSlider() {
@@ -174,7 +311,7 @@ export default class PodsExtension extends Extension {
     }
 
     _showSlider() {
-        this._adaptiveLabel.text = `Adaptive Noise (${Math.round(this._slider.value * 100)}%)`;
+        this._adaptivePercent.text = `${Math.round(this._slider.value * 100)}%`;
     }
 
     _sendSlider() {
@@ -263,27 +400,46 @@ export default class PodsExtension extends Extension {
         }
         const variant = state.is_headset ? 'max' : state.is_pro_series ? 'pro' : 'buds';
         this._panelIcon.gicon = this._headerIcon.gicon = this._icons[variant];
+        this._headerIcon.opacity = state.connected ? 255 : 120;
         const buds = (state.is_headset ? [state.headset] : [state.left, state.right])
             .filter(cell => cell?.available);
         this._percentage.visible = buds.length > 0;
         this._percentage.text = buds.length > 0 ? `${Math.min(...buds.map(cell => cell.level))}%` : '';
-        this._device.text = state.device_name || 'AirPods';
-        const worn = state.left?.in_ear || state.right?.in_ear;
-        this._connection.text = state.connected ? (worn ? 'Connected · Worn' : 'Connected') : 'Away';
-        this._batteryRow.visible = available;
-        for (const {key, column, percent, progress} of this._batteries) {
+        this._device.text = state.model_name || state.device_name || 'AirPods';
+        this._connection.text = state.connected ? 'CONNECTED' : 'NOT CONNECTED';
+
+        this._batterySection.visible = available;
+        for (const {key, line, fill, percent, meta} of this._batteries) {
             const cell = state[key];
-            column.visible = !!cell?.available;
-            if (column.visible) {
-                percent.text = `${cell.level}%${cell.charging ? '+' : ''}`;
-                progress.width = Math.round(BATTERY_TRACK_WIDTH * cell.level / 100);
+            const show = state.is_headset ? key === 'headset' && !!cell?.available : key !== 'headset' && !!cell?.available;
+            line.visible = show;
+            if (show) {
+                const level = Math.max(0, Math.min(100, cell.level));
+                percent.text = `${level}%`;
+                fill.width = Math.round(METER_WIDTH * level / 100);
+                const low = level <= LOW_BATTERY_PERCENT && !cell.charging;
+                if (low)
+                    fill.add_style_class_name('pods-meter-low');
+                else
+                    fill.remove_style_class_name('pods-meter-low');
+                meta.text = podMeta(key, cell, state.lid_state);
             }
         }
-        for (const {button, capability, value} of this._modes) {
-            button.visible = !!(state.connected && state.supports_noise_control && state[capability]);
-            button.checked = state.noise_mode === value;
+
+        let anyMode = false;
+        for (const {row, text, check, capability, value} of this._modes) {
+            const show = !!(state.connected && state.supports_noise_control && state[capability]);
+            row.visible = show;
+            if (show)
+                anyMode = true;
+            const active = state.noise_mode === value;
+            check.visible = active;
+            if (active)
+                text.add_style_class_name('pods-mode-active');
+            else
+                text.remove_style_class_name('pods-mode-active');
         }
-        this._modeRow.visible = this._modes.some(({button}) => button.visible);
+        this._modeHeader.visible = anyMode;
         this._adaptiveRow.visible = !!(state.connected && state.supports_adaptive && state.noise_mode === 3);
         if (!this._adaptiveRow.visible)
             this._cancelSlider();
@@ -293,10 +449,26 @@ export default class PodsExtension extends Extension {
             this._showSlider();
             this._rendering = false;
         }
-        for (const {item, key, capability} of this._switches) {
-            item.visible = !!(state.connected && (capability ? state[capability] : state.model_int > 0));
-            if (item.visible)
-                item.setToggleState(capability ? state[key] : state[key] !== 2);
+
+        let anySwitch = false;
+        for (const {row, toggle, key, capability} of this._switches) {
+            const show = !!(state.connected && state[capability]);
+            row.visible = show;
+            if (show) {
+                anySwitch = true;
+                toggle.state = !!state[key];
+            }
         }
+
+        const showEar = !!(state.connected && state.model_int > 0);
+        this._earRow.visible = showEar;
+        if (showEar) {
+            const entry = EAR_MODES[state.ear_detection_behavior];
+            this._earValue.text = entry ? entry[0] : 'Unknown';
+        }
+
+        this._batterySep.visible = available && (anyMode || anySwitch || showEar);
+        this._switchSep.visible = anyMode && anySwitch;
+        this._earSep.visible = (anyMode || anySwitch) && showEar;
     }
 }

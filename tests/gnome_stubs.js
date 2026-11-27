@@ -18,7 +18,21 @@ class SignalEmitter {
         this._handlers = new Map();
         this.visible = true;
         this.destroyed = false;
+        this.opacity = 255;
+        this._classes = new Set();
         state.actors.add(this);
+    }
+
+    add_style_class_name(name) {
+        this._classes.add(name);
+    }
+
+    remove_style_class_name(name) {
+        this._classes.delete(name);
+    }
+
+    has_style_class_name(name) {
+        return this._classes.has(name);
     }
 
     connect(signal, callback) {
@@ -125,6 +139,7 @@ class Menu {
     constructor() {
         this.items = [];
         this.closedCount = 0;
+        this.box = new Container();
     }
 
     addMenuItem(item) {
@@ -148,6 +163,23 @@ export class Button extends Container {
 export class PopupBaseMenuItem extends Container {
     constructor(props = {}) {
         super(props);
+    }
+}
+
+export class PopupSeparatorMenuItem extends SignalEmitter {
+    constructor() {
+        super();
+    }
+}
+
+export class Switch extends SignalEmitter {
+    constructor(active) {
+        super();
+        this.state = !!active;
+    }
+
+    setToggleState(active) {
+        this.state = !!active;
     }
 }
 

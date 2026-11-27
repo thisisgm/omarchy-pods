@@ -13,13 +13,27 @@ pub(super) const MENU_PATH: &str = "/MenuBar";
 const MENU_VERSION: u32 = 3;
 const ROOT: i32 = 0;
 const ADAPTIVE_MENU: i32 = 8;
+const EAR_MENU: i32 = 11;
 const MODES: [(i32, &str, NoiseMode); 4] = [
     (4, "Off", NoiseMode::Off),
-    (5, "Noise Cancellation", NoiseMode::Anc),
     (6, "Transparency", NoiseMode::Transparency),
     (7, "Adaptive", NoiseMode::Adaptive),
+    (5, "Noise Cancellation", NoiseMode::Anc),
 ];
 const PRESETS: [(i32, u8); 5] = [(13, 0), (14, 25), (15, 50), (16, 75), (17, 100)];
+const EAR_BEHAVIORS: [(i32, &str, EarDetectionBehavior); 3] = [
+    (
+        18,
+        "Pause when one is out",
+        EarDetectionBehavior::PauseWhenOneRemoved,
+    ),
+    (
+        19,
+        "Pause when both are out",
+        EarDetectionBehavior::PauseWhenBothRemoved,
+    ),
+    (20, "Never pause", EarDetectionBehavior::Disabled),
+];
 
 type Properties = HashMap<String, OwnedVariant>;
 type Layout = (i32, Properties, Vec<OwnedVariant>);
@@ -164,12 +178,6 @@ fn add_switches(rows: &mut Vec<Row>, state: &State) {
     if caps.conversational_awareness || caps.ear_detection || caps.one_bud_anc {
         rows.push(Row::separator(9));
     }
-    let ear = state.ear_detection_behavior != EarDetectionBehavior::Disabled;
-    let next_ear = if ear {
-        EarDetectionBehavior::Disabled
-    } else {
-        EarDetectionBehavior::default()
-    };
     for (id, label, available, selected, command) in [
         (
             10,
@@ -177,13 +185,6 @@ fn add_switches(rows: &mut Vec<Row>, state: &State) {
             caps.conversational_awareness,
             state.conversational_awareness,
             Command::SetConversationalAwareness(!state.conversational_awareness),
-        ),
-        (
-            11,
-            "Ear Detection",
-            caps.ear_detection,
-            ear,
-            Command::SetEarDetection(next_ear),
         ),
         (
             12,
@@ -201,6 +202,26 @@ fn add_switches(rows: &mut Vec<Row>, state: &State) {
                 "checkmark",
                 selected,
                 command,
+            ));
+        }
+    }
+    if caps.ear_detection {
+        rows.push(Row::new(
+            EAR_MENU,
+            ROOT,
+            [
+                ("label", "Ear Detection".into()),
+                ("children-display", "submenu".into()),
+            ],
+        ));
+        for (id, label, behavior) in EAR_BEHAVIORS {
+            rows.push(Row::toggle(
+                id,
+                EAR_MENU,
+                label.to_owned(),
+                "radio",
+                state.ear_detection_behavior == behavior,
+                Command::SetEarDetection(behavior),
             ));
         }
     }
