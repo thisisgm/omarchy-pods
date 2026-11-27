@@ -171,7 +171,8 @@ omarchy plugin remove io.github.thisisgm.omapods
 
 The uninstaller leaves `~/.config/AirPodsTrayApp` in place. Plugin version
 1.3.6 and earlier kept the C++ daemon's pairing keys and settings there, and
-the Rust daemon does not read those keys. Remove it if it exists.
+the Rust daemon does not read those keys. Once you no longer run the C++
+daemon, remove it if it exists.
 
 ```bash
 rm -r ~/.config/AirPodsTrayApp
