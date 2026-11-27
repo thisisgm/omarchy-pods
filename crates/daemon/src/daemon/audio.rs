@@ -20,9 +20,6 @@ use pods_core::policy::audio::{
 };
 use pods_core::state::State;
 use pods_proto::addr::BdAddr;
-use pulseaudio::protocol::{
-    AuthParams, Command, CommandTag, Prop, Props, PulseError, SubscriptionMask, SuspendParams,
-};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::sync::watch;
@@ -32,6 +29,9 @@ use tokio::time::{Instant, sleep, timeout};
 use super::link::{Input, STOP_WAIT_MS};
 use super::log;
 use volume::{Observed, VolumeWrite, Volumes};
+use wire::protocol::{
+    AuthParams, Command, CommandTag, Prop, Props, PulseError, SubscriptionMask, SuspendParams,
+};
 use wire::{Frame, Malformed, Message, PROTOCOL_VERSION, read_frame, take_frame, write_frame};
 
 /// The driver asks once per link signal, and the adapter takes each request at once.
@@ -52,11 +52,7 @@ const CLIENT_NAME: &CStr = c"librepods";
 /// The cookie's length in the auth request; `PipeWire`'s pulse server does not check its bytes.
 const COOKIE_LENGTH: usize = 256;
 
-#[expect(
-    clippy::as_conversions,
-    reason = "the discriminant is the PulseAudio protocol's error code"
-)]
-const NO_ENTITY: u32 = PulseError::NoEntity as u32;
+const NO_ENTITY: u32 = PulseError::NoEntity.number();
 
 /// The sink and default refreshed for a queued volume write.
 const VOLUME_REFRESH: SubscriptionMask = SubscriptionMask::SINK.union(SubscriptionMask::SERVER);

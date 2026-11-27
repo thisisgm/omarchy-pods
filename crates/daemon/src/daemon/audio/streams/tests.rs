@@ -1,13 +1,10 @@
-//! Support tests: the readers of the source list and of the record stream list against replies the protocol crate writes, cut and arbitrary input; the suite through the built daemon is `tests/recorders.rs`.
+//! Support tests: the readers of the source list and of the record stream list against native protocol fixture replies, cut and arbitrary input; the suite through the built daemon is `tests/recorders.rs`.
 
 use std::ffi::{CStr, CString};
 
+use crate::daemon::audio::wire::fixture::{ChannelVolume, Props, SourceInfo, SourceOutputInfo};
 use proptest::collection::vec;
 use proptest::prelude::*;
-use pulseaudio::protocol::{
-    ChannelMap, ChannelVolume, FormatEncoding, FormatInfo, Props, SampleFormat, SampleSpec,
-    SourceInfo, SourceOutputInfo,
-};
 
 use super::super::wire::tests::{body, reply};
 use super::*;
@@ -18,11 +15,8 @@ pub(in crate::daemon::audio) const MICROPHONE_INDEX: u32 = 57;
 const BUILT_IN_INDEX: u32 = 40;
 /// What the server lists as the source of a record stream linked to none.
 const NO_SOURCE: u32 = u32::MAX;
-const SPEC: SampleSpec = SampleSpec {
-    format: SampleFormat::S16Le,
-    channels: 2,
-    sample_rate: 48_000,
-};
+const RECORD_RATE: u32 = 48_000;
+const RECORD_CHANNELS: u8 = 2;
 /// Longer than any list a test here builds.
 const ANY_BYTES_MAX: usize = 2048;
 
@@ -34,12 +28,10 @@ pub(in crate::daemon::audio) fn source(
     SourceInfo {
         index,
         name: name.to_owned(),
-        sample_spec: SPEC,
-        channel_map: ChannelMap::stereo(),
-        cvolume: ChannelVolume::norm(SPEC.channels),
+        sample_rate: RECORD_RATE,
+        cvolume: ChannelVolume::norm(RECORD_CHANNELS),
         monitor_of_sink_index: monitor_of.map(|_| 0),
         monitor_of_sink_name: monitor_of.map(CStr::to_owned),
-        ..SourceInfo::default()
     }
 }
 
@@ -72,14 +64,11 @@ pub(in crate::daemon::audio) fn stream_on(source: u32, node: Option<&str>) -> So
     SourceOutputInfo {
         name: c"recorder".to_owned(),
         source_index: source,
-        sample_spec: SPEC,
-        channel_map: ChannelMap::stereo(),
-        cvolume: ChannelVolume::norm(SPEC.channels),
+        sample_rate: RECORD_RATE,
+        cvolume: ChannelVolume::norm(RECORD_CHANNELS),
         props,
-        has_volume: true,
-        volume_writable: true,
-        format: FormatInfo::new(FormatEncoding::Pcm),
-        ..SourceOutputInfo::default()
+        index: 0,
+        corked: false,
     }
 }
 

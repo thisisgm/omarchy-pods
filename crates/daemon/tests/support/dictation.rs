@@ -3,11 +3,11 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::support::audio::protocol::SinkState;
 use pods_fake::doap::Table;
 use pods_proto::doap::{STOP_REASON_HOST, doap_mode_on};
 use pods_pwrig::{Recorder, Server};
 use pods_samples::MODEL_NUMBER;
-use pulseaudio::protocol::SinkState;
 
 use super::audio::{FakeAudio, Recorder as Listed, RecorderId};
 use super::pipewire::{node_name, record, start, wait_node};

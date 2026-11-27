@@ -12,10 +12,10 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::{STOPPED_BY_THE_PODS_LINE, withdrawn_line};
     use pods_pwrig::Server;
     use pods_samples::{MODEL_NUMBER, Placed};
-    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::wire::card_named;
     use super::support::audio::{Asked, FakeAudio, FakeProfile, Volumes};

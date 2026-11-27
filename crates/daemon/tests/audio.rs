@@ -13,8 +13,8 @@ mod tests {
     use std::fs;
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::{MAX_VERSION, SubscriptionMask};
     use pods_fake::Profile;
-    use pulseaudio::protocol::{MAX_VERSION, SubscriptionMask};
     use serde_json::Value;
     use zbus::OwnedVariant;
 

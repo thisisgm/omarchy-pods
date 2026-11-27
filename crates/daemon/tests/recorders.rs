@@ -12,9 +12,9 @@ mod support;
 mod tests {
     use std::rc::Rc;
 
+    use crate::support::audio::protocol::{CommandTag, SinkState};
     use pods_pwrig::Server;
     use pods_samples::MODEL_NUMBER;
-    use pulseaudio::protocol::{CommandTag, SinkState};
 
     use super::support::audio::{Asked, FakeAudio, Recorder, Volumes};
     use super::support::pipewire::{node_name, start, wait_node};

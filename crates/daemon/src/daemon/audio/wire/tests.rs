@@ -1,16 +1,16 @@
-//! Support tests: the reader of the audio server's bytes against frames the protocol crate writes, cut, oversized and arbitrary input.
+//! Support tests: the reader of the audio server's bytes against native protocol fixture frames, cut, oversized and arbitrary input.
 
 use std::ffi::CStr;
 use std::time::Duration;
 
+use crate::daemon::audio::wire::fixture::{
+    AuthReply, CardInfo, CardPortInfo, ChannelVolume, ClientInfo, Command, CommandReply, Prop,
+    Props, PulseError, ServerInfo, SinkInfo, SubscriptionEvent, SubscriptionEventFacility,
+    SubscriptionEventType, TagWriter, read_command, read_command_message, write_command_message,
+    write_error, write_reply_message,
+};
 use proptest::collection::vec;
 use proptest::prelude::*;
-use pulseaudio::protocol::{
-    AuthReply, CardInfo, CardPortInfo, ChannelVolume, ClientInfo, Command, CommandReply,
-    FormatEncoding, FormatInfo, Prop, Props, PulseError, ServerInfo, SinkInfo, SubscriptionEvent,
-    SubscriptionEventFacility, SubscriptionEventType, TagStructWriter, port_info,
-    read_command_message, write_command_message, write_error, write_reply_message,
-};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder;
 use tokio::time::timeout;
@@ -48,7 +48,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
-/// A whole message as the crate writes it, its descriptor stripped.
+/// A whole message with its native header, its descriptor stripped.
 fn stripped(bytes: &[u8]) -> Frame {
     Frame(bytes[DESCRIPTOR_SIZE..].to_vec())
 }
@@ -59,7 +59,7 @@ pub(in crate::daemon::audio) async fn read_request(
     pending: &mut Vec<u8>,
 ) -> (u32, Command) {
     let frame = read_frame(stream, pending).await.unwrap();
-    Command::read_tag_prefixed(&mut frame.0.as_slice(), PROTOCOL_VERSION).unwrap()
+    read_command(&frame.0).unwrap()
 }
 
 pub(in crate::daemon::audio) fn reply(reply: &impl CommandReply) -> Frame {
@@ -78,18 +78,7 @@ pub(in crate::daemon::audio) fn body(frame: &Frame) -> &[u8] {
 }
 
 fn descriptor(length: u32, channel: u32) -> [u8; DESCRIPTOR_SIZE] {
-    let mut bytes = [0; DESCRIPTOR_SIZE];
-    let flags = DescriptorFlags::empty();
-    encode_descriptor(
-        &mut bytes,
-        &Descriptor {
-            length,
-            channel,
-            offset: 0,
-            flags,
-        },
-    );
-    bytes
+    Descriptor { length, channel }.encode()
 }
 
 fn props() -> Props {
@@ -105,15 +94,11 @@ pub(in crate::daemon::audio) fn sink(index: u32, name: &CStr, volumes: &[u32]) -
     for volume in volumes {
         cvolume.push(Volume::from_u32_clamped(*volume));
     }
-    let format = FormatInfo {
-        encoding: FormatEncoding::Pcm,
-        props: props(),
-    };
     SinkInfo {
         name: name.to_owned(),
         cvolume,
         props: props(),
-        formats: vec![format],
+        formats: vec![props()],
         ..SinkInfo::new_dummy(index)
     }
 }
@@ -238,7 +223,7 @@ fn a_request_goes_out_as_the_crate_reads_it() {
         theirs.read_to_end(&mut sent).await.unwrap();
         sent
     });
-    let (seq, command) = read_command_message(&mut sent.as_slice(), PROTOCOL_VERSION).unwrap();
+    let (seq, command) = read_command_message(&sent).unwrap();
     assert_eq!(seq, SEQ);
     assert_eq!(command, Command::GetSinkInfoList);
 }
@@ -252,7 +237,7 @@ fn message_tells_replies_refusals_events_and_the_rest_apart() {
     ));
 
     let mut refusal = Vec::new();
-    write_error(&mut refusal, SEQ, &PulseError::NoEntity).unwrap();
+    write_error(&mut refusal, SEQ, PulseError::NoEntity).unwrap();
     assert_eq!(
         message(&stripped(&refusal)),
         Ok(Message::Refused {
@@ -267,14 +252,14 @@ fn message_tells_replies_refusals_events_and_the_rest_apart() {
         index: Some(0),
     });
     let mut announced = Vec::new();
-    write_command_message(&mut announced, EVENT_SEQ, &event, PROTOCOL_VERSION).unwrap();
+    write_command_message(&mut announced, EVENT_SEQ, &event).unwrap();
     assert_eq!(
         message(&stripped(&announced)),
         Ok(Message::Event(Some(SubscriptionMask::SINK)))
     );
 
     let mut other = Vec::new();
-    write_command_message(&mut other, SEQ, &Command::GetServerInfo, PROTOCOL_VERSION).unwrap();
+    write_command_message(&mut other, SEQ, &Command::GetServerInfo).unwrap();
     assert_eq!(message(&stripped(&other)), Ok(Message::Other));
 
     assert_eq!(message(&Frame(Vec::new())), Err(Malformed::Cut));
@@ -288,9 +273,9 @@ fn subscription_event(seq: u32, flags: u32) -> Frame {
     const SINK_INDEX: u32 = 0;
 
     let mut payload = Vec::new();
-    let mut tags = TagStructWriter::new(&mut payload, PROTOCOL_VERSION);
-    for value in [command::EVENT, seq, flags, SINK_INDEX] {
-        tags.write_u32(value).unwrap();
+    let mut tags = TagWriter(&mut payload);
+    for value in [CommandTag::SubscribeEvent.number(), seq, flags, SINK_INDEX] {
+        tags.u32(value);
     }
     Frame(payload)
 }
@@ -298,24 +283,42 @@ fn subscription_event(seq: u32, flags: u32) -> Frame {
 #[test]
 fn the_hand_built_event_reads_as_its_facility() {
     for (facility, mask) in [
-        (subscription::SINK, SubscriptionMask::SINK),
-        (subscription::CLIENT, SubscriptionMask::CLIENT),
-        (subscription::CARD, SubscriptionMask::CARD),
+        (
+            SubscriptionEventFacility::Sink.number(),
+            SubscriptionMask::SINK,
+        ),
+        (
+            SubscriptionEventFacility::Client.number(),
+            SubscriptionMask::CLIENT,
+        ),
+        (
+            SubscriptionEventFacility::Card.number(),
+            SubscriptionMask::CARD,
+        ),
     ] {
-        let event = subscription_event(EVENT_SEQ, facility | subscription::CHANGED);
+        let event = subscription_event(
+            EVENT_SEQ,
+            facility | SubscriptionEventType::Changed.number(),
+        );
         assert_eq!(message(&event), Ok(Message::Event(Some(mask))));
     }
 }
 
 #[test]
 fn an_event_with_a_request_sequence_invalidates_everything() {
-    let event = subscription_event(SEQ, subscription::SINK | subscription::CHANGED);
+    let event = subscription_event(
+        SEQ,
+        SubscriptionEventFacility::Sink.number() | SubscriptionEventType::Changed.number(),
+    );
     assert_eq!(message(&event), Ok(Message::Event(None)));
 }
 
 #[test]
 fn an_event_with_trailing_bytes_invalidates_everything() {
-    let mut event = subscription_event(EVENT_SEQ, subscription::SINK | subscription::CHANGED);
+    let mut event = subscription_event(
+        EVENT_SEQ,
+        SubscriptionEventFacility::Sink.number() | SubscriptionEventType::Changed.number(),
+    );
     event.0.push(tag::TRUE);
     assert_eq!(message(&event), Ok(Message::Event(None)));
 }
@@ -324,17 +327,18 @@ fn an_event_with_trailing_bytes_invalidates_everything() {
 fn an_event_with_bad_type_bits_invalidates_everything() {
     const BAD_TYPE_BITS: u32 = 0x30;
 
-    let event = subscription_event(EVENT_SEQ, subscription::SINK | BAD_TYPE_BITS);
+    let event = subscription_event(
+        EVENT_SEQ,
+        SubscriptionEventFacility::Sink.number() | BAD_TYPE_BITS,
+    );
     assert_eq!(message(&event), Ok(Message::Event(None)));
 }
 
 #[test]
-#[expect(
-    clippy::as_conversions,
-    reason = "the discriminant is the protocol's sink input facility number"
-)]
 fn an_event_with_an_unknown_facility_invalidates_everything() {
-    let flags = SubscriptionEventFacility::SinkInput as u32 | subscription::CHANGED;
+    const SINK_INPUT_FACILITY: u32 = 2;
+
+    let flags = SINK_INPUT_FACILITY | SubscriptionEventType::Changed.number();
     let event = subscription_event(EVENT_SEQ, flags);
     assert_eq!(message(&event), Ok(Message::Event(None)));
 }
@@ -354,9 +358,8 @@ fn the_auth_reply_grants_its_version_without_the_memory_flags() {
 fn the_default_sink_is_read_from_the_server_info() {
     let named = ServerInfo {
         server_name: Some(c"PulseAudio (on PipeWire 1.4.2)".to_owned()),
-        default_sink_name: Some(c"alsa_output.speakers".to_owned()),
-        default_source_name: Some(c"alsa_input.mic".to_owned()),
-        ..ServerInfo::default()
+        default_sink: Some(c"alsa_output.speakers".to_owned()),
+        default_source: Some(c"alsa_input.mic".to_owned()),
     };
     let bytes = reply(&named);
     let named_body = body(&bytes);
@@ -405,7 +408,7 @@ fn every_sink_of_a_list_is_read_with_its_mean_volume() {
 
 #[test]
 fn each_sinks_index_and_state_are_read() {
-    use pulseaudio::protocol::SinkState as Wire;
+    use crate::daemon::audio::wire::fixture::SinkState as Wire;
     let infos: Vec<SinkInfo> = [(4, Wire::Running), (9, Wire::Idle), (11, Wire::Suspended)]
         .into_iter()
         .map(|(index, state)| SinkInfo {
@@ -454,7 +457,7 @@ fn a_malformed_sink_ends_the_walk() {
 
 #[test]
 fn a_volume_with_more_than_the_maximum_channels_is_refused() {
-    let too_many = MAX_CHANNELS.saturating_add(1);
+    let too_many = u8::try_from(MAX_CHANNELS.saturating_add(1)).unwrap();
     assert_eq!(
         Tags(&[tag::CVOLUME, too_many]).volume(),
         Err(Malformed::TooManyChannels(too_many))
@@ -512,22 +515,14 @@ fn the_hint_requires_a_complete_client_list_with_an_exact_true_value() {
 fn the_headset_reader_walks_ports_and_matches_only_the_named_cards_active_profile() {
     let port = CardPortInfo {
         name: c"output".to_owned(),
-        port_type: port_info::PortType::Unknown,
-        description: None,
         props: props(),
-        dir: port_info::PortDirection::Output,
-        priority: 0,
-        available: port_info::PortAvailable::Unknown,
         availability_group: Some(c"speaker".to_owned()),
         profiles: vec![c"a2dp-sink".to_owned(), c"headset-head-unit".to_owned()],
-        latency_offset: 0,
     };
     let card = |index, name: &CStr, active_profile: &CStr, ports| CardInfo {
         index,
         name: name.to_owned(),
         props: props(),
-        owner_module_index: None,
-        driver: None,
         ports,
         profiles: Vec::new(),
         active_profile: Some(active_profile.to_owned()),
@@ -597,4 +592,67 @@ proptest! {
             rest = &after[declared..];
         }
     }
+}
+
+#[test]
+fn requests_match_native_protocol_bytes() {
+    use crate::daemon::audio::wire::fixture::{AuthParams, SetDeviceVolumeParams};
+
+    let mut props = Props::new();
+    props.set(Prop::ApplicationName, c"pods");
+    let mut volume = ChannelVolume::empty();
+    volume.push(Volume::from_u32_clamped(HALF));
+    volume.push(Volume::NORM);
+
+    let requests: [(Command, &[u8]); 7] = [
+        (
+            Command::Auth(AuthParams {
+                version: 35,
+                cookie: vec![0x12, 0x34],
+                ..AuthParams::default()
+            }),
+            b"L\x00\x00\x00\x08L\x00\x00\x00\x07L\x00\x00\x00\x23x\x00\x00\x00\x02\x12\x34",
+        ),
+        (
+            Command::SetClientName(props),
+            b"L\x00\x00\x00\x09L\x00\x00\x00\x07Ptapplication.name\0L\x00\x00\x00\x05x\x00\x00\x00\x05pods\0N",
+        ),
+        (
+            Command::GetCardInfoList,
+            b"L\x00\x00\x00\x59L\x00\x00\x00\x07",
+        ),
+        (
+            Command::GetSourceOutputInfoList,
+            b"L\x00\x00\x00\x20L\x00\x00\x00\x07",
+        ),
+        (
+            Command::Subscribe(SubscriptionMask::SINK | SubscriptionMask::SOURCE_OUTPUT),
+            b"L\x00\x00\x00\x23L\x00\x00\x00\x07L\x00\x00\x00\x09",
+        ),
+        (
+            Command::GetSinkInfoList,
+            b"L\x00\x00\x00\x16L\x00\x00\x00\x07",
+        ),
+        (
+            Command::SetSinkVolume(SetDeviceVolumeParams {
+                device_index: Some(42),
+                device_name: None,
+                volume,
+            }),
+            b"L\x00\x00\x00\x24L\x00\x00\x00\x07L\x00\x00\x00\x2aNv\x02\x00\x00\x80\x00\x00\x01\x00\x00",
+        ),
+    ];
+    block_on(async {
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        for (command, payload) in requests {
+            let frame = Frame::request(SEQ, &command).unwrap();
+            write_frame(&mut sender, &frame).await.unwrap();
+            let mut expected = u32::try_from(payload.len()).unwrap().to_be_bytes().to_vec();
+            expected.extend_from_slice(b"\xff\xff\xff\xff\0\0\0\0\0\0\0\0\0\0\0\0");
+            expected.extend_from_slice(payload);
+            let mut bytes = vec![0; expected.len()];
+            receiver.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(bytes, expected, "{command:?}");
+        }
+    });
 }

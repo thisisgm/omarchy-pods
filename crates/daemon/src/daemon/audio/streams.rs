@@ -4,8 +4,8 @@ use std::ffi::CString;
 
 use pods_core::policy::audio::{AudioFact, Recorders, SinkFact};
 use pods_core::policy::route::DICTATION_RECORDERS;
-use pulseaudio::protocol::{Command, SubscriptionMask};
 
+use super::wire::protocol::{Command, SubscriptionMask};
 use super::wire::{self, Malformed, Tags};
 use super::{Connection, Ended, Follower, Lost, log};
 

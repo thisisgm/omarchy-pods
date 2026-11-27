@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
+use crate::support::audio::protocol::SinkState;
 use pods_proto::doap::doap_mode_off;
 use pods_pwrig::Recorder;
-use pulseaudio::protocol::SinkState;
 
 use super::super::support::audio::RecorderId;
 use super::super::support::dictation::{CAPTURE, Fixture};

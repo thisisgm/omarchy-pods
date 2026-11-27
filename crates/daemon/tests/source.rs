@@ -12,6 +12,7 @@ mod support;
 mod tests {
     use std::time::Duration;
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::{
         SOURCE_UP_LINE, STOP_QUIET_LINE, STOPPED_BY_THE_PODS_LINE, withdrawn_line,
     };
@@ -19,7 +20,6 @@ mod tests {
     use pods_mic::{NODE_LATENCY_MS, RATE_HZ};
     use pods_pwrig::Server;
     use pods_samples::{MODEL_NUMBER, NAME, Placed};
-    use pulseaudio::protocol::SinkState;
     use serde_json::{Value, json};
 
     use super::support::audio::{Asked, Volumes};

@@ -3,12 +3,12 @@
 use std::fs;
 use std::time::Duration;
 
-use pods_core::policy::audio::{AudioFact, AudioRequest, Recorders};
-use pulseaudio::protocol::{
-    Command, CommandTag, Descriptor, DescriptorFlags, SinkInfo, SinkState, SourceOutputInfo,
-    SubscriptionEvent, SubscriptionEventFacility, SubscriptionEventType, TagStructWriter,
-    write_command_message, write_descriptor,
+use crate::daemon::audio::wire::fixture::{
+    Command, CommandTag, SinkInfo, SinkState, SourceOutputInfo, SubscriptionEvent,
+    SubscriptionEventFacility, SubscriptionEventType, TagWriter, write_command_message,
+    write_payload,
 };
+use pods_core::policy::audio::{AudioFact, AudioRequest, Recorders};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
@@ -17,7 +17,6 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::super::super::streams::tests::stream_on;
-use super::super::super::wire::PROTOCOL_VERSION;
 use super::super::super::wire::tests::{read_request, sink as listed_sink};
 use super::super::super::{Input, SOCKET, queue, run, stop};
 use super::super::{DEVICE, HALF, NORM};
@@ -26,7 +25,6 @@ use crate::daemon::paused::on_paused_clock;
 
 const VOLUME_CHANGES: usize = 10;
 const EVENT_SEQUENCE: u32 = u32::MAX;
-const CONTROL_CHANNEL: u32 = u32::MAX;
 /// On the paused clock, an idle socket has had time to deliver the next immediate request.
 const QUIET: Duration = Duration::from_millis(1);
 const ALL_READS: [CommandTag; 6] = [
@@ -162,30 +160,18 @@ fn event(
         index,
     });
     let mut bytes = Vec::new();
-    write_command_message(&mut bytes, EVENT_SEQUENCE, &command, PROTOCOL_VERSION).unwrap();
+    write_command_message(&mut bytes, EVENT_SEQUENCE, &command).unwrap();
     bytes
 }
 
-#[expect(
-    clippy::as_conversions,
-    reason = "the discriminants are the protocol's numbers for the command and its flags"
-)]
 fn event_without_index() -> Vec<u8> {
     let mut payload = Vec::new();
-    let mut tags = TagStructWriter::new(&mut payload, PROTOCOL_VERSION);
-    tags.write_u32(CommandTag::SubscribeEvent as u32).unwrap();
-    tags.write_u32(EVENT_SEQUENCE).unwrap();
-    tags.write_u32(SubscriptionEventFacility::Sink as u32 | SubscriptionEventType::Changed as u32)
-        .unwrap();
+    let mut tags = TagWriter(&mut payload);
+    tags.u32(CommandTag::SubscribeEvent.number());
+    tags.u32(EVENT_SEQUENCE);
+    tags.u32(SubscriptionEventFacility::Sink.number() | SubscriptionEventType::Changed.number());
     let mut bytes = Vec::new();
-    let descriptor = Descriptor {
-        length: u32::try_from(payload.len()).unwrap(),
-        channel: CONTROL_CHANNEL,
-        offset: 0,
-        flags: DescriptorFlags::empty(),
-    };
-    write_descriptor(&mut bytes, &descriptor).unwrap();
-    bytes.extend(payload);
+    write_payload(&mut bytes, &payload).unwrap();
     bytes
 }
 

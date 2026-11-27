@@ -13,12 +13,12 @@ mod tests {
     use std::fs;
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::dictation::DOAP_STOP_ANSWER_MS;
     use pods_fake::doap::FRAME;
     use pods_proto::doap::{STOP_REASON_UNSOLICITED, doap_mode_off};
     use pods_samples::NAME;
     use pods_samples::uplink::state_marker;
-    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::Recorder as Listed;
     use super::support::dictation::{

@@ -2,7 +2,7 @@
 
 use std::ffi::{CStr, CString};
 
-use pulseaudio::protocol::{CardInfo, CardProfileInfo, Props, PulseError};
+use crate::support::audio::protocol::{CardInfo, CardProfileInfo, Props, PulseError};
 
 /// One profile of a card, with the sinks and sources it would open.
 #[derive(Clone, Copy)]
@@ -44,8 +44,6 @@ impl Card {
     fn info(&self) -> CardInfo {
         let profiles = self.profiles.iter().map(|profile| CardProfileInfo {
             name: CString::new(profile.name).unwrap(),
-            description: None,
-            priority: 0,
             available: u32::from(profile.available),
             num_sinks: profile.sinks,
             num_sources: profile.sources,
@@ -54,8 +52,6 @@ impl Card {
             index: self.index,
             name: CString::new(self.name.as_str()).unwrap(),
             props: self.props.clone(),
-            owner_module_index: None,
-            driver: None,
             ports: Vec::new(),
             profiles: profiles.collect(),
             active_profile: Some(CString::new(self.active).unwrap()),

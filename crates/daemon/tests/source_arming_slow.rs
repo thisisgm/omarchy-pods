@@ -14,13 +14,13 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::{
         BUD_GRACE_MS, STOP_NOT_WORN_LINE, STOP_QUIET_LINE, STOP_WAITS_LINE, UPLINK_LINGER_MS,
     };
     use pods_pw::source::PW_OPEN_MS;
     use pods_pwrig::{SOCKET, Server};
     use pods_samples::MODEL_NUMBER;
-    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::{FakeAudio, LADDER_MS, Volumes};
     use super::support::pipewire::{start, wait_node};

@@ -4,13 +4,13 @@ use std::fs;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::support::audio::protocol::SinkState;
 use pods_core::policy::audio::RESTORE_HOLD_MS;
 use pods_core::policy::mic::{START_ANSWER_MS, START_TRIES, STOP_ANSWER_MS};
 use pods_core::prefs::{self, MicPref, Prefs};
 use pods_fake::{Heard, Profile};
 use pods_samples::uplink::{START, STOP};
 use pods_samples::{CASE, Cell, LEFT, Placed, RIGHT};
-use pulseaudio::protocol::SinkState;
 use serde_json::{Value, json};
 
 use super::audio::wire::sink_named;

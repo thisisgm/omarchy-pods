@@ -1,13 +1,13 @@
-//! Frames and volumes of the native audio server protocol, read and written only through the `pulseaudio` crate.
+//! Frames and volumes of the native audio server protocol, used by the fake audio server.
 
 use std::io::{self, ErrorKind, Read};
 
-use pods_proto::addr::BdAddr;
-use pulseaudio::protocol::{
-    Command, CommandReply, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, PulseError,
-    TagStructReader, Volume, read_descriptor, write_ack_message, write_command_message,
-    write_descriptor, write_error, write_reply_message,
+use crate::support::audio::protocol::{
+    Command, CommandReply, DESCRIPTOR_SIZE, Descriptor, PulseError, Volume, command_header,
+    read_command, read_descriptor, write_ack_message, write_command_message, write_descriptor,
+    write_error, write_reply_message,
 };
+use pods_proto::addr::BdAddr;
 
 /// The largest frame the daemon, the fake or its test client reads; a sink list is a few kilobytes.
 pub(crate) const FRAME_MAX: u32 = 262_144;
@@ -113,26 +113,17 @@ fn read_rest(reader: &mut impl Read, rest: &mut [u8]) -> io::Result<()> {
 
 /// The descriptor's channel and the payload's command number and sequence; sample payload `4c 00 00 00 08 4c 00 00 00 01`.
 pub(crate) fn header(frame: &[u8]) -> Result<(u32, u32, u32), String> {
-    let descriptor = read_descriptor(&mut &frame[..]).map_err(|error| error.to_string())?;
-    let mut payload = &frame[DESCRIPTOR_SIZE..];
-    let mut tags = TagStructReader::new(&mut payload, pulseaudio::protocol::MAX_VERSION);
-    let command = tags.read_u32().map_err(|error| error.to_string())?;
-    let seq = tags.read_u32().map_err(|error| error.to_string())?;
+    let mut payload = frame;
+    let descriptor = read_descriptor(&mut payload).map_err(|error| error.to_string())?;
+    let (command, seq) = command_header(payload).map_err(|error| error.to_string())?;
     Ok((descriptor.channel, command, seq))
 }
 
-/// The command a frame carries, whole to its last byte as a real server demands; sample payload `4c 00 00 00 14 4c 00 00 00 01`.
-pub(crate) fn command(frame: &[u8], version: u16) -> Result<Command, String> {
-    let mut payload = &frame[DESCRIPTOR_SIZE..];
-    let (_, command) =
-        Command::read_tag_prefixed(&mut payload, version).map_err(|error| error.to_string())?;
-    if !payload.is_empty() {
-        return Err(format!(
-            "{} bytes after a {:?}",
-            payload.len(),
-            command.tag()
-        ));
-    }
+/// The command a frame carries, whole to its last byte; sample payload `4c 00 00 00 14 4c 00 00 00 01`.
+pub(crate) fn command(frame: &[u8]) -> Result<Command, String> {
+    let mut payload = frame;
+    read_descriptor(&mut payload).map_err(|error| error.to_string())?;
+    let (_, command) = read_command(payload).map_err(|error| error.to_string())?;
     Ok(command)
 }
 
@@ -150,13 +141,13 @@ pub(super) fn ack(seq: u32) -> Vec<u8> {
 
 pub(super) fn error(seq: u32, error: PulseError) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_error(&mut bytes, seq, &error).unwrap();
+    write_error(&mut bytes, seq, error).unwrap();
     bytes
 }
 
-pub(super) fn event(event: &Command, version: u16) -> Vec<u8> {
+pub(super) fn event(event: &Command) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_command_message(&mut bytes, EVENT_SEQ, event, version).unwrap();
+    write_command_message(&mut bytes, EVENT_SEQ, event).unwrap();
     bytes
 }
 
@@ -165,10 +156,8 @@ pub(super) fn oversized_frame() -> Vec<u8> {
     let descriptor = Descriptor {
         length: OVERSIZED_LENGTH,
         channel: CONTROL_CHANNEL,
-        offset: 0,
-        flags: DescriptorFlags::empty(),
     };
     let mut bytes = Vec::new();
-    write_descriptor(&mut bytes, &descriptor).unwrap();
+    write_descriptor(&mut bytes, descriptor).unwrap();
     bytes
 }

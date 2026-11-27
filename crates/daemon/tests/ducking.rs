@@ -15,10 +15,10 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
+    use crate::support::audio::protocol::{CommandTag, SinkState};
     use pods_fake::Profile;
     use pods_pwrig::Server;
     use pods_samples::MODEL_NUMBER;
-    use pulseaudio::protocol::{CommandTag, SinkState};
 
     use super::support::audio::wire::sink_named;
     use super::support::audio::{
@@ -709,7 +709,7 @@ mod tests {
                 .channel_volume(&sink)
                 .channels()
                 .iter()
-                .map(pulseaudio::protocol::Volume::as_u32)
+                .map(|volume| volume.as_u32())
                 .eq(original)
                 .then_some(())
         });
@@ -759,7 +759,7 @@ mod tests {
                 .channel_volume(&sink)
                 .channels()
                 .iter()
-                .map(pulseaudio::protocol::Volume::as_u32)
+                .map(|volume| volume.as_u32())
                 .eq([lowered])
         );
     }

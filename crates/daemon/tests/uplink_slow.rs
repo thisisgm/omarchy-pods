@@ -13,6 +13,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::{
         BUD_GRACE_MS, FAILED_LINE, START_TRIES, STOP_UNCONFIRMED_LINE, STOP_WAITS_LINE,
         UPLINK_LINGER_MS, unanswered_line,
@@ -20,7 +21,6 @@ mod tests {
     use pods_fake::Profile;
     use pods_samples::uplink::START;
     use pods_samples::{MODEL_NUMBER, Placed};
-    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::wire::sink_named;
     use super::support::audio::{FakeAudio, Volumes};

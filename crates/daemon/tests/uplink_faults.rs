@@ -13,6 +13,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::{
         START_TRIES, STOP_SLEEP_LINE, STOP_WAITS_LINE, STOPPED_BY_THE_PODS_LINE, UPLINK_STALL_MS,
         start_sent_line, unanswered_line,
@@ -21,7 +22,6 @@ mod tests {
     use pods_pwrig::Recorder;
     use pods_samples::uplink::{session_marker, state_marker};
     use pods_samples::{MODEL_NUMBER, Placed};
-    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::wire::{card_named, sink_named};
     use super::support::audio::{Asked, FakeAudio, FakeProfile, Recorder as Listed};

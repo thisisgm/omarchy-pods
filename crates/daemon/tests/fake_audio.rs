@@ -1,4 +1,4 @@
-//! Support tests: the fake audio server, driven by a client built from the same protocol crate; no user path yet.
+//! Support tests: the fake audio server, driven by a client speaking the native protocol; no user path yet.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -12,24 +12,22 @@ mod support;
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::{CStr, CString};
-    use std::io::{ErrorKind, Read, Write};
+    use std::io::{Read, Write};
     use std::net::Shutdown;
-    use std::os::unix::net::UnixStream;
-    use std::path::Path;
     use std::time::Duration;
 
     use proptest::collection::vec;
     use proptest::prelude::*;
 
-    use pulseaudio::protocol::{
-        AuthParams, AuthReply, CardInfo, ChannelVolume, Command, CommandReply, CommandTag,
-        DEFAULT_SINK, DESCRIPTOR_SIZE, GetCardInfo, GetSinkInfo, MAX_VERSION, Prop, Props,
-        ProtocolError, PulseError, ServerInfo, SetCardProfileParams, SetClientNameReply,
-        SetDeviceVolumeParams, SinkInfo, SinkState, SourceInfo, SourceOutputInfo,
-        SubscriptionEvent, SubscriptionEventFacility, SubscriptionEventType, SubscriptionMask,
-        Volume, read_ack_message, read_command_message, read_descriptor, read_reply_message,
-        write_command_message,
+    use crate::support::audio::protocol::{
+        CardInfo, ChannelVolume, Command, CommandTag, DEFAULT_SINK, DESCRIPTOR_SIZE, DeviceLookup,
+        MAX_VERSION, PulseError, ServerInfo, SetCardProfileParams, SetDeviceVolumeParams, SinkInfo,
+        SinkState, SourceInfo, SourceOutputInfo, SubscriptionEvent, SubscriptionEventFacility,
+        SubscriptionEventType, SubscriptionMask, Volume, read_descriptor, write_command_message,
     };
+
+    mod fake_audio_client;
+    use fake_audio_client::Client;
 
     use super::support::Session;
     use super::support::audio::wire::{
@@ -82,109 +80,12 @@ mod tests {
         }
     }
 
-    /// One connection to the fake, speaking only through the crate's own messages.
-    struct Client {
-        stream: UnixStream,
-        seq: u32,
-    }
-
-    impl Client {
-        fn connect(socket: &Path) -> Self {
-            let stream = UnixStream::connect(socket).unwrap();
-            stream.set_read_timeout(Some(ANSWER_WITHIN)).unwrap();
-            Self { stream, seq: 0 }
-        }
-
-        /// Connected, authorised and named, as every client of the audio server opens.
-        fn open(socket: &Path) -> Self {
-            let mut client = Self::connect(socket);
-            let auth = Command::Auth(AuthParams {
-                version: MAX_VERSION,
-                cookie: vec![0; COOKIE_LENGTH],
-                ..AuthParams::default()
-            });
-            let reply: AuthReply = client.ask(&auth);
-            assert_eq!(reply.version, MAX_VERSION);
-            let mut props = Props::new();
-            props.set(Prop::ApplicationName, c"fake audio test");
-            let _: SetClientNameReply = client.ask(&Command::SetClientName(props));
-            client
-        }
-
-        fn send(&mut self, command: &Command) {
-            self.seq = self.seq.wrapping_add(1);
-            let mut bytes = Vec::new();
-            write_command_message(&mut bytes, self.seq, command, MAX_VERSION).unwrap();
-            self.stream.write_all(&bytes).unwrap();
-        }
-
-        fn frame(&mut self) -> Vec<u8> {
-            read_frame(&mut self.stream).unwrap()
-        }
-
-        fn reply<R: CommandReply>(&mut self) -> R {
-            let (seq, reply) =
-                read_reply_message(&mut self.frame().as_slice(), MAX_VERSION).unwrap();
-            assert_eq!(seq, self.seq, "a reply to another command");
-            reply
-        }
-
-        fn ask<R: CommandReply>(&mut self, command: &Command) -> R {
-            self.send(command);
-            self.reply()
-        }
-
-        fn ack(&mut self, command: &Command) {
-            self.send(command);
-            let seq = read_ack_message(&mut self.frame().as_slice()).unwrap();
-            assert_eq!(seq, self.seq, "an ack of another command");
-        }
-
-        fn refused(&mut self, command: &Command) -> PulseError {
-            self.send(command);
-            match read_ack_message(&mut self.frame().as_slice()) {
-                Err(ProtocolError::ServerError(error)) => error,
-                other => panic!("an error reply expected, got {other:?}"),
-            }
-        }
-
-        fn subscribe(&mut self, mask: SubscriptionMask) {
-            self.ack(&Command::Subscribe(mask));
-        }
-
-        fn event(&mut self) -> SubscriptionEvent {
-            match read_command_message(&mut self.frame().as_slice(), MAX_VERSION).unwrap() {
-                (u32::MAX, Command::SubscribeEvent(event)) => event,
-                other => panic!("an event expected, got {other:?}"),
-            }
-        }
-
-        fn nothing_for(&mut self, quiet: Duration) {
-            self.stream.set_read_timeout(Some(quiet)).unwrap();
-            let mut byte = [0];
-            match self.stream.read(&mut byte) {
-                Ok(0) => panic!("the fake closed the connection during a quiet wait"),
-                Ok(_) => panic!("a frame arrived during a quiet wait"),
-                Err(error) => assert!(
-                    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
-                    "{error}"
-                ),
-            }
-            self.stream.set_read_timeout(Some(ANSWER_WITHIN)).unwrap();
-        }
-
-        fn closed(&mut self) -> bool {
-            let mut byte = [0];
-            matches!(self.stream.read(&mut byte), Ok(0))
-        }
-    }
-
     fn c_name(name: &str) -> CString {
         CString::new(name).unwrap()
     }
 
     fn sink_info(name: &CString) -> Command {
-        Command::GetSinkInfo(GetSinkInfo {
+        Command::GetSinkInfo(DeviceLookup {
             index: None,
             name: Some(name.clone()),
         })
@@ -244,10 +145,12 @@ mod tests {
         let mut client = Client::open(audio.socket());
 
         let server: ServerInfo = client.ask(&Command::GetServerInfo);
-        assert_eq!(server.default_sink_name, Some(c_name(&name)));
-        let by_name: SinkInfo = client.ask(&sink_info(&c_name(&name)));
-        let by_default: SinkInfo = client.ask(&sink_info(&DEFAULT_SINK.to_owned()));
+        assert_eq!(server.default_sink, Some(c_name(&name)));
+        let (by_name, named_body): (SinkInfo, _) = client.ask_with_body(&sink_info(&c_name(&name)));
+        let (by_default, default_body): (SinkInfo, _) =
+            client.ask_with_body(&sink_info(&DEFAULT_SINK.to_owned()));
         assert_eq!(by_name, by_default);
+        assert_eq!(named_body, default_body);
         assert_eq!(by_name.name, c_name(&name));
         assert_eq!(by_name.cvolume, stereo(volume_of(ADDED_PERCENT)));
         let absent = client.refused(&sink_info(&c_name(&sink_of(SECOND))));
@@ -350,19 +253,19 @@ mod tests {
         assert_eq!(watcher.event(), changed);
         watcher.nothing_for(QUIET);
         let server: ServerInfo = watcher.ask(&Command::GetServerInfo);
-        assert_eq!(server.default_sink_name, Some(c_name(&second)));
+        assert_eq!(server.default_sink, Some(c_name(&second)));
 
         audio.remove_sink(&second);
         assert_eq!(watcher.event(), changed);
         watcher.nothing_for(QUIET);
         let server: ServerInfo = watcher.ask(&Command::GetServerInfo);
-        assert_eq!(server.default_sink_name, Some(c_name(&first)));
+        assert_eq!(server.default_sink, Some(c_name(&first)));
 
         audio.remove_sink(&first);
         assert_eq!(watcher.event(), changed);
         watcher.nothing_for(QUIET);
         let server: ServerInfo = watcher.ask(&Command::GetServerInfo);
-        assert_eq!(server.default_sink_name, None);
+        assert_eq!(server.default_sink, None);
         assert!(audio.requests().contains(&Asked::Subscribe {
             mask: SubscriptionMask::SERVER
         }));
@@ -410,14 +313,10 @@ mod tests {
 
         audio.hold_replies(false);
         let server: ServerInfo = client.reply();
-        assert_eq!(server.default_sink_name, Some(c_name(&name)));
+        assert_eq!(server.default_sink, Some(c_name(&name)));
     }
 
     #[test]
-    #[expect(
-        clippy::as_conversions,
-        reason = "the discriminant of a fieldless enum is the protocol's command number"
-    )]
     fn an_unknown_command_gets_an_error_reply() {
         let session = Session::new();
         let (audio, name) = one_sink(&session);
@@ -428,11 +327,11 @@ mod tests {
         assert_eq!(
             audio.requests().last(),
             Some(&Asked::Unknown {
-                command: u32::from(CommandTag::GetModuleInfoList as u8)
+                command: CommandTag::GetModuleInfoList.number()
             })
         );
         let server: ServerInfo = client.ask(&Command::GetServerInfo);
-        assert_eq!(server.default_sink_name, Some(c_name(&name)));
+        assert_eq!(server.default_sink, Some(c_name(&name)));
     }
 
     #[test]
@@ -454,7 +353,7 @@ mod tests {
         let (audio, _) = one_sink(&session);
         let mut client = Client::open(audio.socket());
         let mut bytes = Vec::new();
-        write_command_message(&mut bytes, 1, &Command::GetServerInfo, MAX_VERSION).unwrap();
+        write_command_message(&mut bytes, 1, &Command::GetServerInfo).unwrap();
         let half = DESCRIPTOR_SIZE.saturating_add(PAYLOAD_KEPT);
         client.stream.write_all(&bytes[..half]).unwrap();
 
@@ -468,7 +367,7 @@ mod tests {
         let (audio, _) = one_sink(&session);
         let mut client = Client::open(audio.socket());
         let mut bytes = Vec::new();
-        write_command_message(&mut bytes, 1, &Command::GetServerInfo, MAX_VERSION).unwrap();
+        write_command_message(&mut bytes, 1, &Command::GetServerInfo).unwrap();
         client.stream.write_all(&bytes[..kept]).unwrap();
         client.stream.shutdown(Shutdown::Write).unwrap();
         audio.wait_clients(0, ANSWER_WITHIN);
@@ -503,7 +402,7 @@ mod tests {
     }
 
     fn card_info(name: &str) -> Command {
-        Command::GetCardInfo(GetCardInfo {
+        Command::GetCardInfo(DeviceLookup {
             index: None,
             name: Some(c_name(name)),
         })
@@ -580,7 +479,8 @@ mod tests {
         let mut client = Client::open(audio.socket());
         let opened = audio.requests().len();
 
-        let cards: Vec<CardInfo> = client.ask(&Command::GetCardInfoList);
+        let (cards, list_body): (Vec<CardInfo>, _) =
+            client.ask_with_body(&Command::GetCardInfoList);
         assert_eq!(cards.len(), 1, "{cards:?}");
         let listed = &cards[0];
         let added = SubscriptionEvent {
@@ -599,8 +499,9 @@ mod tests {
             (c_name(profile.name), counts)
         });
         assert!(profiles.eq(offered), "{:?}", listed.profiles);
-        let by_name: CardInfo = client.ask(&card_info(&card));
+        let (by_name, named_body): (CardInfo, _) = client.ask_with_body(&card_info(&card));
         assert_eq!(&by_name, listed);
+        assert_eq!(named_body, list_body);
         let absent = client.refused(&card_info(&card_of(SECOND)));
         assert_eq!(absent, PulseError::NoEntity);
         assert_eq!(audio.active_profile(&card), OFF);
@@ -793,7 +694,21 @@ mod tests {
     fn read_as_the_fake_does(bytes: &[u8]) {
         if let Ok(frame) = read_frame(&mut &bytes[..]) {
             drop(header(&frame));
-            drop(command(&frame, MAX_VERSION));
+            drop(command(&frame));
+        }
+    }
+
+    #[test]
+    fn oversized_tag_lengths_and_inconsistent_properties_are_refused() {
+        let bodies = [
+            b"L\0\0\0\x08L\0\0\0\x01L\0\0\0\x23x\xff\xff\xff\xff".as_slice(),
+            b"L\0\0\0\x09L\0\0\0\x01Ptk\0L\0\0\0\x02x\0\0\0\x01vN",
+            b"L\0\0\0\x24L\0\0\0\x01L\0\0\0\x07Nv\xff",
+        ];
+        for body in bodies {
+            let frame = framed(body);
+            assert!(header(&frame).is_ok());
+            assert!(command(&frame).is_err());
         }
     }
 

@@ -6,6 +6,11 @@ use std::ffi::{CStr, CString};
 use std::fs;
 use std::time::Duration;
 
+use crate::daemon::audio::wire::fixture::{
+    AuthReply, Command, CommandTag, DESCRIPTOR_SIZE, PulseError, ServerInfo, SetClientNameReply,
+    SinkInfo, SinkState, SourceOutputInfo, SuspendParams, read_command as decode_command,
+    read_descriptor, write_ack_message, write_error, write_reply_message,
+};
 use pods_core::link::Signal;
 use pods_core::policy::audio::{
     AUDIO_CALL_TIMEOUT_MS, AudioFact, AudioRequest, RestoreId, SinkFact,
@@ -17,11 +22,6 @@ use pods_core::state::{MicCode, Microphone, State};
 use pods_proto::ear::EarReport;
 use pods_proto::uplink::UplinkState;
 use pods_samples::MODEL_NUMBER;
-use pulseaudio::protocol::{
-    AuthReply, Command, CommandTag, DESCRIPTOR_SIZE, PulseError, ServerInfo, SetClientNameReply,
-    SinkInfo, SinkState, SourceOutputInfo, SuspendParams, read_descriptor, write_ack_message,
-    write_error, write_reply_message,
-};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -230,7 +230,10 @@ pub(super) fn answer(
         Command::GetSinkInfoList => reply(seq, &vec![sink(state)]),
         Command::GetSourceInfoList => match lists {
             Some(name) => reply(seq, &vec![source(MICROPHONE_INDEX, name, None)]),
-            None => reply(seq, &Vec::<pulseaudio::protocol::SourceInfo>::new()),
+            None => reply(
+                seq,
+                &Vec::<crate::daemon::audio::wire::fixture::SourceInfo>::new(),
+            ),
         },
         Command::GetSourceOutputInfoList => reply(seq, &Vec::<SourceOutputInfo>::new()),
         _ => error(seq),
@@ -245,10 +248,13 @@ pub(super) async fn read_command(stream: &mut UnixStream) -> Option<(u32, Comman
     let length = read_descriptor(&mut descriptor.as_slice()).unwrap().length;
     let mut payload = vec![0; usize::try_from(length).unwrap()];
     stream.read_exact(&mut payload).await.unwrap();
-    Some(Command::read_tag_prefixed(&mut payload.as_slice(), PROTOCOL_VERSION).unwrap())
+    Some(decode_command(&payload).unwrap())
 }
 
-pub(super) fn reply(seq: u32, reply: &impl pulseaudio::protocol::CommandReply) -> Vec<u8> {
+pub(super) fn reply(
+    seq: u32,
+    reply: &impl crate::daemon::audio::wire::fixture::CommandReply,
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     write_reply_message(&mut bytes, seq, reply, PROTOCOL_VERSION).unwrap();
     bytes
@@ -262,13 +268,13 @@ pub(super) fn ack(seq: u32) -> Vec<u8> {
 
 fn error(seq: u32) -> Vec<u8> {
     let mut bytes = Vec::new();
-    write_error(&mut bytes, seq, &PulseError::Command).unwrap();
+    write_error(&mut bytes, seq, PulseError::Command).unwrap();
     bytes
 }
 
 fn server_info() -> ServerInfo {
     ServerInfo {
-        default_sink_name: Some(output()),
+        default_sink: Some(output()),
         ..ServerInfo::default()
     }
 }

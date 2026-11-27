@@ -2,20 +2,14 @@
 
 use std::ffi::CString;
 
-use pulseaudio::protocol::{
-    ChannelMap, ChannelVolume, FormatEncoding, FormatInfo, Props, SampleFormat, SampleSpec,
-    SourceInfo, SourceOutputInfo,
-};
+use crate::support::audio::protocol::{ChannelVolume, Props, SourceInfo, SourceOutputInfo};
 
 /// What the server lists as the source of a record stream linked to none.
 const NO_SOURCE: u32 = u32::MAX;
 const MONITOR_SUFFIX: &str = ".monitor";
 /// The format `parec` records in by default.
-const RECORD_SPEC: SampleSpec = SampleSpec {
-    format: SampleFormat::S16Le,
-    channels: 2,
-    sample_rate: 44_100,
-};
+const RECORD_RATE: u32 = 44_100;
+const RECORD_CHANNELS: u8 = 2;
 
 /// A record stream as a desktop opens one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,12 +137,10 @@ impl Source {
         SourceInfo {
             index: self.index,
             name: CString::new(self.name.as_str()).unwrap(),
-            sample_spec: RECORD_SPEC,
-            channel_map: ChannelMap::stereo(),
-            cvolume: ChannelVolume::norm(RECORD_SPEC.channels),
+            sample_rate: RECORD_RATE,
+            cvolume: ChannelVolume::norm(RECORD_CHANNELS),
             monitor_of_sink_index: monitor_index,
             monitor_of_sink_name: monitor_name,
-            ..SourceInfo::default()
         }
     }
 }
@@ -160,15 +152,10 @@ impl Recording {
             index: self.index,
             name: c"recorder".to_owned(),
             source_index: source.unwrap_or(NO_SOURCE),
-            sample_spec: RECORD_SPEC,
-            channel_map: ChannelMap::stereo(),
-            cvolume: ChannelVolume::norm(RECORD_SPEC.channels),
+            sample_rate: RECORD_RATE,
+            cvolume: ChannelVolume::norm(RECORD_CHANNELS),
             props: self.props(corked),
             corked,
-            has_volume: true,
-            volume_writable: true,
-            format: FormatInfo::new(FormatEncoding::Pcm),
-            ..SourceOutputInfo::default()
         }
     }
 

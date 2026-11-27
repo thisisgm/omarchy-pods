@@ -12,7 +12,7 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
-    use pulseaudio::protocol::MAX_VERSION;
+    use crate::support::audio::protocol::MAX_VERSION;
 
     use super::support::audio::{Asked, CALL_TIMEOUT, LADDER_MS, PERCENT, Volumes};
     use super::support::rig::{Rig, assert_gap};

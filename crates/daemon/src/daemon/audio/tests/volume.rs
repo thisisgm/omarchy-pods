@@ -4,20 +4,19 @@ use std::ffi::CString;
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use pods_core::policy::audio::{AudioFact, AudioRequest, Percent, VolumeStamp};
-use pods_core::state::State;
-use pulseaudio::protocol::{
+use crate::daemon::audio::wire::fixture::{
     Command, CommandTag, PulseError, SetDeviceVolumeParams, SinkState, SubscriptionEvent,
     SubscriptionEventFacility, SubscriptionEventType, SubscriptionMask, write_command_message,
     write_error,
 };
+use pods_core::policy::audio::{AudioFact, AudioRequest, Percent, VolumeStamp};
+use pods_core::state::State;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
 
 use super::super::volume::{Observed, VolumeWrite, Volumes, device_sink, protocol_volume};
-use super::super::wire::PROTOCOL_VERSION;
 use super::super::wire::tests::{sink, sink_list};
 use super::super::{Connection, Follower, Input, Left, Requests, Restore, queue};
 use super::restore::{ack, answer, read_command, reply};
@@ -84,7 +83,7 @@ fn set_volume_rounds_to_the_nearest_protocol_value() {
         });
         let mut stale = SubscriptionMask::empty();
         for (percent, _) in cases {
-            let mut channels = pulseaudio::protocol::ChannelVolume::empty();
+            let mut channels = crate::daemon::audio::wire::fixture::ChannelVolume::empty();
             channels.push(protocol_volume(Percent::new(percent).unwrap()));
             connection
                 .set_channel_volume(OLD_INDEX, channels, &mut stale)
@@ -248,7 +247,7 @@ fn a_duck_replacing_a_queued_restore_keeps_the_original_channels() {
                     .volume
                     .channels()
                     .iter()
-                    .map(pulseaudio::protocol::Volume::as_u32)
+                    .map(|volume| volume.as_u32())
                     .collect();
                 assert_eq!(actual, expected);
                 server.write_all(&ack(seq)).await.unwrap();
@@ -371,7 +370,7 @@ fn a_missing_sink_retry_does_not_duck_the_replacement() {
             answer_command_with_sink(&mut server, OLD_INDEX).await;
             let (seq, original) = volume_command(&mut server).await;
             assert_eq!(original.device_index, Some(OLD_INDEX));
-            refuse_volume(&mut server, seq, &PulseError::NoEntity).await;
+            refuse_volume(&mut server, seq, PulseError::NoEntity).await;
 
             answer_command(&mut server, CommandTag::GetServerInfo).await;
             answer_command_with_sink(&mut server, NEW_INDEX).await;
@@ -415,7 +414,7 @@ fn two_missing_sink_refusals_drop_only_the_pending_write() {
                 let (seq, params) = refreshed_volume_command(&mut server, NORM).await;
                 assert_eq!(params.device_index, Some(OLD_INDEX));
                 assert_eq!(params.volume.channels().first().unwrap().as_u32(), NORM);
-                refuse_volume(&mut server, seq, &PulseError::NoEntity).await;
+                refuse_volume(&mut server, seq, PulseError::NoEntity).await;
             }
 
             requests
@@ -427,11 +426,11 @@ fn two_missing_sink_refusals_drop_only_the_pending_write() {
                 HALF,
                 "the refused write must yield to the new volume request"
             );
-            refuse_volume(&mut server, seq, &PulseError::NoEntity).await;
+            refuse_volume(&mut server, seq, PulseError::NoEntity).await;
 
             let (seq, retried) = refreshed_volume_command(&mut server, HALF).await;
             assert_eq!(retried.volume.channels(), next.volume.channels());
-            refuse_volume(&mut server, seq, &PulseError::NoEntity).await;
+            refuse_volume(&mut server, seq, PulseError::NoEntity).await;
             requests.try_send(AudioRequest::Follow(None)).unwrap();
             assert!(read_command(&mut server).await.is_none());
             let Some(Input::Audio(AudioFact::Sink(Some(sink)))) = facts.try_recv().ok() else {
@@ -474,7 +473,7 @@ fn a_volume_write_refused_for_another_reason_disconnects() {
             let mut server = open_with_sink(&listener, &mut facts).await;
             requests.try_send(set_volume(Percent::FULL, 1)).unwrap();
             let (seq, _) = refreshed_volume_command(&mut server, NORM).await;
-            refuse_volume(&mut server, seq, &PulseError::Command).await;
+            refuse_volume(&mut server, seq, PulseError::Command).await;
             let next = read_command(&mut server)
                 .await
                 .map(|(_, command)| command.tag());
@@ -606,7 +605,7 @@ async fn notify_change(server: &mut UnixStream, facility: SubscriptionEventFacil
         index: Some(index),
     });
     let mut bytes = Vec::new();
-    write_command_message(&mut bytes, EVENT_SEQ, &event, PROTOCOL_VERSION).unwrap();
+    write_command_message(&mut bytes, EVENT_SEQ, &event).unwrap();
     server.write_all(&bytes).await.unwrap();
 }
 
@@ -681,7 +680,7 @@ async fn refreshed_volume_command(
     volume_command(server).await
 }
 
-async fn refuse_volume(server: &mut UnixStream, seq: u32, error: &PulseError) {
+async fn refuse_volume(server: &mut UnixStream, seq: u32, error: PulseError) {
     let mut reply = Vec::new();
     write_error(&mut reply, seq, error).unwrap();
     server.write_all(&reply).await.unwrap();

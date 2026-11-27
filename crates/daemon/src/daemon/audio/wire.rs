@@ -1,4 +1,6 @@
-//! Frames of the audio server's native protocol: requests written through the `pulseaudio` crate, the server's bytes read here.
+//! Control frames and reply readers for the `PulseAudio` native protocol.
+
+#![forbid(unsafe_code)]
 
 use std::fmt;
 use std::io::{self, ErrorKind};
@@ -6,21 +8,11 @@ use std::iter;
 
 use pods_core::policy::audio::{Percent, SinkState};
 use pods_proto::addr::BdAddr;
-use pulseaudio::protocol::{
-    ChannelVolume, Command, DESCRIPTOR_SIZE, Descriptor, DescriptorFlags, SubscriptionMask, Volume,
-    encode_descriptor, read_descriptor,
-};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 /// A card list is a few kilobytes; a larger frame ends the connection.
 pub(super) const AUDIO_FRAME_MAX: usize = 262_144;
-
-/// The version whose sink layout `Tags::sink` walks; `PipeWire`'s pulse server and `PulseAudio` 15 onward speak it.
-pub(super) const PROTOCOL_VERSION: u16 = 35;
-
-/// Command frames travel on this channel; any other carries stream audio, which this client never opens.
-const CONTROL_CHANNEL: u32 = u32::MAX;
 
 /// Format, channel count and a 4 byte rate.
 const SAMPLE_SPEC_LEN: usize = 6;
@@ -33,9 +25,6 @@ const BEFORE_VOLUME: usize = 4;
 
 /// Monitor name, two latencies, driver, flags, properties and base volume.
 const BEFORE_STATE: usize = 7;
-
-/// A `PulseAudio` channel volume can carry up to 32 channels.
-const MAX_CHANNELS: u8 = 32;
 
 /// Volume steps and card.
 const AFTER_STATE: usize = 2;
@@ -61,78 +50,24 @@ const AFTER_PORT_PROFILES: usize = 3;
 /// The percent that `Volume::NORM` stands for.
 const FULL: u64 = 100;
 
-/// The crate's tag bytes, so the table is written once.
+pub(super) mod protocol;
+
+#[cfg(test)]
+use protocol as native;
+#[cfg(test)]
 #[expect(
-    clippy::as_conversions,
-    reason = "the discriminant of a fieldless enum is the protocol's tag byte"
+    dead_code,
+    reason = "unit fixtures share their codec with the external fake server and client"
 )]
-mod tag {
-    use pulseaudio::protocol::Tag;
+#[path = "../../../tests/support/audio/protocol.rs"]
+pub(super) mod fixture;
 
-    pub(super) const STRING: u8 = Tag::String as u8;
-    pub(super) const STRING_NULL: u8 = Tag::StringNull as u8;
-    pub(super) const U32: u8 = Tag::U32 as u8;
-    pub(super) const U8: u8 = Tag::U8 as u8;
-    pub(super) const U64: u8 = Tag::U64 as u8;
-    pub(super) const S64: u8 = Tag::S64 as u8;
-    pub(super) const SAMPLE_SPEC: u8 = Tag::SampleSpec as u8;
-    pub(super) const ARBITRARY: u8 = Tag::Arbitrary as u8;
-    pub(super) const TRUE: u8 = Tag::BooleanTrue as u8;
-    pub(super) const FALSE: u8 = Tag::BooleanFalse as u8;
-    pub(super) const TIMEVAL: u8 = Tag::TimeVal as u8;
-    pub(super) const USEC: u8 = Tag::Usec as u8;
-    pub(super) const CHANNEL_MAP: u8 = Tag::ChannelMap as u8;
-    pub(super) const CVOLUME: u8 = Tag::CVolume as u8;
-    pub(super) const PROPLIST: u8 = Tag::PropList as u8;
-    pub(super) const VOLUME: u8 = Tag::Volume as u8;
-    pub(super) const FORMAT_INFO: u8 = Tag::FormatInfo as u8;
-}
-
-/// The crate's numbers for the two sink states the gate tells apart from running.
-#[expect(
-    clippy::as_conversions,
-    reason = "the discriminant of a fieldless enum is the protocol's state number"
-)]
-mod state {
-    use pulseaudio::protocol::SinkState;
-
-    pub(super) const IDLE: u32 = SinkState::Idle as u32;
-    pub(super) const SUSPENDED: u32 = SinkState::Suspended as u32;
-}
-
-/// The crate's numbers for the three commands a server sends this client.
-#[expect(
-    clippy::as_conversions,
-    reason = "the discriminant of a fieldless enum is the protocol's command number"
-)]
-mod command {
-    use pulseaudio::protocol::CommandTag;
-
-    pub(super) const ERROR: u32 = CommandTag::Error as u32;
-    pub(super) const REPLY: u32 = CommandTag::Reply as u32;
-    pub(super) const EVENT: u32 = CommandTag::SubscribeEvent as u32;
-}
-
-/// The flags of a subscription event hold the facility in their low four bits.
-#[expect(
-    clippy::as_conversions,
-    reason = "the discriminants are the protocol's facility and event type numbers"
-)]
-mod subscription {
-    use pulseaudio::protocol::{SubscriptionEventFacility, SubscriptionEventType};
-
-    pub(super) const SEQUENCE: u32 = u32::MAX;
-    pub(super) const FACILITY_MASK: u32 = 0x0f;
-    pub(super) const SINK: u32 = SubscriptionEventFacility::Sink as u32;
-    pub(super) const SOURCE: u32 = SubscriptionEventFacility::Source as u32;
-    pub(super) const SOURCE_OUTPUT: u32 = SubscriptionEventFacility::SourceOutput as u32;
-    pub(super) const SERVER: u32 = SubscriptionEventFacility::Server as u32;
-    pub(super) const CLIENT: u32 = SubscriptionEventFacility::Client as u32;
-    pub(super) const CARD: u32 = SubscriptionEventFacility::Card as u32;
-    pub(super) const NEW: u32 = SubscriptionEventType::New as u32;
-    pub(super) const CHANGED: u32 = SubscriptionEventType::Changed as u32;
-    pub(super) const REMOVED: u32 = SubscriptionEventType::Removed as u32;
-}
+pub(super) use protocol::PROTOCOL_VERSION;
+use protocol::{
+    CONTROL_CHANNEL, ChannelVolume, Command, CommandTag, DESCRIPTOR_SIZE, Descriptor,
+    EVENT_SEQUENCE, FACILITY_MASK, MAX_CHANNELS, SubscriptionEventFacility, SubscriptionEventType,
+    SubscriptionMask, Volume, field_length, protocol_version, read_descriptor, tag,
+};
 
 /// What is wrong with the server's bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,11 +105,7 @@ pub(super) struct Frame(Vec<u8>);
 
 impl Frame {
     pub(super) fn request(seq: u32, command: &Command) -> io::Result<Self> {
-        let mut payload = Vec::new();
-        command
-            .write_tag_prefixed(seq, &mut payload, PROTOCOL_VERSION)
-            .map_err(io::Error::other)?;
-        Ok(Self(payload))
+        command.encode(seq).map(Self)
     }
 }
 
@@ -213,16 +144,11 @@ pub(super) fn take_frame(pending: &mut Vec<u8>) -> io::Result<Option<Frame>> {
 }
 
 pub(super) async fn write_frame(stream: &mut UnixStream, frame: &Frame) -> io::Result<()> {
-    let length = u32::try_from(frame.0.len()).map_err(io::Error::other)?;
-    let mut descriptor = [0; DESCRIPTOR_SIZE];
-    let control = Descriptor {
-        length,
+    let descriptor = Descriptor {
+        length: field_length(frame.0.len())?,
         channel: CONTROL_CHANNEL,
-        offset: 0,
-        flags: DescriptorFlags::empty(),
     };
-    encode_descriptor(&mut descriptor, &control);
-    stream.write_all(&descriptor).await?;
+    stream.write_all(&descriptor.encode()).await?;
     stream.write_all(&frame.0).await
 }
 
@@ -263,13 +189,13 @@ pub(super) enum Message<'a> {
 pub(super) fn message(frame: &Frame) -> Result<Message<'_>, Malformed> {
     let mut tags = Tags(&frame.0);
     let number = tags.u32()?;
-    if number == command::EVENT {
+    if number == CommandTag::SubscribeEvent.number() {
         return Ok(Message::Event(event(tags)));
     }
     let seq = tags.u32()?;
     Ok(match number {
-        command::REPLY => Message::Reply { seq, body: tags.0 },
-        command::ERROR => Message::Refused {
+        number if number == CommandTag::Reply.number() => Message::Reply { seq, body: tags.0 },
+        number if number == CommandTag::Error.number() => Message::Refused {
             seq,
             code: tags.u32()?,
         },
@@ -279,31 +205,21 @@ pub(super) fn message(frame: &Frame) -> Result<Message<'_>, Malformed> {
 
 /// An event's sequence, facility and type flags, and index; sample `L ffffffff L 00000010 L 00000007`: sink 7 changed.
 fn event(mut tags: Tags<'_>) -> Option<SubscriptionMask> {
-    use subscription::{CHANGED, FACILITY_MASK, NEW, REMOVED};
-
-    if tags.u32().ok()? != subscription::SEQUENCE {
+    if tags.u32().ok()? != EVENT_SEQUENCE {
         return None;
     }
     let flags = tags.u32().ok()?;
     tags.u32().ok()?;
-    if !tags.0.is_empty() || !matches!(flags & !FACILITY_MASK, NEW | CHANGED | REMOVED) {
+    if !tags.0.is_empty() {
         return None;
     }
-    match flags & FACILITY_MASK {
-        subscription::SINK => Some(SubscriptionMask::SINK),
-        subscription::SOURCE => Some(SubscriptionMask::SOURCE),
-        subscription::SOURCE_OUTPUT => Some(SubscriptionMask::SOURCE_OUTPUT),
-        subscription::SERVER => Some(SubscriptionMask::SERVER),
-        subscription::CLIENT => Some(SubscriptionMask::CLIENT),
-        subscription::CARD => Some(SubscriptionMask::CARD),
-        _ => None,
-    }
+    SubscriptionEventType::from_number(flags & !FACILITY_MASK)?;
+    Some(SubscriptionEventFacility::from_number(flags & FACILITY_MASK)?.mask())
 }
 
 /// The version an auth reply grants, its high half being memory flags; sample `L 40 00 00 23`: 35 with memfd.
 pub(super) fn auth_version(body: &[u8]) -> Result<u16, Malformed> {
-    let [_, _, high, low] = Tags(body).u32()?.to_be_bytes();
-    Ok(u16::from_be_bytes([high, low]))
+    Tags(body).u32().map(protocol_version)
 }
 
 /// The default sink's name in a server info reply; sample `t "pulse\0" t "15\0" t "me\0" t "box\0" a 03 02 0000bb80 t "bluez_output.02_00_00_00_00_01.1\0"`.
@@ -416,7 +332,7 @@ pub(super) fn sinks(body: &[u8]) -> impl Iterator<Item = Result<Sink<'_>, Malfor
     })
 }
 
-/// A walk over a tagstruct, copying nothing: the crate's reader allocates a property's declared length, up to 4 GiB, before checking it.
+/// A walk over a tagstruct, borrowing property values only after checking their lengths.
 pub(super) struct Tags<'a>(pub(super) &'a [u8]);
 
 impl<'a> Tags<'a> {
@@ -503,7 +419,7 @@ impl<'a> Tags<'a> {
         if channels == 0 {
             return Err(Malformed::NoChannels);
         }
-        if channels > MAX_CHANNELS {
+        if usize::from(channels) > MAX_CHANNELS {
             return Err(Malformed::TooManyChannels(channels));
         }
         let mut volumes = ChannelVolume::empty();
@@ -525,8 +441,8 @@ impl<'a> Tags<'a> {
     /// A sink's state, any number past the protocol's three reading as running, which keeps the gate shut; sample `L 00000002`: suspended.
     fn sink_state(&mut self) -> Result<SinkState, Malformed> {
         Ok(match self.u32()? {
-            state::IDLE => SinkState::Idle,
-            state::SUSPENDED => SinkState::Suspended,
+            value if value == protocol::SinkState::Idle.number() => SinkState::Idle,
+            value if value == protocol::SinkState::Suspended.number() => SinkState::Suspended,
             _ => SinkState::Running,
         })
     }
