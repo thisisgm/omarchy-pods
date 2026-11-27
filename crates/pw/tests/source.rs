@@ -53,6 +53,8 @@ mod tests {
     const SETTLE_CYCLES: u64 = 12;
     /// Start timing before the audio window to cover the lead-in and recorder buffering.
     const TIMED_LEAD_CYCLES: u64 = 8;
+    /// Stop timing one cycle after the 200 ms (4.7 cycle) step window that follows the ramp marker.
+    const TIMED_TAIL_CYCLES: u64 = 6;
     /// The rig normally fills every 42.7 ms. A gap above 55 ms indicates a missed deadline.
     const XRUN_GAP_US: u64 = 55_000;
     const MAX_ATTEMPTS: usize = 2;
@@ -103,7 +105,10 @@ mod tests {
             const RAMP_CYCLES: u32 = 4;
             const HALF: u64 = SETTLE_CYCLES + COUNTED_CYCLES;
             const FIRST_TIMED_CYCLE: u64 = 2 * HALF - TIMED_LEAD_CYCLES;
-            let started = (self.cycle >= FIRST_TIMED_CYCLE).then(Instant::now);
+            const LAST_TIMED_CYCLE: u64 = 2 * HALF + TIMED_TAIL_CYCLES;
+            let started = (FIRST_TIMED_CYCLE..=LAST_TIMED_CYCLE)
+                .contains(&self.cycle)
+                .then(Instant::now);
             self.tone.fill(out, capacity);
             if let Some(started) = started {
                 let since_previous = self
