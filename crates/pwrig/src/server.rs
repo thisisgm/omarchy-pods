@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::process::Signal;
 use serde_json::{Value, json};
 
 use crate::{Process, end, log_text, signal_and_wait, spawn, tool_output, wait_until};
@@ -163,26 +163,22 @@ impl Server {
         self.launch();
     }
 
-    /// Suspends the private graph driver while the caller runs `while_stopped`.
-    pub fn while_stopped(&self, while_stopped: impl FnOnce()) {
-        struct Resume(Pid);
-        impl Drop for Resume {
-            fn drop(&mut self) {
-                if let Err(error) = kill_process(self.0, Signal::CONT) {
-                    assert!(std::thread::panicking(), "resume private PipeWire: {error}");
-                }
-            }
-        }
-
-        let process = self.process.borrow();
-        let child = process
-            .as_ref()
-            .unwrap_or_else(|| panic!("private PipeWire server must be running"));
-        let pid = Pid::from_child(child);
-        kill_process(pid, Signal::STOP)
-            .unwrap_or_else(|error| panic!("pause private PipeWire: {error}"));
-        let _resume = Resume(pid);
-        while_stopped();
+    /// Resolves the private driver before `schedule_pause`, then pauses it while `while_paused` runs.
+    pub fn while_driver_paused(&self, schedule_pause: impl FnOnce(), while_paused: impl FnOnce()) {
+        let node = self.wait_node(DRIVER_NODE, LINK_WITHIN);
+        let id = node
+            .get("id")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("{DRIVER_NODE} has no id: {node}"))
+            .to_string();
+        let set_driver = |command| {
+            self.run("pw-cli", &["send-command", &id, command, "{}"]);
+        };
+        schedule_pause();
+        set_driver("Pause");
+        while_paused();
+        // Start resets the driver timer. SIGCONT instead makes it replay overdue graph cycles in a burst.
+        set_driver("Start");
     }
 
     fn launch(&self) {
