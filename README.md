@@ -115,7 +115,7 @@ with one of these values:
 |-----|--------|
 | `j` / `k`, `↓` / `↑` | Move between rows |
 | `Enter` / `Space` | Activate the focused button or toggle |
-| `←` / `→` | Adjust the focused adaptive noise level in steps of 5 |
+| `h` / `l` or `←` / `→` | Adjust the focused adaptive noise level in steps of 5 |
 | `o` | Off |
 | `t` | Transparency |
 | `a` | Adaptive |
