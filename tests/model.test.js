@@ -175,6 +175,10 @@ check("other set failures display only the refusal",
   Model.commandFailureText(1, true, "Refused\nValues: off"), "Refused")
 check("other ctl failures keep the elided error",
   Model.commandFailureText(1, false, "Refused\nTry again"), "Refused Try again")
+check("a set failure with no stderr names the refusal",
+  Model.commandFailureText(1, true, ""), "librepods refused the change")
+check("a ctl failure with no stderr names the rejection",
+  Model.commandFailureText(1, false, ""), "librepods-ctl rejected the command")
 
 // A Max sends one battery under "headset" and no pods at all, so the panel needs the flag to pick a shape.
 const max = Model.parseStatus('{"connected":true,"device_name":"AirPods Max","headset":{"available":true,"charging":false,"level":100},"is_headset":true,"model_name":"AirPods Max","noise_mode":1,"schema_version":1}')

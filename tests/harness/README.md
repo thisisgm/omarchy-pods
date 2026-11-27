@@ -147,6 +147,32 @@ reachable (before the first read), reachable and not connected, connected,
 not connected, not reachable (the file is gone, as when the daemon stops),
 and reachable again (the daemon is back).
 
+## a_state_home_made_after_the_shell_is_read
+
+The first boot shape: neither the state home nor its `librepods` directory
+exists when the shell starts, and the daemon makes both at once.
+
+```bash
+rmdir -- "$run/state/librepods" "$run/state"
+"${sandbox[@]}" OMAPODS_HARNESS_SECONDS=20 qs --no-color -p "$run/config" > "$run/out" 2>&1 &
+pid=$!
+await '"daemonReachable":false' 1
+mkdir -p -- "$run/state/librepods" && publish "$away"
+await '"daemonReachable":true' 1
+rm -- "$state" && rmdir -- "$run/state/librepods"
+await '"daemonReachable":false' 2
+mkdir -- "$run/state/librepods" && publish "$away"
+await '"daemonReachable":true' 2
+wait "$pid"
+grep -F 'harness {' "$run/out"
+```
+
+Passes when every `await` returns 0 and the lines read, in order: not
+reachable (nothing exists yet), reachable (the directories and the file
+appeared together), not reachable (the file and its directory are gone), and
+reachable again (both are back). No timer drives any of these reads, so a
+watch that misses an event leaves its `await` failing after 10 s.
+
 ## A change with no librepods-ctl on PATH
 
 ```bash
