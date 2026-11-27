@@ -282,7 +282,7 @@ export default class PodsExtension extends Extension {
             button.checked = state.noise_mode === value;
         }
         this._modeRow.visible = this._modes.some(({button}) => button.visible);
-        this._adaptiveRow.visible = !!(state.connected && state.supports_adaptive);
+        this._adaptiveRow.visible = !!(state.connected && state.supports_adaptive && state.noise_mode === 3);
         if (!this._adaptiveRow.visible)
             this._cancelSlider();
         if (this._adaptiveRow.visible && !this._dragging && !this._sliderTimer) {

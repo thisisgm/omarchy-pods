@@ -29,24 +29,32 @@ fn xdg_home(variable: &str, default: &str) -> Option<PathBuf> {
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(default)))
 }
 
-fn enabled() -> bool {
+async fn enabled() -> bool {
     match env::var("PODS_TRAY").as_deref() {
         Ok("0") => return false,
         Ok("1") => return true,
         _ => {}
     }
-    let omarchy = xdg_home("XDG_CONFIG_HOME", ".config")
-        .is_some_and(|path| path.join("omarchy/plugins/superwhisper.pods").exists());
-    let gnome = env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktop| desktop.contains("GNOME"))
-        && xdg_home("XDG_DATA_HOME", ".local/share").is_some_and(|path| {
-            path.join("gnome-shell/extensions/pods@superwhisper.com")
-                .exists()
-        });
-    !omarchy && !gnome
+    let omarchy_path = xdg_home("XDG_CONFIG_HOME", ".config")
+        .map(|path| path.join("omarchy/plugins/superwhisper.pods"));
+    let gnome_path = env::var("XDG_CURRENT_DESKTOP")
+        .is_ok_and(|desktop| desktop.contains("GNOME"))
+        .then(|| {
+            xdg_home("XDG_DATA_HOME", ".local/share")
+                .map(|path| path.join("gnome-shell/extensions/pods@superwhisper.com"))
+        })
+        .flatten();
+    tokio::task::spawn_blocking(move || {
+        let omarchy = omarchy_path.is_some_and(|path| path.exists());
+        let gnome = gnome_path.is_some_and(|path| path.exists());
+        !omarchy && !gnome
+    })
+    .await
+    .unwrap_or(false)
 }
 
 pub(super) async fn serve(connection: &Connection, hub: Hub) {
-    if enabled()
+    if enabled().await
         && let Err(error) = run(connection, hub).await
     {
         log(&format!("desktop tray: {error}"));

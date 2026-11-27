@@ -1,0 +1,13 @@
+{
+  "imports": {
+    "gi://Clutter": "./gnome_gi.js?Clutter",
+    "gi://Gio": "./gnome_gi.js?Gio",
+    "gi://GLib": "./gnome_gi.js?GLib",
+    "gi://St": "./gnome_gi.js?St",
+    "resource:///org/gnome/shell/extensions/extension.js": "./gnome_stubs.js",
+    "resource:///org/gnome/shell/ui/main.js": "./gnome_stubs.js",
+    "resource:///org/gnome/shell/ui/panelMenu.js": "./gnome_stubs.js",
+    "resource:///org/gnome/shell/ui/popupMenu.js": "./gnome_stubs.js",
+    "resource:///org/gnome/shell/ui/slider.js": "./gnome_stubs.js"
+  }
+}

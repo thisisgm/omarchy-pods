@@ -132,7 +132,7 @@ fn rows(state: &State) -> Vec<Row> {
             }
         }
     }
-    if caps.adaptive {
+    if caps.adaptive && state.noise_mode == NoiseMode::Adaptive {
         let level = state.adaptive_noise_level.percent();
         rows.push(Row::new(
             ADAPTIVE_MENU,

@@ -210,7 +210,22 @@ mod tests {
         bus: &Connection,
         menu: &[Layout],
     ) {
-        let adaptive = menu
+        assert!(
+            !menu
+                .iter()
+                .any(|(_, props, _)| label(props).starts_with("Adaptive Noise")),
+            "Adaptive Noise submenu must stay hidden outside Adaptive mode"
+        );
+        click(bus, row_at(menu, "Adaptive")).await;
+        device
+            .pods
+            .wait_heard(&setting(NOISE, ADAPTIVE.wire), 1, HANG_LIMIT)
+            .unwrap();
+        rig.wait_status("noise_mode", |state| {
+            state["noise_mode"] == serde_json::json!(ADAPTIVE.status)
+        });
+        let adaptive_menu = wait_for_adaptive_menu(bus).await;
+        let adaptive = adaptive_menu
             .iter()
             .find(|(_, props, _)| label(props) == "Adaptive Noise (50%)")
             .unwrap();
@@ -225,14 +240,6 @@ mod tests {
         assert_eq!(labels, ["0%", "25%", "50%", "75%", "100%"]);
         for (items, text, field, value, identifier, wire) in [
             (
-                menu,
-                "Adaptive",
-                "noise_mode",
-                serde_json::json!(ADAPTIVE.status),
-                NOISE,
-                ADAPTIVE.wire,
-            ),
-            (
                 &presets[..],
                 "75%",
                 "adaptive_noise_level",
@@ -241,7 +248,7 @@ mod tests {
                 75,
             ),
             (
-                menu,
+                &adaptive_menu[..],
                 "Conversation Awareness",
                 "conversational_awareness",
                 serde_json::json!(true),
@@ -267,6 +274,24 @@ mod tests {
             });
         }
         click(bus, i32::MAX).await;
+    }
+
+    async fn wait_for_adaptive_menu(bus: &Connection) -> Vec<Layout> {
+        tokio::time::timeout(HANG_LIMIT, async {
+            loop {
+                let (_, (_, _, items)) = layout(bus).await;
+                let entries = children(items);
+                if entries
+                    .iter()
+                    .any(|(_, props, _)| label(props) == "Adaptive Noise (50%)")
+                {
+                    return entries;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Adaptive Noise submenu did not appear after switching to Adaptive mode")
     }
 
     #[test]
@@ -324,7 +349,6 @@ mod tests {
                     "Noise Cancellation",
                     "Transparency",
                     "Adaptive",
-                    "Adaptive Noise (50%)",
                     "",
                     "Conversation Awareness",
                     "Ear Detection",

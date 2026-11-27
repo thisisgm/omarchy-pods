@@ -170,6 +170,7 @@ jobs:
         with:
           deno-version: 2.9.8
       - run: deno test --allow-read tests/model.test.js tests/icons.test.js
+      - run: deno test --allow-read --import-map=tests/gnome_import_map.json tests/gnome_extension.test.js
       - run: |
           extension=packaging/gnome-extension/pods@superwhisper.com
           node --input-type=module --check < "$extension/extension.js"
