@@ -47,11 +47,12 @@ omarchy install dev-env rust
 ~/.config/omarchy/plugins/io.github.thisisgm.omapods/packaging/setup --from-source
 ```
 
-Setup installs `librepods` and its `librepods-ctl` command in `~/.local/bin`.
-It enables and starts the `librepods.service` user unit for the graphical
-session. Use the same setup command to update the daemon after updating the
-plugin with `omarchy plugin update io.github.thisisgm.omapods`. If the service
-fails to start, check its log.
+Setup installs `librepods` in `~/.local/bin` and links `librepods-ctl` to it,
+so commands written for the C++ daemon still work. It enables and starts the
+`librepods.service` user unit for the graphical session. Use the same setup
+command to update the daemon after updating the plugin with
+`omarchy plugin update io.github.thisisgm.omapods`. If the service fails to
+start, check its log.
 
 ```bash
 journalctl --user -u librepods.service -n 30
@@ -134,7 +135,7 @@ listening modes and toggles have no effect.
 | Setting | Default | Effect |
 |---------|---------|--------|
 | `hideWhenDisconnected` | `true` | Hide the widget when the AirPods are disconnected and no battery reading is available. |
-| `ctlPath` | empty | Path to `librepods-ctl` for the legacy daemon. An empty value uses `PATH`. The Rust daemon uses `librepods` on `PATH`. |
+| `ctlPath` | empty | Path to `librepods-ctl`, used only with the C++ daemon. An empty value uses `PATH`. The panel ignores it with the Rust daemon. |
 
 To keep the icon visible, including when the daemon is down:
 
@@ -166,6 +167,14 @@ keep the keys and settings for a later reinstall.
 ```bash
 ~/.config/omarchy/plugins/io.github.thisisgm.omapods/packaging/setup --uninstall
 omarchy plugin remove io.github.thisisgm.omapods
+```
+
+The uninstaller leaves `~/.config/AirPodsTrayApp` in place. Plugin version
+1.3.6 and earlier kept the C++ daemon's pairing keys and settings there, and
+the Rust daemon does not read those keys. Remove it if it exists.
+
+```bash
+rm -r ~/.config/AirPodsTrayApp
 ```
 
 ## Contributing
