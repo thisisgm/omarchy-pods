@@ -96,6 +96,8 @@ async fn run(
         wake,
         wanted: None,
         opened: None,
+        #[cfg(test)]
+        before_card_update: || {},
         misses: 0,
         retry_at: None,
     };
@@ -211,6 +213,8 @@ struct Adapter {
     /// The open last asked for, with its node's name and description, until a close.
     wanted: Option<Wanted>,
     opened: Option<Opened>,
+    #[cfg(test)]
+    before_card_update: fn(),
     /// Failed tries since the node was last up or asked for, which pick the ladder's step.
     misses: usize,
     retry_at: Option<Instant>,
@@ -307,8 +311,12 @@ impl Adapter {
             return None;
         }
         let id = opened.id;
+        #[cfg(test)]
+        let before_card_update = self.before_card_update;
         // Wait for the worker to return the source before serving another update or close.
         let updated = spawn_blocking(move || {
+            #[cfg(test)]
+            before_card_update();
             match opened.source.set_device_id(card_id) {
                 Ok(()) => opened.card_id = card_id,
                 Err(error) => log(&format!("mic: pw_stream_update_properties failed: {error}")),
@@ -323,6 +331,7 @@ impl Adapter {
             }
             Err(error) => {
                 log(&format!("mic: card id update ended abnormally: {error}"));
+                self.reader.send_replace(None);
                 self.tap.close(());
                 Some(self.retry(id))
             }

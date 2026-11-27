@@ -6,6 +6,7 @@ use std::time::Duration;
 use pods_core::policy::{MicFact, OpenId};
 use pods_mic::{NODE_LATENCY_MS, RATE_HZ, SAMPLES_PER_UNIT, STAMP_STEP};
 use pods_pw::Event;
+use pods_pwrig::Server;
 use pods_samples::uplink::tone_unit;
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, watch};
@@ -26,6 +27,7 @@ fn adapter() -> Adapter {
         wake,
         wanted: None,
         opened: None,
+        before_card_update: || {},
         misses: 0,
         retry_at: None,
     }
@@ -119,6 +121,42 @@ fn a_broken_library_ends_the_want_so_no_retry_follows() {
     let runtime = Builder::new_current_thread().build().unwrap();
     assert_eq!(runtime.block_on(adapter.open()), None);
     assert_eq!((adapter.misses, adapter.retry_at), (0, None));
+}
+
+#[test]
+fn a_panicked_card_update_clears_the_reader() {
+    const CARD_ID: u32 = 86;
+    let directory = tempfile::tempdir().unwrap();
+    let server = Server::start(directory.path());
+    let runtime = Builder::new_current_thread().enable_time().build().unwrap();
+    let mut adapter = adapter();
+    adapter.socket = server.socket();
+    let reader = adapter.reader.subscribe();
+    let device = "02:00:00:00:00:01".parse().unwrap();
+    let id = OpenId::default();
+
+    runtime.block_on(async {
+        let request = Request {
+            node: MicRequest::Open {
+                id,
+                name: "test-mic".to_owned(),
+                description: "Test microphone".to_owned(),
+            },
+            device: Some(device),
+        };
+        assert_eq!(adapter.serve(request).await, Some(MicFact::Up(id)));
+        assert!(reader.borrow().is_some());
+
+        adapter.before_card_update = || panic!("injected card update panic");
+        assert_eq!(
+            adapter.update_card(Some((device, CARD_ID))).await,
+            Some(MicFact::Down(id))
+        );
+        assert!(
+            reader.borrow().is_none(),
+            "the reader still names the dropped source"
+        );
+    });
 }
 
 #[test]
