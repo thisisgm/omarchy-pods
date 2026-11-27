@@ -101,10 +101,12 @@ export default class PodsExtension extends Extension {
                 x_expand: true,
             });
             const percent = new St.Label();
-            const progress = new St.Bin({style_class: 'pods-progress', x_align: Clutter.ActorAlign.START});
+            const progress = new St.Bin({style_class: 'pods-progress'});
+            const track = new St.BoxLayout({style_class: 'pods-track', x_align: Clutter.ActorAlign.START});
+            track.add_child(progress);
             column.add_child(new St.Label({text: label}));
             column.add_child(percent);
-            column.add_child(new St.Bin({style_class: 'pods-track', child: progress}));
+            column.add_child(track);
             batteryStrip.add_child(column);
             return {key, column, percent, progress};
         });
@@ -274,7 +276,7 @@ export default class PodsExtension extends Extension {
             column.visible = !!cell?.available;
             if (column.visible) {
                 percent.text = `${cell.level}%${cell.charging ? '+' : ''}`;
-                progress.width = BATTERY_TRACK_WIDTH * cell.level / 100;
+                progress.width = Math.round(BATTERY_TRACK_WIDTH * cell.level / 100);
             }
         }
         for (const {button, capability, value} of this._modes) {

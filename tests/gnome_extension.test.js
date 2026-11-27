@@ -226,6 +226,9 @@ Deno.test('Plain AirPods hide noise modes (including Off), Max uses headset icon
     }));
     assertEq(ext._panelIcon.gicon.file.name, 'pods-max-symbolic.svg', 'max icon');
     assertEq(ext._percentage.text, '42%', 'headset percentage');
+    const headsetCol = ext._batteries.find(b => b.key === 'headset');
+    assertEq(headsetCol.column.children[2].x_align, 'start', 'battery track anchored flush-left');
+    assertEq(headsetCol.progress.width, 27, 'headset progress bar rounded pixel width');
 
     // Disconnected with case battery stays visible as Away with controls hidden.
     harness.emitStatus(makeStatus({
