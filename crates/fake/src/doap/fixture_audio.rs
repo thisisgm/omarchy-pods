@@ -1,4 +1,4 @@
-//! The generated audio a fake DoAP microphone hears.
+//! The generated audio a fake `DoAP` microphone hears.
 
 use std::time::Instant;
 
