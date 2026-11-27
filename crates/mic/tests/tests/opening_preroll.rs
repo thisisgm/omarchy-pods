@@ -117,7 +117,7 @@ fn a_stalled_reader_in_a_short_opening_catches_up_without_dropping_audio() {
     let (after, _) = take.reader.read_ends();
     let cut = after - before - i64::try_from(QUANTUM).unwrap();
     let max_cut = i64::try_from(frames_in(ms(MAX_CUT_MS))).unwrap();
-    assert!((0..=max_cut).contains(&cut), "stall cut {cut} frames");
+    assert!((1..=max_cut).contains(&cut), "stall cut {cut} frames");
     writeln!(
         io::stderr(),
         "reader skipped {cut} silent frames after the stall"
@@ -214,6 +214,69 @@ fn a_late_opening_anchor_inside_the_realign_bound_catches_up_before_the_tail() {
     assert!(
         lag <= max_lag,
         "reader stayed {lag} frames behind target at the tail (limit {max_lag} frames)"
+    );
+    assert_bounded_catch_up(&take);
+    assert_eq!(Rig::count(&take.counters.underruns), 0);
+}
+
+/// Plays a dictation whose word is followed by digital silence, stalls the reader for `stall_ms` after its first read, and gives the take and the frames the stall cut.
+fn stall_over_silence(stall_ms: u32) -> (Take, i64) {
+    const SILENT: usize = 10;
+    const TRAILING_SILENT: usize = 20;
+    const READS: usize = 120;
+    let mut burst_frames = vec![silence(); SILENT];
+    burst_frames.push(tone_onset());
+    burst_frames.extend(iter::repeat_n(silence(), TRAILING_SILENT));
+    let mut take = Take::new(0, None);
+    take.play(
+        Vec::new(),
+        linked(STEADY, SHORT_LEAD_MS),
+        head(SHORT_LEAD_MS) / QUANTUM,
+    );
+    for (index, chunk) in burst_frames.chunks(BURST_FRAMES).enumerate() {
+        let offset = index.saturating_mul(BURST_FRAMES);
+        let counters = (offset..).map(|counter| u16::try_from(counter).unwrap());
+        take.chain
+            .frames(STEADY, counters.zip(chunk.iter().copied()));
+    }
+    take.lands = (0..READS)
+        .map(|index| {
+            let at = after(
+                STEADY.saturating_add(ms(FRAME_MS)),
+                ms(FRAME_MS),
+                u32::try_from(index).unwrap(),
+            );
+            (at, vec![burst_frames.len().saturating_add(index)])
+        })
+        .collect();
+    take.go_on(1);
+    let (before, _) = take.reader.read_ends();
+    take.now = take.now.saturating_add(ms(stall_ms));
+    take.go_on(1);
+    let (after, _) = take.reader.read_ends();
+    take.go_on(READS - 2);
+    let quantum = i64::try_from(QUANTUM).unwrap();
+    (take, after.saturating_sub(before).saturating_sub(quantum))
+}
+
+#[test]
+fn a_stall_over_digital_silence_cuts_only_what_the_rate_budget_cannot_close() {
+    const STALL_MS: u32 = 120;
+    // 120 ms behind, less the 15 ms steady bound and the 43 ms the rate budget closes.
+    const MIN_CUT_MS: u32 = 61;
+    const MAX_CUT_MS: u32 = 62;
+    const WORD_FRAMES: usize = 3;
+    let (unstalled, _) = stall_over_silence(0);
+    let (take, cut) = stall_over_silence(STALL_MS);
+    let min_cut = i64::try_from(frames_in(ms(MIN_CUT_MS))).unwrap();
+    let max_cut = i64::try_from(frames_in(ms(MAX_CUT_MS))).unwrap();
+    assert!((min_cut..=max_cut).contains(&cut), "stall cut {cut} frames");
+    let onset = |tape: &[f32]| tape.iter().position(|sample| *sample != 0.0).unwrap();
+    let (heard, expected) = (onset(&take.tape), onset(&unstalled.tape));
+    let word = WORD_FRAMES * frame_frames();
+    assert!(
+        take.tape[heard..heard + word] == unstalled.tape[expected..expected + word],
+        "the cut reached the word"
     );
     assert_bounded_catch_up(&take);
     assert_eq!(Rig::count(&take.counters.underruns), 0);
