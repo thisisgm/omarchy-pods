@@ -7,13 +7,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use pulseaudio::protocol::{
-    AuthReply, ChannelVolume, Command, CommandTag, DEFAULT_SINK, GetCardInfo, GetSinkInfo,
-    MAX_VERSION, PulseError, ServerInfo, SetCardProfileParams, SetClientNameReply,
-    SetDeviceVolumeParams, SinkInfo, SinkState, SubscriptionEvent, SubscriptionEventFacility,
-    SubscriptionEventType, SubscriptionMask, SuspendParams, Volume,
+use crate::support::audio::protocol::{
+    AuthReply, ChannelVolume, Command, CommandTag, DEFAULT_SINK, DeviceLookup, MAX_VERSION,
+    PulseError, ServerInfo, SetCardProfileParams, SetClientNameReply, SetDeviceVolumeParams,
+    SinkInfo, SinkState, SubscriptionEvent, SubscriptionEventFacility, SubscriptionEventType,
+    SubscriptionMask, SuspendParams, Volume,
 };
 
 use super::Asked;
@@ -34,6 +34,9 @@ const SPLIT_AT: usize = 24;
 const WRITE_LIMIT: Duration = Duration::from_secs(2);
 /// Stereo, as `SinkInfo::new_dummy` describes every sink.
 const SINK_CHANNELS: usize = 2;
+mod asked;
+use asked::asked;
+
 /// The commands the fake answers; any other is refused with `PulseError::Command`.
 const UNDERSTOOD: [CommandTag; 15] = [
     CommandTag::Auth,
@@ -230,10 +233,6 @@ impl State {
     }
 
     /// A real server posts the event to each subscriber whose mask has the facility's bit.
-    #[expect(
-        clippy::as_conversions,
-        reason = "the discriminant of a fieldless enum is the protocol's facility number"
-    )]
     pub(super) fn announce(
         &mut self,
         facility: SubscriptionEventFacility,
@@ -243,7 +242,7 @@ impl State {
         if self.silent_events {
             return;
         }
-        let mask = SubscriptionMask::from_bits_truncate(1 << facility as u32);
+        let mask = SubscriptionMask::from_bits_truncate(1 << facility.number());
         let event = Command::SubscribeEvent(SubscriptionEvent {
             event_facility: facility,
             event_type: kind,
@@ -251,7 +250,7 @@ impl State {
         });
         self.send_each(
             |client| client.subscribed.contains(mask),
-            |version| wire::event(&event, version),
+            |_| wire::event(&event),
         );
     }
 
@@ -461,7 +460,7 @@ impl State {
         });
         let mut faults = Vec::new();
         for client in &mut self.clients {
-            let mut head = wire::event(&event, client.version());
+            let mut head = wire::event(&event);
             let tail = head.split_off(SPLIT_AT);
             faults.extend(client.write(&head).err());
             client.held.push(tail);
@@ -523,10 +522,6 @@ impl State {
     }
 
     #[expect(
-        clippy::as_conversions,
-        reason = "the discriminant of a fieldless enum is the protocol's command number"
-    )]
-    #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "the fake refuses every command outside the ones it serves"
     )]
@@ -535,16 +530,13 @@ impl State {
         if channel != CONTROL_CHANNEL {
             return Err(format!("client {id} sent stream data on channel {channel}"));
         }
-        if !UNDERSTOOD
-            .iter()
-            .any(|tag| u32::from(*tag as u8) == command)
-        {
+        if !UNDERSTOOD.iter().any(|tag| tag.number() == command) {
             self.record(Asked::Unknown { command });
             self.send(id, wire::error(seq, PulseError::Command));
             return Ok(());
         }
         let version = self.client(id).version;
-        let parsed = wire::command(frame, version.unwrap_or(MAX_VERSION))?;
+        let parsed = wire::command(frame)?;
         let recorded = asked(command, &parsed, |index| {
             let sink = self.sinks.iter().find(|sink| sink.index == index);
             sink.map(|sink| sink.name.to_string_lossy().into_owned())
@@ -564,7 +556,7 @@ impl State {
             self.send(id, wire::error(seq, PulseError::AccessDenied));
             return Ok(());
         };
-        if matches!(self.replies, Replies::HoldAt(tag) if command == u32::from(tag as u8)) {
+        if matches!(self.replies, Replies::HoldAt(tag) if command == tag.number()) {
             self.replies = Replies::Holding;
         }
         let bytes = match parsed {
@@ -572,7 +564,7 @@ impl State {
                 wire::reply(seq, &SetClientNameReply { client_id: id }, version)
             }
             Command::GetServerInfo => wire::reply(seq, &self.server_info(), version),
-            Command::GetSinkInfo(GetSinkInfo {
+            Command::GetSinkInfo(DeviceLookup {
                 index: None,
                 name: Some(name),
             }) => match self.position(&name) {
@@ -591,7 +583,7 @@ impl State {
                 self.client(id).subscribed = mask;
                 wire::ack(seq)
             }
-            Command::GetCardInfo(GetCardInfo {
+            Command::GetCardInfo(DeviceLookup {
                 index: None,
                 name: Some(name),
             }) => match self.cards.info(&name) {
@@ -628,12 +620,12 @@ impl State {
     }
 
     fn server_info(&self) -> ServerInfo {
-        let default_sink_name = self
+        let default_sink = self
             .default
             .and_then(|index| self.sinks.iter().find(|sink| sink.index == index))
             .map(|sink| sink.name.clone());
         ServerInfo {
-            default_sink_name,
+            default_sink,
             ..ServerInfo::default()
         }
     }
@@ -688,77 +680,6 @@ impl State {
     }
 }
 
-/// `named` resolves a sink index before the fake records its command.
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "the fake records unrecognized commands by number"
-)]
-fn asked(command: u32, parsed: &Command, named: impl FnOnce(u32) -> Option<String>) -> Asked {
-    match parsed {
-        Command::Auth(params) => Asked::Auth {
-            version: params.version,
-        },
-        Command::SetClientName(_) => Asked::ClientName,
-        Command::GetClientInfoList => Asked::ClientList,
-        Command::GetServerInfo => Asked::ServerInfo,
-        Command::GetSinkInfo(GetSinkInfo {
-            index: None,
-            name: Some(name),
-        }) => Asked::SinkInfo {
-            name: name.to_string_lossy().into_owned(),
-        },
-        Command::GetSinkInfoList => Asked::SinkList,
-        Command::SetSinkVolume(SetDeviceVolumeParams {
-            device_index,
-            device_name,
-            volume,
-        }) => {
-            let name = match (device_index, device_name) {
-                (Some(index), None) => named(*index),
-                (None, Some(name)) => Some(name.to_string_lossy().into_owned()),
-                _ => None,
-            };
-            name.map_or(Asked::Unknown { command }, |name| Asked::Volume {
-                name,
-                index: *device_index,
-                percent: percent_of(loudest(volume)),
-                at: Instant::now(),
-            })
-        }
-        Command::Subscribe(mask) => Asked::Subscribe { mask: *mask },
-        Command::GetCardInfo(GetCardInfo {
-            index: None,
-            name: Some(name),
-        }) => Asked::CardInfo {
-            name: name.to_string_lossy().into_owned(),
-        },
-        Command::GetCardInfoList => Asked::CardList,
-        Command::SetCardProfile(SetCardProfileParams {
-            card_index: None,
-            card_name: Some(card),
-            profile_name,
-        }) => Asked::Profile {
-            card: card.to_string_lossy().into_owned(),
-            profile: profile_name.to_string_lossy().into_owned(),
-        },
-        Command::GetSourceInfoList => Asked::SourceList,
-        Command::SetDefaultSource(name) => Asked::DefaultSource {
-            name: name.to_string_lossy().into_owned(),
-        },
-        Command::GetSourceOutputInfoList => Asked::RecorderList,
-        Command::SuspendSink(SuspendParams {
-            device_index: Some(index),
-            device_name: None,
-            suspend,
-        }) => Asked::Suspend {
-            name: named(*index),
-            suspend: *suspend,
-            at: Instant::now(),
-        },
-        _ => Asked::Unknown { command },
-    }
-}
-
 fn uniform_volume(volume: Volume) -> ChannelVolume {
     let mut uniform = ChannelVolume::empty();
     for _ in 0..SINK_CHANNELS {
@@ -773,7 +694,7 @@ fn loudest(volume: &ChannelVolume) -> Volume {
         .channels()
         .iter()
         .copied()
-        .max_by_key(Volume::as_u32)
+        .max_by_key(|volume| volume.as_u32())
         .unwrap_or(Volume::MUTED)
 }
 

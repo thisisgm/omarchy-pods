@@ -2,10 +2,10 @@
 
 use pods_core::policy::audio::{AudioRequest, Percent, SinkFact, VolumeStamp};
 use pods_proto::addr::BdAddr;
-use pulseaudio::protocol::{
+
+use super::wire::protocol::{
     ChannelVolume, Command, CommandTag, SetDeviceVolumeParams, SubscriptionMask, Volume,
 };
-
 use super::wire::{self, Malformed};
 use super::{Connection, Lost, NO_ENTITY, log};
 

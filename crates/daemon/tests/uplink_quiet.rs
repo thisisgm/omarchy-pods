@@ -14,6 +14,7 @@ mod tests {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::{
         BUD_GRACE_MS, STOP_NOT_WORN_LINE, STOP_OWED_PLAYING_LINE, STOP_QUIET_LINE, UPLINK_STALL_MS,
     };
@@ -21,7 +22,6 @@ mod tests {
     use pods_pwrig::{Recorder, Server};
     use pods_samples::MODEL_NUMBER;
     use pods_samples::uplink::START;
-    use pulseaudio::protocol::SinkState;
 
     use super::support::audio::wire::sink_named;
     use super::support::audio::{Asked, FakeAudio};

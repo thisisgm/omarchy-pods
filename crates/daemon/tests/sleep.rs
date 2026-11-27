@@ -12,10 +12,10 @@ mod support;
 mod tests {
     use std::time::{Duration, Instant};
 
+    use crate::support::audio::protocol::SinkState;
     use pods_core::policy::mic::UPLINK_STALL_MS;
     use pods_fake::Profile;
     use pods_samples::MODEL_NUMBER;
-    use pulseaudio::protocol::SinkState;
     use serde_json::Value;
 
     use super::support::bus::Listener;

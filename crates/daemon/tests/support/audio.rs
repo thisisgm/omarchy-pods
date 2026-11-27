@@ -3,6 +3,9 @@
 mod capture;
 mod cards;
 mod lists;
+#[path = "../../src/daemon/audio/wire/protocol.rs"]
+mod native;
+pub(crate) mod protocol;
 mod server;
 pub(crate) mod wire;
 
@@ -16,8 +19,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::support::audio::protocol::{
+    ChannelVolume, CommandTag, Props, SinkState, SubscriptionMask, Volume,
+};
 use pods_core::policy::audio::AUDIO_CALL_TIMEOUT_MS;
-use pulseaudio::protocol::{ChannelVolume, CommandTag, Props, SinkState, SubscriptionMask, Volume};
 use rustix::net::{self, Shutdown};
 
 pub(crate) use capture::{Recorder, RecorderId};

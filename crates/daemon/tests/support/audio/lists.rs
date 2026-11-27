@@ -2,7 +2,7 @@
 
 use std::ffi::CString;
 
-use pulseaudio::protocol::{
+use crate::support::audio::protocol::{
     ClientInfo, Prop, Props, SubscriptionEventFacility, SubscriptionEventType,
 };
 
@@ -29,7 +29,6 @@ impl State {
             index,
             name: c"Recorder program".to_owned(),
             props,
-            ..ClientInfo::default()
         });
         self.announce(
             SubscriptionEventFacility::Client,
