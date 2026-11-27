@@ -784,10 +784,10 @@ fn raise(counter: &mut u64) {
 #[cfg(test)]
 mod tests {
     mod commands;
-    mod cpp_ladder;
     mod devices;
     mod invariants;
     mod known;
+    mod ladder_timing;
     mod ladders;
     mod lifecycle;
     mod log_lines;

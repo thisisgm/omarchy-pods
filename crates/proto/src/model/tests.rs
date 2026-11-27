@@ -1,10 +1,7 @@
-//! The `tst_enums` cases, translated, plus the model rows compared with the C++ source.
+//! Model lookup, status values and supported listening features.
 
 use super::*;
-use cpp_source::{BLE_MANAGER_SOURCE, DEVICE_INFO, ENUMS};
 use proptest::prelude::*;
-
-type Flag = fn(Capabilities) -> bool;
 
 /// A row the Rust table holds and the C++ sources do not, named by why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,52 +37,6 @@ const BEYOND_CPP: &[BeyondCpp] = &[
     BeatsKeptOut(0x202F),
     BeatsKeptOut(0x2038),
 ];
-
-fn in_cpp(model: Model) -> bool {
-    !BEYOND_CPP.contains(&ReleasedAfter(model))
-}
-
-fn id_in_cpp(id: u16) -> bool {
-    !BEYOND_CPP.contains(&IdPublishedAfter(id))
-}
-
-/// The C++ enumerator name, which the Rust variant name copies.
-fn cpp_name(model: Model) -> String {
-    format!("{model:?}")
-}
-
-/// Sample input: `case AirPodsModel::AirPodsMaxUSBC:` lines above a switch's first `return true;`.
-fn cpp_true_cases(function: &str) -> Vec<String> {
-    let body = ENUMS.scope(&format!("inline bool {function}(AirPodsModel model)"));
-    let (cases, _) = body
-        .split_once("return true;")
-        .unwrap_or_else(|| panic!("daemon/enums.h: {function} has no `return true;`"));
-    cases
-        .split("case AirPodsModel::")
-        .skip(1)
-        .map(|case| {
-            let (name, _) = case
-                .split_once(':')
-                .unwrap_or_else(|| panic!("daemon/enums.h: {function} has a case without `:`"));
-            name.trim().to_owned()
-        })
-        .collect()
-}
-
-fn rust_true_cases(flag: Flag) -> Vec<String> {
-    Model::ALL
-        .iter()
-        .copied()
-        .filter(|&model| in_cpp(model) && flag(model.capabilities()))
-        .map(cpp_name)
-        .collect()
-}
-
-/// So a comparison ignores the order of the C++ case labels.
-fn sorted(mut names: Vec<String>) -> Vec<String> {
-    names.sort();
-    names
-}
 
 #[test]
 fn parse_model_number_matches_apple_support_list() {
@@ -295,179 +246,102 @@ fn capabilities_never_exceed_noise_control() {
 }
 
 #[test]
-fn model_numbers_match_the_cpp_model_number_map() {
-    // Sample input: `{"A1523", AirPodsModel::AirPods1},` one entry per line, `//` lines between.
-    let cpp: Vec<(String, String)> = ENUMS
-        .between("modelNumberMap = {", "return modelNumberMap")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("//"))
-        .map(|line| {
-            let (_, entry) = line
-                .split_once("{\"")
-                .unwrap_or_else(|| panic!("daemon/enums.h: bad modelNumberMap line `{line}`"));
-            let (number, name) = entry
-                .split_once("\", AirPodsModel::")
-                .unwrap_or_else(|| panic!("daemon/enums.h: bad modelNumberMap line `{line}`"));
-            let (name, _) = name
-                .split_once('}')
-                .unwrap_or_else(|| panic!("daemon/enums.h: bad modelNumberMap line `{line}`"));
-            (number.to_owned(), name.to_owned())
-        })
-        .collect();
-    let rust: Vec<(String, String)> = MODEL_NUMBERS
-        .iter()
-        .filter(|&&(_, model)| in_cpp(model))
-        .map(|&(number, model)| (number.to_owned(), cpp_name(model)))
-        .collect();
-    assert_eq!(rust, cpp);
-    for (number, name) in &cpp {
-        assert_eq!(&cpp_name(Model::from_number(number)), name, "{number}");
-    }
-}
-
-#[test]
-fn model_ints_match_the_cpp_enum_order() {
-    // Sample input: `{ Unknown, AirPods1, ... // comment ... AirPodsMax2 }`, one per line.
-    let cpp: Vec<&str> = ENUMS
-        .scope("enum class AirPodsModel")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && *line != "{" && !line.starts_with("//"))
-        .map(|line| line.trim_end_matches(','))
-        .collect();
-    let rust: Vec<String> = Model::ALL
-        .iter()
-        .copied()
-        .filter(|&model| in_cpp(model))
-        .map(cpp_name)
-        .collect();
-    assert_eq!(rust, cpp);
-    for (int, &model) in Model::ALL.iter().enumerate() {
-        assert_eq!(model.as_int(), i64::try_from(int).unwrap(), "{model:?}");
-    }
-}
-
-#[test]
-fn display_names_match_the_cpp_switch() {
-    let body = ENUMS.scope("inline QString modelDisplayName(AirPodsModel model)");
-    for &model in Model::ALL.iter().filter(|&&model| in_cpp(model)) {
-        let name = cpp_name(model);
-        // Sample input: `case AirPodsModel::AirPods1:   return QStringLiteral("AirPods");`
-        let (_, rest) = body
-            .split_once(&format!("case AirPodsModel::{name}:"))
-            .unwrap_or_else(|| panic!("daemon/enums.h: modelDisplayName has no case {name}"));
-        let (statement, _) = rest
-            .split_once(';')
-            .unwrap_or_else(|| panic!("daemon/enums.h: modelDisplayName case {name} has no `;`"));
-        let cpp = match statement.trim() {
-            "return QString()" => "",
-            literal => literal
-                .strip_prefix("return QStringLiteral(\"")
-                .and_then(|rest| rest.strip_suffix("\")"))
-                .unwrap_or_else(|| {
-                    panic!("daemon/enums.h: modelDisplayName case {name} is `{literal}`")
-                }),
-        };
-        assert_eq!(model.display_name(), cpp, "{name}");
-    }
-}
-
-#[test]
-fn capabilities_match_the_cpp_switches() {
-    let flags: [(&str, Flag); 4] = [
-        ("supportsNoiseControl", |c| c.noise_control),
-        ("supportsOneBudANC", |c| c.one_bud_anc),
-        ("isProSeriesAirPods", |c| c.is_pro_series),
-        ("isModelHeadset", |c| c.is_headset),
+fn model_numbers_in_status_follow_the_public_order() {
+    // The status line publishes these numbers, so a reordered variant list must go red here.
+    let public = [
+        (Model::Unknown, 0),
+        (Model::AirPods1, 1),
+        (Model::AirPods2, 2),
+        (Model::AirPods3, 3),
+        (Model::AirPodsPro, 4),
+        (Model::AirPodsPro2Lightning, 5),
+        (Model::AirPodsPro2USBC, 6),
+        (Model::AirPodsMaxLightning, 7),
+        (Model::AirPodsMaxUSBC, 8),
+        (Model::AirPods4, 9),
+        (Model::AirPods4ANC, 10),
+        (Model::AirPodsPro3, 11),
+        (Model::AirPodsMax2, 12),
+        (Model::AirPods5, 13),
+        (Model::AirPods5WirelessCase, 14),
     ];
-    for (function, flag) in flags {
-        assert_eq!(
-            sorted(rust_true_cases(flag)),
-            sorted(cpp_true_cases(function)),
-            "{function}"
-        );
+    assert_eq!(Model::ALL.len(), public.len());
+    for (model, int) in public {
+        assert_eq!(model.as_int(), int, "{model:?}");
     }
-    let h2 = sorted(cpp_true_cases("hasH2ListeningFeatures"));
-    let delegates: [(&str, Flag); 2] = [
-        ("supportsAdaptiveAudio", |c| c.adaptive),
-        ("supportsConversationalAwareness", |c| {
-            c.conversational_awareness
-        }),
-    ];
-    for (function, flag) in delegates {
-        let body = ENUMS.scope(&format!("inline bool {function}(AirPodsModel model)"));
-        assert_eq!(
-            body.trim().trim_start_matches('{').trim(),
-            "return hasH2ListeningFeatures(model);",
-            "{function}"
-        );
-        assert_eq!(sorted(rust_true_cases(flag)), h2, "{function}");
-    }
-    // Sample input: `return model != AirPodsModel::AirPodsPro3;`
-    let without_off = ENUMS.find(
-        Some("inline bool supportsNoiseOff(AirPodsModel model)"),
-        "return model != AirPodsModel::",
-        ';',
-    );
-    let rust_without_off: Vec<String> = Model::ALL
-        .iter()
-        .copied()
-        .filter(|&model| in_cpp(model) && !model.capabilities().noise_off)
-        .map(cpp_name)
-        .collect();
-    assert_eq!(rust_without_off, [without_off]);
 }
 
+/// Display name and capability flags per model, in the field order of `Capabilities`.
 #[test]
-fn default_model_matches_the_cpp_device_info() {
-    // Sample input: `AirPodsModel m_model = AirPodsModel::Unknown;`
-    let initial = DEVICE_INFO.find(None, "AirPodsModel m_model = AirPodsModel::", ';');
-    assert_eq!(cpp_name(Model::default()), initial);
-    // Sample input: `setModel(AirPodsModel::Unknown);` inside `void reset()`.
-    let reset = DEVICE_INFO.find(Some("void reset()"), "setModel(AirPodsModel::", ')');
-    assert_eq!(cpp_name(Model::default()), reset);
+fn names_and_capabilities_are_pinned_for_every_model() {
+    const T: bool = true;
+    const F: bool = false;
+    let table: [(Model, &str, [bool; 7]); 15] = [
+        (Model::Unknown, "", [T, T, F, F, F, F, F]),
+        (Model::AirPods1, "AirPods", [T, F, F, F, F, F, F]),
+        (
+            Model::AirPods2,
+            "AirPods (2nd generation)",
+            [T, F, F, F, F, F, F],
+        ),
+        (
+            Model::AirPods3,
+            "AirPods (3rd generation)",
+            [T, F, F, F, F, F, F],
+        ),
+        (Model::AirPodsPro, "AirPods Pro", [T, T, F, F, T, T, F]),
+        (
+            Model::AirPodsPro2Lightning,
+            "AirPods Pro 2",
+            [T, T, T, T, T, T, F],
+        ),
+        (
+            Model::AirPodsPro2USBC,
+            "AirPods Pro 2 (USB-C)",
+            [T, T, T, T, T, T, F],
+        ),
+        (
+            Model::AirPodsMaxLightning,
+            "AirPods Max",
+            [T, T, F, F, F, F, T],
+        ),
+        (
+            Model::AirPodsMaxUSBC,
+            "AirPods Max (USB-C)",
+            [T, T, F, F, F, F, T],
+        ),
+        (Model::AirPods4, "AirPods 4", [T, F, F, F, F, F, F]),
+        (Model::AirPods4ANC, "AirPods 4", [T, T, T, T, T, F, F]),
+        (Model::AirPodsPro3, "AirPods Pro 3", [F, T, T, T, T, T, F]),
+        (Model::AirPodsMax2, "AirPods Max 2", [T, T, T, T, F, F, T]),
+        (Model::AirPods5, "AirPods 5", [T, T, T, T, T, F, F]),
+        (
+            Model::AirPods5WirelessCase,
+            "AirPods 5",
+            [T, T, T, T, T, F, F],
+        ),
+    ];
+    assert_eq!(Model::ALL.len(), table.len());
+    assert_eq!(Model::default(), Model::Unknown);
+    for (model, name, flags) in table {
+        assert_eq!(model.display_name(), name, "{model:?}");
+        let c = model.capabilities();
+        let actual = [
+            c.noise_off,
+            c.noise_control,
+            c.adaptive,
+            c.conversational_awareness,
+            c.one_bud_anc,
+            c.is_pro_series,
+            c.is_headset,
+        ];
+        assert_eq!(actual, flags, "{model:?}");
+    }
 }
 
 /// The Pro 3's product as BlueZ prints it, and the byte swapped key the C++ map gives it.
 const PRO_3_MODALIAS: &str = "bluetooth:v004Cp2027d0000";
 const PRO_3_CPP_KEY: u16 = 0x2720;
-
-fn bad_map_line(line: &str) -> ! {
-    panic!("daemon/ble/blemanager.cpp: bad modelMap line `{line}`")
-}
-
-#[test]
-fn product_identifiers_are_the_cpp_model_map_byte_swapped() {
-    // Sample input: `{0x2720, AirPodsModel::AirPodsPro3}` one entry per line, `//` lines between.
-    let cpp: Vec<(u16, String)> = BLE_MANAGER_SOURCE
-        .between("modelMap = {", "};")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("//"))
-        .map(|line| {
-            let (key, name) = line
-                .strip_prefix("{0x")
-                .and_then(|entry| entry.split_once(", AirPodsModel::"))
-                .unwrap_or_else(|| bad_map_line(line));
-            let (name, _) = name.split_once('}').unwrap_or_else(|| bad_map_line(line));
-            let key = u16::from_str_radix(key, 16).unwrap_or_else(|_| bad_map_line(line));
-            (key, name.to_owned())
-        })
-        .collect();
-    let rust: Vec<(u16, String)> = AIRPODS_PRODUCTS
-        .iter()
-        .filter(|&&(id, _)| id_in_cpp(id))
-        .map(|&(id, model)| (id.swap_bytes(), cpp_name(model)))
-        .collect();
-    assert_eq!(rust, cpp);
-    for (key, name) in &cpp {
-        match product(key.swap_bytes()) {
-            Product::AirPods(model) => assert_eq!(&cpp_name(model), name, "{key:#06X}"),
-            other @ (Product::Beats | Product::Unknown) => panic!("{key:#06X} reads as {other:?}"),
-        }
-    }
-}
 
 #[test]
 fn the_lookup_takes_the_modalias_number_not_the_cpp_key() {

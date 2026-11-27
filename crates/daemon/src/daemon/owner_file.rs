@@ -6,7 +6,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{Mode, OFlags, fsync, open};
+use rustix::fs::{Mode, OFlags, RenameFlags, fsync, open, renameat_with};
 use rustix::io::Errno;
 
 use super::log;
@@ -153,6 +153,14 @@ pub(super) fn same_cause(one: &io::Error, other: &io::Error) -> bool {
 
 /// A fresh 0600 copy, synced, renamed over, its directory synced; a link at either is never followed, one above them is.
 pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    write_with(path, bytes, RenameFlags::empty())
+}
+
+pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    write_with(path, bytes, RenameFlags::NOREPLACE)
+}
+
+fn write_with(path: &Path, bytes: &[u8], rename_flags: RenameFlags) -> Result<(), WriteError> {
     if u64::try_from(bytes.len()).map_or(true, |len| len > FILE_MAX) {
         return Err(WriteError::TooLong(bytes.len()));
     }
@@ -186,7 +194,13 @@ pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
         drop(fs::remove_file(&temp));
         return Err(WriteError::WriteCopy(temp, error));
     }
-    if let Err(error) = fs::rename(&temp, path) {
+    let renamed = if rename_flags.is_empty() {
+        fs::rename(&temp, path)
+    } else {
+        renameat_with(rustix::fs::CWD, &temp, rustix::fs::CWD, path, rename_flags)
+            .map_err(io::Error::from)
+    };
+    if let Err(error) = renamed {
         drop(fs::remove_file(&temp));
         return Err(WriteError::RenameCopy(temp, error));
     }

@@ -1,4 +1,4 @@
-//! The librepods binary: the daemon, and the command line client under either of its names.
+//! The pods binary: the daemon, and the command line client under either of its names.
 
 mod cli;
 mod client;
@@ -67,7 +67,7 @@ fn run_daemon() -> ExitCode {
         daemon::log(daemon::NO_STATE_HOME);
         return ExitCode::FAILURE;
     };
-    let old_conf = daemon::prefs::old_conf_path(
+    let old_conf = daemon::legacy_conf::path(
         env::var_os(CONFIG_HOME_VAR).as_deref(),
         env::var_os(HOME_VAR).as_deref(),
     );

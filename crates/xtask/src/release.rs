@@ -15,16 +15,17 @@ use crate::{print_line, report};
 const GLIBC_CEILING: [u32; 2] = [2, 39];
 
 /// The libraries a release may need: glibc's own, the compiler's and `PipeWire`'s, and nothing else.
-const ALLOWED_NEEDED: [&str; 5] = [
+const ALLOWED_NEEDED: [&str; 6] = [
     "libc.so.6",
     "libm.so.6",
     "libgcc_s.so.1",
     "ld-linux-x86-64.so.2",
+    "ld-linux-aarch64.so.1",
     "libpipewire-0.3.so.0",
 ];
 
 /// The crate whose compile unit must carry a line table, so a backtrace through the daemon's own code has a file and a line.
-const DAEMON_CRATE: &str = "librepods";
+const DAEMON_CRATE: &str = "pods";
 
 /// How long `--version` may take; the daemon answers well inside a second.
 const VERSION_DEADLINE: &str = "10s";
@@ -159,7 +160,7 @@ fn version_check(
         .arg("--version")
         .output()
         .map_err(|error| format!("version: could not start timeout: {error}"))?;
-    // Sample input: `librepods 2.0.0\n`.
+    // Sample input: `pods 1.0.0\n`.
     let said = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     // Standard error is shown only for a non-zero exit, the one path where it holds the reason.
     if output.status.code() == Some(TIMED_OUT) {
@@ -240,7 +241,7 @@ fn glibc_check(versions: Result<Vec<Vec<u32>>, String>) -> Result<String, String
 }
 
 /// The source of the compile unit `readelf --debug-dump=info` lists for crate `name`, if there is one.
-// Sample input: `    <12>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/librepods.f9d5f7b3489be63c-cgu.0`.
+// Sample input: `    <12>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/pods.f9d5f7b3489be63c-cgu.0`.
 fn crate_source<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     let unit = format!("{name}.");
     text.lines()
@@ -377,9 +378,9 @@ mod tests {
 
     #[test]
     fn crate_source_finds_only_the_named_crate() {
-        let text = " <0><b>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <12>   DW_AT_name        : (indirect string, offset: 0x1b2e8e): /rustc/48a229ce/library/std/src/lib.rs/@/std.6c98fd8553dbae28-cgu.0\n    <30>   DW_AT_name        : (strp) (offset: 0x5): new\n    <44>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/librepods_core.f9d5f7b3489be63c-cgu.0\n    <58>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/librepods.f9d5f7b3489be63c-cgu.0\n";
+        let text = " <0><b>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <12>   DW_AT_name        : (indirect string, offset: 0x1b2e8e): /rustc/48a229ce/library/std/src/lib.rs/@/std.6c98fd8553dbae28-cgu.0\n    <30>   DW_AT_name        : (strp) (offset: 0x5): new\n    <44>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/pods_core.f9d5f7b3489be63c-cgu.0\n    <58>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/pods.f9d5f7b3489be63c-cgu.0\n";
         assert_eq!(
-            crate_source(text, "librepods"),
+            crate_source(text, "pods"),
             Some("crates/daemon/src/main.rs")
         );
         assert_eq!(
@@ -387,13 +388,13 @@ mod tests {
             Some("/rustc/48a229ce/library/std/src/lib.rs")
         );
         assert_eq!(crate_source(text, "zbus"), None);
-        assert_eq!(crate_source("", "librepods"), None);
+        assert_eq!(crate_source("", "pods"), None);
     }
 
     #[test]
     fn the_line_offset_is_the_named_units_own() {
-        let text = " <0><b>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <12>   DW_AT_name        : (strp) (offset: 0x1b2e8e): library/std/src/lib.rs/@/std.6c98fd8553dbae28-cgu.0\n    <16>   DW_AT_stmt_list   : 0\n <0><2c>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <38>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/librepods.f9d5f7b3489be63c-cgu.0\n    <3c>   DW_AT_stmt_list   : 0x16a\n <0><5e>: Abbrev Number: 2 (DW_TAG_compile_unit)\n    <6a>   DW_AT_name        : (strp) (offset: 0x5): zbus/src/lib.rs/@/zbus.1-cgu.0\n";
-        assert_eq!(crate_line_offset(text, "librepods"), Some("0x16a"));
+        let text = " <0><b>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <12>   DW_AT_name        : (strp) (offset: 0x1b2e8e): library/std/src/lib.rs/@/std.6c98fd8553dbae28-cgu.0\n    <16>   DW_AT_stmt_list   : 0\n <0><2c>: Abbrev Number: 1 (DW_TAG_compile_unit)\n    <38>   DW_AT_name        : (strp) (offset: 0x42f629): crates/daemon/src/main.rs/@/pods.f9d5f7b3489be63c-cgu.0\n    <3c>   DW_AT_stmt_list   : 0x16a\n <0><5e>: Abbrev Number: 2 (DW_TAG_compile_unit)\n    <6a>   DW_AT_name        : (strp) (offset: 0x5): zbus/src/lib.rs/@/zbus.1-cgu.0\n";
+        assert_eq!(crate_line_offset(text, "pods"), Some("0x16a"));
         assert_eq!(crate_line_offset(text, "std"), Some("0"));
         assert_eq!(crate_line_offset(text, "zbus"), None);
         let programs = "Raw dump of debug contents of section .debug_line:\n\n  Offset:                      0\n  Length:                      102\n  Offset:                      0x16a\n";

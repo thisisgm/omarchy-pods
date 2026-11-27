@@ -1,21 +1,8 @@
-#!/bin/bash
-# omarchy plugin add only clones files, so this is the rest of the install.
-
+#!/usr/bin/env bash
 set -euo pipefail
-
-root=$(cd "$(dirname "$0")" && pwd)
-daemon="$root/daemon"
-
-omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse
-
-cmake -S "$daemon" -B "$daemon/build" -G Ninja -DBUILD_TESTING=OFF
-cmake --build "$daemon/build"
-cmake --install "$daemon/build" --prefix "$HOME/.local"
-systemctl --user daemon-reload
-systemctl --user enable librepods.service
-# enable --now would leave an already-running daemon on the old binary after an update.
-systemctl --user restart librepods.service
-
-echo "librepods is running."
-echo "The bar icon stays hidden until AirPods are connected."
-echo "Keep it visible: omarchy bar set io.github.thisisgm.omapods hideWhenDisconnected false --json"
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [[ ${1:-} == --uninstall ]]; then
+    shift
+    exec "$root/packaging/uninstall.sh" "$@"
+fi
+exec "$root/packaging/install.sh" "$@"

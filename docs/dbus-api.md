@@ -11,9 +11,9 @@ release gets a new name.
 | | |
 |---|---|
 | Bus | session |
-| Name | `io.github.thisisgm.Omapods` |
-| Object path | `/io/github/thisisgm/Omapods` |
-| Interface | `io.github.thisisgm.Omapods1` |
+| Name | `com.superwhisper.Pods` |
+| Object path | `/com/superwhisper/Pods` |
+| Interface | `com.superwhisper.Pods1` |
 
 If the session bus is missing, or another process already owns the name, the
 daemon logs one line and keeps serving the control socket and the state file
@@ -115,16 +115,16 @@ the message.
 
 | Name | Code |
 |---|---|
-| `io.github.thisisgm.Omapods1.Error.NotConnected` | `not_connected` |
-| `io.github.thisisgm.Omapods1.Error.NotSupported` | `not_supported` |
-| `io.github.thisisgm.Omapods1.Error.NotWorn` | `not_worn` |
-| `io.github.thisisgm.Omapods1.Error.OutOfRange` | `out_of_range` |
-| `io.github.thisisgm.Omapods1.Error.BadValue` | `bad_value` |
-| `io.github.thisisgm.Omapods1.Error.UnknownKey` | `unknown_key` |
-| `io.github.thisisgm.Omapods1.Error.BadRequest` | `bad_request` |
-| `io.github.thisisgm.Omapods1.Error.Timeout` | `timeout` |
-| `io.github.thisisgm.Omapods1.Error.Headless` | `headless` |
-| `io.github.thisisgm.Omapods1.Error.NoDevice` | `no_device` |
+| `com.superwhisper.Pods1.Error.NotConnected` | `not_connected` |
+| `com.superwhisper.Pods1.Error.NotSupported` | `not_supported` |
+| `com.superwhisper.Pods1.Error.NotWorn` | `not_worn` |
+| `com.superwhisper.Pods1.Error.OutOfRange` | `out_of_range` |
+| `com.superwhisper.Pods1.Error.BadValue` | `bad_value` |
+| `com.superwhisper.Pods1.Error.UnknownKey` | `unknown_key` |
+| `com.superwhisper.Pods1.Error.BadRequest` | `bad_request` |
+| `com.superwhisper.Pods1.Error.Timeout` | `timeout` |
+| `com.superwhisper.Pods1.Error.Headless` | `headless` |
+| `com.superwhisper.Pods1.Error.NoDevice` | `no_device` |
 
 No method of this interface names a setting or opens a window, so none returns
 `UnknownKey` or `Headless`. Any method returns `Timeout` when the daemon's input
@@ -140,13 +140,13 @@ wrong argument type or one that writes a property, gets a standard
 Read one property:
 
 ```console
-$ busctl --user get-property io.github.thisisgm.Omapods /io/github/thisisgm/Omapods io.github.thisisgm.Omapods1 Connected
+$ busctl --user get-property com.superwhisper.Pods /com/superwhisper/Pods com.superwhisper.Pods1 Connected
 b false
 ```
 
 Call one method:
 
 ```console
-$ busctl --user call io.github.thisisgm.Omapods /io/github/thisisgm/Omapods io.github.thisisgm.Omapods1 SetEarDetection s both
+$ busctl --user call com.superwhisper.Pods /com/superwhisper/Pods com.superwhisper.Pods1 SetEarDetection s both
 s "confirmed"
 ```

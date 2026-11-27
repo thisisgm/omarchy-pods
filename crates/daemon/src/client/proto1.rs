@@ -70,7 +70,7 @@ pub(crate) fn watch(socket: &Path, out: &mut dyn Write, err: &mut dyn Write) -> 
 fn print_state(line: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), ExitCode> {
     match out.write_all(line.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => Ok(()),
-        // Nothing reads the output any more, as under `librepods watch | head -1`: a normal end.
+        // Nothing reads the output any more, as under `pods watch | head -1`: a normal end.
         Err(error) if error.kind() == ErrorKind::BrokenPipe => Err(ExitCode::SUCCESS),
         Err(error) => {
             emit(

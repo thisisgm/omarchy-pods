@@ -1,6 +1,5 @@
-//! Each command with no link and the counters it raises, read against the C++ setters.
+//! Each command with no link and the counters it raises.
 
-use cpp_source::MAIN;
 use pods_proto::noise::NoiseMode;
 use proptest::prelude::*;
 use serde_json::Value;
@@ -142,53 +141,8 @@ fn ear_detection_is_stored_and_confirmed() {
     assert_eq!(state.counters.ear_detection_changes, 1);
 }
 
-/// Sample input: `{ ...; writePacketToSocket(packet, "..."); ++m_x; }`, each send the call alone.
-fn assert_send_is_unchecked(function: &str) {
-    let body = MAIN.body(&format!("void {function}("));
-    let statements: Vec<&str> = body
-        .split([';', '{', '}'])
-        .map(str::trim)
-        .filter(|statement| statement.contains("writePacketToSocket("))
-        .collect();
-    assert!(!statements.is_empty(), "{function} sends nothing: {body}");
-    for statement in statements {
-        let arguments = statement
-            .strip_prefix("writePacketToSocket(")
-            .and_then(|rest| rest.strip_suffix(')'));
-        // corner: the C++ send arguments hold no parentheses, so one closing one ends the call.
-        let alone = arguments.is_some_and(|arguments| !arguments.contains(')'));
-        assert!(alone, "{function} reads its send: {statement}");
-    }
-}
-
-// The C++ setters store the value after a send whose failure they ignore.
 #[test]
-fn ca_and_adaptive_level_are_stored_where_the_cpp_stores_them() {
-    for (function, store) in [
-        (
-            "setConversationalAwareness",
-            "m_deviceInfo->setConversationalAwareness(enabled);",
-        ),
-        (
-            "setAdaptiveNoiseLevel",
-            "m_deviceInfo->setAdaptiveNoiseLevel(level);",
-        ),
-    ] {
-        assert_send_is_unchecked(function);
-        let body = MAIN.body(&format!("void {function}("));
-        let (before, after) = body
-            .split_once(store)
-            .unwrap_or_else(|| panic!("{function} does not store through {store}: {body}"));
-        assert!(
-            before.contains("writePacketToSocket("),
-            "{function}: the store comes before the send: {body}"
-        );
-        assert!(
-            after.contains("++m_"),
-            "{function}: no counter after the store"
-        );
-    }
-
+fn ca_and_adaptive_level_are_stored_without_a_link() {
     let mut state = State::default();
     let outcome = apply(&mut state, &Command::SetConversationalAwareness(true));
     assert_eq!(outcome, Outcome::Refused(CommandError::NotConnected));
@@ -295,44 +249,6 @@ fn command_of(verb: &str) -> Command {
     }
 }
 
-// Sample input: `} else if (msg == "ca:off") { trayAppPtr->setConversationalAwareness(false);`
-fn cpp_chain_body(verb: &str, chain: &[&str]) -> &'static str {
-    let handler = if verb.ends_with(':') {
-        format!("msg.startsWith(\"{verb}\"))")
-    } else {
-        format!("msg == \"{verb}\")")
-    };
-    let mut body = MAIN.body(&handler);
-    for function in chain {
-        assert!(
-            body.contains(&format!("{function}(")),
-            "the C++ path of {verb:?} does not call {function}: {body}"
-        );
-        body = MAIN.body(&format!("void {function}("));
-    }
-    body
-}
-
-// Sample input: `++m_caChangesTotal;` with `status.insert("ca_changes_total", caChangesTotal());`
-fn cpp_counter_key(body: &str) -> &'static str {
-    let (_, after) = body
-        .split_once("++m_")
-        .unwrap_or_else(|| panic!("no counter rises in {body}"));
-    let (member, _) = after.split_once(';').unwrap();
-    assert_eq!(
-        MAIN.body(&format!("int {member}() const")).trim(),
-        format!("return m_{member};"),
-        "{member} has no plain getter"
-    );
-    let suffix = format!("\", {member}()");
-    let entry = MAIN
-        .all_between("status.insert(\"", ");")
-        .into_iter()
-        .find(|entry| entry.ends_with(&suffix))
-        .unwrap_or_else(|| panic!("no status key publishes {member}"));
-    entry.strip_suffix(&suffix).unwrap()
-}
-
 fn counters_of(state: &State) -> Vec<(String, u64)> {
     let Value::Object(fields) = serde_json::from_str(&to_status_line(state)).unwrap() else {
         panic!("the status line is not an object");
@@ -357,7 +273,7 @@ fn rises(verb: &str, state: &State) -> Vec<(String, u64)> {
 }
 
 #[test]
-fn each_verb_raises_the_counter_its_cpp_setter_raises() {
+fn each_verb_raises_its_status_counter_once() {
     let anc = State {
         noise_mode: NoiseMode::Anc,
         ..State::default()
@@ -374,128 +290,65 @@ fn each_verb_raises_the_counter_its_cpp_setter_raises() {
         conversational_awareness: true,
         ..State::default()
     };
-    let noise = ["setNoiseControlModeInt", "setNoiseControlMode"].as_slice();
-    let cases: [(&str, &[&str], &State); 12] = [
-        ("noise:off", noise, &anc),
-        ("noise:anc", noise, &State::default()),
-        ("noise:transparency", noise, &State::default()),
-        ("noise:adaptive", noise, &State::default()),
+    let cases = [
+        ("noise:off", "noise_control_changes_total", &anc),
         (
-            "noise:cycle",
-            &[
-                "cycleNoiseControlMode",
-                "setNoiseControlModeInt",
-                "setNoiseControlMode",
-            ],
+            "noise:anc",
+            "noise_control_changes_total",
             &State::default(),
         ),
-        ("ear:off", &["setEarDetectionBehavior"], &State::default()),
-        ("ear:one", &["setEarDetectionBehavior"], &disabled),
-        ("ear:both", &["setEarDetectionBehavior"], &State::default()),
-        ("ca:on", &["setConversationalAwareness"], &State::default()),
-        ("ca:off", &["setConversationalAwareness"], &aware),
-        ("adaptive:", &["setAdaptiveNoiseLevel"], &adaptive),
-        ("reopen", &["incReopenCallsTotal"], &State::default()),
+        (
+            "noise:transparency",
+            "noise_control_changes_total",
+            &State::default(),
+        ),
+        (
+            "noise:adaptive",
+            "noise_control_changes_total",
+            &State::default(),
+        ),
+        (
+            "noise:cycle",
+            "noise_control_changes_total",
+            &State::default(),
+        ),
+        ("ear:off", "ear_detection_changes_total", &State::default()),
+        ("ear:one", "ear_detection_changes_total", &disabled),
+        ("ear:both", "ear_detection_changes_total", &State::default()),
+        ("ca:on", "ca_changes_total", &State::default()),
+        ("ca:off", "ca_changes_total", &aware),
+        ("adaptive:37", "adaptive_level_changes_total", &adaptive),
+        ("reopen", "reopen_calls_total", &State::default()),
     ];
-    for (verb, chain, state) in cases {
-        let key = cpp_counter_key(cpp_chain_body(verb, chain));
-        let sent = if verb == "adaptive:" {
-            "adaptive:37"
-        } else {
-            verb
-        };
-        assert_eq!(rises(sent, state), [(key.to_owned(), 1)], "{verb}");
+    for (verb, key, state) in cases {
+        assert_eq!(rises(verb, state), [(key.to_owned(), 1)], "{verb}");
     }
 }
 
-// Sample: `if (...conversationalAwareness() == enabled) { ...; return; } ... ++m_caChangesTotal;`
-fn assert_guard_precedes_counter(verb: &str, body: &str, guard: &str, then: &str) {
-    let (_, after_guard) = body
-        .split_once(guard)
-        .unwrap_or_else(|| panic!("{verb}: no {guard:?} in {body}"));
-    let (before_then, after_then) = after_guard
-        .split_once(then)
-        .unwrap_or_else(|| panic!("{verb}: no {then:?} after {guard:?} in {body}"));
-    assert!(
-        !before_then.contains("++m_"),
-        "{verb}: the counter rises before {then:?}"
-    );
-    assert!(
-        after_then.contains("++m_"),
-        "{verb}: no counter after {then:?}"
-    );
-}
-
 #[test]
-fn verbs_whose_cpp_counter_needs_a_link_or_a_change_raise_nothing() {
-    let noise = ["setNoiseControlModeInt", "setNoiseControlMode"].as_slice();
-    let body = cpp_chain_body("noise:off", noise);
-    assert_guard_precedes_counter("noise:off", body, "== mode", "return;");
-    assert_send_is_unchecked("setNoiseControlMode");
-    assert_eq!(rises("noise:off", &State::default()), []);
-
-    let body = cpp_chain_body("ear:one", &["setEarDetectionBehavior"]);
-    assert_guard_precedes_counter(
+fn unchanged_or_unavailable_commands_do_not_raise_counters() {
+    for verb in [
+        "noise:off",
         "ear:one",
-        body,
-        "behavior == earDetectionBehavior()",
-        "return;",
-    );
-    assert_eq!(rises("ear:one", &State::default()), []);
-
-    let body = cpp_chain_body("ca:off", &["setConversationalAwareness"]);
-    assert_guard_precedes_counter(
         "ca:off",
-        body,
-        "conversationalAwareness() == enabled",
-        "return;",
-    );
-    assert_eq!(rises("ca:off", &State::default()), []);
-
+        "forget",
+        "connect",
+        "disconnect",
+        "adaptive:37",
+    ] {
+        assert_eq!(rises(verb, &State::default()), [], "{verb}");
+    }
     for verb in ["onebud:on", "onebud:off"] {
-        let body = cpp_chain_body(verb, &["setOneBudANCMode"]);
-        let (sent, unsent) = body
-            .split_once("else")
-            .unwrap_or_else(|| panic!("{verb}: no branch for an unsent packet in {body}"));
-        assert_guard_precedes_counter(verb, sent, "if (writePacketToSocket(", "{");
-        assert!(
-            !unsent.contains("++m_"),
-            "{verb}: a counter rises outside the sent branch"
-        );
         let current = State {
             one_bud_anc_mode: verb == "onebud:off",
             ..State::default()
         };
         assert_eq!(rises(verb, &current), [], "{verb}");
     }
-
-    for (verb, function) in [
-        ("forget", "forgetDevice"),
-        ("connect", "connectAirPods"),
-        ("disconnect", "disconnectAirPods"),
-    ] {
-        let body = cpp_chain_body(verb, &[function]);
-        assert_guard_precedes_counter(verb, body, "bluetoothAddress().isEmpty()", "return;");
-        assert_eq!(rises(verb, &State::default()), [], "{verb}");
-    }
-
-    let body = cpp_chain_body("adaptive:", &["setAdaptiveNoiseLevel"]);
-    assert_guard_precedes_counter("adaptive:", body, "adaptiveModeActive()", "{");
-    assert_eq!(rises("adaptive:37", &State::default()), []);
-    let (_, clamped) = body.split_once("qBound(").unwrap();
-    assert_guard_precedes_counter("adaptive:", clamped, "adaptiveNoiseLevel() != level", "{");
     let at_37 = State {
         noise_mode: NoiseMode::Adaptive,
         adaptive_noise_level: level(37),
         ..State::default()
     };
     assert_eq!(rises("adaptive:37", &at_37), []);
-}
-
-#[test]
-fn adaptive_maximum_is_the_cpp_bound() {
-    let body = MAIN.body("void setAdaptiveNoiseLevel(");
-    let (_, after) = body.split_once("qBound(").unwrap();
-    let (bounds, _) = after.split_once(')').unwrap();
-    assert_eq!(bounds, format!("0, level, {ADAPTIVE_LEVEL_MAX}"));
 }

@@ -1,6 +1,5 @@
 //! Support tests: the settings file and the old C++ file read as text, with no user path of their own.
 
-use cpp_source::{MAIN, MEDIA_CONTROLLER};
 use proptest::prelude::*;
 
 use super::*;
@@ -38,14 +37,7 @@ fn model_lists() -> [MicModels; 3] {
 }
 
 #[test]
-fn the_defaults_are_the_cpp_defaults() {
-    let ear = MAIN.between("\"earDetection/setting\", ", ")");
-    assert_eq!(
-        ear,
-        "MediaController::EarDetectionBehavior::PauseWhenOneRemoved"
-    );
-    let notices = MAIN.between("\"notifications/enabled\", ", ")");
-    assert_eq!(notices, "true");
+fn defaults_enable_notifications_and_pause_when_one_is_removed() {
     let defaults = Prefs::default();
     assert_eq!(
         defaults.ear_detection,
@@ -175,24 +167,6 @@ fn an_oversized_document_still_parses_without_harm() {
     padded.push_str(&" ".repeat(1 << 20));
     assert_eq!(parse(&padded), Ok(Prefs::default()));
     assert!(parse(&"[".repeat(1 << 16)).is_err());
-}
-
-#[test]
-fn the_old_keys_are_the_cpp_keys() {
-    for (group, key) in [OLD_EAR_DETECTION, OLD_NOTIFICATIONS] {
-        let quoted = format!("\"{group}/{key}\"");
-        assert!(MAIN.text().contains(&quoted), "{quoted}");
-    }
-}
-
-#[test]
-fn the_old_numbers_are_the_cpp_enumeration() {
-    let enumerators = MEDIA_CONTROLLER.enumerators("enum EarDetectionBehavior");
-    assert_eq!(enumerators.len(), EarDetectionBehavior::ALL.len());
-    for (name, number) in enumerators {
-        let read = from_old_conf(&format!("[earDetection]\nsetting={number}\n"));
-        assert_eq!(format!("{:?}", read.ear_detection), name);
-    }
 }
 
 #[test]

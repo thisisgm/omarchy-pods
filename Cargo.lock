@@ -185,10 +185,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
-name = "cpp-source"
-version = "0.0.0"
-
-[[package]]
 name = "cpubits"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,30 +332,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
-name = "librepods"
-version = "0.0.0"
-dependencies = [
- "allocation-counter",
- "cpp-source",
- "pods-core",
- "pods-fake",
- "pods-mic",
- "pods-proto",
- "pods-pw",
- "pods-pwrig",
- "pods-samples",
- "pods-sys",
- "pods-trap",
- "proptest",
- "rustix",
- "serde_json",
- "tempfile",
- "tokio",
- "zbus",
- "zeroize",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -435,6 +407,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pods"
+version = "1.0.0"
+dependencies = [
+ "allocation-counter",
+ "pods-core",
+ "pods-fake",
+ "pods-mic",
+ "pods-proto",
+ "pods-pw",
+ "pods-pwrig",
+ "pods-samples",
+ "pods-sys",
+ "pods-trap",
+ "proptest",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
 name = "pods-aac"
 version = "0.0.0"
 dependencies = [
@@ -446,7 +441,6 @@ dependencies = [
 name = "pods-core"
 version = "0.0.0"
 dependencies = [
- "cpp-source",
  "pods-proto",
  "pods-samples",
  "proptest",
@@ -480,7 +474,6 @@ name = "pods-proto"
 version = "0.0.0"
 dependencies = [
  "aes",
- "cpp-source",
  "pods-fake",
  "pods-samples",
  "pods-sys",
@@ -516,7 +509,6 @@ name = "pods-samples"
 version = "0.0.0"
 dependencies = [
  "aes",
- "cpp-source",
  "pods-aac",
 ]
 

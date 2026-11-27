@@ -43,7 +43,7 @@ impl Source {
     pub fn set_device_id(&self, id: Option<u32>) -> io::Result<()> {
         let value = id.map(|id| id.to_string()).map(CString::new).transpose()?;
         let item = ffi::spa_dict_item {
-            key: c"omarchypods.device.id".as_ptr(),
+            key: c"pods.device.id".as_ptr(),
             // The server merges node properties, so omission would keep the last card ID.
             value: value.as_deref().unwrap_or(c"").as_ptr(),
         };

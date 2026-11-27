@@ -26,7 +26,7 @@ if [ "$1 $2" = "do disconnect" ] && [ ! -e "$STUB/kept-modes" ]; then
         cp "$run/$name" "$STUB/kept-$name"
     done
 fi
-exec "$STUB/bin/librepods-under-test" "$@"
+exec "$STUB/bin/pods-under-test" "$@"
 "#;
 
 /// The line of the daemon under test for pods named `name`.
@@ -96,17 +96,9 @@ fn c9_prints_no_value() {
     let old = old_line(OLD_NAME, OLD_MODEL_NUMBER);
     let new = new_line(NEW_NAME, NEW_MODEL_NUMBER);
     let bench = bench_with(&old, &new);
-    fs::rename(
-        bench.path("bin/librepods"),
-        bench.path("bin/librepods-under-test"),
-    )
-    .unwrap();
-    bench.set("bin/librepods", KEEPING_BINARY);
-    fs::set_permissions(
-        bench.path("bin/librepods"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    fs::rename(bench.path("bin/pods"), bench.path("bin/pods-under-test")).unwrap();
+    bench.set("bin/pods", KEEPING_BINARY);
+    fs::set_permissions(bench.path("bin/pods"), fs::Permissions::from_mode(0o755)).unwrap();
     let output = bench.run(&[]);
     let stdout = text(&output.stdout);
     let printed = format!("{stdout}{}", text(&output.stderr));
@@ -149,7 +141,7 @@ fn c9_is_skipped_by_name_when_the_installed_daemon_is_not_the_old_one() {
         "{stdout}"
     );
     let bench = Bench::new();
-    bench.set("unit-librepods.service", "inactive");
+    bench.set("unit-podsd.service", "inactive");
     let output = bench.run(&[]);
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(0), "{stdout}");
@@ -183,7 +175,7 @@ fn c9_fails_when_the_installed_line_is_not_a_state_object() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
         stdout.contains(
-            "C9 old line: FAILED\n  the installed librepods-ctl status printed no state object\n"
+            "C9 old line: FAILED\n  the installed pods-ctl status printed no state object\n"
         ),
         "{stdout}"
     );
@@ -199,7 +191,7 @@ fn c9_fails_when_the_installed_ctl_exits_with_an_error() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
         stdout.contains(
-            "C9 old line: FAILED\n  the installed librepods-ctl status exited with exit status: 3\n"
+            "C9 old line: FAILED\n  the installed pods-ctl status exited with exit status: 3\n"
         ),
         "{stdout}"
     );

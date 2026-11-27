@@ -189,40 +189,15 @@ mod tests {
 
     use std::time::Duration;
 
-    use cpp_source::NOTIFIER;
     use tokio::process::Command;
     use tokio::sync::oneshot;
     use tokio::time::Instant;
 
-    use super::{ARGS, PROGRAM, Run, wait};
+    use super::{Run, wait};
     use crate::daemon::paused::on_paused_clock;
 
     /// `NOTIFY_WAIT_MS`, written out so a drifted wait goes red.
     const NOTIFY_WAIT: Duration = Duration::from_millis(5000);
-
-    /// Each `QStringLiteral("...")` in `call`, a `\uXXXX` escape read as its character; sample input `{QStringLiteral("-g"), QStringLiteral(""), title, message}`.
-    fn literals(call: &str) -> Vec<String> {
-        call.split("QStringLiteral(\"")
-            .skip(1)
-            .map(|piece| {
-                let literal = piece.split_once("\")").unwrap().0;
-                match literal.strip_prefix("\\u") {
-                    Some(hex) => char::from_u32(u32::from_str_radix(hex, 16).unwrap())
-                        .unwrap()
-                        .to_string(),
-                    None => literal.to_owned(),
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_program_and_its_arguments_are_the_cpp_notifiers() {
-        let call = NOTIFIER.between("QProcess::startDetached(omarchy, {", "title, message});");
-        assert_eq!(literals(call), ARGS);
-        let program = NOTIFIER.find(None, "findExecutable(QStringLiteral(\"", '"');
-        assert_eq!(program, PROGRAM);
-    }
 
     #[test]
     fn a_run_that_never_exits_is_hung_after_the_wait() {

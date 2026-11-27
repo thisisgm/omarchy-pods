@@ -12,7 +12,9 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::task::spawn_blocking;
 use zeroize::Zeroizing;
 
-use super::{log, owner_file};
+use super::{legacy_conf::LegacyConf, log, owner_file};
+
+mod legacy;
 
 pub(super) const FILE_NAME: &str = "keys.json";
 
@@ -54,10 +56,10 @@ impl fmt::Display for FileError {
     }
 }
 
-/// Runs once before the runtime starts; the line for a file it cannot use names the fault, never the content.
-pub(super) fn load(path: &Path) -> Option<SavedKeys> {
+/// Loads keys at startup and reports unusable files without printing their contents.
+pub(super) fn load(path: &Path, legacy: &LegacyConf<'_>) -> Option<SavedKeys> {
     let reason = match owner_file::read_private(path) {
-        Ok(None) => return None,
+        Ok(None) => return legacy::import(path, legacy),
         Ok(Some(bytes)) => match parse(&Zeroizing::new(bytes)) {
             Ok(keys) => return Some(keys),
             Err(error) => error.to_string(),

@@ -6,11 +6,11 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// Base name of `argv[0]` that makes the binary act as the C++ `librepods-ctl`, with no subcommand.
-const LEGACY_CLIENT_NAME: &str = "librepods-ctl";
+/// Base name of `argv[0]` that makes the binary act as the `pods-ctl` compatibility client, with no subcommand.
+const LEGACY_CLIENT_NAME: &str = "pods-ctl";
 
-const CTL_SUBCOMMAND_PROGRAM: &str = "librepods ctl";
-const VERSION: &str = concat!("librepods ", env!("CARGO_PKG_VERSION"), "\n");
+const CTL_SUBCOMMAND_PROGRAM: &str = "pods ctl";
+const VERSION: &str = concat!("pods ", env!("CARGO_PKG_VERSION"), "\n");
 const INVALID_UTF8: &str = "invalid UTF-8 was detected in one or more arguments";
 const HELP_OPTION: &str = "  -h, --help  Print help\n";
 const ROOT_HELP: Help<'static> = Help {
@@ -65,10 +65,7 @@ impl ParseError {
         };
         Self::new(
             kind,
-            format!(
-                "error: {reason}\n\nUsage: librepods {}\n{footer}",
-                help.usage
-            ),
+            format!("error: {reason}\n\nUsage: pods {}\n{footer}", help.usage),
         )
     }
 
@@ -122,10 +119,10 @@ impl Command {
         match self {
             Self::Ctl => Help {
                 usage: "ctl [WORDS]...",
-                summary: "Send one command to the running daemon, exactly as librepods-ctl does",
+                summary: "Send one command to the running daemon, exactly as pods-ctl does",
                 arguments: &[(
                     "[WORDS]...",
-                    "The command to send; anything after it is ignored, as librepods-ctl ignores it",
+                    "The command to send; anything after it is ignored, as pods-ctl ignores it",
                 )],
                 options: "",
             },
@@ -180,7 +177,7 @@ impl Command {
 
 fn display_help(kind: ParseErrorKind, command: Option<Command>) -> ParseError {
     let help = command.map_or(ROOT_HELP, Command::help);
-    let mut message = format!("{}\n\nUsage: librepods {}\n", help.summary, help.usage);
+    let mut message = format!("{}\n\nUsage: pods {}\n", help.summary, help.usage);
     if command.is_none() {
         const DAEMON_LABEL: &str = "daemon, --headless";
         message.push_str("\nCommands:\n");
@@ -211,7 +208,7 @@ fn display_help(kind: ParseErrorKind, command: Option<Command>) -> ParseError {
     ParseError::new(kind, message)
 }
 
-// Sample input: `/bin/librepods-ctl` with `["noise:anc"]`, or `librepods` with `["ctl", "status"]`.
+// Sample input: `/bin/pods-ctl` with `["noise:anc"]`, or `pods` with `["ctl", "status"]`.
 pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, ParseError> {
     if Path::new(argv0).file_name() == Some(OsStr::new(LEGACY_CLIENT_NAME)) {
         return legacy(LEGACY_CLIENT_NAME, args);
@@ -436,59 +433,59 @@ mod tests {
 
     #[test]
     fn legacy_name_takes_the_verb_with_no_subcommand() {
-        let parsed = parse(OsStr::new("/usr/bin/librepods-ctl"), &args(&["noise:anc"]));
+        let parsed = parse(OsStr::new("/usr/bin/pods-ctl"), &args(&["noise:anc"]));
         assert_eq!(parsed.unwrap(), client("noise:anc"));
     }
 
     #[test]
     fn legacy_name_sends_flags_as_verbs_and_ignores_extra_words() {
-        let parsed = parse(OsStr::new("librepods-ctl"), &args(&["--help", "extra"]));
+        let parsed = parse(OsStr::new("pods-ctl"), &args(&["--help", "extra"]));
         assert_eq!(parsed.unwrap(), client("--help"));
     }
 
     #[test]
     fn legacy_name_without_a_verb_is_usage() {
-        let parsed = parse(OsStr::new("librepods-ctl"), &[]);
+        let parsed = parse(OsStr::new("pods-ctl"), &[]);
         assert_eq!(
             parsed.unwrap(),
             Invocation::LegacyUsage {
-                program: "librepods-ctl"
+                program: "pods-ctl"
             }
         );
     }
 
     #[test]
     fn ctl_subcommand_reaches_the_same_client() {
-        let parsed = parse(OsStr::new("librepods"), &args(&["ctl", "status", "extra"]));
+        let parsed = parse(OsStr::new("pods"), &args(&["ctl", "status", "extra"]));
         assert_eq!(parsed.unwrap(), client("status"));
     }
 
     #[test]
     fn ctl_subcommand_sends_flags_as_verbs() {
-        let parsed = parse(OsStr::new("librepods"), &args(&["ctl", "--help", "extra"]));
+        let parsed = parse(OsStr::new("pods"), &args(&["ctl", "--help", "extra"]));
         assert_eq!(parsed.unwrap(), client("--help"));
     }
 
     #[test]
     fn ctl_subcommand_without_a_verb_is_usage() {
-        let parsed = parse(OsStr::new("librepods"), &args(&["ctl"]));
+        let parsed = parse(OsStr::new("pods"), &args(&["ctl"]));
         assert_eq!(
             parsed.unwrap(),
             Invocation::LegacyUsage {
-                program: "librepods ctl"
+                program: "pods ctl"
             }
         );
     }
 
     #[test]
-    fn a_name_that_only_contains_librepods_ctl_is_not_the_client() {
-        let parsed = parse(OsStr::new("librepods-ctl.old"), &args(&["noise:anc"]));
+    fn a_name_that_only_contains_pods_ctl_is_not_the_client() {
+        let parsed = parse(OsStr::new("pods-ctl.old"), &args(&["noise:anc"]));
         assert_eq!(parsed.unwrap_err().kind(), ErrorKind::InvalidSubcommand);
     }
 
     #[test]
     fn no_arguments_is_a_usage_error() {
-        let parsed = parse(OsStr::new("librepods"), &[]);
+        let parsed = parse(OsStr::new("pods"), &[]);
         assert_eq!(
             parsed.unwrap_err().kind(),
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
@@ -498,15 +495,15 @@ mod tests {
     #[test]
     fn daemon_subcommand_and_headless_flag_both_start_the_daemon() {
         for words in [["daemon"], ["--headless"]] {
-            let parsed = parse(OsStr::new("librepods"), &args(&words));
+            let parsed = parse(OsStr::new("pods"), &args(&words));
             assert_eq!(parsed.unwrap(), Invocation::Daemon, "{words:?}");
         }
     }
 
     #[test]
     fn the_packaged_unit_starts_the_daemon() {
-        let unit = include_str!("../../../packaging/systemd/librepods.service");
-        // Sample input: `ExecStart=%h/.local/bin/librepods daemon`.
+        let unit = include_str!("../../../packaging/systemd/podsd.service");
+        // Sample input: `ExecStart=%h/.local/bin/pods daemon`.
         let line = unit
             .lines()
             .find_map(|line| line.strip_prefix("ExecStart="))
@@ -519,7 +516,7 @@ mod tests {
 
     #[test]
     fn headless_flag_takes_no_further_arguments() {
-        let parsed = parse(OsStr::new("librepods"), &args(&["--headless", "--debug"]));
+        let parsed = parse(OsStr::new("pods"), &args(&["--headless", "--debug"]));
         assert_eq!(parsed.unwrap_err().kind(), ErrorKind::UnknownArgument);
     }
 
@@ -543,26 +540,26 @@ mod tests {
             ),
             (vec!["state-dir"], Invocation::StateDir),
         ] {
-            let parsed = parse(OsStr::new("librepods"), &args(&words));
+            let parsed = parse(OsStr::new("pods"), &args(&words));
             assert_eq!(parsed.unwrap(), expected, "{words:?}");
         }
     }
 
     #[test]
     fn set_needs_a_key_and_a_value() {
-        let parsed = parse(OsStr::new("librepods"), &args(&["set", "noise"]));
+        let parsed = parse(OsStr::new("pods"), &args(&["set", "noise"]));
         assert_eq!(
             parsed.unwrap_err().kind(),
             ErrorKind::MissingRequiredArgument
         );
-        let parsed = parse(OsStr::new("librepods"), &args(&["status", "extra"]));
+        let parsed = parse(OsStr::new("pods"), &args(&["status", "extra"]));
         assert_eq!(parsed.unwrap_err().kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn verb_that_is_not_utf8_is_refused() {
         let verb = OsString::from_vec(vec![0xff]);
-        let parsed = parse(OsStr::new("librepods-ctl"), &[verb]);
+        let parsed = parse(OsStr::new("pods-ctl"), &[verb]);
         assert_eq!(parsed.unwrap_err().kind(), ErrorKind::InvalidUtf8);
     }
 
@@ -579,7 +576,7 @@ mod tests {
             ],
             vec![OsString::from("ctl"), invalid.clone()],
         ] {
-            let error = parse(OsStr::new("librepods"), &words).unwrap_err();
+            let error = parse(OsStr::new("pods"), &words).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::InvalidUtf8);
         }
         let error = parse(&invalid, &[]).unwrap_err();
@@ -591,7 +588,7 @@ mod tests {
         let invalid = OsString::from_vec(vec![0xff]);
         assert_eq!(
             parse(
-                OsStr::new("librepods-ctl"),
+                OsStr::new("pods-ctl"),
                 &[OsString::from("status"), invalid.clone()],
             )
             .unwrap(),
@@ -599,7 +596,7 @@ mod tests {
         );
         assert_eq!(
             parse(
-                OsStr::new("librepods"),
+                OsStr::new("pods"),
                 &[OsString::from("ctl"), OsString::from("status"), invalid],
             )
             .unwrap(),
@@ -609,7 +606,7 @@ mod tests {
 
     #[test]
     fn a_separator_passes_hyphenated_operands_literally() {
-        let program = OsStr::new("librepods");
+        let program = OsStr::new("pods");
         let words = args(&["set", "adaptive", "--", "-1"]);
         assert_eq!(
             parse(program, &words).unwrap(),
@@ -623,7 +620,7 @@ mod tests {
             client("--help")
         );
         assert_eq!(
-            parse(OsStr::new("librepods-ctl"), &args(&["--", "--help"])).unwrap(),
+            parse(OsStr::new("pods-ctl"), &args(&["--", "--help"])).unwrap(),
             client("--")
         );
     }

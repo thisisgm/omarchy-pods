@@ -41,15 +41,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      LIBREPODS_TRAP_EXPECT_NO_RADIO: "1"
+      PODS_TRAP_EXPECT_NO_RADIO: "1"
       NEXTEST_SUCCESS_OUTPUT: final
     steps:
       - run: uname -r
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # The installer's bench reads the files the old v1.3.6 install left from that tag.
-          fetch-tags: true
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -66,12 +64,16 @@ jobs:
       - run: |
           systemd-analyze --version
           home=$(mktemp -d)
-          mkdir -p "$home/.local/bin"
-          printf '#!/bin/sh\n' > "$home/.local/bin/librepods"
-          chmod +x "$home/.local/bin/librepods"
+          touch "$home/.pods-unit-test"
+          trap '[[ "$home" == /?* && -f "$home/.pods-unit-test" ]] && rm -rf -- "$home"' EXIT
+          mkdir -p "$home"/{.local/bin,config,state,data,cache,runtime}
+          printf '#!/bin/sh\n' > "$home/.local/bin/pods"
+          chmod +x "$home/.local/bin/pods"
           log="$home/verify.log"
           # verify only warns about an unknown key or a bad value and still exits 0, so any output fails the step.
-          if ! HOME="$home" XDG_RUNTIME_DIR="$home" systemd-analyze --user verify packaging/systemd/librepods.service > "$log" 2>&1 || [ -s "$log" ]; then
+          export HOME="$home" XDG_RUNTIME_DIR="$home/runtime" XDG_CONFIG_HOME="$home/config"
+          export XDG_STATE_HOME="$home/state" XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache"
+          if ! systemd-analyze --user verify packaging/systemd/podsd.service > "$log" 2>&1 || [ -s "$log" ]; then
             cat "$log"
             exit 1
           fi
@@ -93,7 +95,7 @@ jobs:
           tool: cargo-nextest
       - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends pipewire pipewire-bin
       - run: pipewire --version
-      - run: cargo nextest run -p librepods -p xtask --locked --run-ignored only
+      - run: cargo nextest run -p pods -p xtask --locked --run-ignored only
 
   pw-ffi:
     runs-on: ubuntu-24.04
@@ -167,7 +169,7 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: 2.9.8
-      - run: deno run --allow-read tests/model.test.js
+      - run: deno test --allow-read tests/model.test.js
       # The stock plugin validator refuses a plugin folder that holds a symlink.
       - run: |
           tracked=$(git ls-files -s)
@@ -184,14 +186,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends shellcheck
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends shellcheck zstd
       # The lint findings are those of this ShellCheck release: a later Ubuntu revision of 0.9.0 passes, another version stops here.
       - run: dpkg-query --show --showformat='${Version}\n' shellcheck | grep --quiet '^0\.9\.0-'
       - run: |
-          for script in packaging/setup setup; do
-            bash -n "$script"
+          for script in packaging/*.sh setup tests/packaging.sh; do
+            if [ "$script" = packaging/web-install.sh ]; then
+              sh -n "$script"
+            else
+              bash -n "$script"
+            fi
           done
-      - run: shellcheck packaging/setup setup
+      - run: shellcheck -x packaging/*.sh setup tests/packaging.sh
+      - run: tests/packaging.sh
 
   ci-ok:
     if: always()

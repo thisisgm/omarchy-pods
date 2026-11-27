@@ -25,7 +25,7 @@ use super::analyse::input::{InputError, LOG_FILE, parse_log, text_of, whole_line
 use super::service::ServiceError;
 use super::store::{self, StoreError};
 
-const NODE_NAME: &str = "omapods_input.probe";
+const NODE_NAME: &str = "pods_input.probe";
 const NODE_DESCRIPTION: &str = "AirPods Microphone (probe)";
 /// The lowest session priority, so no session manager prefers the probe's node over a device.
 const NODE_PRIORITY: u32 = 0;

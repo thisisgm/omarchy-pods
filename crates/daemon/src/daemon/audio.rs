@@ -47,7 +47,7 @@ pub(super) const AUDIO_RETRY_MS: [u64; 5] = [250, 500, 1000, 2000, 5000];
 const SOCKET: &str = "pulse/native";
 
 /// What `pactl list clients` shows.
-const CLIENT_NAME: &CStr = c"librepods";
+const CLIENT_NAME: &CStr = c"pods";
 
 /// The cookie's length in the auth request; `PipeWire`'s pulse server does not check its bytes.
 const COOKIE_LENGTH: usize = 256;

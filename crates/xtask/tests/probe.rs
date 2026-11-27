@@ -14,7 +14,7 @@ const WIDE_MODE: u32 = 0o755;
 /// A directory name that is not UTF-8: one byte no UTF-8 text holds.
 const NOT_UTF8_NAME: &[u8] = &[0xff];
 /// The store under the temporary home.
-const ROOT_NAME: &str = "omapods-captures";
+const ROOT_NAME: &str = "pods-captures";
 
 /// One probe command of the built binary, with `HOME` set to `home`.
 fn probe(home: &Path, args: &[&str]) -> Command {
@@ -37,7 +37,7 @@ fn init_prints_the_session_path_and_nothing_else() {
             .output()
             .unwrap()
     };
-    let root = home.path().join("omapods-captures");
+    let root = home.path().join("pods-captures");
     let session = root.join(STAMP);
 
     let created = init();

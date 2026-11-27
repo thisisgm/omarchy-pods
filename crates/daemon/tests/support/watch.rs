@@ -1,4 +1,4 @@
-//! `librepods watch` as a child of the test, its printed lines read on a thread.
+//! `pods watch` as a child of the test, its printed lines read on a thread.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -14,14 +14,14 @@ use super::{Daemon, HANG_LIMIT, Session, binary};
 
 const WATCH_LOG_NAME: &str = "watch.log";
 
-/// One line `librepods watch` printed, and when the test's reader took it.
+/// One line `pods watch` printed, and when the test's reader took it.
 #[derive(Debug)]
 pub(crate) struct Printed {
     pub(crate) at: Instant,
     pub(crate) state: Value,
 }
 
-/// `librepods watch` in a guard, its output read on a thread the guard joins.
+/// `pods watch` in a guard, its output read on a thread the guard joins.
 pub(crate) struct Watch {
     process: Daemon,
     lines: Receiver<(Instant, String)>,
@@ -29,7 +29,7 @@ pub(crate) struct Watch {
 }
 
 impl Watch {
-    /// Starts `librepods watch` in `session`, its lines read as they come.
+    /// Starts `pods watch` in `session`, its lines read as they come.
     pub(crate) fn start(session: &Session) -> Self {
         let log = File::create(session.dir.path().join(WATCH_LOG_NAME)).unwrap();
         let mut child = session

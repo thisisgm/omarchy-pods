@@ -495,7 +495,7 @@ fn a_cut_trace_is_named_first_and_its_tables_are_those_of_the_whole_records() {
 #[test]
 fn a_trace_of_another_owner_is_refused_with_what_to_do_about_it() {
     let home = tempfile::tempdir().unwrap();
-    let root = home.path().join("omapods-captures");
+    let root = home.path().join("pods-captures");
     let refused = export(&root, Path::new(SYSTEM_FILE), "20261120T120000Z", "trace-1");
     let error = refused.unwrap_err().to_string();
     assert_eq!(

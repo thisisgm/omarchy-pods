@@ -507,7 +507,7 @@ fn the_open_names_the_model_in_lower_case_and_describes_it() {
     node.step(&linked(), &Fact::Changed, SENT, &mut effects);
     let open = MicRequest::Open {
         id: OpenId(0),
-        name: format!("omarchypods_input.{}", MODEL_NUMBER.to_lowercase()),
+        name: format!("pods_input.{}", MODEL_NUMBER.to_lowercase()),
         description: "AirPods Pro 3 Microphone".to_owned(),
     };
     assert_eq!(effects, [Effect::Mic(open)]);

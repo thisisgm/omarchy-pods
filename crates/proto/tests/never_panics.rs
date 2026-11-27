@@ -363,7 +363,7 @@ proptest! {
         prop_assert!(BatteryReport::parse_decrypted(&payload, primary_left, pod_in_case, headset).is_ok());
     }
 
-    // tst_stress parseActive_fuzzShape: random, header plus tail, and a short prefix of the header.
+    // Random bytes, the header plus a tail, and a short prefix of the header.
     #[test]
     fn parse_active_fuzz_shape(
         random in proptest::collection::vec(any::<u8>(), 0..=20),
@@ -377,7 +377,7 @@ proptest! {
         let _prefix = ControlCommand::parse(&CONTROL_HEADER[..prefix_len]);
     }
 
-    // tst_stress parseState_fuzzValueByte: state is Some only for 0x01 and 0x02.
+    // The state is Some only for 0x01 and 0x02.
     #[test]
     fn parse_state_fuzz_value_byte(
         id in any::<u8>(),

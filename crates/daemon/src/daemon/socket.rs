@@ -209,7 +209,6 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
-    use cpp_source::MAIN;
     use rustix::fs::{CWD, mkfifoat};
     use tokio::runtime::Builder;
 
@@ -232,25 +231,15 @@ mod tests {
     }
 
     #[test]
-    fn start_probe_matches_the_cpp_single_instance_guard() {
-        let connect = MAIN.find(None, "socket_check.waitForConnected(", ')');
-        assert_eq!(connect, LIVE_DAEMON_PROBE.as_millis().to_string());
-        let write = MAIN.find(None, "socket_check.waitForBytesWritten(", ')');
-        assert_eq!(write, REOPEN_WRITE_TIMEOUT.as_millis().to_string());
-        let verb = MAIN.find(None, "socket_check.write(\"", '"');
-        assert_eq!(verb, REOPEN_VERB);
-    }
-
-    #[test]
     fn lock_is_refused_while_another_holds_it() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("librepods.sock");
+        let socket = dir.path().join("pods.sock");
         let held = block_on(lock(&socket)).unwrap();
         assert!(held.is_some());
         assert!(block_on(lock(&socket)).unwrap().is_none());
         drop(held);
         assert!(block_on(lock(&socket)).unwrap().is_some());
-        let mode = fs::metadata(dir.path().join("librepods.lock"))
+        let mode = fs::metadata(dir.path().join("pods.lock"))
             .unwrap()
             .permissions();
         assert_eq!(
@@ -262,7 +251,7 @@ mod tests {
     #[test]
     fn lock_is_never_opened_through_a_symbolic_link() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("librepods.sock");
+        let socket = dir.path().join("pods.sock");
         let lock_path = socket.with_extension(LOCK_EXTENSION);
         let target = dir.path().join("target");
         symlink(&target, &lock_path).unwrap();
@@ -286,15 +275,15 @@ mod tests {
         fs::create_dir(&real).unwrap();
         let linked = dir.path().join("linked");
         symlink(&real, &linked).unwrap();
-        let held = block_on(lock(&linked.join("librepods.sock"))).unwrap();
+        let held = block_on(lock(&linked.join("pods.sock"))).unwrap();
         assert!(held.is_some());
-        assert!(real.join("librepods.lock").is_file());
+        assert!(real.join("pods.lock").is_file());
     }
 
     #[test]
     fn lock_leaves_the_runtime_thread_free_while_it_opens_the_file() {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("librepods.sock");
+        let socket = dir.path().join("pods.sock");
         let lock_path = socket.with_extension(LOCK_EXTENSION);
         // Opening a FIFO to write waits for a reader; only a task on the runtime thread opens one.
         mkfifoat(CWD, &lock_path, Mode::from_raw_mode(LOCK_MODE)).unwrap();

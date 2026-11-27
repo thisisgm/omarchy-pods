@@ -36,7 +36,7 @@ pub(crate) fn log_text(records: &[Record]) -> String {
 }
 
 pub(crate) fn run_path(home: &TempDir, name: &str) -> PathBuf {
-    home.path().join("omapods-captures").join(STAMP).join(name)
+    home.path().join("pods-captures").join(STAMP).join(name)
 }
 
 /// A new file in `dir` with the mode the store gives its files.

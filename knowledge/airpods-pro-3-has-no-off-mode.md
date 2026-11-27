@@ -21,7 +21,7 @@ after noise:off attempt 3 -> mode 1
 control: after noise:transparency -> mode 2
 ```
 
-Three rejections, then the control applied immediately. `librepods-ctl` exits 0
+Three rejections, then the control applied immediately. `pods-ctl` exits 0
 either way and `noise_control_changes_total` counts the attempt, so nothing on
 the daemon side reports the failure: the pods simply ignore the packet.
 

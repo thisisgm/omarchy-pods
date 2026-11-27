@@ -7,7 +7,7 @@ use crate::error::{HEADER_LEN, ParseError, Parser};
 
 pub use state::UplinkState;
 
-// From librepods-org/librepods pull request 655 (aacp.rs, aacp_audio.rs); the C++ has no uplink.
+// Wire layout from the reference AACP implementation in pull request 655 (aacp.rs and aacp_audio.rs).
 
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00];
 /// A little endian u16 right after the header.

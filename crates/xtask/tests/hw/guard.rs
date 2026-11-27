@@ -36,13 +36,13 @@ fn the_installed_service_is_restored_on_success() {
 
 #[test]
 fn the_installed_service_is_restored_on_sigint() {
-    interrupted_by(&waiting_bench(), "-INT", "librepods status");
+    interrupted_by(&waiting_bench(), "-INT", "pods status");
 }
 
 #[test]
 fn the_installed_service_is_restored_on_sigterm_and_sighup() {
-    interrupted_by(&waiting_bench(), "-TERM", "librepods status");
-    interrupted_by(&waiting_bench(), "-HUP", "librepods status");
+    interrupted_by(&waiting_bench(), "-TERM", "pods status");
+    interrupted_by(&waiting_bench(), "-HUP", "pods status");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn a_hanging_status_is_killed_at_every_poll_and_the_service_restored() {
 fn a_signal_before_the_stop_leaves_the_installed_service_alone() {
     let bench = Bench::new();
     bench.set("hang-show", "");
-    let call = "systemctl --user show --property=LoadState --value librepods-hw.service";
+    let call = "systemctl --user show --property=LoadState --value pods-hw.service";
     let output = signalled(&bench, "-INT", call);
     assert_eq!(output.status.code(), Some(1));
     assert!(
@@ -77,7 +77,7 @@ fn a_signal_before_the_stop_leaves_the_installed_service_alone() {
         !bench
             .calls()
             .iter()
-            .any(|call| call == "systemctl --user stop librepods.service"),
+            .any(|call| call == "systemctl --user stop podsd.service"),
         "{:?}",
         bench.calls()
     );
@@ -87,7 +87,7 @@ fn a_signal_before_the_stop_leaves_the_installed_service_alone() {
 fn a_signal_during_the_stop_never_starts_the_daemon_under_test() {
     let bench = Bench::new();
     bench.set("hang-stop", "");
-    let output = signalled(&bench, "-INT", "systemctl --user stop librepods.service");
+    let output = signalled(&bench, "-INT", "systemctl --user stop podsd.service");
     assert_eq!(output.status.code(), Some(1));
     assert!(
         text(&output.stderr).contains("stopped by a signal"),
@@ -103,8 +103,8 @@ fn a_signal_during_the_stop_never_starts_the_daemon_under_test() {
         bench.calls()
     );
     let calls = bench.calls();
-    let stopped = index_of(&calls, "systemctl --user stop librepods.service").expect("stopped");
-    let started = index_of(&calls, "systemctl --user start librepods.service")
+    let stopped = index_of(&calls, "systemctl --user stop podsd.service").expect("stopped");
+    let started = index_of(&calls, "systemctl --user start podsd.service")
         .expect("the installed service was started again");
     assert!(stopped < started, "{calls:?}");
     assert!(bench.installed_is("active"));
@@ -119,7 +119,7 @@ fn a_daemon_that_stops_answering_is_a_failure_not_absent_airpods() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = text(&output.stderr);
     assert!(
-        stderr.contains("did not answer status: librepods status exited with"),
+        stderr.contains("did not answer status: pods status exited with"),
         "{stderr}"
     );
     assert!(!stderr.contains("nothing was measured"), "{stderr}");
@@ -129,14 +129,14 @@ fn a_daemon_that_stops_answering_is_a_failure_not_absent_airpods() {
 #[test]
 fn a_service_that_was_inactive_is_left_inactive() {
     let bench = Bench::new();
-    bench.set("unit-librepods.service", "inactive");
+    bench.set("unit-podsd.service", "inactive");
     let output = bench.run(&[]);
     assert_eq!(output.status.code(), Some(0));
     assert!(
         !bench
             .calls()
             .iter()
-            .any(|call| call == "systemctl --user start librepods.service")
+            .any(|call| call == "systemctl --user start podsd.service")
     );
     assert!(bench.installed_is("inactive"));
 }
@@ -179,7 +179,7 @@ fn a_start_that_exits_0_but_does_not_take_exits_70() {
     let last = last_line(&output.stderr);
     assert!(
         last.contains("RESTORE FAILED")
-            && last.contains("librepods.service is inactive after its start"),
+            && last.contains("podsd.service is inactive after its start"),
         "{last}"
     );
 }
@@ -198,14 +198,14 @@ fn a_test_unit_that_will_not_stop_keeps_the_installed_service_down_and_exits_70(
     let last = last_line(&output.stderr);
     assert!(
         last.contains("RESTORE FAILED")
-            && last.contains("librepods-hw.service is still active after its stop"),
+            && last.contains("pods-hw.service is still active after its stop"),
         "{last}"
     );
     assert!(
         !bench
             .calls()
             .iter()
-            .any(|call| call == "systemctl --user start librepods.service"),
+            .any(|call| call == "systemctl --user start podsd.service"),
         "{:?}",
         bench.calls()
     );
@@ -220,7 +220,7 @@ fn an_existing_test_unit_refuses_the_run() {
     assert!(text(&output.stderr).contains("nothing was stopped"));
     assert_eq!(
         bench.calls(),
-        ["systemctl --user show --property=LoadState --value librepods-hw.service"]
+        ["systemctl --user show --property=LoadState --value pods-hw.service"]
     );
 }
 
@@ -228,19 +228,19 @@ fn an_existing_test_unit_refuses_the_run() {
 fn a_missing_installed_service_refuses_the_run() {
     let bench = Bench::new();
     bench.set("installed-missing", "");
-    bench.set("unit-librepods.service", "inactive");
+    bench.set("unit-podsd.service", "inactive");
     let output = bench.run(&[]);
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.contains("xtask hw: systemctl is-active librepods.service gave no state (exit status: 4); nothing was stopped"),
+        stderr.contains("xtask hw: systemctl is-active podsd.service gave no state (exit status: 4); nothing was stopped"),
         "{stderr}"
     );
     assert_eq!(
         bench.calls(),
         [
-            "systemctl --user show --property=LoadState --value librepods-hw.service",
-            "systemctl --user is-active librepods.service"
+            "systemctl --user show --property=LoadState --value pods-hw.service",
+            "systemctl --user is-active podsd.service"
         ]
     );
 }
@@ -262,8 +262,7 @@ const FEWEST_DIRECTIVES: usize = 10;
 
 /// The unit the package installs, as the test reads the file itself.
 fn packaged_unit() -> String {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/librepods.service");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/podsd.service");
     fs::read_to_string(path).unwrap()
 }
 
@@ -339,13 +338,11 @@ fn the_test_unit_copies_the_hardening_of_the_packaged_unit() {
         arg.starts_with("--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/")
             && arg.ends_with("/bus")
     }));
-    assert!(
-        args.contains(&"--unit=librepods-hw".to_owned()) && args.contains(&"--collect".to_owned())
-    );
+    assert!(args.contains(&"--unit=pods-hw".to_owned()) && args.contains(&"--collect".to_owned()));
     assert_eq!(
         args[args.len() - 2..],
         [
-            bench.path("bin/librepods").display().to_string(),
+            bench.path("bin/pods").display().to_string(),
             "--headless".to_owned()
         ]
     );
@@ -365,7 +362,7 @@ fn the_packaged_unit_starts_the_daemon_subcommand() {
         .lines()
         .filter(|line| line.starts_with("ExecStart"))
         .collect();
-    assert_eq!(starts, ["ExecStart=%h/.local/bin/librepods daemon"]);
+    assert_eq!(starts, ["ExecStart=%h/.local/bin/pods daemon"]);
 }
 
 #[test]
@@ -397,7 +394,7 @@ fn a_second_run_during_a_run_stops_and_starts_nothing() {
     let mut command = bench.command(Some(["--idle-window-seconds", "1"]), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let first = bench.spawn(command);
-    wait_for_call(&bench, "systemctl --user stop librepods.service");
+    wait_for_call(&bench, "systemctl --user stop podsd.service");
     let mut command = bench.command(Some(["--idle-window-seconds", "1"]), &[]);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let second = bench.spawn(command);
@@ -410,13 +407,9 @@ fn a_second_run_during_a_run_stops_and_starts_nothing() {
         "xtask hw: a run is in progress; nothing was stopped\n"
     );
     let count = |call: &str| calls.iter().filter(|made| *made == call).count();
+    assert_eq!(count("systemctl --user stop podsd.service"), 1, "{calls:?}");
     assert_eq!(
-        count("systemctl --user stop librepods.service"),
-        1,
-        "{calls:?}"
-    );
-    assert_eq!(
-        count("systemctl --user show --property=LoadState --value librepods-hw.service"),
+        count("systemctl --user show --property=LoadState --value pods-hw.service"),
         1,
         "{calls:?}"
     );

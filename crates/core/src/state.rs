@@ -74,7 +74,7 @@ impl Default for State {
     }
 }
 
-const MIC_NODE_PREFIX: &str = "omarchypods_input.";
+const MIC_NODE_PREFIX: &str = "pods_input.";
 
 impl State {
     /// Forgets what the pods reported; preferences and counters stay.

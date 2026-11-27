@@ -34,9 +34,9 @@ pub(super) const MANAGER_INTERFACE: &str = "org.bluez.AdvertisementMonitorManage
 const MONITOR_INTERFACE: &str = "org.bluez.AdvertisementMonitor1";
 
 /// The application BlueZ reads the monitor through, and the one monitor under it.
-pub(super) const APP_PATH: &str = "/librepods/adverts";
+pub(super) const APP_PATH: &str = "/pods/adverts";
 
-const MONITOR_PATH: &str = "/librepods/adverts/apple";
+const MONITOR_PATH: &str = "/pods/adverts/apple";
 
 const OR_PATTERNS: &str = "or_patterns";
 

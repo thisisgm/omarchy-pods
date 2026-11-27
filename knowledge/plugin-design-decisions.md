@@ -33,9 +33,8 @@ survives `omarchy update`.
 
 macOS shows Standard and Voice Isolation under a Mic Mode heading whenever an
 app holds the microphone. That is macOS DSP applied to the input stream for any
-source, not an AirPods capability: `grep -i 'mic|voice|isolation'` over
-`airpods_packets.h`, `main.cpp` and `enums.h` finds nothing, and `ipcverb.hpp`
-names `mic:N` only as a hypothetical future verb. There is no packet to send.
+source. No packet in `crates/proto` selects those host-side microphone modes,
+so there is nothing to send.
 
 Two real Linux options were considered and rejected. A PipeWire `rnnoise`
 filter chain is honest noise suppression but applies to every microphone, so it
@@ -46,8 +45,8 @@ would be a knob nobody turns.
 
 # No polling at all, measured
 
-The panel watches `$XDG_STATE_HOME/librepods/status.json` with a `FileView` and
-runs no process while idle. An earlier design polled `librepods-ctl status` on a
+The panel watches `$XDG_STATE_HOME/pods/status.json` with a `FileView` and
+runs no process while idle. An earlier design polled `pods-ctl status` on a
 `refreshIntervalSec` manifest setting; the daemon gained a state file instead,
 so the setting, its clamp and the timer were all deleted.
 

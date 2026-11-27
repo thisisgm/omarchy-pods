@@ -50,7 +50,7 @@ use script::{Opening, Route, Script, ScriptError, ScriptName, StepsError};
 use service::{RunLock, ServiceError};
 use store::{Run, Session, StoreError};
 
-/// Bounds the connect: the connect timeout of aacp.rs in librepods-org/librepods pull request 655.
+/// Bounds the connect using the reference AACP timeout in pull request 655.
 pub(crate) const CONNECT_TIMEOUT_MS: u64 = 10_000;
 /// What a run was recorded with and when its clock began.
 const META_NAME: &str = "meta.txt";
@@ -75,7 +75,7 @@ struct Probe {
 
 #[derive(Debug, Subcommand)]
 enum ProbeCommand {
-    /// Creates or checks the session directory under $HOME/omapods-captures and prints its path.
+    /// Creates or checks the session directory under $HOME/pods-captures and prints its path.
     Init {
         /// The session stamp, from date -u +%Y%m%dT%H%M%SZ.
         #[arg(long)]
@@ -115,7 +115,7 @@ enum ProbeCommand {
     },
     /// Measures the decoded audio of a run, alone or against a reference recording, and writes audio.tsv into it; with --whole, one decoded file as one window.
     Audio(audio::AudioArgs),
-    /// Serves the audio of a capture as a microphone: its packets go through the decode chain into the node `omapods_input.probe`, each at the time the log holds for it, until the capture ends or a signal comes; one status line a second on stdout.
+    /// Serves the audio of a capture as a microphone: its packets go through the decode chain into the node `pods_input.probe`, each at the time the log holds for it, until the capture ends or a signal comes; one status line a second on stdout.
     Source(source::SourceArgs),
     /// The objective audio bench: makes its cache of pinned tools, or scores with them.
     Bench {

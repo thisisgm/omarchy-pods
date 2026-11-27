@@ -1,4 +1,4 @@
-//! The one line of JSON the daemon publishes for the plugin and `librepods status`.
+//! The one line of JSON the daemon publishes for the plugin and `pods status`.
 
 use std::collections::BTreeMap;
 

@@ -291,7 +291,7 @@ fn a_stub_start_that_finds_the_set_socket_listening_leaves_it_bound() {
     let bench = Bench::new();
     let run = bench.path("tmp/unit/run");
     fs::create_dir_all(&run).unwrap();
-    let socket = run.join("librepods.sock");
+    let socket = run.join("pods.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     let mut runtime = OsString::from("--setenv=XDG_RUNTIME_DIR=");

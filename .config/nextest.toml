@@ -12,15 +12,15 @@ cpu-heavy = { max-threads = 6 }
 # Private PipeWire graphs and paced audio captures need regular scheduling.
 [[profile.default.overrides]]
 filter = '''
-binary_id(=librepods::dictation) |
-binary_id(=librepods::dictation_slow) |
-binary_id(=librepods::recorders) |
-binary_id(=librepods::source) |
-binary_id(=librepods::source_arming) |
-binary_id(=librepods::source_arming_slow) |
-binary_id(=librepods::source_audio) |
-binary_id(=librepods::source_audio_slow) |
-binary_id(=librepods::source_slow) |
+binary_id(=pods::dictation) |
+binary_id(=pods::dictation_slow) |
+binary_id(=pods::recorders) |
+binary_id(=pods::source) |
+binary_id(=pods::source_arming) |
+binary_id(=pods::source_arming_slow) |
+binary_id(=pods::source_audio) |
+binary_id(=pods::source_audio_slow) |
+binary_id(=pods::source_slow) |
 binary_id(=pods-pw::no_alloc) |
 binary_id(=pods-pw::source) |
 binary_id(=pods-pwrig::rig) |
@@ -33,7 +33,7 @@ test-group = 'realtime-audio'
 # A test that retried a proven rig miss and passed still shows its first attempt's evidence.
 [[profile.default.overrides]]
 filter = '''
-(binary_id(=librepods::dictation_slow) & test(=tests::history_recorder_stays_click_free_across_opening_catchup_exit)) |
+(binary_id(=pods::dictation_slow) & test(=tests::history_recorder_stays_click_free_across_opening_catchup_exit)) |
 (binary_id(=pods-pw::source) & test(ratio_is_followed))
 '''
 success-output = 'final'

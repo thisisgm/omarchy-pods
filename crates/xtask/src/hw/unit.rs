@@ -12,19 +12,19 @@ use std::time::{Duration, Instant};
 use super::clock::{Clock, SystemClock};
 
 /// The installed daemon's unit, stopped for the run and restored after it.
-pub(crate) const INSTALLED: &str = "librepods.service";
+pub(crate) const INSTALLED: &str = "podsd.service";
 
 /// The installed client under the home directory, which C3 and C9 run.
-const INSTALLED_CTL: &str = ".local/bin/librepods-ctl";
+const INSTALLED_CTL: &str = ".local/bin/pods-ctl";
 
 /// The transient unit the binary under test runs in.
-pub(crate) const UNDER_TEST: &str = "librepods-hw.service";
+pub(crate) const UNDER_TEST: &str = "pods-hw.service";
 
 /// The name `systemd-run --unit` takes for `UNDER_TEST`.
-const UNDER_TEST_NAME: &str = "librepods-hw";
+const UNDER_TEST_NAME: &str = "pods-hw";
 
 /// Read at build time so the run's hardening cannot drift from it.
-const SERVICE_FILE: &str = include_str!("../../../../packaging/systemd/librepods.service");
+const SERVICE_FILE: &str = include_str!("../../../../packaging/systemd/podsd.service");
 
 /// Where the hardening block the test unit copies begins.
 const FIRST_HARDENING_DIRECTIVE: &str = "UMask";
@@ -460,8 +460,8 @@ esac
         let systemctl = stub.path().join("systemctl");
         fs::write(&systemctl, SYSTEMCTL_STUB).unwrap();
         fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(stub.path().join("librepods.service"), "inactive").unwrap();
-        fs::write(stub.path().join("librepods-hw.service"), "active").unwrap();
+        fs::write(stub.path().join("podsd.service"), "inactive").unwrap();
+        fs::write(stub.path().join("pods-hw.service"), "active").unwrap();
         let path = format!("{}:{}", stub.path().display(), env::var("PATH").unwrap());
         let child = Command::new(env::current_exe().unwrap())
             .args([
@@ -477,17 +477,17 @@ esac
         let stderr = String::from_utf8_lossy(&child.stderr);
         assert!(!child.status.success(), "the child did not panic: {stderr}");
         assert!(
-            stderr.contains("librepods.service is as the run found it"),
+            stderr.contains("podsd.service is as the run found it"),
             "{stderr}"
         );
         let calls = fs::read_to_string(stub.path().join("calls")).unwrap();
         assert_eq!(
             calls.lines().collect::<Vec<_>>(),
             [
-                "--user stop librepods-hw.service",
-                "--user is-active librepods-hw.service",
-                "--user start librepods.service",
-                "--user is-active librepods.service"
+                "--user stop pods-hw.service",
+                "--user is-active pods-hw.service",
+                "--user start podsd.service",
+                "--user is-active podsd.service"
             ]
         );
     }
@@ -531,12 +531,12 @@ esac
 
     #[test]
     fn the_start_arguments_end_with_the_binary_in_headless_mode() {
-        let args = start_arguments(Path::new("/x/librepods"), Path::new("/t/d"), 1000);
+        let args = start_arguments(Path::new("/x/pods"), Path::new("/t/d"), 1000);
         let text: Vec<String> = args
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(text[text.len() - 3..], ["--", "/x/librepods", "--headless"]);
+        assert_eq!(text[text.len() - 3..], ["--", "/x/pods", "--headless"]);
         assert!(text.contains(&"--setenv=XDG_RUNTIME_DIR=/t/d/run".to_owned()));
         assert!(text.contains(
             &"--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus".to_owned()
@@ -556,9 +556,9 @@ esac
             .err()
             .unwrap();
         assert!(error.starts_with("env sleep did not finish"), "{error}");
-        let start = start_arguments(Path::new("/x/librepods"), Path::new("/t/d"), 1000);
+        let start = start_arguments(Path::new("/x/pods"), Path::new("/t/d"), 1000);
         let refs: Vec<&OsStr> = start.iter().map(OsString::as_os_str).collect();
-        assert_eq!(first_word(&refs), "/x/librepods");
+        assert_eq!(first_word(&refs), "/x/pods");
     }
 
     #[test]

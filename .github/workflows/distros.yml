@@ -1,0 +1,59 @@
+name: Linux distributions
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  packaging:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: public.ecr.aws/docker/library/archlinux:latest
+            runner: ubuntu-24.04
+            manager: pacman
+          - image: public.ecr.aws/docker/library/ubuntu:24.04
+            runner: ubuntu-24.04
+            manager: apt
+          - image: public.ecr.aws/docker/library/ubuntu:24.04
+            runner: ubuntu-24.04-arm
+            manager: apt
+          - image: public.ecr.aws/docker/library/debian:trixie
+            runner: ubuntu-24.04
+            manager: apt
+          - image: public.ecr.aws/docker/library/fedora:latest
+            runner: ubuntu-24.04
+            manager: dnf
+          - image: public.ecr.aws/docker/library/fedora:latest
+            runner: ubuntu-24.04-arm
+            manager: dnf
+          - image: public.ecr.aws/docker/library/almalinux:10
+            runner: ubuntu-24.04
+            manager: dnf
+          - image: registry.opensuse.org/opensuse/tumbleweed:latest
+            runner: ubuntu-24.04
+            manager: zypper
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          IMAGE: ${{ matrix.image }}
+          MANAGER: ${{ matrix.manager }}
+        run: |
+          docker run --rm -v "$PWD:/workspace:ro" -w /workspace -e MANAGER "$IMAGE" bash -euc '
+            case "$MANAGER" in
+              pacman) pacman -Sy --noconfirm --needed curl tar zstd coreutils diffutils findutils python util-linux pipewire pipewire-pulse bluez ;;
+              apt) apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl tar zstd coreutils diffutils findutils python3 util-linux pipewire pipewire-pulse bluez ;;
+              dnf) dnf install -y --allowerasing curl tar zstd coreutils diffutils findutils python3 util-linux pipewire pipewire-pulseaudio bluez ;;
+              zypper) zypper --non-interactive install curl tar zstd coreutils diffutils findutils python3 util-linux pipewire pipewire-pulseaudio bluez ;;
+            esac
+            exec setpriv --reuid=10001 --regid=10001 --clear-groups bash /workspace/tests/packaging.sh --check-distro
+          '

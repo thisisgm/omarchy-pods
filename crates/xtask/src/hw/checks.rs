@@ -139,7 +139,7 @@ pub(crate) fn stop(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     Ok(check)
 }
 
-/// C3: `librepods status` carries exactly the status document's keys, and the installed `librepods-ctl` prints the same line.
+/// C3: `pods status` carries exactly the status document's keys, and the installed `pods-ctl` prints the same line.
 pub(crate) fn same_contract(lab: &Lab<'_>) -> Check {
     let mut check = Check::new("C3 same contract");
     let expected = document_keys();
@@ -148,10 +148,10 @@ pub(crate) fn same_contract(lab: &Lab<'_>) -> Check {
         Ok(ran) => Err(format!("{name} status exited with {}", ran.status)),
         Err(error) => Err(error),
     };
-    let before = line("librepods", lab.librepods(&["status"], STATUS_TIMEOUT));
+    let before = line("pods", lab.pods(&["status"], STATUS_TIMEOUT));
     let run_dir = lab.run_dir();
     let ctl = line(
-        "librepods-ctl",
+        "pods-ctl",
         run(
             &unit::installed_ctl(lab.home),
             &[OsStr::new("status")],
@@ -159,7 +159,7 @@ pub(crate) fn same_contract(lab: &Lab<'_>) -> Check {
             STATUS_TIMEOUT,
         ),
     );
-    let after = line("librepods", lab.librepods(&["status"], STATUS_TIMEOUT));
+    let after = line("pods", lab.pods(&["status"], STATUS_TIMEOUT));
     match before.as_deref().map(status_object) {
         Ok(Some(object)) => {
             let keys: Vec<&str> = object.keys().map(String::as_str).collect();
@@ -169,18 +169,18 @@ pub(crate) fn same_contract(lab: &Lab<'_>) -> Check {
                 expected.len()
             ));
             if keys != expected.iter().map(String::as_str).collect::<Vec<_>>() {
-                check.fail("the keys of librepods status differ from the status document");
+                check.fail("the keys of pods status differ from the status document");
             }
         }
-        Ok(None) => check.fail("librepods status printed no state object"),
+        Ok(None) => check.fail("pods status printed no state object"),
         Err(error) => check.fail(error.as_str()),
     }
     // The state can change between two reads, so the ctl line must equal the line read just before or just after it.
     match ctl {
         Ok(ctl) if before.as_ref() == Ok(&ctl) || after.as_ref() == Ok(&ctl) => {
-            check.note("librepods-ctl prints the same line");
+            check.note("pods-ctl prints the same line");
         }
-        Ok(_) => check.fail("the installed librepods-ctl printed a different line"),
+        Ok(_) => check.fail("the installed pods-ctl printed a different line"),
         Err(error) => check.fail(error),
     }
     check

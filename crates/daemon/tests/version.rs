@@ -1,4 +1,4 @@
-//! The file under test: what it says it is, and that a session starts the daemon `LIBREPODS_E2E_BINARY` names.
+//! The file under test: what it says it is, and that a session starts the daemon `PODS_E2E_BINARY` names.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -50,7 +50,7 @@ mod tests {
             assert!(out.stderr.is_empty(), "{flag}");
             assert_eq!(
                 String::from_utf8(out.stdout).unwrap(),
-                format!("librepods {}\n", env!("CARGO_PKG_VERSION"))
+                format!("pods {}\n", env!("CARGO_PKG_VERSION"))
             );
         }
     }
@@ -58,19 +58,13 @@ mod tests {
     #[test]
     fn help_flags_and_subcommand_print_usage_to_stdout() {
         for (args, usage) in [
-            (&["-h"][..], "librepods <COMMAND>"),
-            (&["--help"][..], "librepods <COMMAND>"),
-            (&["help"][..], "librepods <COMMAND>"),
-            (&["help", "set"][..], "librepods set <KEY> <VALUE>"),
-            (
-                &["set", "noise", "--help"][..],
-                "librepods set <KEY> <VALUE>",
-            ),
-            (&["do", "-h"][..], "librepods do <ACTION>"),
-            (
-                &["--headless", "--help"][..],
-                "librepods {daemon|--headless}",
-            ),
+            (&["-h"][..], "pods <COMMAND>"),
+            (&["--help"][..], "pods <COMMAND>"),
+            (&["help"][..], "pods <COMMAND>"),
+            (&["help", "set"][..], "pods set <KEY> <VALUE>"),
+            (&["set", "noise", "--help"][..], "pods set <KEY> <VALUE>"),
+            (&["do", "-h"][..], "pods do <ACTION>"),
+            (&["--headless", "--help"][..], "pods {daemon|--headless}"),
         ] {
             let out = Command::new(support::binary()).args(args).output().unwrap();
             assert!(out.status.success(), "{args:?}");
@@ -83,25 +77,25 @@ mod tests {
     #[test]
     fn parser_failures_print_usage_to_stderr_and_exit_two() {
         for (args, usage, reason) in [
-            (&[][..], "librepods <COMMAND>", "Commands:"),
+            (&[][..], "pods <COMMAND>", "Commands:"),
             (
                 &["--bogus"][..],
-                "librepods <COMMAND>",
+                "pods <COMMAND>",
                 "unexpected argument '--bogus'",
             ),
             (
                 &["bogus"][..],
-                "librepods <COMMAND>",
+                "pods <COMMAND>",
                 "unrecognized subcommand 'bogus'",
             ),
             (
                 &["set", "noise"][..],
-                "librepods set <KEY> <VALUE>",
+                "pods set <KEY> <VALUE>",
                 "\n  <VALUE>\n",
             ),
             (
                 &["do", "connect", "extra"][..],
-                "librepods do <ACTION>",
+                "pods do <ACTION>",
                 "unexpected argument 'extra'",
             ),
         ] {
@@ -119,7 +113,7 @@ mod tests {
         let session = Session::new();
         let _daemon = session.start();
         let dir = tempfile::tempdir().unwrap();
-        let ctl = dir.path().join("librepods-ctl");
+        let ctl = dir.path().join("pods-ctl");
         symlink(support::binary(), &ctl).unwrap();
         let invalid = OsString::from_vec(vec![0xff]);
         let ctl_args = [OsString::from("status"), invalid.clone()];
@@ -147,10 +141,8 @@ mod tests {
 
     #[test]
     fn the_daemon_a_session_starts_is_the_file_under_test() {
-        let wanted = env::var_os(BINARY_VARIABLE).map_or_else(
-            || PathBuf::from(env!("CARGO_BIN_EXE_librepods")),
-            PathBuf::from,
-        );
+        let wanted = env::var_os(BINARY_VARIABLE)
+            .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pods")), PathBuf::from);
         let session = Session::new();
         let daemon = session.start();
         let running = fs::read_link(format!("/proc/{}/exe", daemon.child.id())).unwrap();
@@ -160,7 +152,7 @@ mod tests {
     #[test]
     fn a_session_starts_the_file_the_variable_names() {
         let dir = tempfile::tempdir().unwrap();
-        let copy = dir.path().join("librepods-under-test");
+        let copy = dir.path().join("pods-under-test");
         fs::copy(support::binary(), &copy).unwrap();
         let (status, said) = respawn_with(dir.path(), &copy);
         assert!(status.success(), "{said}");
@@ -170,9 +162,9 @@ mod tests {
     #[test]
     fn a_bare_name_in_the_variable_is_the_file_in_the_directory_the_suite_runs_in() {
         let dir = tempfile::tempdir().unwrap();
-        let copy = dir.path().join("librepods-under-test");
+        let copy = dir.path().join("pods-under-test");
         fs::copy(support::binary(), &copy).unwrap();
-        let (status, said) = respawn_with(dir.path(), Path::new("librepods-under-test"));
+        let (status, said) = respawn_with(dir.path(), Path::new("pods-under-test"));
         assert!(status.success(), "{said}");
         assert!(said.contains("test result: ok. 1 passed"), "{said}");
     }

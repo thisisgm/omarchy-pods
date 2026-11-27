@@ -6,6 +6,7 @@ mod dbus;
 mod dictation;
 mod hub;
 mod keys;
+pub(crate) mod legacy_conf;
 mod legacy_dialect;
 mod link;
 mod media;
@@ -14,7 +15,7 @@ mod notify;
 mod owner_file;
 #[cfg(test)]
 mod paused;
-pub(crate) mod prefs;
+mod prefs;
 mod proto1;
 mod signals;
 mod sleep;
@@ -37,12 +38,12 @@ use pods_proto::packets::{ATT_PSM, CONTROL_PSM};
 use pods_sys::l2cap;
 use tokio::runtime::Builder;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, spawn_blocking};
 
 use hub::Hub;
 use state_file::StateFile;
 
-/// As `daemon/main.cpp` logs it.
+/// The startup diagnostic when the runtime directory is unavailable.
 pub(crate) const NO_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR is unset; cannot place the control socket";
 
 pub(crate) const NO_STATE_HOME: &str =
@@ -62,18 +63,14 @@ const SUBSCRIBER_BACKLOG: usize = MAX_CONNECTIONS;
 pub(crate) struct Paths {
     pub(crate) socket: PathBuf,
     pub(crate) state_file: PathBuf,
-    /// The C++ daemon's settings, read once if `settings.json` is absent.
+    /// The C++ daemon's settings, read once if either JSON file is absent.
     pub(crate) old_conf: Option<PathBuf>,
     pub(crate) runtime_dir: PathBuf,
 }
 
 pub(crate) fn run(paths: Paths) -> ExitCode {
-    let settings = paths.state_file.with_file_name(prefs::FILE_NAME);
-    let loaded = prefs::load(&settings, paths.old_conf.as_deref());
-    let keys_file = paths.state_file.with_file_name(keys::FILE_NAME);
-    let stored = keys::load(&keys_file);
     match Builder::new_current_thread().enable_all().build() {
-        Ok(runtime) => runtime.block_on(serve(paths, settings, loaded, keys_file, stored)),
+        Ok(runtime) => runtime.block_on(serve(paths)),
         Err(error) => {
             log(&format!("cannot start the daemon's async runtime: {error}"));
             ExitCode::FAILURE
@@ -81,13 +78,41 @@ pub(crate) fn run(paths: Paths) -> ExitCode {
     }
 }
 
-async fn serve(
-    paths: Paths,
+struct Startup {
     settings: PathBuf,
     loaded: Prefs,
     keys_file: PathBuf,
     stored: Option<SavedKeys>,
-) -> ExitCode {
+}
+
+/// Claims the daemon lock, then loads startup settings and keys off the async runtime.
+async fn claim_and_load(paths: &Paths) -> Result<(File, Startup), ExitCode> {
+    let lock = claim(&paths.socket).await?;
+    let settings = paths.state_file.with_file_name(prefs::FILE_NAME);
+    let keys_file = paths.state_file.with_file_name(keys::FILE_NAME);
+    let old_conf = paths.old_conf.clone();
+    let startup = spawn_blocking(move || {
+        let legacy = legacy_conf::LegacyConf::new(old_conf.as_deref());
+        let loaded = prefs::load(&settings, &legacy);
+        let stored = keys::load(&keys_file, &legacy);
+        Startup {
+            settings,
+            loaded,
+            keys_file,
+            stored,
+        }
+    })
+    .await
+    .map_err(|error| {
+        log(&format!(
+            "startup: loading saved state did not finish: {error}"
+        ));
+        ExitCode::FAILURE
+    })?;
+    Ok((lock, startup))
+}
+
+async fn serve(paths: Paths) -> ExitCode {
     let mut stop = match signals::listen() {
         Ok(stop) => stop,
         Err(error) => {
@@ -95,18 +120,17 @@ async fn serve(
             return ExitCode::FAILURE;
         }
     };
-    let _lock = match claim(&paths.socket).await {
-        Ok(lock) => lock,
+    let (_lock, startup) = match claim_and_load(&paths).await {
+        Ok(ready) => ready,
         Err(code) => return code,
     };
-
     let (link, inputs) = link::queue();
-    let hub = Hub::new(link.clone(), loaded.clone().into_state());
+    let hub = Hub::new(link.clone(), startup.loaded.clone().into_state());
     let (requests, watcher_requests) = mpsc::channel(link::REQUEST_QUEUE);
     let connector = connector_on(CONTROL_PSM);
     let (notices, notice_queue) = notify::queue();
     let (stop_notifier, notifier_stops) = oneshot::channel();
-    let (prefs, prefs_changes) = watch::channel(loaded);
+    let (prefs, prefs_changes) = watch::channel(startup.loaded);
     let notifier = tokio::spawn(notify::run(notice_queue, prefs.subscribe(), notifier_stops));
     let (audio_requests, audio_queue) = audio::queue();
     let (media_requests, media_queue) = media::queue();
@@ -140,7 +164,7 @@ async fn serve(
             sleep_bus,
             tap,
         },
-        stored.clone(),
+        startup.stored.clone(),
     ));
     let file = StateFile::new(paths.state_file);
     let updates = hub.subscribe();
@@ -163,8 +187,8 @@ async fn serve(
 
     let accept = tokio::spawn(socket::accept_loop(listener, hub.clone()));
     let follow = tokio::spawn(state_file::follow(updates, file.clone(), failures));
-    let prefs_writer = tokio::spawn(prefs::follow(prefs_changes, settings));
-    let keys_writer = tokio::spawn(keys::follow(pairs, keys_file, stored));
+    let prefs_writer = tokio::spawn(prefs::follow(prefs_changes, startup.settings));
+    let keys_writer = tokio::spawn(keys::follow(pairs, startup.keys_file, startup.stored));
     // After the bind, so a missing or slow bus never delays the socket or the state file.
     let bus = tokio::spawn(session_bus(hub.clone(), link.clone(), media_queue));
     let watcher = tokio::spawn(bluez::watch(link.clone(), watcher_requests, monitor_wanted));

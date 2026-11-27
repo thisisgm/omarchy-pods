@@ -1,14 +1,13 @@
-//! Support tests: the advert parser, the address check and the opened block, against the C++ sources and the core specification's sample.
+//! Support tests: the advert parser, the address check and the opened block, against protocol fixtures and the core specification's sample.
 
 use super::*;
 use crate::battery::BatteryReport;
 use crate::model::{Model, Product, product, product_of_modalias};
-use cpp_source::{BLE_MANAGER_SOURCE, BLE_UTILS};
 use pods_samples::advert::{HEADER_LEN, Keys, PRODUCT_AT, address_of, advert_of};
 use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY};
 use proptest::prelude::*;
 
-/// The sample of `onDeviceDiscovered`: `07 19 01 27 20 21 88 8F 11 00 04`.
+/// An example proximity advert header: `07 19 01 27 20 21 88 8F 11 00 04`.
 const HEADER: [u8; HEADER_LEN] = [
     0x07, 0x19, 0x01, 0x27, 0x20, 0x21, 0x88, 0x8f, 0x11, 0x00, 0x04,
 ];
@@ -48,28 +47,6 @@ fn address(text: &str) -> BdAddr {
     text.parse().unwrap()
 }
 
-/// `onDeviceDiscovered` transcribed: the in ear bits by side, flipped when the right bud is primary, then named primary and secondary.
-fn cpp_in_ear(status: u8) -> (bool, bool) {
-    let primary_left = status & STATUS_PRIMARY_LEFT != 0;
-    let this_in_case = status & STATUS_THIS_POD_IN_CASE != 0;
-    let xor_factor = !primary_left ^ this_in_case;
-    let left = if xor_factor {
-        status & STATUS_EAR_HIGH != 0
-    } else {
-        status & STATUS_EAR_LOW != 0
-    };
-    let right = if xor_factor {
-        status & STATUS_EAR_LOW != 0
-    } else {
-        status & STATUS_EAR_HIGH != 0
-    };
-    if primary_left {
-        (left, right)
-    } else {
-        (right, left)
-    }
-}
-
 #[test]
 fn the_sample_advert_parses_to_its_fields() {
     let data = sample();
@@ -90,7 +67,7 @@ fn the_sample_advert_parses_to_its_fields() {
 }
 
 #[test]
-fn the_product_reads_little_endian_where_the_cpp_key_is_swapped() {
+fn the_product_reads_little_endian() {
     for (word, modalias, model) in [
         (
             [0x27, 0x20],
@@ -123,11 +100,6 @@ fn the_product_reads_little_endian_where_the_cpp_key_is_swapped() {
             "{modalias}"
         );
     }
-    let cpp = BLE_MANAGER_SOURCE.find(None, "deviceInfo.modelName = getModelName(", ';');
-    assert_eq!(
-        cpp,
-        "static_cast<quint16>(data[4]) | (static_cast<quint8>(data[3]) << 8))"
-    );
 }
 
 #[test]
@@ -164,105 +136,44 @@ fn an_advert_in_pairing_mode_is_refused() {
 }
 
 #[test]
-fn the_cpp_reads_the_same_bytes_and_bits() {
-    let line = |start: &str| BLE_MANAGER_SOURCE.find(None, start, ';');
-    assert_eq!(
-        line("static constexpr int proximityPairingBytes = "),
-        format!("{HEADER_LEN} + {SEALED_LEN}")
-    );
-    assert_eq!(ADVERT_LEN, HEADER_LEN + SEALED_LEN);
-    let read_at = |at: usize| format!("static_cast<quint8>(data[{at}])");
-    assert_eq!(line("quint8 status = "), read_at(STATUS_AT));
-    assert_eq!(line("quint8 flagsAndCaseBattery = "), read_at(CASE_AT));
-    assert_eq!(line("quint8 lidIndicator = "), read_at(LID_AT));
-    let front = BLE_MANAGER_SOURCE.find(None, "if (data.size() >= ", ')');
-    assert_eq!(
-        front,
-        format!("proximityPairingBytes && data[0] == {PROXIMITY_TYPE:#04x}")
-    );
-    let pairing = BLE_MANAGER_SOURCE.find(None, "if (data[2] == ", ')');
-    assert_eq!(pairing, format!("{PAIRING_MODE:#04x}"));
-    let bit = |start: &str| BLE_MANAGER_SOURCE.find(None, start, ')');
-    assert_eq!(
-        bit("bool primaryLeft = (status & "),
-        format!("{STATUS_PRIMARY_LEFT:#04x}")
-    );
-    assert_eq!(
-        bit("deviceInfo.isThisPodInTheCase = (status & "),
-        format!("{STATUS_THIS_POD_IN_CASE:#04x}")
-    );
-    let tenths = BLE_MANAGER_SOURCE.find(None, "int caseNibble = flagsAndCaseBattery & ", ';');
-    assert_eq!(tenths, format!("{CASE_TENTHS:#04X}"));
-    assert_eq!(
-        bit("deviceInfo.caseCharging = (flags & "),
-        format!("{:#04x}", CASE_CHARGING >> 4)
-    );
-    assert_eq!(
-        bit("static_cast<quint8>((lidIndicator >> "),
-        LID_CLOSED.trailing_zeros().to_string()
-    );
-}
-
-#[test]
-fn cpp_in_ear_is_the_cpp_rule_as_written() {
-    let line = |start: &str| BLE_MANAGER_SOURCE.find(None, start, ';');
-    assert_eq!(line("bool areValuesFlipped = "), "!primaryLeft");
-    assert_eq!(
-        line("bool xorFactor = "),
-        "areValuesFlipped ^ deviceInfo.isThisPodInTheCase"
-    );
-    let side = |first: u8, second: u8| {
-        format!("xorFactor ? (status & {first:#04x}) != 0 : (status & {second:#04x}) != 0")
-    };
-    assert_eq!(
-        line("deviceInfo.isLeftPodInEar = "),
-        side(STATUS_EAR_HIGH, STATUS_EAR_LOW)
-    );
-    assert_eq!(
-        line("deviceInfo.isRightPodInEar = "),
-        side(STATUS_EAR_LOW, STATUS_EAR_HIGH)
-    );
-    assert_eq!(
-        line("deviceInfo.isPrimaryInEar = "),
-        "primaryLeft ? deviceInfo.isLeftPodInEar : deviceInfo.isRightPodInEar"
-    );
-}
-
-/// Worked by hand from the C++ lines: the primary pod reads the high bit while it is in the case and the low bit out of it.
-#[test]
-fn cpp_in_ear_gives_the_primary_the_high_bit_only_in_the_case() {
-    let in_case = [
-        (STATUS_THIS_POD_IN_CASE, STATUS_EAR_HIGH, STATUS_EAR_LOW),
-        (0, STATUS_EAR_LOW, STATUS_EAR_HIGH),
-    ];
-    for side in [STATUS_PRIMARY_LEFT, 0] {
-        for (case_bit, primary_bit, secondary_bit) in in_case {
-            let status = side | case_bit;
-            assert_eq!(
-                cpp_in_ear(status | primary_bit),
-                (true, false),
-                "{status:#04x}"
-            );
-            assert_eq!(
-                cpp_in_ear(status | secondary_bit),
-                (false, true),
-                "{status:#04x}"
-            );
+fn the_status_maps_ear_bits_to_primary_and_secondary() {
+    let both = STATUS_PRIMARY_LEFT | STATUS_THIS_POD_IN_CASE;
+    // The status bits no field reads, set together to show they change nothing.
+    let unread = !(both | STATUS_EAR_HIGH | STATUS_EAR_LOW);
+    // Each row names the side, case placement and bits assigned to the two ears.
+    for (status, primary_left, in_case, primary_bit, secondary_bit) in [
+        (0, false, false, STATUS_EAR_LOW, STATUS_EAR_HIGH),
+        (
+            STATUS_PRIMARY_LEFT,
+            true,
+            false,
+            STATUS_EAR_LOW,
+            STATUS_EAR_HIGH,
+        ),
+        (
+            STATUS_THIS_POD_IN_CASE,
+            false,
+            true,
+            STATUS_EAR_HIGH,
+            STATUS_EAR_LOW,
+        ),
+        (both, true, true, STATUS_EAR_HIGH, STATUS_EAR_LOW),
+    ] {
+        for (bits, primary, secondary) in [
+            (0, false, false),
+            (primary_bit, true, false),
+            (secondary_bit, false, true),
+            (primary_bit | secondary_bit, true, true),
+        ] {
+            let byte = status | bits;
+            let advert = parse(&with(STATUS_AT, byte)).unwrap();
+            let expected = EarReport::from_in_ear(primary, secondary);
+            assert_eq!(advert.ear, expected, "{byte:#04x}");
+            assert_eq!(advert.primary_left, primary_left, "{byte:#04x}");
+            assert_eq!(advert.this_pod_in_case, in_case, "{byte:#04x}");
+            let noisy = byte | unread;
+            assert_eq!(parse(&with(STATUS_AT, noisy)), Ok(advert), "{noisy:#04x}");
         }
-    }
-}
-
-#[test]
-fn the_ear_bits_follow_the_cpp_rule_for_every_status() {
-    for status in 0..=u8::MAX {
-        let (primary, secondary) = cpp_in_ear(status);
-        let advert = parse(&with(STATUS_AT, status)).unwrap();
-        assert_eq!(
-            advert.ear,
-            EarReport::from_in_ear(primary, secondary),
-            "{status:#04x}"
-        );
-        assert_eq!(advert.primary_left, status & 0x20 != 0, "{status:#04x}");
     }
 }
 
@@ -308,19 +219,6 @@ fn the_core_specification_sample_resolves() {
 }
 
 #[test]
-fn the_cpp_takes_the_hash_and_random_part_where_resolves_does() {
-    let verify = BLE_UTILS.body("bool verifyRPA(");
-    assert!(
-        verify.contains("QByteArray prand = rpa.mid(3, 3);"),
-        "{verify}"
-    );
-    assert!(
-        verify.contains("QByteArray hash = rpa.left(3);"),
-        "{verify}"
-    );
-}
-
-#[test]
 fn another_identity_key_does_not_resolve() {
     let advert = advert_of(HEADER, PAYLOAD, &keys(), RANDOM);
     assert!(!resolves(
@@ -355,9 +253,6 @@ fn open_inverts_a_block_sealed_with_the_same_key() {
         open(&advert.sealed, &Key::from_bytes(IDENTITY_KEY)),
         PAYLOAD
     );
-    let cpp = BLE_UTILS.body("QByteArray aes128CbcDecryptZeroIv(");
-    assert!(cpp.contains("unsigned char iv[16] = {0};"), "{cpp}");
-    assert!(cpp.contains("EVP_aes_128_cbc()"), "{cpp}");
 }
 
 #[test]

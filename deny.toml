@@ -18,7 +18,6 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0",
-    "GPL-3.0-only",
 ]
 
 [bans]

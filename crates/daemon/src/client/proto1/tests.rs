@@ -85,7 +85,7 @@ fn pair() -> (BufReader<UnixStream>, UnixStream) {
 
 /// A stub daemon on a socket in `dir` that reads one request line, writes `lines` and closes.
 fn stub(dir: &Path, lines: Vec<u8>) -> (PathBuf, thread::JoinHandle<Vec<u8>>) {
-    let socket = dir.join("librepods.sock");
+    let socket = dir.join("pods.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let daemon = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
@@ -682,7 +682,7 @@ fn set_and_do_succeed_only_on_their_own_documented_reply() {
 #[test]
 fn a_daemon_that_accepts_but_never_replies_times_out() {
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("librepods.sock");
+    let socket = dir.path().join("pods.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let held = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();

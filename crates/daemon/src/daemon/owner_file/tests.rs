@@ -10,10 +10,7 @@ fn max() -> usize {
 }
 
 fn owned_path(dir: &tempfile::TempDir) -> PathBuf {
-    dir.path()
-        .join("state")
-        .join("librepods")
-        .join("status.json")
+    dir.path().join("state").join("pods").join("status.json")
 }
 
 #[test]

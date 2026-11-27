@@ -82,7 +82,7 @@ fn names_path(error: &StoreError, path: &Path) -> bool {
 fn creates_root_session_and_run_with_mode_0700() {
     let home = tempfile::tempdir().unwrap();
     let root = root_of(&home);
-    assert_eq!(root, home.path().join("omapods-captures"));
+    assert_eq!(root, home.path().join("pods-captures"));
 
     let session = Session::open(&root, STAMP).unwrap();
     assert_eq!(session.path(), root.join(STAMP));
@@ -226,7 +226,7 @@ fn refuses_a_directory_inside_a_git_work_tree() {
     let root = root(through.as_os_str());
     let error = Session::open(&root, STAMP).unwrap_err();
     assert!(matches!(error, StoreError::InRepository { .. }), "{error}");
-    assert!(!nested.join("omapods-captures").exists());
+    assert!(!nested.join("pods-captures").exists());
 
     let worktree = tempfile::tempdir().unwrap();
     fs::write(worktree.path().join(".git"), "gitdir: elsewhere\n").unwrap();
@@ -241,7 +241,7 @@ fn refuses_a_directory_inside_a_git_work_tree() {
     assert!(!root.join(STAMP).exists());
 }
 
-/// `<home>/omapods-captures/<STAMP>/run`, each level made 0700 by hand so no store check runs.
+/// `<home>/pods-captures/<STAMP>/run`, each level made 0700 by hand so no store check runs.
 fn hand_made_run(home: &Path) -> PathBuf {
     let run = root(home.as_os_str()).join(STAMP).join("run");
     fs::create_dir_all(&run).unwrap();

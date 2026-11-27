@@ -43,7 +43,7 @@ const EXIT_ABSENT: u8 = 77;
 const EXIT_NOT_RESTORED: u8 = 70;
 
 /// The run lock's file in the user's runtime directory; a second run finds it held and starts nothing.
-const RUN_LOCK: &str = "librepods-hw.lock";
+const RUN_LOCK: &str = "pods-hw.lock";
 
 /// The length of each idle window of C5 unless a test shortens it.
 const IDLE_WINDOW_SECONDS: u64 = 600;
@@ -77,7 +77,7 @@ enum HwCommand {
 
 #[derive(Debug, Args)]
 struct LinkArgs {
-    /// The librepods binary under test.
+    /// The pods binary under test.
     #[arg(long)]
     binary: PathBuf,
     /// A person is at the machine: run the command census, which ends with a prompt to take both buds out.
@@ -152,7 +152,7 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     };
     let Some(home) = env::var_os("HOME").filter(|home| home.to_str().is_some()) else {
         report(
-            "xtask hw: HOME must be set and valid UTF-8, because the installed librepods-ctl is found under it",
+            "xtask hw: HOME must be set and valid UTF-8, because the installed pods-ctl is found under it",
         );
         return ExitCode::from(EXIT_USAGE);
     };
@@ -257,7 +257,7 @@ pub(crate) fn run_lock() -> Result<Option<OwnedFd>, String> {
 /// The run's directory, with `run` (0700) and `state` in it; its path goes into a unit property, so it holds no space.
 fn private_dir() -> Result<tempfile::TempDir, String> {
     let dir = tempfile::Builder::new()
-        .prefix("librepods-hw-")
+        .prefix("pods-hw-")
         .tempdir()
         .map_err(|error| format!("could not create the run directory: {error}"))?;
     let usable = dir

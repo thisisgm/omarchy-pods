@@ -33,7 +33,7 @@ pub(crate) use record::{
 pub(crate) use wires::OpenAtt;
 use wires::{RECV_TIMEOUT_MS, Wake, Wires, receive};
 
-/// How long one handshake request may go unanswered: daemon/main.cpp asks again after 2 s, the probe fails naming the step.
+/// The probe reports the unanswered handshake step after the legacy two-second retry interval.
 pub(crate) const HANDSHAKE_STEP_TIMEOUT_MS: u64 = 2_000;
 /// How long START waits for an ear detection packet: kEarReportWaitMs in pull request 85 of this repository.
 const EAR_REPORT_WAIT_MS: u64 = 3_000;

@@ -56,7 +56,7 @@ fn the_burst_check_passes_against_the_fake_pods() {
     assert_eq!(bench.sockets(), 1);
     assert_eq!(
         bench.read("units-at-dial"),
-        "librepods-hw.service inactive\nlibrepods.service inactive"
+        "pods-hw.service inactive\npodsd.service inactive"
     );
 }
 
@@ -189,7 +189,7 @@ fn the_installed_service_is_restored_when_the_burst_check_fails() {
     assert!(stdout.contains("C8 burst: FAILED"), "{stdout}");
     assert!(stdout.ends_with("result: FAILED\n"), "{stdout}");
     assert_restarted_after_the_run(&bench);
-    assert!(text(&output.stderr).ends_with("xtask hw: librepods.service is as the run found it\n"));
+    assert!(text(&output.stderr).ends_with("xtask hw: podsd.service is as the run found it\n"));
 }
 
 #[test]

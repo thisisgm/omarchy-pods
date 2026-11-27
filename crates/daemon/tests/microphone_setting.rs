@@ -42,7 +42,7 @@ mod tests {
     /// Settings as the daemon wrote them before it kept the preference, both other choices off their defaults.
     const WITHOUT_THE_KEY: &str = r#"{"version":1,"ear_detection":"both","notifications":false}"#;
 
-    const BAD_VALUE: &str = "io.github.thisisgm.Omapods1.Error.BadValue";
+    const BAD_VALUE: &str = "com.superwhisper.Pods1.Error.BadValue";
 
     /// The preference and what `mic` reads, as the status document holds them.
     fn microphone(status: &Value) -> (&str, &str) {

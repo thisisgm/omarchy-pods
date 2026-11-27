@@ -304,7 +304,7 @@ mod hci {
             let mode = fs::metadata(dir.join(name)).unwrap().permissions().mode();
             assert_eq!(mode & PERMISSION_BITS, OWNER_FILE, "{name}");
         }
-        let root = home.path().join("omapods-captures");
+        let root = home.path().join("pods-captures");
         for private in [root.as_path(), &root.join(STAMP), &dir] {
             let mode = fs::metadata(private).unwrap().permissions().mode();
             assert_eq!(mode & PERMISSION_BITS, OWNER_DIR, "{}", private.display());
@@ -348,7 +348,7 @@ mod hci {
             // The whole line is compared, so no value of the trace can ride along in any spelling.
             let said = format!("xtask probe: {}: {rule}\n", path.display());
             assert_eq!(String::from_utf8(refused.stderr).unwrap(), said);
-            assert!(!home.path().join("omapods-captures").exists(), "{rule}");
+            assert!(!home.path().join("pods-captures").exists(), "{rule}");
         }
     }
 
@@ -494,7 +494,7 @@ mod hci {
         assert_eq!(refused.stdout, b"");
         let error = String::from_utf8(refused.stderr).unwrap();
         assert!(error.contains("is larger than 536870912 bytes"), "{error}");
-        assert!(!home.path().join("omapods-captures").exists());
+        assert!(!home.path().join("pods-captures").exists());
     }
 
     #[test]
@@ -521,7 +521,7 @@ mod hci {
         assert!(!missing.status.success(), "{missing:?}");
         assert!(holds(&missing.stderr, b"absent.btsnoop"), "{missing:?}");
         assert!(!holds(&missing.stderr, b"btmon"), "{missing:?}");
-        assert!(!home.path().join("omapods-captures").exists());
+        assert!(!home.path().join("pods-captures").exists());
 
         let bad_stamp = Command::new(env!("CARGO_BIN_EXE_xtask"))
             .args(["probe", "hci"])
@@ -531,7 +531,7 @@ mod hci {
             .output()
             .unwrap();
         assert!(!bad_stamp.status.success(), "{bad_stamp:?}");
-        assert!(!home.path().join("omapods-captures").exists());
+        assert!(!home.path().join("pods-captures").exists());
     }
 
     /// A music stream on `handle` from `at_ms` on: SBC offered and set, a start, then four media packets a millisecond apart.

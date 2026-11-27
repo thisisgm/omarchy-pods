@@ -14,7 +14,7 @@ pub const KEY_LEN: usize = 16;
 /// A tag, a big endian length and one reserved byte.
 const ENTRY_HEAD_LEN: usize = 4;
 const ENTRY_LEN: usize = ENTRY_HEAD_LEN + KEY_LEN;
-/// 47, the shortest reply `parseMagicCloudKeysPacket` in `daemon/airpods_packets.h` reads; later bytes are ignored there too.
+/// The 47-byte minimum for two key entries. The parser ignores trailing bytes.
 const MIN_LEN: usize = HEADER_LEN + 1 + 2 * ENTRY_LEN;
 
 /// Wiped when dropped, and never printed.
@@ -106,8 +106,6 @@ const fn too_short(parser: Parser, need: usize, got: usize) -> ParseError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpp_source::PACKETS;
-    use pods_samples::host::MAGIC_PAIRING;
     use pods_samples::{IDENTITY_KEY, PAYLOAD_KEY, keys_of};
     use proptest::prelude::*;
 
@@ -185,26 +183,6 @@ mod tests {
             error.to_string(),
             "proximity keys reply too short: need 47 bytes, got 46"
         );
-    }
-
-    #[test]
-    fn the_layout_is_the_cpp_one() {
-        let cpp_header = PACKETS.hex(MAGIC_PAIRING, "MAGIC_CLOUD_KEYS_HEADER");
-        assert_eq!(cpp_header, [&HEADER[..], &[ENTRY_COUNT]].concat());
-        let parser = PACKETS.body("inline MagicCloudKeys parseMagicCloudKeysPacket");
-        assert!(
-            parser.contains(&format!("data.size() < {MIN_LEN}")),
-            "{parser}"
-        );
-        assert!(
-            parser.contains(&format!("!= {IDENTITY_TAG:#04x})")),
-            "{parser}"
-        );
-        assert!(
-            parser.contains(&format!("!= {PAYLOAD_TAG:#04x})")),
-            "{parser}"
-        );
-        assert!(parser.contains(&format!("!= {KEY_LEN})")), "{parser}");
     }
 
     proptest! {

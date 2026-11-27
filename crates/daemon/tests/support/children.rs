@@ -51,7 +51,7 @@ pub(crate) fn children(pid: Pid) -> Vec<i32> {
     found
 }
 
-/// The minor faults of every child `pid` waited for, above zero once it ran any program; sample input `4242 (librepods) S 4200 4242 4200 0 -1 4194560 1534 0 0 0 3 1 0 0 20 0 9 0 81234`.
+/// The minor faults of every child `pid` waited for, above zero once it ran any program; sample input `4242 (pods) S 4200 4242 4200 0 -1 4194560 1534 0 0 0 3 1 0 0 20 0 9 0 81234`.
 pub(crate) fn reaped_children_faults(pid: Pid) -> u64 {
     let pid = pid.as_raw_nonzero();
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();

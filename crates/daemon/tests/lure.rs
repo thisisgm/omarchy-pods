@@ -29,19 +29,19 @@ mod tests {
     use super::support::wait_within;
 
     const LURE_VARIABLES: [&str; 9] = [
-        "LIBREPODS_PODS",
-        "LIBREPODS_PODS_SOCKET",
-        "LIBREPODS_CHANNEL",
-        "LIBREPODS_CONNECT",
-        "LIBREPODS_CONNECTOR",
-        "LIBREPODS_DEVICE",
-        "LIBREPODS_FAKE",
-        "LIBREPODS_TEST",
-        "LIBREPODS_L2CAP",
+        "PODS_PODS",
+        "PODS_PODS_SOCKET",
+        "PODS_CHANNEL",
+        "PODS_CONNECT",
+        "PODS_CONNECTOR",
+        "PODS_DEVICE",
+        "PODS_FAKE",
+        "PODS_TEST",
+        "PODS_L2CAP",
     ];
 
     /// Set on the hosted runner only, which has no Bluetooth in its kernel, so an untrapped dial cannot page a real device.
-    const NO_RADIO: &str = "LIBREPODS_TRAP_EXPECT_NO_RADIO";
+    const NO_RADIO: &str = "PODS_TRAP_EXPECT_NO_RADIO";
 
     /// Room for the start of anything the daemon might send on the inherited descriptor.
     const PEEK_LEN: usize = 64;
@@ -63,8 +63,8 @@ mod tests {
     }
 
     fn lay(rig: &mut Rig) -> Lures {
-        let runtime_socket = rig.session().runtime_dir().join("librepods-pods.sock");
-        let state_dir = rig.session().state_home().join("librepods");
+        let runtime_socket = rig.session().runtime_dir().join("pods-pods.sock");
+        let state_dir = rig.session().state_home().join("pods");
         fs::create_dir(&state_dir).unwrap();
         let listeners = vec![
             listening(runtime_socket.clone()),
@@ -81,9 +81,7 @@ mod tests {
             for variable in LURE_VARIABLES {
                 command.env(variable, &runtime_socket);
             }
-            command
-                .env("LIBREPODS_CHANNEL_FD", "0")
-                .stdin(Stdio::from(near));
+            command.env("PODS_CHANNEL_FD", "0").stdin(Stdio::from(near));
         });
         Lures {
             listeners,

@@ -301,7 +301,7 @@ mod tests {
         let copy = kept
             .path()
             .join(kept_label(Model::Unknown))
-            .join("librepods")
+            .join("pods")
             .join("status.json");
         let first = fs::read_to_string(&copy).unwrap();
         let status: Value = serde_json::from_str(&first).unwrap();

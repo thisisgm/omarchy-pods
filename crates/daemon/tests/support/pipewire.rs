@@ -38,7 +38,7 @@ pub(crate) fn daemon_states_latency(daemon: Pid) -> bool {
 
 /// The node the daemon makes for the sample pods.
 pub(crate) fn node_name() -> String {
-    format!("omarchypods_input.{}", MODEL_NUMBER.to_lowercase())
+    format!("pods_input.{}", MODEL_NUMBER.to_lowercase())
 }
 
 pub(crate) fn wait_node(server: &Server) -> Value {

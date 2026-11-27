@@ -22,9 +22,9 @@ pub(super) const ADOPTION_WAIT: Duration = Duration::from_secs(10);
 pub(super) const DISCONNECT_WAIT: Duration = Duration::from_secs(5);
 /// How long a `do connect` has to reach a populated state, which is `BlueZ`'s page plus the handshake.
 pub(super) const RECONNECT_WAIT: Duration = Duration::from_secs(15);
-/// How long `librepods status` may take; it answers from memory.
+/// How long `pods status` may take; it answers from memory.
 pub(super) const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long `librepods do` may take; a connect waits on `BlueZ`'s page.
+/// How long `pods do` may take; a connect waits on `BlueZ`'s page.
 pub(super) const ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The run's directory, binary and the `BlueZ` objects of the `AirPods`; the paths are private and never printed.
@@ -78,15 +78,15 @@ impl<'a> Lab<'a> {
     }
 
     pub(super) fn socket(&self) -> PathBuf {
-        self.run_dir().join("librepods.sock")
+        self.run_dir().join("pods.sock")
     }
 
     pub(super) fn state_file(&self) -> PathBuf {
-        self.dir.join("state").join("librepods").join("status.json")
+        self.dir.join("state").join("pods").join("status.json")
     }
 
     /// Runs the binary under test as a client of the test unit's socket.
-    pub(super) fn librepods(&self, args: &[&str], timeout: Duration) -> Result<unit::Ran, String> {
+    pub(super) fn pods(&self, args: &[&str], timeout: Duration) -> Result<unit::Ran, String> {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
         let run_dir = self.run_dir();
         let state_dir = self.dir.join("state");
@@ -97,14 +97,13 @@ impl<'a> Lab<'a> {
         run(&self.binary.to_string_lossy(), &args, &env, timeout)
     }
 
-    /// The state object `librepods status` prints.
+    /// The state object `pods status` prints.
     pub(super) fn status(&self) -> Result<Map<String, Value>, String> {
-        let ran = self.librepods(&["status"], STATUS_TIMEOUT)?;
+        let ran = self.pods(&["status"], STATUS_TIMEOUT)?;
         if !ran.succeeded() {
-            return Err(format!("librepods status exited with {}", ran.status));
+            return Err(format!("pods status exited with {}", ran.status));
         }
-        status_object(&ran.stdout)
-            .ok_or_else(|| "librepods status printed no state object".to_owned())
+        status_object(&ran.stdout).ok_or_else(|| "pods status printed no state object".to_owned())
     }
 
     pub(super) fn connected(&self) -> Option<bool> {
@@ -115,14 +114,14 @@ impl<'a> Lab<'a> {
         if action == "disconnect" {
             self.disconnect_sent.set(true);
         }
-        let ran = self.librepods(&["do", action], ACTION_TIMEOUT)?;
+        let ran = self.pods(&["do", action], ACTION_TIMEOUT)?;
         if ran.succeeded() {
             if action == "connect" {
                 self.disconnect_sent.set(false);
             }
             Ok(())
         } else {
-            Err(format!("librepods do {action} exited with {}", ran.status))
+            Err(format!("pods do {action} exited with {}", ran.status))
         }
     }
 
@@ -139,7 +138,7 @@ impl<'a> Lab<'a> {
                 state
                     .get("connected")
                     .and_then(Value::as_bool)
-                    .ok_or_else(|| "librepods status printed no connected key".to_owned())
+                    .ok_or_else(|| "pods status printed no connected key".to_owned())
             });
             last == Ok(true)
         })?;

@@ -43,7 +43,7 @@ pub(crate) enum Installed {
     Unread(String),
 }
 
-/// Reads the first line the installed `librepods-ctl status` prints, sample `{"case":{...},"connected":true,...}`, on the session's own runtime directory.
+/// Reads the first line the installed `pods-ctl status` prints, sample `{"case":{...},"connected":true,...}`, on the session's own runtime directory.
 pub(crate) fn read(home: &OsStr, was_running: bool) -> Installed {
     if !was_running {
         return Installed::Skipped(
@@ -59,7 +59,7 @@ pub(crate) fn read(home: &OsStr, was_running: bool) -> Installed {
         Ok(ran) if ran.succeeded() => ran,
         Ok(ran) => {
             return Installed::Unread(format!(
-                "the installed librepods-ctl status exited with {}",
+                "the installed pods-ctl status exited with {}",
                 ran.status
             ));
         }
@@ -68,7 +68,7 @@ pub(crate) fn read(home: &OsStr, was_running: bool) -> Installed {
     let line = ran.stdout.lines().next().unwrap_or_default();
     let Some(object) = status_object(line) else {
         return Installed::Unread(
-            "the installed librepods-ctl status printed no state object".to_owned(),
+            "the installed pods-ctl status printed no state object".to_owned(),
         );
     };
     let added = ADDITIVE_KEYS
@@ -146,11 +146,11 @@ pub(crate) fn check(lab: &Lab<'_>) -> Result<Check, Interrupted> {
     Ok(check)
 }
 
-/// The first line `librepods status` of the daemon under test prints, sample `{"advert_intake":"paused","case":{...},...}`.
+/// The first line `pods status` of the daemon under test prints, sample `{"advert_intake":"paused","case":{...},...}`.
 fn new_line(lab: &Lab<'_>) -> Result<String, String> {
-    let ran = lab.librepods(&["status"], STATUS_TIMEOUT)?;
+    let ran = lab.pods(&["status"], STATUS_TIMEOUT)?;
     if !ran.succeeded() {
-        return Err(format!("librepods status exited with {}", ran.status));
+        return Err(format!("pods status exited with {}", ran.status));
     }
     Ok(ran.stdout.lines().next().unwrap_or_default().to_owned())
 }

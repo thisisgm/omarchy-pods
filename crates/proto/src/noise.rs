@@ -94,8 +94,6 @@ impl TryFrom<u8> for NoiseMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::ControlCommand;
-    use cpp_source::{ENUMS, PACKETS};
 
     #[test]
     fn next_follows_the_noise_cycle_order() {
@@ -120,35 +118,19 @@ mod tests {
     }
 
     #[test]
-    fn command_matches_the_cpp_noise_control_packets() {
-        for (mode, symbol) in [
-            (NoiseMode::Off, "OFF"),
-            (NoiseMode::Anc, "NOISE_CANCELLATION"),
-            (NoiseMode::Transparency, "TRANSPARENCY"),
-            (NoiseMode::Adaptive, "ADAPTIVE"),
+    fn noise_commands_carry_the_wire_values() {
+        for (mode, status, wire) in [
+            (NoiseMode::Off, 0, 1),
+            (NoiseMode::Anc, 1, 2),
+            (NoiseMode::Transparency, 2, 3),
+            (NoiseMode::Adaptive, 3, 4),
         ] {
-            let cpp = PACKETS.command(Some("namespace NoiseControl"), symbol);
-            assert_eq!(mode.command().encode(), cpp, "{symbol}");
-            let parsed = ControlCommand::parse(&cpp).unwrap();
-            assert_eq!(NoiseMode::from_command(&parsed), Ok(mode), "{symbol}");
-        }
-    }
-
-    #[test]
-    fn modes_match_the_cpp_noise_control_mode_enum() {
-        for (mode, name) in [
-            (NoiseMode::Off, "Off"),
-            (NoiseMode::Anc, "NoiseCancellation"),
-            (NoiseMode::Transparency, "Transparency"),
-            (NoiseMode::Adaptive, "Adaptive"),
-        ] {
-            let cpp = ENUMS.byte(
-                Some("enum class NoiseControlMode"),
-                &format!("{name} = "),
-                ',',
-            );
-            assert_eq!(u8::from(mode), cpp, "{name}");
-            assert_eq!(NoiseMode::try_from(cpp), Ok(mode), "{name}");
+            assert_eq!(u8::from(mode), status);
+            assert_eq!(NoiseMode::try_from(status), Ok(mode));
+            let encoded = mode.command().encode();
+            assert_eq!(encoded, [4, 0, 4, 0, 9, 0, 13, wire, 0, 0, 0]);
+            let parsed = ControlCommand::parse(&encoded).unwrap();
+            assert_eq!(NoiseMode::from_command(&parsed), Ok(mode));
         }
     }
 

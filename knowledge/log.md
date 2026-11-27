@@ -2,7 +2,7 @@
 type: log
 title: Knowledge bundle changelog
 description: What was added or corrected in this bundle, and when
-tags: [omapods]
+tags: [pods]
 ---
 
 ## 2026-08-16
@@ -14,14 +14,14 @@ Bundle created alongside the first working panel.
   could supply battery.
 - `airpods-pro-3-identity`: `bluetoothctl info` and `pactl list short sinks`
   taken while the pods were connected.
-- `librepods-status-schema`: read out of the daemon's `status` branch. The
+- `pods-status-schema`: read out of the daemon's `status` branch. The
   absent-keys behaviour and the BLE-versus-L2CAP split were found by reading
   the insert calls rather than by observing a live daemon, which is noted here
   because the daemon had not been built when the bundle was written.
-- `librepods-build-requirements`: upstream and AUR checked directly rather
+- `pods-build-requirements`: upstream and AUR checked directly rather
   than assumed.
 - `ipc-socket-location`: written with the change that moved the socket.
-- `librepods-status-schema`: corrected once the daemon was actually built and
+- `pods-status-schema`: corrected once the daemon was actually built and
   polled: the wire order is alphabetical, not the insert order the file had been
   written from. The first version of that fact was read out of source and was
   wrong about it.
@@ -42,7 +42,7 @@ Bundle created alongside the first working panel.
 ## 2026-08-16, after the adversarial review
 
 Three cold reviewers read the whole plugin. Most of what they found was
-documentation left behind by the move from polling `librepods-ctl status` to
+documentation left behind by the move from polling `pods-ctl status` to
 watching the daemon's state file, so the corrections are recorded here rather
 than quietly rewritten.
 
@@ -50,7 +50,7 @@ than quietly rewritten.
   `refreshIntervalSec` setting, a 1s open cadence and poll counts, none of which
   survived the move to a `FileView`. Replaced with what was actually measured,
   including the startup case.
-- `librepods-status-schema`: said the panel execs `librepods-ctl status` once
+- `pods-status-schema`: said the panel execs `pods-ctl status` once
   per poll. It does not. Rewritten around the state file, and the three
   properties of the daemon's publish path the panel depends on were read out of
   `linux/main.cpp` and measured: write only on change, remove on quit, and

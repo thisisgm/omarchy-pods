@@ -1,27 +1,28 @@
-//! Frames the host sends, read from `Connection` and `MagicPairing` in `daemon/airpods_packets.h`.
-
-use cpp_source::PACKETS;
-
-const CONNECTION: Option<&str> = Some("namespace Connection");
-
-pub const MAGIC_PAIRING: Option<&str> = Some("namespace MagicPairing");
+//! Expected wire frames for the host side of the control handshake.
 
 #[must_use]
 pub fn handshake() -> Vec<u8> {
-    PACKETS.hex(CONNECTION, "HANDSHAKE")
+    vec![
+        0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ]
 }
 
 #[must_use]
 pub fn set_specific_features() -> Vec<u8> {
-    PACKETS.hex(CONNECTION, "SET_SPECIFIC_FEATURES")
+    vec![
+        0x04, 0x00, 0x04, 0x00, 0x4d, 0x00, 0xd7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]
 }
 
 #[must_use]
 pub fn request_notifications() -> Vec<u8> {
-    PACKETS.hex(CONNECTION, "REQUEST_NOTIFICATIONS")
+    vec![
+        0x04, 0x00, 0x04, 0x00, 0x0f, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff,
+    ]
 }
 
 #[must_use]
 pub fn request_proximity_keys() -> Vec<u8> {
-    PACKETS.hex(MAGIC_PAIRING, "REQUEST_MAGIC_CLOUD_KEYS")
+    vec![0x04, 0x00, 0x04, 0x00, 0x30, 0x00, 0x05, 0x00]
 }

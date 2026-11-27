@@ -92,7 +92,7 @@ fn refusal(trace: &[u8]) -> String {
     let refused = hci(&home, &path, RUN);
     assert!(!refused.status.success(), "{refused:?}");
     assert_eq!(refused.stdout, b"");
-    assert!(!home.path().join("omapods-captures").exists());
+    assert!(!home.path().join("pods-captures").exists());
     let said = String::from_utf8(refused.stderr).unwrap();
     let prefix = format!("xtask probe: {}: ", path.display());
     said.strip_prefix(&prefix).unwrap().to_owned()

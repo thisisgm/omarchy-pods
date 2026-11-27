@@ -1,10 +1,10 @@
-//! Where the daemon socket lives, as `daemon/ipcpath.hpp` decides it.
+//! The daemon socket path under the user runtime directory.
 
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
 /// Appended to the runtime directory as text, separator included, exactly as the C++ does.
-const SOCKET_SUFFIX: &str = "/librepods.sock";
+const SOCKET_SUFFIX: &str = "/pods.sock";
 
 pub(crate) fn socket_path(xdg_runtime_dir: Option<&OsStr>) -> Option<PathBuf> {
     // Callers fail rather than fall back, or the socket lands in a world-visible directory.
@@ -34,16 +34,13 @@ mod tests {
     #[test]
     fn set_runtime_dir_gives_an_absolute_path_under_it() {
         let path = socket_path(Some(OsStr::new("/run/user/1000"))).unwrap();
-        assert_eq!(path, Path::new("/run/user/1000/librepods.sock"));
+        assert_eq!(path, Path::new("/run/user/1000/pods.sock"));
         assert!(path.is_absolute());
     }
 
     #[test]
     fn trailing_slash_is_kept_as_the_cpp_keeps_it() {
         let path = socket_path(Some(OsStr::new("/run/user/1000/"))).unwrap();
-        assert_eq!(
-            path.as_os_str(),
-            OsStr::new("/run/user/1000//librepods.sock")
-        );
+        assert_eq!(path.as_os_str(), OsStr::new("/run/user/1000//pods.sock"));
     }
 }

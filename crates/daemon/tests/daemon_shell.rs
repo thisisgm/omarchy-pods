@@ -18,7 +18,6 @@ mod tests {
     use std::process::Stdio;
     use std::time::{Duration, Instant, UNIX_EPOCH};
 
-    use cpp_source::MAIN;
     use pods_core::legacy::{LegacyRequest, parse_verb};
     use pods_core::state::State;
     use pods_core::status::to_status_line;
@@ -119,18 +118,31 @@ mod tests {
         lines
     }
 
-    /// The reply a headless daemon gives to `reopen`, read from `daemon/main.cpp`.
     fn headless_refusal() -> Vec<u8> {
-        MAIN.between("clientSocket->write(\"", "\");")
-            .replace("\\n", "\n")
-            .into_bytes()
+        b"error: this daemon runs headless and has no window\n".to_vec()
     }
 
-    /// Every verb of the C++ dispatch, and one adaptive level.
-    fn every_verb() -> Vec<&'static str> {
-        let mut verbs = MAIN.all_between("msg == \"", "\"");
-        verbs.push(ADAPTIVE_VERB);
-        verbs
+    fn every_verb() -> [&'static str; 18] {
+        [
+            "reopen",
+            "noise:off",
+            "noise:anc",
+            "noise:transparency",
+            "noise:adaptive",
+            "noise:cycle",
+            "ear:off",
+            "ear:one",
+            "ear:both",
+            "forget",
+            "ca:on",
+            "ca:off",
+            "disconnect",
+            "connect",
+            "onebud:on",
+            "onebud:off",
+            "status",
+            ADAPTIVE_VERB,
+        ]
     }
 
     /// One `*_total` value from a status line.
@@ -522,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn unset_runtime_dir_fails_with_the_cpp_message() {
+    fn unset_runtime_dir_fails_with_a_diagnostic() {
         let session = Session::new();
         let mut daemon = {
             let log = session.dir.path().join("daemon.log");
@@ -535,8 +547,10 @@ mod tests {
             Daemon { child, log }
         };
         assert_eq!(daemon.wait_exit().code(), Some(1));
-        let cpp = MAIN.between("LOG_ERROR(\"XDG_RUNTIME_DIR", "\");");
-        assert_eq!(daemon.log(), format!("XDG_RUNTIME_DIR{cpp}\n"));
+        assert_eq!(
+            daemon.log(),
+            "XDG_RUNTIME_DIR is unset; cannot place the control socket\n"
+        );
     }
 
     #[test]
@@ -697,7 +711,7 @@ mod tests {
     fn rust_client_gets_the_status_line_and_the_exit_code_of_every_verb() {
         let session = Session::new();
         let _daemon = session.start();
-        let link = session.dir.path().join("librepods-ctl");
+        let link = session.dir.path().join("pods-ctl");
         symlink(binary(), &link).unwrap();
         for verb in every_verb() {
             let expected_status = session.status();

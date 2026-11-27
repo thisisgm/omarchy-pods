@@ -161,7 +161,7 @@ mod tests {
         })
     }
 
-    /// The four surfaces in turn: `librepods status`, the state file, the D-Bus interface and `librepods ctl status`.
+    /// The four surfaces in turn: `pods status`, the state file, the D-Bus interface and `pods ctl status`.
     fn surfaces(rig: &Rig) -> [Value; 4] {
         let status = picked(&rig.cli_status());
         let state_file = wait_for("the state file showing the status", || {

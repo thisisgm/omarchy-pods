@@ -13,7 +13,7 @@ mod tests {
     const VERSION: &str = "9.8.7";
 
     /// A two line program that answers `--version` as the daemon does.
-    const PROGRAM: &str = "fn main() {\n    println!(\"librepods 9.8.7\");\n}\n";
+    const PROGRAM: &str = "fn main() {\n    println!(\"pods 9.8.7\");\n}\n";
 
     /// A program that refuses `--version` with a reason on its standard error.
     const REFUSING: &str =
@@ -30,7 +30,7 @@ mod tests {
 
     const FAST_CHECK_LIMIT: Duration = Duration::from_secs(5);
 
-    /// Checks args like `--kill-after 2s 10s ./librepods --version`, then shortens the real wait.
+    /// Checks args like `--kill-after 2s 10s ./pods --version`, then shortens the real wait.
     const SHORT_TIMEOUT: &str = r#"#!/bin/sh
 if [ "$1" != --kill-after ] || [ "$2" != 2s ] || [ "$3" != 10s ]; then
     echo "unexpected release timeout arguments: $*" >&2
@@ -51,7 +51,8 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
     const SPARSE_BYTES: u64 = 1 << 30;
 
     /// What the check says when the file's own crate carries no line table.
-    const NO_LINE_TABLES: &str = "FAIL line tables: the librepods crate has no line table, so a backtrace has no file and line";
+    const NO_LINE_TABLES: &str =
+        "FAIL line tables: the pods crate has no line table, so a backtrace has no file and line";
 
     /// Links `libresolv.so.2`, which `libc6-dev` ships and the allow list leaves out; without the first flag the linker drops an unused library.
     const OUTSIDE_LIBRARY: [&str; 4] = [
@@ -61,13 +62,13 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
         "link-arg=-lresolv",
     ];
 
-    /// Builds `program` into `dir` as the crate `librepods` with line tables, as the release profile builds the daemon; a later `-C debuginfo` in `flags` wins.
+    /// Builds `program` into `dir` as the crate `pods` with line tables, as the release profile builds the daemon; a later `-C debuginfo` in `flags` wins.
     fn build(dir: &Path, program: &str, flags: &[&str]) -> PathBuf {
         let source = dir.join("main.rs");
         fs::write(&source, program).unwrap();
-        let file = dir.join("librepods");
+        let file = dir.join("pods");
         let status = Command::new("rustc")
-            .args(["--edition", "2024", "--crate-name", "librepods"])
+            .args(["--edition", "2024", "--crate-name", "pods"])
             .args(["-C", "debuginfo=line-tables-only"])
             .args(flags)
             .arg("-o")
@@ -154,7 +155,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
         let lines = lines(&output);
         let bytes = fs::metadata(&file).unwrap().len();
         assert_eq!(lines.len(), 5, "{lines:?}");
-        assert_eq!(lines[0], "ok version: librepods 9.8.7");
+        assert_eq!(lines[0], "ok version: pods 9.8.7");
         assert_eq!(
             lines[1],
             "ok libraries: libgcc_s.so.1 libc.so.6 ld-linux-x86-64.so.2"
@@ -175,12 +176,12 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
         let dir = tempfile::tempdir().unwrap();
         build(dir.path(), PROGRAM, &[]);
         let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
-            .args(["release-check", "librepods", VERSION])
+            .args(["release-check", "pods", VERSION])
             .current_dir(dir.path())
             .env("PATH", "/usr/bin")
             .output()
             .unwrap();
-        assert_eq!(checks(&output)[0], "ok version: librepods 9.8.7");
+        assert_eq!(checks(&output)[0], "ok version: pods 9.8.7");
     }
 
     #[test]
@@ -193,7 +194,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
             let checks = checks(&output);
             assert_eq!(
                 checks[0],
-                format!("FAIL version: `librepods 9.8.7` does not end with {wrong}")
+                format!("FAIL version: `pods 9.8.7` does not end with {wrong}")
             );
             assert!(
                 checks[1..].iter().all(|line| line.starts_with("ok ")),
@@ -317,7 +318,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
     fn line_tables_moved_to_a_linked_debug_file_fail() {
         let dir = tempfile::tempdir().unwrap();
         let file = build(dir.path(), PROGRAM, &[]);
-        let debug = dir.path().join("librepods.debug");
+        let debug = dir.path().join("pods.debug");
         let kept = Command::new("objcopy")
             .arg("--only-keep-debug")
             .arg(&file)
@@ -364,8 +365,8 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
     #[test]
     fn a_file_that_is_not_elf_fails_with_one_sentence() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("librepods");
-        fs::write(&file, "#!/bin/sh\necho librepods 9.8.7\n").unwrap();
+        let file = dir.path().join("pods");
+        fs::write(&file, "#!/bin/sh\necho pods 9.8.7\n").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
         let output = release_check(&file, VERSION);
         assert_input_refused(&output, &file, "is not an ELF file");
@@ -394,7 +395,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
         use rustix::fs::{CWD, FileType, Mode, mknodat};
 
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("librepods");
+        let file = dir.path().join("pods");
         mknodat(CWD, &file, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0).unwrap();
         let output = check_input_under_limits(&file);
         assert_input_refused(&output, &file, "is not a regular file");
@@ -403,7 +404,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
     #[test]
     fn a_large_sparse_file_is_checked_under_a_small_memory_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("librepods");
+        let file = dir.path().join("pods");
         fs::File::create(&file)
             .unwrap()
             .set_len(SPARSE_BYTES)
@@ -415,7 +416,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
     #[test]
     fn a_missing_file_fails_with_one_sentence() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("librepods");
+        let file = dir.path().join("pods");
         let output = release_check(&file, VERSION);
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(
@@ -431,7 +432,7 @@ exec /usr/bin/timeout --kill-after "$grace" "$deadline" "$@"
     #[test]
     fn a_missing_argument_prints_the_usage() {
         let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
-            .args(["release-check", "librepods"])
+            .args(["release-check", "pods"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));

@@ -21,7 +21,7 @@ pub(super) const REQUEST_DEADLINE: Duration = Duration::from_millis(1000);
 
 const REPLY_DEADLINE: Duration = Duration::from_millis(500);
 
-/// Exactly as `daemon/main.cpp` writes it.
+/// The legacy reply when a client asks to open a window.
 const HEADLESS_REFUSAL: &str = "error: this daemon runs headless and has no window\n";
 
 const LOGGED_REQUEST_BYTES: usize = 64;
@@ -111,7 +111,6 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    use cpp_source::MAIN;
     use proptest::prelude::*;
     use tokio::io::ReadBuf;
     use tokio::runtime::Builder;
@@ -214,11 +213,5 @@ mod tests {
     fn a_request_stops_at_the_bound() {
         let request = read_chunks(vec![vec![b'a'; 3 * MAX_REQUEST_BYTES]]);
         assert_eq!(request.len(), MAX_REQUEST_BYTES);
-    }
-
-    #[test]
-    fn refusal_is_the_cpp_reply() {
-        let cpp = MAIN.between("clientSocket->write(\"", "\");");
-        assert_eq!(HEADLESS_REFUSAL, cpp.replace("\\n", "\n"));
     }
 }

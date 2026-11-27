@@ -1,6 +1,5 @@
 //! The choices kept across restarts in `settings.json` beside the state file, and the one read of the C++ daemon's file.
 
-use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,17 +10,9 @@ use tokio::task::spawn_blocking;
 use tokio::time::timeout;
 
 use super::owner_file::{Failures, WriteError};
-use super::{log, owner_file, state_file};
+use super::{legacy_conf::LegacyConf, log, owner_file};
 
 pub(super) const FILE_NAME: &str = "settings.json";
-
-/// Qt's `GenericConfigLocation` fallback when `XDG_CONFIG_HOME` cannot place it.
-const HOME_CONFIG_DIR: &str = ".config";
-
-/// The organisation and application of the C++ `QSettings`, which name its directory and file.
-const OLD_DIR_NAME: &str = "AirPodsTrayApp";
-
-const OLD_FILE_NAME: &str = "AirPodsTrayApp.conf";
 
 const UNREADABLE: &str = "prefs: settings unreadable, defaults used";
 
@@ -46,26 +37,16 @@ impl fmt::Display for Unsaved {
     }
 }
 
-// Sample: `XDG_CONFIG_HOME=/home/u/.config`, or `HOME=/home/u` if unset, empty or relative.
-pub(crate) fn old_conf_path(
-    xdg_config_home: Option<&OsStr>,
-    home: Option<&OsStr>,
-) -> Option<PathBuf> {
-    Some(
-        state_file::xdg_dir(xdg_config_home, home, HOME_CONFIG_DIR)?
-            .join(OLD_DIR_NAME)
-            .join(OLD_FILE_NAME),
-    )
-}
-
-/// Runs once before the runtime starts; the old file is read only while `settings` is absent.
-pub(super) fn load(settings: &Path, old_conf: Option<&Path>) -> Prefs {
+/// Loads settings at startup, falling back to the legacy preferences when `settings` is absent.
+pub(super) fn load(settings: &Path, legacy: &LegacyConf<'_>) -> Prefs {
     match owner_file::read(settings) {
         Ok(Some(bytes)) => match prefs::parse(&String::from_utf8_lossy(&bytes)) {
             Ok(prefs) => prefs,
             Err(error) => unreadable(&error.to_string()),
         },
-        Ok(None) => old_conf.map_or_else(Prefs::default, |old| migrate(settings, old)),
+        Ok(None) => legacy
+            .read()
+            .map_or_else(Prefs::default, |old| migrate(settings, old)),
         Err(error) => unreadable(&error.to_string()),
     }
 }
@@ -75,19 +56,9 @@ fn unreadable(reason: &str) -> Prefs {
     Prefs::default()
 }
 
-/// Takes the two keys of the old file and writes them at once, so it is never read again.
-fn migrate(settings: &Path, old: &Path) -> Prefs {
-    let text = match owner_file::read(old) {
-        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
-        Ok(None) => return Prefs::default(),
-        Err(error) => {
-            log(&format!(
-                "prefs: the old settings are unreadable, defaults used: {error}"
-            ));
-            return Prefs::default();
-        }
-    };
-    let taken = prefs::from_old_conf(&text);
+/// Saves both migrated preferences together for the next start.
+fn migrate(settings: &Path, old: &[u8]) -> Prefs {
+    let taken = prefs::from_old_conf(&String::from_utf8_lossy(old));
     // A failed save needs no retry here: the next start reads the settings file if the rename landed, else the old file again.
     if let Err(unsaved) = store(settings, &taken) {
         log(&unsaved.to_string());

@@ -32,7 +32,7 @@ pub(crate) const STAMP: &str = "20261121T120000Z";
 /// The synthetic device of the device file, which no output of the command may name.
 pub(crate) const DEVICE: &str = "02:00:00:00:00:01";
 /// The store under the temporary home.
-pub(crate) const ROOT_NAME: &str = "omapods-captures";
+pub(crate) const ROOT_NAME: &str = "pods-captures";
 /// The mode the store gives a run directory.
 const OWNER_DIR: u32 = 0o700;
 /// The mode of a file of the caller's alone: every file the store makes, and every step file the tests write.
@@ -46,9 +46,9 @@ pub(crate) const HANG_LIMIT: Duration = Duration::from_secs(30);
 pub(crate) const A_FEW: u32 = 100;
 const POLL: Duration = Duration::from_millis(5);
 /// The installed daemon's unit, whose state the stub `systemctl` keeps in a file of this name.
-pub(crate) const INSTALLED: &str = "librepods.service";
+pub(crate) const INSTALLED: &str = "podsd.service";
 /// The hardware run's lock in the runtime directory.
-pub(crate) const RUN_LOCK: &str = "librepods-hw.lock";
+pub(crate) const RUN_LOCK: &str = "pods-hw.lock";
 pub(crate) const EXECUTABLE: u32 = 0o755;
 /// The directory of a home that holds the stub `systemctl`, its log and the state of each unit.
 const STUBS_NAME: &str = "stubs";
@@ -61,11 +61,11 @@ pub(crate) const LOCKED_NAME: &str = "locked";
 /// What `flock -n` in a stub exits with while another process holds the lock.
 pub(crate) const LOCK_HELD: &str = "1";
 /// The call that reads the state of the installed service.
-pub(crate) const ASKED: &str = "systemctl --user is-active librepods.service";
+pub(crate) const ASKED: &str = "systemctl --user is-active podsd.service";
 /// The calls that find the installed service running and stop it.
-pub(crate) const STOPPED: [&str; 3] = [ASKED, "systemctl --user stop librepods.service", ASKED];
+pub(crate) const STOPPED: [&str; 3] = [ASKED, "systemctl --user stop podsd.service", ASKED];
 /// The calls that put the installed service back, and nothing of the hardware run's test unit.
-pub(crate) const STARTED: [&str; 2] = ["systemctl --user start librepods.service", ASKED];
+pub(crate) const STARTED: [&str; 2] = ["systemctl --user start podsd.service", ASKED];
 
 /// A `systemctl --user` that logs each call, its environment and whether another process holds the hardware run's lock, and keeps each unit's state in a file named after it, a stop leaving the state a `.stops-as` file names and a start failing while a `.start-fails` file is there; builtins and absolute paths only, as `PATH` may hold nothing else.
 pub(crate) const SYSTEMCTL: &str = r#"#!/bin/sh

@@ -1,4 +1,4 @@
-//! The link's commands through the built daemon: `librepods set`, `librepods ctl` and the socket change the pods, and `watch` shows what the pods change.
+//! The link's commands through the built daemon: `pods set`, `pods ctl` and the socket change the pods, and `watch` shows what the pods change.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -124,7 +124,7 @@ mod tests {
             .collect()
     }
 
-    /// Fails unless `librepods <args>` exited 1 with `message` on stderr.
+    /// Fails unless `pods <args>` exited 1 with `message` on stderr.
     fn refused(rig: &Rig, args: &[&str], message: &str) {
         let output = rig.client(args);
         assert_eq!(output.status.code(), Some(1), "{output:?}");

@@ -1,6 +1,6 @@
 //! Sample control channel packets for tests: documented layouts, synthetic contents.
 
-// Layouts from daemon/airpods_packets.h and parseMetadata in daemon/main.cpp; no real device bytes.
+// The fixtures follow the control and metadata packet layouts and use synthetic bytes.
 
 pub mod advert;
 pub mod doap;
@@ -215,7 +215,7 @@ pub fn metadata_of(name: &str, model_number: &str) -> Vec<u8> {
 /// `04 00 04 00 31 00 02 01 00 10 00 <identity> 04 00 10 00 <payload>`, 47 bytes.
 #[must_use]
 pub fn keys_of(identity: [u8; 16], payload: [u8; 16]) -> Vec<u8> {
-    let header = cpp_source::PACKETS.hex(host::MAGIC_PAIRING, "MAGIC_CLOUD_KEYS_HEADER");
+    let header = [0x04, 0x00, 0x04, 0x00, 0x31, 0x00, 0x02];
     [
         &header[..],
         &IDENTITY_ENTRY,
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn a_setting_is_the_eleven_bytes_the_cpp_daemon_writes() {
-        // What `ControlCommand::createCommand` in daemon/BasicControlCommand.hpp returns.
+        // The legacy control frames for Conversation Awareness and One-Bud ANC.
         let written = [
             [
                 0x04, 0x00, 0x04, 0x00, 0x09, 0x00, 0x28, 0x02, 0x00, 0x00, 0x00,
@@ -380,15 +380,5 @@ mod tests {
         let mut rest = overridden.clone();
         rest[noise] = plain[noise].clone();
         assert_eq!(rest, plain);
-    }
-
-    #[test]
-    fn the_off_option_identifier_is_the_cpp_one() {
-        let cpp = cpp_source::PACKETS.byte(
-            Some("namespace AllowOffOption"),
-            "BasicControlCommand<",
-            '>',
-        );
-        assert_eq!(ALLOW_OFF_OPTION, cpp);
     }
 }

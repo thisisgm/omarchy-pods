@@ -1,6 +1,5 @@
-//! Read against `daemon/main.cpp`, `daemon/ipcverb.hpp` and `tst_ipcverb.cpp`.
+//! The legacy verb grammar, dispatch and numeric bounds.
 
-use cpp_source::{IPC_VERB, MAIN, MEDIA_CONTROLLER};
 use proptest::prelude::*;
 
 use super::*;
@@ -21,8 +20,6 @@ fn level(verb: &str) -> Option<u8> {
         Some(other) => panic!("{verb:?} parsed to {other:?}"),
     }
 }
-
-// The eleven cases of `daemon/tests/tst_ipcverb.cpp`, in its order.
 
 #[test]
 fn wrong_prefix_is_not_a_level() {
@@ -125,78 +122,12 @@ fn bytes_that_are_not_utf8_are_refused() {
     assert_eq!(parse_verb(b"status\xff"), None);
 }
 
-// One case per whole-word verb, with the C++ call each one makes.
-
-fn cpp_call(request: LegacyRequest) -> String {
-    let command = match request {
-        LegacyRequest::Status => return "statusJson()".to_owned(),
-        LegacyRequest::Command(command) => command,
-    };
-    match command {
-        Command::SetNoise(NoiseTarget::Mode(mode)) => {
-            format!("setNoiseControlModeInt({})", u8::from(mode))
-        }
-        Command::SetNoise(NoiseTarget::Cycle) => "cycleNoiseControlMode()".to_owned(),
-        Command::SetEarDetection(behavior) => {
-            let (name, _) = MEDIA_CONTROLLER
-                .enumerators("enum EarDetectionBehavior")
-                .into_iter()
-                .find(|&(_, number)| number == behavior.number())
-                .unwrap();
-            format!("MediaController::EarDetectionBehavior::{name})")
-        }
-        Command::SetConversationalAwareness(on) => format!("setConversationalAwareness({on})"),
-        Command::SetOneBudAnc(on) => format!("setOneBudANCMode({on})"),
-        Command::SetAdaptiveLevel(_) => "setAdaptiveNoiseLevel(*level)".to_owned(),
-        Command::Connect => "connectAirPods()".to_owned(),
-        Command::Disconnect => "disconnectAirPods()".to_owned(),
-        Command::Forget => "forgetDevice()".to_owned(),
-        Command::Reopen => "incReopenCallsTotal()".to_owned(),
-        Command::SetNotifications(_) => panic!("no legacy verb sets notifications"),
-        Command::SetMicrophone(_) => panic!("no legacy verb sets the microphone"),
-    }
-}
-
 #[test]
-fn every_verb_parses_to_the_request_whose_call_its_cpp_handler_makes() {
+fn every_whole_word_verb_dispatches() {
     for (verb, request) in VERBS {
         let verb = text(verb);
         assert_eq!(parse_verb(verb.as_bytes()), Some(request), "{verb}");
-        let handler = MAIN.body(&format!("msg == \"{verb}\")"));
-        let call = cpp_call(request);
-        assert!(handler.contains(&call), "{verb}: no {call} in {handler}");
     }
-    let handler = MAIN.body(&format!("msg.startsWith(\"{ADAPTIVE_PREFIX}\"))"));
-    let call = cpp_call(LegacyRequest::Command(Command::SetAdaptiveLevel(
-        AdaptiveLevel::default(),
-    )));
-    assert!(handler.contains(&call), "{handler}");
-}
-
-#[test]
-fn verb_table_is_exactly_the_cpp_dispatch() {
-    let rust: Vec<String> = VERBS.iter().map(|&(verb, _)| text(verb)).collect();
-    assert_eq!(rust, MAIN.all_between("msg == \"", "\""));
-    assert_eq!(
-        MAIN.all_between("msg.startsWith(\"", "\""),
-        [ADAPTIVE_PREFIX]
-    );
-}
-
-#[test]
-fn level_bounds_are_the_cpp_defaults() {
-    assert_eq!(IPC_VERB.find(None, "int min = ", ','), u8::MIN.to_string());
-    assert_eq!(
-        IPC_VERB.find(None, "int max = ", ')'),
-        ADAPTIVE_LEVEL_MAX.to_string()
-    );
-    let dispatch = MAIN.body(&format!("msg.startsWith(\"{ADAPTIVE_PREFIX}\"))"));
-    assert!(
-        dispatch.contains(&format!(
-            "parseIntVerb(msg, QStringLiteral(\"{ADAPTIVE_PREFIX}\"))"
-        )),
-        "the C++ dispatch passes bounds of its own: {dispatch}"
-    );
 }
 
 #[test]

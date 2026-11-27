@@ -43,7 +43,7 @@ mod tests {
     const DESCRIPTION: &str = "AirPods Pro 3 Microphone";
     /// The first step of `AUDIO_RETRY_MS` in `src/daemon/audio.rs`, tied by a test beside the adapter.
     const FIRST_RETRY: Duration = Duration::from_millis(250);
-    const CARD_ID: &str = "/info/props/omarchypods.device.id";
+    const CARD_ID: &str = "/info/props/pods.device.id";
     const PODS_ADDRESS: &str = "02:00:00:00:00:01";
     const OTHER_ADDRESS: &str = "02:00:00:00:00:02";
     const BLUETOOTH_CARD: &str = "test-bluetooth-card";
@@ -237,7 +237,7 @@ mod tests {
     }
 
     fn assert_stable_source(reported: &str, saved: &str) {
-        const SOURCE: &str = "omarchypods_input.a3063";
+        const SOURCE: &str = "pods_input.a3063";
         let mut rig = Rig::new();
         // Plant the saved number as written by older versions, including the noncanonical number.
         let settings = json!({

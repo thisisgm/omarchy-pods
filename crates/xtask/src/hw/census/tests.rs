@@ -121,7 +121,7 @@ fn run_census_from(
     read: Read,
 ) -> (Rounds, Check, Vec<String>, Duration) {
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("librepods.sock");
+    let socket = dir.path().join("pods.sock");
     let done = Arc::new(AtomicBool::new(false));
     let shown = original_status();
     let mut answer = answer;
@@ -262,12 +262,12 @@ fn a_level_the_status_shows_only_once_fails_though_it_holds_a_value_asked_for() 
 fn a_status_that_cannot_be_read_fails_naming_why() {
     let (_, check, _, _) =
         run_census_from(Box::new(|_| Some(SENT_REPLY)), Box::new(|_| true), |_| {
-            Err("librepods status exited with exit status: 1".to_owned())
+            Err("pods status exited with exit status: 1".to_owned())
         });
     assert!(check.failed());
     assert!(
         check.lines.iter().any(|line| line
-            == "the status could not be read after a set: librepods status exited with exit status: 1"),
+            == "the status could not be read after a set: pods status exited with exit status: 1"),
         "{:?}",
         check.lines
     );
@@ -336,7 +336,7 @@ const BOUNDED: Duration = TEST_REPLY_TIMEOUT.saturating_add(Duration::from_secs(
 #[test]
 fn a_full_listen_backlog_is_unanswered_within_the_bound() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("librepods.sock");
+    let path = dir.path().join("pods.sock");
     let listener = rustix::net::socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
     let address = SocketAddrUnix::new(&path).unwrap();
     rustix::net::bind(&listener, &address).unwrap();

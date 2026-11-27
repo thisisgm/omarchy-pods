@@ -12,23 +12,23 @@ holds the AirPods.
 ## What it needs
 
 - The machine with the AirPods paired and connected, in a graphical session
-  with BlueZ, PipeWire and the installed `librepods.service`.
-- A release build of `librepods` and of `xtask` copied to a private temporary
+  with BlueZ, PipeWire and the installed `podsd.service`.
+- A release build of `pods` and of `xtask` copied to a private temporary
   directory on that machine:
 
   ```bash
-  cargo build -p librepods -p xtask --release --locked
+  cargo build -p pods -p xtask --release --locked
   ```
 
-- The installed `librepods-ctl` under `~/.local/bin`, which check C3 compares
+- The installed `pods-ctl` under `~/.local/bin`, which check C3 compares
   against and check C9 reads the installed daemon's line with.
 
 Then, on that machine:
 
 ```bash
-./xtask hw link --binary ./librepods                 # unattended checks
-./xtask hw link --binary ./librepods --attended      # also the command census
-./xtask hw link --binary ./librepods --attended --adapter-cycle
+./xtask hw link --binary ./pods                 # unattended checks
+./xtask hw link --binary ./pods --attended      # also the command census
+./xtask hw link --binary ./pods --attended --adapter-cycle
 ```
 
 `--attended` means a person is at the machine: the census ends by asking for
@@ -38,29 +38,29 @@ off and on and every Bluetooth device on the machine drops once.
 
 ## What it stops and what it changes
 
-1. It takes an exclusive lock on `librepods-hw.lock` in
+1. It takes an exclusive lock on `pods-hw.lock` in
    `$XDG_RUNTIME_DIR` and holds it until after the restore; a second run
    started meanwhile ends at once, having stopped nothing. It also refuses
-   to start if a user unit named `librepods-hw` exists, which means an
+   to start if a user unit named `pods-hw` exists, which means an
    earlier run left a failed unit
-   (`systemctl --user reset-failed librepods-hw` clears that).
-2. It notes whether `librepods.service` is running and stops it. From that
+   (`systemctl --user reset-failed pods-hw` clears that).
+2. It notes whether `podsd.service` is running and stops it. From that
    moment the installed service is restored on every way out: success, a
    failed check, a panic, SIGINT, SIGTERM, SIGHUP, or a tool the run needs
    that fails or hangs and is killed at its timeout.
-3. It starts the binary under test as the transient user unit `librepods-hw`,
-   with every hardening directive of `packaging/systemd/librepods.service`
+3. It starts the binary under test as the transient user unit `pods-hw`,
+   with every hardening directive of `packaging/systemd/podsd.service`
    from `UMask` on, except the ones naming the installed daemon's own
    directories. Its runtime and state directories are a private temporary
    directory, so the run never touches the real socket or state file. It uses
    the real system bus and the real session bus.
-4. After the checks it stops `librepods-hw`, runs C8 with no daemon
-   running, and starts `librepods.service` again if it was running before.
+4. After the checks it stops `pods-hw`, runs C8 with no daemon
+   running, and starts `podsd.service` again if it was running before.
 
 Every program it runs is waited for before it exits, or killed at its
 timeout. SIGKILL cannot be caught, so after one nothing is restored: run
-`systemctl --user stop librepods-hw` and `systemctl --user start
-librepods.service` by hand.
+`systemctl --user stop pods-hw` and `systemctl --user start
+podsd.service` by hand.
 
 It stops no other unit. It never forgets, pairs or trusts a device, never runs
 a card profile command, and puts back every setting the census changes,
@@ -77,7 +77,7 @@ once more in the adapter check with `--adapter-cycle`.
 |---|---|---|
 | C1 adoption | restarts the unit 10 times with the AirPods connected | each restart reaches a populated state |
 | C2 stop | stops the unit with the link up | the unit is inactive within 1 s, the socket and state file are gone, and BlueZ still holds the device |
-| C3 same contract | reads `librepods status` and the installed `librepods-ctl status` | the keys are exactly the status document's, and both print the same line |
+| C3 same contract | reads `pods status` and the installed `pods-ctl status` | the keys are exactly the status document's, and both print the same line |
 | C9 old line | reads the status line of the installed daemon before it is stopped, then the Rust daemon's on the same pods | every one of the C++ daemon's 36 keys is present in both (the Rust daemon's line adds 3, for 39), and each key outside the list below has byte equal values |
 | C4 reconnect | `do disconnect` then `do connect`, 5 times | `connected` is false within 5 s and the state is populated again within 15 s |
 | C5 idle | 10 minutes with the link up, then 10 minutes after `do disconnect` | the daemon's wakeups stay within the bounds below and the adapter is never discovering |
@@ -87,7 +87,7 @@ once more in the adapter check with `--adapter-cycle`.
 
 C9 runs when the installed daemon is the C++ one, which its line shows by
 carrying none of the three keys the Rust daemon adds. Otherwise, or when
-`librepods.service` was not running, it reports `skipped` with the reason,
+`podsd.service` was not running, it reports `skipped` with the reason,
 which does not fail the run. It prints each key with `equal`, `differs`,
 `only new` or `only old`, and the byte length of each line, never a value.
 The keys allowed to differ are the `*_total` counters, which count each
@@ -98,8 +98,8 @@ U+2019 the check shows both daemons write it the same way; a name without it
 tests nothing about that mark. Both lines are kept only as files of mode 0600
 in the run's private directory, which the run removes when it ends.
 
-C8 runs on every invocation, last, after `librepods-hw` has stopped and
-before `librepods.service` is started again, so only one program holds a
+C8 runs on every invocation, last, after `pods-hw` has stopped and
+before `podsd.service` is started again, so only one program holds a
 control channel to the AirPods at a time. It asks BlueZ for the AirPods it
 reports connected and opens the channel to that device only; with none it
 fails as `no connected AirPods` and opens no socket. It prints one line of
@@ -114,7 +114,7 @@ output. A difference is a fact about the AirPods: the sample is corrected to
 match it, never the check loosened.
 
 C6 sends each command over protocol 1 on the test socket rather than through
-`librepods set`, which prints nothing when a command succeeds and so cannot
+`pods set`, which prints nothing when a command succeeds and so cannot
 show the reply. One 10 s bound covers each command's connect, request and
 reply. The first command that gets no reply at all within it ends the census
 as failed and is named, and putting the settings back stops at its first
@@ -135,7 +135,7 @@ Timings are printed as a range with the number of trials, never as one number:
 | G1a | unit start to populated, from the journal's own stamps | at most 2 s in 10 of 10 |
 | G1b | `link: idle to opening` to populated, after `do connect` | at most 500 ms in 4 of 5; a miss prints its phase lines |
 | G2b | wall time of each census command | reported only, no bound yet |
-| G3 | voluntary context switches of the daemon, a minute | at most 12 with the link up, at most 2 with nothing connected, printed beside the number of `librepods watch` lines in the same window |
+| G3 | voluntary context switches of the daemon, a minute | at most 12 with the link up, at most 2 with nothing connected, printed beside the number of `pods watch` lines in the same window |
 | G4b | `do connect` reply to populated | at most 15 s in 5 of 5 |
 | G4c | adapter power on to populated | reported only, no bound yet |
 
@@ -149,7 +149,7 @@ on its standard error.
 |---|---|
 | 0 | every check passed and every bound was met |
 | 1 | a check failed or a bound was missed, the run was stopped by a signal, or a tool the run needs failed; `pactl` failing only prints the headset profile line as `unknown` |
-| 2 | wrong usage, another run holds the lock, the lock in `$XDG_RUNTIME_DIR` could not be opened or taken, or a `librepods-hw` unit already exists; nothing was stopped |
+| 2 | wrong usage, another run holds the lock, the lock in `$XDG_RUNTIME_DIR` could not be opened or taken, or a `pods-hw` unit already exists; nothing was stopped |
 | 77 | the AirPods did not connect within 20 s, so nothing was measured; the service was restored |
 | 70 | the installed service could not be restored; this is printed last |
 | 101 | the run panicked; the restore ran as it unwound, and its line follows the panic message |
@@ -178,7 +178,7 @@ of `xtask probe init`, on the route the step files run on:
 
 `probe capture` and `probe stop` take the hardware run's lock before they dial
 the AirPods, and refuse to start while a hardware run or another probe holds
-it. They stop `librepods.service` if it runs and start it again on every way
+it. They stop `podsd.service` if it runs and start it again on every way
 out: the end of the script, a connect that fails, and SIGINT, SIGTERM, SIGHUP
 or SIGQUIT. Each of the two is said in one line on standard error, so nobody
 stops the service by hand for a sitting. A service that was not running is left
@@ -274,7 +274,7 @@ Also written down in the same sitting:
 a microphone. It reads the `sdu.log` of a run that `cargo xtask probe capture`
 wrote, sends each audio packet through the decode chain at the time the log
 holds for it, on the monotonic clock, and offers the result as the node
-`omapods_input.probe`, described as `AirPods Microphone (probe)`. So the
+`pods_input.probe`, described as `AirPods Microphone (probe)`. So the
 jitter a capture recorded is the jitter the node is fed. After the last
 packet the node stays for the latency it states, while the reader plays what
 it holds; with a recorder linked it stays until three reads in a row have
@@ -287,7 +287,7 @@ on standard error counts them.
 A replay opens no channel to the AirPods, stops no unit and writes no file.
 It needs only the session's audio server, whose socket it takes from
 `$XDG_RUNTIME_DIR`. The node links to nothing by itself: a recorder names it,
-as in `pw-record --target omapods_input.probe out.wav`. The command ends when
+as in `pw-record --target pods_input.probe out.wav`. The command ends when
 the capture ends, or on SIGINT, SIGTERM, SIGHUP or SIGQUIT, and the node goes
 with it. It fails, before any node exists, on a file that is not the caller's
 own or holds no audio packet, and when no audio server answers.
@@ -295,7 +295,7 @@ own or holds no audio packet, and when no audio server answers.
 Without `--replay`, `cargo xtask probe source [--seconds N]` serves the AirPods
 of the device file live. It takes the hardware run's lock first and refuses to
 start while a hardware run or another live probe holds it. It stops
-`librepods.service` if it runs, and starts it again on every way out; the
+`podsd.service` if it runs, and starts it again on every way out; the
 hardware run's test unit it leaves alone. It dials the control channel, runs the
 handshake and sends START; the node is made only once the AirPods answer with
 their running marker. Each audio packet then goes through the decode chain as it

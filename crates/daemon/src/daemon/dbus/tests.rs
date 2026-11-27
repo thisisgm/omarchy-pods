@@ -30,9 +30,9 @@ use crate::daemon::link::tests::Running;
 /// A test still waiting after this long has hung, and fails.
 const CEILING: Duration = Duration::from_secs(10);
 
-const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+const INTERFACE: &str = "com.superwhisper.Pods1";
 
-const ERROR_PREFIX: &str = "io.github.thisisgm.Omapods1.Error.";
+const ERROR_PREFIX: &str = "com.superwhisper.Pods1.Error.";
 
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
@@ -42,16 +42,16 @@ const API_DOCUMENT: &str = include_str!("../../../../../docs/dbus-api.md");
 /// No catch-all, so a new variant fails to build until its name is spelled here.
 fn spelled(error: CommandError) -> &'static str {
     match error {
-        CommandError::NotConnected => "io.github.thisisgm.Omapods1.Error.NotConnected",
-        CommandError::NotSupported => "io.github.thisisgm.Omapods1.Error.NotSupported",
-        CommandError::NotWorn => "io.github.thisisgm.Omapods1.Error.NotWorn",
-        CommandError::OutOfRange => "io.github.thisisgm.Omapods1.Error.OutOfRange",
-        CommandError::BadValue => "io.github.thisisgm.Omapods1.Error.BadValue",
-        CommandError::UnknownKey => "io.github.thisisgm.Omapods1.Error.UnknownKey",
-        CommandError::BadRequest => "io.github.thisisgm.Omapods1.Error.BadRequest",
-        CommandError::Timeout => "io.github.thisisgm.Omapods1.Error.Timeout",
-        CommandError::Headless => "io.github.thisisgm.Omapods1.Error.Headless",
-        CommandError::NoDevice => "io.github.thisisgm.Omapods1.Error.NoDevice",
+        CommandError::NotConnected => "com.superwhisper.Pods1.Error.NotConnected",
+        CommandError::NotSupported => "com.superwhisper.Pods1.Error.NotSupported",
+        CommandError::NotWorn => "com.superwhisper.Pods1.Error.NotWorn",
+        CommandError::OutOfRange => "com.superwhisper.Pods1.Error.OutOfRange",
+        CommandError::BadValue => "com.superwhisper.Pods1.Error.BadValue",
+        CommandError::UnknownKey => "com.superwhisper.Pods1.Error.UnknownKey",
+        CommandError::BadRequest => "com.superwhisper.Pods1.Error.BadRequest",
+        CommandError::Timeout => "com.superwhisper.Pods1.Error.Timeout",
+        CommandError::Headless => "com.superwhisper.Pods1.Error.Headless",
+        CommandError::NoDevice => "com.superwhisper.Pods1.Error.NoDevice",
     }
 }
 
@@ -63,7 +63,7 @@ const MOST_SIGNALS_HELD: usize = FLOOD_CHANGES / 4;
 
 /// Compared after white space is removed.
 const INTROSPECTED: &str = r#"
-<interface name="io.github.thisisgm.Omapods1">
+<interface name="com.superwhisper.Pods1">
   <method name="SetNoiseMode">
     <arg name="mode" type="s" direction="in"/>
     <arg type="s" direction="out"/>
@@ -168,7 +168,7 @@ async fn peer(link: Running) -> Peer {
         Builder::unix_stream(server_end)
             .server(Guid::generate())
             .p2p()
-            .serve_at(OBJECT_PATH, Omapods { hub: hub.clone() })
+            .serve_at(OBJECT_PATH, Pods { hub: hub.clone() })
             .build(),
     );
     let client = Builder::unix_stream(client_end)
@@ -654,7 +654,7 @@ fn a_peer_that_stops_reading_neither_stalls_the_state_nor_queues_signals() {
         let server = Builder::unix_stream(server_end)
             .server(Guid::generate())
             .p2p()
-            .serve_at(OBJECT_PATH, Omapods { hub: hub.clone() })
+            .serve_at(OBJECT_PATH, Pods { hub: hub.clone() })
             .build()
             .await
             .unwrap();

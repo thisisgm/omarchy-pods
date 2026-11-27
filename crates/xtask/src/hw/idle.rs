@@ -15,7 +15,7 @@ use super::report::Check;
 use super::system::Wakeups;
 use super::unit;
 
-/// The size of one read of `librepods watch` output.
+/// The size of one read of `pods watch` output.
 const WATCH_CHUNK_BYTES: usize = 4096;
 /// G3 with the link up: wakeups a minute.
 const IDLE_LINK_UP_PER_MINUTE: u64 = 12;
@@ -42,7 +42,7 @@ fn count_lines(mut source: impl Read, lines: &AtomicUsize) {
     }
 }
 
-/// A `librepods watch` running for an idle window, counting the lines it prints; it is killed when dropped.
+/// A `pods watch` running for an idle window, counting the lines it prints; it is killed when dropped.
 struct WatchLines {
     child: Child,
     reader: Option<JoinHandle<()>>,
@@ -60,8 +60,8 @@ impl WatchLines {
             .stderr(Stdio::null())
             .process_group(0)
             .spawn()
-            .map_err(|error| format!("librepods watch could not start: {error}"))?;
-        let stdout = child.stdout.take().ok_or("librepods watch has no output")?;
+            .map_err(|error| format!("pods watch could not start: {error}"))?;
+        let stdout = child.stdout.take().ok_or("pods watch has no output")?;
         let lines = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&lines);
         let reader = thread::spawn(move || count_lines(stdout, &counted));
@@ -83,10 +83,8 @@ impl WatchLines {
         let lines = self.stop().saturating_sub(1);
         match ended {
             Ok(None) => Ok(lines),
-            Ok(Some(status)) => Err(format!(
-                "librepods watch ended before the window did: {status}"
-            )),
-            Err(error) => Err(format!("librepods watch could not be checked: {error}")),
+            Ok(Some(status)) => Err(format!("pods watch ended before the window did: {status}")),
+            Err(error) => Err(format!("pods watch could not be checked: {error}")),
         }
     }
 
@@ -201,7 +199,7 @@ fn idle_window(
     // The daemon's accept and first write for the watch are not idle wakeups, so counting starts after them.
     if !watch.wait_first_line(STATUS_TIMEOUT)? {
         check.fail(format!(
-            "{name}: librepods watch printed nothing within {} s",
+            "{name}: pods watch printed nothing within {} s",
             STATUS_TIMEOUT.as_secs()
         ));
         return Ok(());

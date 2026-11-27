@@ -37,13 +37,13 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 /// Names a release file for the suite to run in place of this build's binary.
-pub(crate) const BINARY_VARIABLE: &str = "LIBREPODS_E2E_BINARY";
+pub(crate) const BINARY_VARIABLE: &str = "PODS_E2E_BINARY";
 
-/// The daemon under test: the file `LIBREPODS_E2E_BINARY` names when it is set, else this build's binary.
+/// The daemon under test: the file `PODS_E2E_BINARY` names when it is set, else this build's binary.
 pub(crate) fn binary() -> &'static str {
     static BINARY: OnceLock<String> = OnceLock::new();
     BINARY.get_or_init(|| match env::var(BINARY_VARIABLE) {
-        Err(VarError::NotPresent) => env!("CARGO_BIN_EXE_librepods").to_owned(),
+        Err(VarError::NotPresent) => env!("CARGO_BIN_EXE_pods").to_owned(),
         // Made absolute here, since a spawn looks a bare name up in `PATH` and a link resolves from its own directory.
         Ok(path) => match fs::canonicalize(&path) {
             Ok(file) if file.is_file() => {
@@ -109,7 +109,7 @@ pub(crate) fn log_lines(log: &str) -> Vec<&str> {
 }
 
 /// Names an absolute directory where `Session::keep_state` copies a daemon's state for a later look; unset, nothing is kept.
-pub(crate) const KEEP_STATE: &str = "LIBREPODS_E2E_KEEP_STATE";
+pub(crate) const KEEP_STATE: &str = "PODS_E2E_KEEP_STATE";
 
 /// The end of the sentence a test fails with when `KEEP_STATE` names anything else.
 pub(crate) const KEEP_STATE_REFUSED: &str = "which is not an absolute directory that exists";
@@ -172,25 +172,25 @@ impl Session {
     }
 
     pub(crate) fn socket(&self) -> PathBuf {
-        self.runtime_dir().join("librepods.sock")
+        self.runtime_dir().join("pods.sock")
     }
 
     /// The status document the plugin reads.
     pub(crate) fn state_file(&self) -> PathBuf {
-        self.state_home().join("librepods").join("status.json")
+        self.state_home().join("pods").join("status.json")
     }
 
     /// The preferences the daemon keeps across restarts, beside the status document.
     pub(crate) fn settings_file(&self) -> PathBuf {
-        self.state_home().join("librepods").join("settings.json")
+        self.state_home().join("pods").join("settings.json")
     }
 
     /// The proximity keys the daemon keeps, beside the status document.
     pub(crate) fn keys_file(&self) -> PathBuf {
-        self.state_home().join("librepods").join("keys.json")
+        self.state_home().join("pods").join("keys.json")
     }
 
-    /// Copies the daemon's state directory to `<KEEP_STATE>/<label>/librepods/` when `KEEP_STATE` is set.
+    /// Copies the daemon's state directory to `<KEEP_STATE>/<label>/pods/` when `KEEP_STATE` is set.
     pub(crate) fn keep_state(&self, label: &str) {
         let alphabet =
             |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-';
@@ -219,9 +219,9 @@ impl Session {
             }
             Err(error) => panic!("keep_state: creating {labelled:?}: {error}"),
         }
-        let kept = labelled.join("librepods");
+        let kept = labelled.join("pods");
         fs::create_dir(&kept).unwrap();
-        for entry in fs::read_dir(self.state_home().join("librepods")).unwrap() {
+        for entry in fs::read_dir(self.state_home().join("pods")).unwrap() {
             let entry = entry.unwrap();
             match fs::copy(entry.path(), kept.join(entry.file_name())) {
                 Ok(_) => {}
@@ -306,7 +306,7 @@ impl Session {
         });
     }
 
-    /// Sends `verb` without closing the write side, as `librepods-ctl` does, and reads until the daemon closes.
+    /// Sends `verb` without closing the write side, as `pods-ctl` does, and reads until the daemon closes.
     pub(crate) fn ask(&self, verb: &[u8]) -> Vec<u8> {
         self.try_ask(verb).unwrap()
     }

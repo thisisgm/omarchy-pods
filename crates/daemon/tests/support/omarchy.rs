@@ -23,7 +23,7 @@ pub(crate) const NOTIFY_WAIT: Duration = Duration::from_millis(5000);
 /// Longer than a run the daemon started takes to reach the record.
 pub(crate) const RECORDED_WITHIN: Duration = Duration::from_millis(500);
 
-/// The run the daemon makes for the disconnect notice, the arguments of the C++ `Notifier` and the text of its `main.cpp`.
+/// The arguments and text the daemon sends for a disconnect notice.
 pub(crate) const DISCONNECT_NOTICE: [&str; 8] = [
     "notification",
     "send",
@@ -45,7 +45,7 @@ const NEXT: &str = "omarchy.next";
 const END_OF_RUN: &str = "--";
 const RUNNABLE: u32 = 0o700;
 
-/// The run the daemon makes for the low battery notice of `part`, the text of the C++ `main.cpp`.
+/// The arguments and text the daemon sends for a low battery notice for `part`.
 pub(crate) fn low_battery_notice(part: &str, percent: u8) -> Vec<String> {
     let title = format!("{part} AirPod Low Battery");
     let message = format!("{percent}% remaining");

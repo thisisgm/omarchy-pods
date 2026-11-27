@@ -25,10 +25,10 @@ const MICROPHONE_KEY: &str = "microphone";
 
 const MIC_MODELS_KEY: &str = "mic_models";
 
-/// The group and key of `earDetection/setting` in the C++ `main.cpp`.
+/// The legacy ear-detection preference, stored as `earDetection/setting`.
 const OLD_EAR_DETECTION: (&str, &str) = ("earDetection", "setting");
 
-/// The group and key of `notifications/enabled` in the C++ `main.cpp`.
+/// The legacy notification preference, stored as `notifications/enabled`.
 const OLD_NOTIFICATIONS: (&str, &str) = ("notifications", "enabled");
 
 /// Whether the daemon may use the pods' microphone.

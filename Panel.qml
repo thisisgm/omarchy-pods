@@ -11,8 +11,8 @@ import "Model.js" as Model
 
 Panel {
   id: root
-  moduleName: "io.github.thisisgm.omapods"
-  ipcTarget: "omapods"
+  moduleName: "superwhisper.pods"
+  ipcTarget: "pods"
   manageIpc: false
 
   property int cursorIndex: 0
@@ -331,7 +331,7 @@ Panel {
               text: (pods.hasAirPods ? root.heroPhraseText
                 : pods.schemaUnsupported ? "Unsupported status schema"
                 : pods.daemonReachable ? "Not connected"
-                : "librepods is not running").toUpperCase()
+                : Model.DAEMON_DOWN_TEXT).toUpperCase()
               color: root.quiet
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -508,7 +508,7 @@ Panel {
             ? "The case battery cannot show while the AirPods are away, because BlueZ is not serving its advertisement monitor. See \"Case battery while away\" in the README."
             : pods.daemonReachable
             ? "Open the case or connect your AirPods to see battery and listening controls."
-            : "Start the librepods daemon to see battery and listening controls."
+            : "Start the pods daemon to see battery and listening controls."
           color: root.quiet
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall

@@ -51,7 +51,7 @@ const SENTINEL: Cell = Cell {
 /// The fake pods serve each open channel on one thread of the test's own process.
 const FAKE_PODS_THREADS: usize = 1;
 /// Set in the copy of this binary that counts threads, so `/proc/self/task` holds no other test's.
-const OWN_PROCESS: &str = "LIBREPODS_THREAD_COUNT_ALONE";
+const OWN_PROCESS: &str = "PODS_THREAD_COUNT_ALONE";
 /// The test that copy runs, by its full name.
 const THREAD_COUNT_TEST: &str =
     "daemon::link::tests::driver::stop_with_the_link_up_leaves_no_thread";

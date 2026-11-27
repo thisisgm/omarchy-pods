@@ -30,7 +30,7 @@ mod tests {
 
     /// How the daemon's line about a taken name starts, from `serve` in `src/daemon/dbus.rs`.
     const NO_BUS_LOG: &str =
-        "D-Bus interface off: cannot own io.github.thisisgm.Omapods on the session bus:";
+        "D-Bus interface off: cannot own com.superwhisper.Pods on the session bus:";
 
     /// How zbus 6 words a name another connection owns, after `NO_BUS_LOG`.
     const NAME_TAKEN: &str = "name already taken on the bus";
@@ -40,7 +40,7 @@ mod tests {
 
     const INTROSPECTABLE_INTERFACE: &str = "org.freedesktop.DBus.Introspectable";
 
-    /// What `librepods <args>` prints, after checking that it exited 0.
+    /// What `pods <args>` prints, after checking that it exited 0.
     fn client(session: &Session, args: &[&str]) -> String {
         let output = session.run_client(Path::new(binary()), args);
         assert!(output.status.success(), "{args:?}: {output:?}");
@@ -174,10 +174,7 @@ mod tests {
             let Err(zbus::Error::MethodError(name, message, _)) = refused else {
                 panic!("SetNoiseMode was not refused: {refused:?}");
             };
-            assert_eq!(
-                name.as_str(),
-                "io.github.thisisgm.Omapods1.Error.NotConnected"
-            );
+            assert_eq!(name.as_str(), "com.superwhisper.Pods1.Error.NotConnected");
             assert_eq!(
                 message.as_deref(),
                 Some(CommandError::NotConnected.message())

@@ -1,4 +1,4 @@
-//! A known setting given a value it does not take, through `librepods set`, the control socket, D-Bus and the legacy verbs.
+//! A known setting given a value it does not take, through `pods set`, the control socket, D-Bus and the legacy verbs.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -111,7 +111,7 @@ mod tests {
                 };
                 assert_eq!(
                     name.as_str(),
-                    "io.github.thisisgm.Omapods1.Error.BadValue",
+                    "com.superwhisper.Pods1.Error.BadValue",
                     "{method}"
                 );
                 assert_eq!(

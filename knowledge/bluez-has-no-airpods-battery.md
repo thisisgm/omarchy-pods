@@ -39,7 +39,7 @@ system knows the numbers.
 This is the fact that ends the "could this be simpler" ladder. There is no
 stock Omarchy command, no PipeWire property and no D-Bus interface that carries
 per-pod or case battery. The only source is a userspace daemon speaking Apple's
-AAP protocol, which is why librepods is a requirement rather than one option
+AAP protocol, which is why pods is a requirement rather than one option
 among several.
 
 Per-pod battery is also not something a single BlueZ percentage could express:

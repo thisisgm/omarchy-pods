@@ -31,7 +31,7 @@ mod tests {
 
     use super::run::{UNITS_PER_SDU, log_text, put_file};
 
-    const NODE: &str = "omapods_input.probe";
+    const NODE: &str = "pods_input.probe";
     /// Line 15 of 480 stands near 1 kHz, far under the half rate of the slowest recorder.
     const LINE: u16 = 15;
     /// A level that decodes to a peak near a fourteenth of full scale, which the node's gain raises to about a third: under the limiter's knee, so the recording is the tone whole.

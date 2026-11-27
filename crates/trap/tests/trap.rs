@@ -608,7 +608,7 @@ mod tests {
     )]
     fn a_machine_without_a_radio_still_gets_a_channel() {
         // Only the hosted runner runs the control; elsewhere an untrapped dial could reach a real radio.
-        if std::env::var_os("LIBREPODS_TRAP_EXPECT_NO_RADIO").is_some() {
+        if std::env::var_os("PODS_TRAP_EXPECT_NO_RADIO").is_some() {
             let line = run_untrapped(&["dial", DEVICE, &psm_arg(CONTROL_PSM)]);
             println!("untrapped dial: {line}");
             assert!(

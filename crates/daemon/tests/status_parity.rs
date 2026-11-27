@@ -1,4 +1,4 @@
-//! One status on every surface of the built daemon: `librepods status`, the legacy `librepods ctl status`, the state file and the D-Bus interface.
+//! One status on every surface of the built daemon: `pods status`, the legacy `pods ctl status`, the state file and the D-Bus interface.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -13,7 +13,6 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::fs;
 
-    use cpp_source::MAIN;
     use pods_core::command::NoiseTarget;
     use pods_core::policy::mic::START_TRIES;
     use pods_core::state::{EarDetectionBehavior, State};
@@ -38,19 +37,15 @@ mod tests {
     /// The document's prefix for the flags `Capabilities` lists.
     const CAPABILITY_PREFIX: &str = "supports_";
 
-    /// The C++ daemon's status keys in the order it inserts them; sample input `status.insert("schema_version", 1);`.
-    fn cpp_keys() -> Vec<&'static str> {
-        MAIN.body("QJsonObject statusJson(")
-            .split("status.insert(\"")
-            .skip(1)
-            .filter_map(|rest| rest.split_once('"'))
-            .map(|(key, _)| key)
-            .collect()
+    fn legacy_keys() -> Vec<&'static str> {
+        let golden = include_str!("../../core/tests/fixtures/status-disconnected.json");
+        let document: BTreeMap<&str, Value> = serde_json::from_str(golden).unwrap();
+        document.into_keys().collect()
     }
 
-    /// The C++ keys and the ones this daemon adds.
+    /// The legacy status keys and the ones this daemon adds.
     fn document_keys() -> BTreeSet<&'static str> {
-        cpp_keys()
+        legacy_keys()
             .into_iter()
             .chain(ADDITIVE_KEYS.iter().copied())
             .collect()
@@ -69,7 +64,7 @@ mod tests {
         let listener = Listener::subscribe(rig.session_bus(), &changes_rule());
         let printed = |args: &[&str]| {
             let output = rig.client(args);
-            assert!(output.status.success(), "librepods {args:?}: {output:?}");
+            assert!(output.status.success(), "pods {args:?}: {output:?}");
             output.stdout
         };
         let command_line = printed(&["status"]);
@@ -198,11 +193,11 @@ mod tests {
         ])
     }
 
-    /// What one read of the four surfaces shows apart from `librepods status`, one line each.
+    /// What one read of the four surfaces shows apart from `pods status`, one line each.
     fn disagreements(surfaces: &Surfaces) -> Vec<String> {
         let line = text(&surfaces.command_line);
         let Ok(document) = serde_json::from_str::<Value>(&line) else {
-            return vec![format!("librepods status printed {line:?}")];
+            return vec![format!("pods status printed {line:?}")];
         };
         let mut found = Vec::new();
         let keys: BTreeSet<&str> = document
@@ -212,10 +207,10 @@ mod tests {
             .map(|(key, _)| key.as_str())
             .collect();
         if keys != document_keys() {
-            found.push(format!("librepods status carries the keys {keys:?}"));
+            found.push(format!("pods status carries the keys {keys:?}"));
         }
         for (name, bytes) in [
-            ("librepods ctl status", &surfaces.legacy),
+            ("pods ctl status", &surfaces.legacy),
             ("the state file", &surfaces.state_file),
         ] {
             if serde_json::from_slice::<Value>(bytes).ok().as_ref() != Some(&document) {
@@ -333,8 +328,8 @@ mod tests {
             None => panic!("no StatusJson property"),
         };
         for (name, bytes) in [
-            ("librepods status", surfaces.command_line.as_slice()),
-            ("librepods ctl status", surfaces.legacy.as_slice()),
+            ("pods status", surfaces.command_line.as_slice()),
+            ("pods ctl status", surfaces.legacy.as_slice()),
             ("the state file", surfaces.state_file.as_slice()),
             ("StatusJson", status_json.as_bytes()),
         ] {
@@ -348,7 +343,7 @@ mod tests {
 
     #[test]
     fn the_36_old_keys_are_all_still_there() {
-        let old = cpp_keys();
+        let old = legacy_keys();
         assert_eq!(old.len(), CPP_KEY_COUNT, "{old:?}");
         assert_eq!(
             document_keys().len(),

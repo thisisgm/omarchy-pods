@@ -15,7 +15,7 @@ use super::{Rig, connected, named};
 const PASSING_SINK: &str = "alsa_output.passing";
 
 impl Rig {
-    /// The `librepods` client in this session, run to its end.
+    /// The `pods` client in this session, run to its end.
     pub(crate) fn client(&self, args: &[&str]) -> Output {
         self.session.run_client(Path::new(binary()), args)
     }
@@ -26,15 +26,15 @@ impl Rig {
         serde_json::from_str(&self.session.status()).expect("the status socket returns JSON")
     }
 
-    /// What `librepods status` prints, parsed.
+    /// What `pods status` prints, parsed.
     pub(crate) fn cli_status(&self) -> Value {
         let output = self.client(&["status"]);
-        assert!(output.status.success(), "librepods status: {output:?}");
+        assert!(output.status.success(), "pods status: {output:?}");
         // Sample input: `{"schema_version":1,"connected":false}\n`.
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
-    /// `librepods watch` in this session, its lines read as they come.
+    /// `pods watch` in this session, its lines read as they come.
     pub(crate) fn watch(&self) -> Watch {
         Watch::start(&self.session)
     }

@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use cpp_source::{LOW_BATTERY, MAIN, MEDIA_CONTROLLER_SOURCE, NOTIFIER};
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::Charge;
 use pods_proto::ear::EarReport;
@@ -15,9 +14,7 @@ use super::ear::{BOTH_OUT_SETTLE_MS, BUS_NAME_MAX};
 use super::mic::START_ANSWER_MS;
 use super::notices::{Notice, Part, disconnected};
 use super::sleep::{RESUME_SETTLE_MS, Suspend};
-use super::{
-    Effect, Era, Fact, MediaRequest, PAUSED_MAX, PlayerOwner, Policy, SleepEdge, UplinkRequest,
-};
+use super::{Effect, Era, Fact, MediaRequest, PlayerOwner, Policy, SleepEdge, UplinkRequest};
 use crate::link::{SavedKeys, Signal};
 use crate::prefs::MicPref;
 use crate::state::{EarDetectionBehavior, LidState, Microphone, State};
@@ -30,14 +27,6 @@ const DEVICE: &str = "02:00:00:00:00:01";
 
 pub(super) fn device() -> BdAddr {
     DEVICE.parse().unwrap()
-}
-
-/// The text after each `opener` up to the next quote; sample input `notify(\n tr("AirPods Disconnected"),\n tr("Your AirPods have been disconnected")` with opener `tr("`.
-fn quoted<'text>(text: &'text str, opener: &str) -> Vec<&'text str> {
-    text.split(opener)
-        .skip(1)
-        .map(|piece| piece.split_once('"').unwrap().0)
-        .collect()
 }
 
 /// A latch that already announced a low level.
@@ -99,38 +88,23 @@ fn the_link_coming_up_shows_nothing() {
 }
 
 #[test]
-fn the_disconnect_text_is_the_cpp_daemons() {
-    let call = MAIN.between("if (!m_isSuspending) {", ");");
-    let notice = Notice::Disconnected;
-    assert_eq!(quoted(call, "tr(\""), [notice.title(), notice.message()]);
-}
+fn desktop_notices_name_the_event_and_battery() {
+    let disconnected = Notice::Disconnected;
+    assert_eq!(disconnected.title(), "AirPods Disconnected");
+    assert_eq!(
+        disconnected.message(),
+        "Your AirPods have been disconnected"
+    );
 
-#[test]
-fn the_low_battery_text_is_the_cpp_daemons() {
-    let labels = quoted(MAIN.between("const Source sources[] = {", "};"), "{ \"");
-    let call = MAIN.between("if (fire) {", "*fire));");
-    let [title, message] = quoted(call, "tr(\"")[..] else {
-        panic!("not a title and a message: {call}");
-    };
-    let parts = [Part::Left, Part::Right, Part::Case];
-    assert_eq!(labels.len(), parts.len(), "{labels:?}");
-    for (part, label) in parts.into_iter().zip(labels) {
-        let notice = Notice::LowBattery {
-            part,
-            percent: LOW_BATTERY_TRIGGER,
-        };
-        assert_eq!(notice.title(), title.replace("%1", label));
-        let percent = LOW_BATTERY_TRIGGER.to_string();
-        assert_eq!(notice.message(), message.replace("%1", &percent));
+    for (part, title) in [
+        (Part::Left, "Left AirPod Low Battery"),
+        (Part::Right, "Right AirPod Low Battery"),
+        (Part::Case, "Case AirPod Low Battery"),
+    ] {
+        let notice = Notice::LowBattery { part, percent: 10 };
+        assert_eq!(notice.title(), title);
+        assert_eq!(notice.message(), "10% remaining");
     }
-}
-
-#[test]
-fn the_latch_levels_are_the_cpp_daemons() {
-    let trigger = LOW_BATTERY.find(Some("LowBatteryLatch"), "quint8 trigger = ", ',');
-    let reset = LOW_BATTERY.find(Some("LowBatteryLatch"), "quint8 reset = ", ')');
-    assert_eq!(trigger, LOW_BATTERY_TRIGGER.to_string());
-    assert_eq!(reset, LOW_BATTERY_RESET.to_string());
 }
 
 #[test]
@@ -296,18 +270,6 @@ fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_ba
     assert_eq!(
         policy.step(&down, lost(hours), at(hours + 7_750)),
         [Effect::Notify(Notice::Disconnected), UNFOLLOW]
-    );
-}
-
-#[test]
-fn the_cpp_notifier_drops_a_notice_only_at_the_send() {
-    let send = NOTIFIER.body("void notify(");
-    assert!(send.trim_start().starts_with("if (!m_enabled)"), "{send}");
-    let check = MAIN.body("void checkLowBatteryThresholds()");
-    let evaluated = check.find("latch->evaluate(").unwrap();
-    assert!(
-        evaluated < check.find("m_notifier->notify(").unwrap(),
-        "{check}"
     );
 }
 
@@ -678,9 +640,7 @@ fn a_bud_out_before_any_link_asks_nothing_once_linked() {
 }
 
 #[test]
-fn the_settle_ends_at_its_first_both_out_report_and_is_the_cpp_daemons() {
-    let source = MEDIA_CONTROLLER_SOURCE.find(None, "bothPodsOutSettleMs = ", ';');
-    assert_eq!(source, BOTH_OUT_SETTLE_MS.to_string());
+fn the_settle_ends_at_its_first_both_out_report() {
     let mut policy = Policy::default();
     let mut state = State {
         connected: true,

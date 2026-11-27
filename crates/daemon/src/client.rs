@@ -1,4 +1,4 @@
-//! The client of `daemon/librepods-ctl.cpp`: its messages, timeouts and exit codes.
+//! The legacy socket client and its messages, timeouts and exit codes.
 
 pub(crate) mod proto1;
 
@@ -30,7 +30,7 @@ const DAEMON_UNAVAILABLE: u8 = 69;
 
 const ERROR_PREFIX: &[u8] = b"error:";
 
-/// The usage block of `librepods-ctl.cpp`, after its first line.
+/// The commands listed after the first line of legacy client usage.
 const USAGE_COMMANDS: &str = "Commands:
   status              Print one-line JSON status snapshot to stdout
   noise:off           Disable noise control
@@ -110,9 +110,9 @@ pub(crate) fn run_legacy(
     }
 }
 
-/// Reports that no daemon accepted on `socket`, in the C++ client's words.
+/// Reports that no daemon accepted on `socket`.
 fn no_daemon(socket: &Path, err: &mut dyn Write) -> ExitCode {
-    let mut message = b"Could not connect to OpenPods daemon at ".to_vec();
+    let mut message = b"Could not connect to the pods daemon at ".to_vec();
     message.extend_from_slice(socket.as_os_str().as_bytes());
     message.extend_from_slice(b" (is it running?)\n");
     emit(err, &message);
@@ -208,7 +208,7 @@ mod tests {
 
     fn status_with_reply(reply: Vec<u8>) -> (ExitCode, Vec<u8>, Vec<u8>) {
         let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("librepods.sock");
+        let socket = dir.path().join("pods.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         let stub = thread::spawn(move || {
             let (mut client, _) = listener.accept().unwrap();

@@ -1,6 +1,4 @@
-//! The enum numbers the status line publishes, read against the C++ enums they mirror, the Off option's one decision, what `mic` shows, and how the chain's counts fold.
-
-use cpp_source::{BLE_MANAGER, MEDIA_CONTROLLER};
+//! The enum numbers the status line publishes, the Off option's one decision, what `mic` shows, and how the chain's counts fold.
 
 use super::*;
 
@@ -31,9 +29,9 @@ fn the_pods_report_of_the_off_option_wins_over_the_model_table() {
 #[test]
 fn either_primary_bud_keeps_the_same_mic_node_name() {
     for (reported, node) in [
-        ("A3063", "omarchypods_input.a3063"),
-        ("A3064", "omarchypods_input.a3063"),
-        ("Z0000", "omarchypods_input.z0000"),
+        ("A3063", "pods_input.a3063"),
+        ("A3064", "pods_input.a3063"),
+        ("Z0000", "pods_input.z0000"),
     ] {
         let state = State {
             model: Model::from_number(reported),
@@ -43,41 +41,6 @@ fn either_primary_bud_keeps_the_same_mic_node_name() {
         assert_eq!(state.mic_node_name(), node, "reported {reported}");
         assert_eq!(state.model_number, reported);
     }
-}
-
-#[test]
-fn ear_detection_behavior_numbers_match_the_cpp_enum() {
-    let rust: Vec<(&str, u8)> = [
-        (
-            "PauseWhenOneRemoved",
-            EarDetectionBehavior::PauseWhenOneRemoved,
-        ),
-        (
-            "PauseWhenBothRemoved",
-            EarDetectionBehavior::PauseWhenBothRemoved,
-        ),
-        ("Disabled", EarDetectionBehavior::Disabled),
-    ]
-    .into_iter()
-    .map(|(name, behavior)| (name, behavior.number()))
-    .collect();
-    assert_eq!(
-        rust,
-        MEDIA_CONTROLLER.enumerators("enum EarDetectionBehavior")
-    );
-}
-
-#[test]
-fn lid_state_numbers_match_the_cpp_enum() {
-    let rust: Vec<(&str, u8)> = [
-        ("OPEN", LidState::Open),
-        ("CLOSED", LidState::Closed),
-        ("UNKNOWN", LidState::Unknown),
-    ]
-    .into_iter()
-    .map(|(name, lid)| (name, lid.number()))
-    .collect();
-    assert_eq!(rust, BLE_MANAGER.enumerators("enum class LidState"));
 }
 
 #[test]

@@ -111,10 +111,14 @@ mod tests {
 
         lose(&rig, &device);
         audio.wait_clients(0, HANG_LIMIT);
-        let before = audio.requests().len();
         rig.relink(&device);
-        wait_for_read(&audio, before, &Asked::RecorderList);
-        assert_eq!(audio.writes(), [set.clone(), set]);
+        let wanted = [set.clone(), set];
+        // A built-in source can prompt a recorder list before the relinked Pods source is ready.
+        wait_for("the new link to set the default source", || {
+            let writes = audio.writes();
+            assert!(wanted.starts_with(&writes), "{writes:?}");
+            (writes == wanted).then_some(())
+        });
         rig.finish();
     }
 

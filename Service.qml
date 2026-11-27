@@ -38,7 +38,7 @@ Item {
   readonly property bool busy: commandProcess.running
   readonly property string stateHome: Quickshell.env("XDG_STATE_HOME")
     || Quickshell.env("HOME") + "/.local/state"
-  readonly property string stateDirectory: stateHome + "/librepods"
+  readonly property string stateDirectory: stateHome + "/pods"
   readonly property string statePath: stateDirectory + "/status.json"
   readonly property bool hasAirPods: daemonReachable && connected
   // Battery keeps arriving over BLE while the audio link is down, so it is not gated on connected.
@@ -239,7 +239,7 @@ Item {
     refresh()
   }
 
-  // FileView watches one parent level, so a new librepods directory can arm the file watch.
+  // FileView watches one parent level, so a new pods directory can arm the file watch.
   FileView {
     id: stateDirectoryWatch
     path: root.stateDirectory

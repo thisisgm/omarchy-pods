@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use cpp_source::MAIN;
-
 use super::{RESUME_SETTLE_MS, SleepEdge, Suspend};
 
 fn ms(millis: u64) -> Duration {
@@ -16,12 +14,6 @@ fn woken(sleep: u64, wake: u64) -> Suspend {
     suspend.edge(SleepEdge::Sleeping, ms(sleep));
     suspend.edge(SleepEdge::Woke, ms(wake));
     suspend
-}
-
-#[test]
-fn the_settle_is_the_cpp_daemons() {
-    let settle = MAIN.find(Some("void onSystemWakingUp()"), "QTimer::singleShot(", ',');
-    assert_eq!(settle, RESUME_SETTLE_MS.to_string());
 }
 
 #[test]

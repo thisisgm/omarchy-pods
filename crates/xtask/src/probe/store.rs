@@ -13,7 +13,7 @@ use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
 use rustix::io::Errno;
 
 /// The store's directory under the home directory.
-const ROOT_NAME: &str = "omapods-captures";
+const ROOT_NAME: &str = "pods-captures";
 /// The marker a git repository or work tree keeps in its top directory.
 const GIT_MARKER: &str = ".git";
 /// The device file's name inside the root.
@@ -418,7 +418,7 @@ pub(crate) fn check_run_name(name: &str) -> Result<(), StoreError> {
     }
 }
 
-// Sample input: <home>/omapods-captures/20261120T143005Z/left-mic-2, split into root, stamp and run name.
+// Sample input: <home>/pods-captures/20261120T143005Z/left-mic-2, split into root, stamp and run name.
 fn split_run_path(path: &Path) -> Result<(&Path, &str, &str), StoreError> {
     let not_a_run = || StoreError::NotARun {
         path: path.to_path_buf(),

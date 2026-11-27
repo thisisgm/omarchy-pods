@@ -16,10 +16,10 @@ use tokio::time::sleep;
 
 use super::owner_file::{self, Failures, WriteError, same_cause};
 
-/// As `daemon/main.cpp` names it.
-const STATE_DIR_NAME: &str = "librepods";
+/// The application directory under the XDG state directory.
+const STATE_DIR_NAME: &str = "pods";
 
-/// As `daemon/main.cpp` names it.
+/// The status snapshot the plugin watches.
 const STATE_FILE_NAME: &str = "status.json";
 
 /// Qt's `GenericStateLocation` fallback when `XDG_STATE_HOME` cannot place it.
@@ -200,35 +200,24 @@ pub(super) async fn follow(
 #[cfg(test)]
 mod tests {
 
-    use cpp_source::MAIN;
     use rustix::io::Errno;
     use tokio::runtime::Builder;
 
     use super::*;
-
-    #[test]
-    fn names_are_the_cpp_state_file_path() {
-        let cpp = MAIN.all_between("QStringLiteral(\"/", "\")");
-        let rust = format!("{STATE_DIR_NAME}/{STATE_FILE_NAME}");
-        assert!(cpp.contains(&rust.as_str()), "{cpp:?}");
-    }
 
     // Where Qt 6.8.2 `GenericStateLocation` lands, measured against libQt6Core on this host.
 
     #[test]
     fn absolute_state_home_is_used() {
         let found = path(Some(OsStr::new("/abs/state")), Some(OsStr::new("/h/u")));
-        assert_eq!(
-            found.unwrap(),
-            Path::new("/abs/state/librepods/status.json")
-        );
+        assert_eq!(found.unwrap(), Path::new("/abs/state/pods/status.json"));
     }
 
     #[test]
     fn unset_empty_or_relative_state_home_falls_back_to_home() {
         for state_home in [None, Some(""), Some("rel/state")] {
             let found = path(state_home.map(OsStr::new), Some(OsStr::new("/h/u")));
-            let expected = Path::new("/h/u/.local/state/librepods/status.json");
+            let expected = Path::new("/h/u/.local/state/pods/status.json");
             assert_eq!(found.unwrap(), expected, "{state_home:?}");
         }
     }
@@ -246,7 +235,7 @@ mod tests {
             .join(STATE_FILE_NAME)
     }
 
-    const PATH: &str = "/s/librepods/status.json";
+    const PATH: &str = "/s/pods/status.json";
 
     fn error(failure: Failure) -> StateFileError {
         StateFileError {
@@ -266,8 +255,8 @@ mod tests {
     fn a_failure_is_logged_when_it_starts_changes_and_ends() {
         let mut failures = StateFile::new(PathBuf::from(PATH)).failures();
         let inspect = |errno: Errno| Err(error(Failure::Write(WriteError::Inspect(errno.into()))));
-        let denied = "cannot publish the state file /s/librepods/status.json: inspecting it: Permission denied (os error 13)";
-        let not_permitted = "cannot publish the state file /s/librepods/status.json: inspecting it: Operation not permitted (os error 1)";
+        let denied = "cannot publish the state file /s/pods/status.json: inspecting it: Permission denied (os error 13)";
+        let not_permitted = "cannot publish the state file /s/pods/status.json: inspecting it: Operation not permitted (os error 1)";
         assert_eq!(failures.message(Ok(())), None);
         assert_eq!(
             failures.message(inspect(Errno::ACCESS)).as_deref(),
@@ -289,7 +278,7 @@ mod tests {
             let unfinished = Err(error(Failure::PublishUnfinished(cancelled())));
             assert!(failures.message(unfinished).is_some());
         }
-        let recovered = "state file /s/librepods/status.json is published again";
+        let recovered = "state file /s/pods/status.json is published again";
         assert_eq!(failures.message(Ok(())), Some(recovered.to_owned()));
         assert!(!failures.failing());
         assert_eq!(failures.message(Ok(())), None);
@@ -297,10 +286,10 @@ mod tests {
 
     #[test]
     fn each_failure_reads_as_the_sentence_the_journal_has_always_shown() {
-        let dir = PathBuf::from("/s/librepods");
-        let copy = PathBuf::from("/s/librepods/status.json.tmp");
+        let dir = PathBuf::from("/s/pods");
+        let copy = PathBuf::from("/s/pods/status.json.tmp");
         let denied = || io::Error::from(Errno::ACCESS);
-        let publish = "cannot publish the state file /s/librepods/status.json";
+        let publish = "cannot publish the state file /s/pods/status.json";
         let cases = [
             (
                 Failure::Write(WriteError::TooLong(65537)),
@@ -312,7 +301,7 @@ mod tests {
             ),
             (
                 Failure::Write(WriteError::CreateDirectory(dir, denied())),
-                "creating /s/librepods: Permission denied (os error 13)",
+                "creating /s/pods: Permission denied (os error 13)",
             ),
             (
                 Failure::Write(WriteError::Inspect(denied())),
@@ -324,25 +313,25 @@ mod tests {
             ),
             (
                 Failure::Write(WriteError::ClearCopy(copy.clone(), denied())),
-                "clearing /s/librepods/status.json.tmp: Permission denied (os error 13)",
+                "clearing /s/pods/status.json.tmp: Permission denied (os error 13)",
             ),
             (
                 Failure::Write(WriteError::CreateCopy(copy.clone(), denied())),
-                "creating /s/librepods/status.json.tmp: Permission denied (os error 13)",
+                "creating /s/pods/status.json.tmp: Permission denied (os error 13)",
             ),
             (
                 Failure::Write(WriteError::WriteCopy(copy.clone(), denied())),
-                "writing /s/librepods/status.json.tmp: Permission denied (os error 13)",
+                "writing /s/pods/status.json.tmp: Permission denied (os error 13)",
             ),
             (
                 Failure::Write(WriteError::RenameCopy(copy, denied())),
-                "renaming /s/librepods/status.json.tmp over it: Permission denied (os error 13)",
+                "renaming /s/pods/status.json.tmp over it: Permission denied (os error 13)",
             ),
         ];
         for (failure, step) in cases {
             assert_eq!(error(failure).to_string(), format!("{publish}: {step}"));
         }
-        let remove = "cannot remove the state file /s/librepods/status.json";
+        let remove = "cannot remove the state file /s/pods/status.json";
         let removal = error(Failure::Remove(denied())).to_string();
         assert_eq!(
             removal,

@@ -31,8 +31,8 @@ pub(crate) use command::{QUICK_BURST_MS, QUICK_CONNECT_MS};
 
 /// The synthetic device every stub reports; none of it may reach the command's output.
 pub(crate) const ADDRESS: &str = "02:00:00:00:00:01";
-const UNDER_TEST: &str = "librepods-hw.service";
-const INSTALLED: &str = "librepods.service";
+const UNDER_TEST: &str = "pods-hw.service";
+const INSTALLED: &str = "podsd.service";
 pub(crate) const DEVICE_PATH: &str = "dev_02_00_00_00_00_01";
 pub(crate) const DEVICE_NAME: &str = "Synthetic Pods 7";
 
@@ -82,24 +82,24 @@ link_up() {
     echo true > "$STUB/connected"; echo true > "$STUB/bluez-connected"
 }
 daemon_start() {
-    echo active > "$STUB/unit-librepods-hw.service"
+    echo active > "$STUB/unit-pods-hw.service"
     n=$(read_file starts); echo $(( n + 1 )) > "$STUB/starts"
-    t=$(tick); emit "$t" "Started librepods-hw.service." 39f53479d3a045ac8e11786248231fbf
+    t=$(tick); emit "$t" "Started pods-hw.service." 39f53479d3a045ac8e11786248231fbf
     run=$(read_file run-dir); state=$(read_file state-dir)
     # touch, never a redirect: a redirect onto the listening socket the bench may have put here ends this shell with status 2.
-    inside "$run" && touch "$run/librepods.sock"
-    inside "$state" && mkdir -p "$state/librepods" && echo '{}' > "$state/librepods/status.json"
+    inside "$run" && touch "$run/pods.sock"
+    inside "$state" && mkdir -p "$state/pods" && echo '{}' > "$state/pods/status.json"
     [ -e "$STUB/pods-absent" ] && return 0
     d=$(( 100000 + 10000 * n ))
     link_up "$(( t + d - 50000 ))" "$(( t + d ))"
 }
 daemon_stop() {
     [ -e "$STUB/hw-stop-ignored" ] && return 0
-    echo inactive > "$STUB/unit-librepods-hw.service"
+    echo inactive > "$STUB/unit-pods-hw.service"
     # Under pods-leave-after-idle the pods drop at the first stop after the idle check, so the burst check finds none connected.
     [ -e "$STUB/pods-leave-after-idle" ] && [ -e "$STUB/idle-started" ] && echo false > "$STUB/bluez-connected"
     [ -e "$STUB/stop-leaves-files" ] && return 0
-    for p in "$(read_file run-dir)/librepods.sock" "$(read_file state-dir)/librepods/status.json"; do
+    for p in "$(read_file run-dir)/pods.sock" "$(read_file state-dir)/pods/status.json"; do
         inside "$p" && rm -f "$p"
     done
 }
@@ -111,7 +111,7 @@ log "systemctl $*"
 shift
 case "$1" in
 show)
-    [ "$3 $4" = "--value librepods-hw.service" ] || exit 1
+    [ "$3 $4" = "--value pods-hw.service" ] || exit 1
     case "$2" in
     --property=LoadState)
         [ -e "$STUB/hang-show" ] && sleep "$hold_seconds"
@@ -124,25 +124,25 @@ show)
     esac ;;
 is-active)
     s=$(cat "$STUB/unit-$2" 2>/dev/null || echo inactive)
-    if [ "$2 $s" = "librepods-hw.service inactive" ] && [ -e "$STUB/hw-activity-fails" ] && [ ! -e "$STUB/hw-activity-failed" ]; then
+    if [ "$2 $s" = "pods-hw.service inactive" ] && [ -e "$STUB/hw-activity-fails" ] && [ ! -e "$STUB/hw-activity-failed" ]; then
         # A word with a failing status, so only the exit status can reject it.
         : > "$STUB/hw-activity-failed"; echo inactive; exit 1
     fi
     echo "$s"
     [ "$s" = active ] && exit 0
     # systemd 257 exits 4 for a unit it does not hold: the collected test unit once inactive, or a missing service.
-    { [ "$2" = librepods-hw.service ] || [ -e "$STUB/installed-missing" ]; } && exit 4
+    { [ "$2" = pods-hw.service ] || [ -e "$STUB/installed-missing" ]; } && exit 4
     exit 3 ;;
 stop)
-    [ "$2" = librepods.service ] && [ -e "$STUB/hang-stop" ] && sleep "$hold_seconds"
-    if [ "$2" = librepods-hw.service ]; then daemon_stop; else echo inactive > "$STUB/unit-$2"; fi ;;
+    [ "$2" = podsd.service ] && [ -e "$STUB/hang-stop" ] && sleep "$hold_seconds"
+    if [ "$2" = pods-hw.service ]; then daemon_stop; else echo inactive > "$STUB/unit-$2"; fi ;;
 start)
     [ -e "$STUB/restore-fails" ] && exit 1
     [ -e "$STUB/start-ignored" ] && exit 0
     echo active > "$STUB/unit-$2" ;;
 restart)
-    [ "$2" = librepods-hw.service ] || exit 1
-    emit "$(read_file clock)" "Stopped librepods-hw.service."
+    [ "$2" = pods-hw.service ] || exit 1
+    emit "$(read_file clock)" "Stopped pods-hw.service."
     daemon_start ;;
 *) exit 1 ;;
 esac
@@ -178,7 +178,7 @@ else cat "$STUB/journal"; fi
 pub(crate) const BUSCTL: &str = r#"
 log "busctl $*"
 # Under watch-unstartable the first adapter read of C5 takes the binary's exec bit away for the rest of the run, so the watch cannot start.
-if [ -e "$STUB/watch-unstartable" ] && [ -e "$STUB/idle-started" ]; then chmod -x "$STUB/bin/librepods"; fi
+if [ -e "$STUB/watch-unstartable" ] && [ -e "$STUB/idle-started" ]; then chmod -x "$STUB/bin/pods"; fi
 printf '{"type":"a{oa{sa{sv}}}","data":[{"/org/bluez/hci0":{"org.bluez.Adapter1":{"Address":{"type":"s","data":"02:00:00:00:00:09"},"Powered":{"type":"b","data":%s},"Discovering":{"type":"b","data":%s}}},"/org/bluez/hci0/dev_02_00_00_00_00_01":{"org.bluez.Device1":{"Address":{"type":"s","data":"02:00:00:00:00:01"},"Name":{"type":"s","data":"Synthetic Pods 7"},"Adapter":{"type":"o","data":"/org/bluez/hci0"},"Connected":{"type":"b","data":%s},"UUIDs":{"type":"as","data":["74ec2172-0bad-4d01-8f77-997b2be0722a"]}}}}]}\n' "$(read_file powered)" "$([ -e "$STUB/discovering" ] && echo true || echo false)" "$(read_file bluez-connected)"
 "#;
 
@@ -202,26 +202,26 @@ log "pactl $*"
 printf 'Card #52\n\tName: bluez_card.02_00_00_00_00_01\n\tdevice.description = "Synthetic Pods 7"\n\tActive Profile: %s\n' "$(read_file profile)"
 "#;
 
-/// The binary under test, and the installed `librepods-ctl`; on the session's own runtime directory the installed daemon answers while its service runs.
-pub(crate) const LIBREPODS: &str = r#"
+/// The binary under test, and the installed `pods-ctl`; on the session's own runtime directory the installed daemon answers while its service runs.
+pub(crate) const PODS: &str = r#"
 log "$(basename "$0") $*"
-if [ "$XDG_RUNTIME_DIR" = "$STUB/runtime" ] && [ "$(basename "$0") $*" = "librepods-ctl status" ]; then
-    [ "$(read_file unit-librepods.service)" = active ] || exit 1
+if [ "$XDG_RUNTIME_DIR" = "$STUB/runtime" ] && [ "$(basename "$0") $*" = "pods-ctl status" ]; then
+    [ "$(read_file unit-podsd.service)" = active ] || exit 1
     [ -e "$STUB/installed-ctl-fails" ] && exit 3
     # The line of the daemon under test unless a test names the installed daemon's own.
     if [ -e "$STUB/installed-status.json" ]; then read_file installed-status.json; else read_file status-true.json; fi
     exit 0
 fi
 [ "$XDG_RUNTIME_DIR" = "$(read_file run-dir)" ] || exit 1
-[ "$(read_file unit-librepods-hw.service)" = active ] || exit 1
+[ "$(read_file unit-pods-hw.service)" = active ] || exit 1
 line() { read_file "status-$(read_file connected).json"; }
 case "$1" in
 status)
     [ -e "$STUB/hang-status" ] && { echo $$ > "$STUB/status-pid"; exec sleep 10; }
     [ -e "$STUB/status-once" ] && [ -e "$STUB/status-answered" ] && exit 1
     : > "$STUB/status-answered"
-    [ "$(basename "$0")" = librepods-ctl ] && [ -e "$STUB/link-drops" ] && echo false > "$STUB/bluez-connected"
-    if [ "$(basename "$0")" = librepods-ctl ] && [ -e "$STUB/ctl-differs" ]; then echo '{"other":1}'; else line; fi ;;
+    [ "$(basename "$0")" = pods-ctl ] && [ -e "$STUB/link-drops" ] && echo false > "$STUB/bluez-connected"
+    if [ "$(basename "$0")" = pods-ctl ] && [ -e "$STUB/ctl-differs" ]; then echo '{"other":1}'; else line; fi ;;
 watch) echo $$ > "$STUB/watch-pid"
     [ -e "$STUB/watch-silent" ] && exec sleep "$watch_seconds"
     [ -e "$STUB/watch-wakes-daemon" ] && { kill -STOP "$(read_file main-pid)"; kill -CONT "$(read_file main-pid)"; }
@@ -313,8 +313,8 @@ impl Bench {
             ("bin/busctl", BUSCTL),
             ("bin/bluetoothctl", BLUETOOTHCTL),
             ("bin/pactl", PACTL),
-            ("bin/librepods", LIBREPODS),
-            ("home/.local/bin/librepods-ctl", LIBREPODS),
+            ("bin/pods", PODS),
+            ("home/.local/bin/pods-ctl", PODS),
         ];
         for (name, body) in stubs {
             let path = bench.path(name);
@@ -334,8 +334,8 @@ impl Bench {
             ("bluez-connected", "true"),
             ("powered", "true"),
             ("profile", "a2dp-sink"),
-            ("unit-librepods.service", "active"),
-            ("unit-librepods-hw.service", "inactive"),
+            ("unit-podsd.service", "active"),
+            ("unit-pods-hw.service", "inactive"),
         ];
         for (name, body) in files {
             bench.set(name, body);
@@ -441,8 +441,8 @@ impl Bench {
 
     /// True when the installed service ends in `state` and the test unit is not running.
     pub(crate) fn installed_is(&self, state: &str) -> bool {
-        self.read("unit-librepods.service").trim() == state
-            && self.read("unit-librepods-hw.service").trim() == "inactive"
+        self.read("unit-podsd.service").trim() == state
+            && self.read("unit-pods-hw.service").trim() == "inactive"
     }
 
     /// Serves protocol 1 `set` on the run's socket until `done` is set or a deadline passes, so it never outlives the run.
@@ -450,7 +450,7 @@ impl Bench {
         let root = self.root.path().to_owned();
         thread::spawn(move || {
             let run_dir = wait_for_file(&root.join("run-dir"));
-            let socket = Path::new(run_dir.trim()).join("librepods.sock");
+            let socket = Path::new(run_dir.trim()).join("pods.sock");
             // Renamed into place: the stand-in's start can write its placeholder between a remove and a bind.
             let fresh = socket.with_extension("sock.new");
             let listener = UnixListener::bind(&fresh).unwrap();
@@ -720,11 +720,11 @@ pub(crate) fn index_of(calls: &[String], call: &str) -> Option<usize> {
 /// The installed service was stopped, then started again after the test unit's last stop.
 pub(crate) fn assert_restarted_after_the_run(bench: &Bench) {
     let calls = bench.calls();
-    let stopped = index_of(&calls, "systemctl --user stop librepods.service")
+    let stopped = index_of(&calls, "systemctl --user stop podsd.service")
         .expect("the installed service was stopped");
-    let unit_stopped = index_of(&calls, "systemctl --user stop librepods-hw.service")
+    let unit_stopped = index_of(&calls, "systemctl --user stop pods-hw.service")
         .expect("the test unit was stopped");
-    let started = index_of(&calls, "systemctl --user start librepods.service")
+    let started = index_of(&calls, "systemctl --user start podsd.service")
         .expect("the installed service was started");
     assert!(stopped < unit_stopped && unit_stopped < started);
     assert!(bench.installed_is("active"));

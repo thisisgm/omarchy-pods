@@ -10,7 +10,7 @@ use super::super::wire::protocol::tags::TagError;
 use super::super::wire::tests::{body, reply};
 use super::*;
 
-const MICROPHONE: &CStr = c"omarchypods_input.a3048";
+const MICROPHONE: &CStr = c"pods_input.a3048";
 /// Apart from list positions, so a reader counting them is caught.
 pub(in crate::daemon::audio) const MICROPHONE_INDEX: u32 = 57;
 const BUILT_IN_INDEX: u32 = 40;
@@ -98,11 +98,8 @@ fn a_source_is_found_by_its_whole_name() {
     let list = source_list();
     let found = source_index(&list, MICROPHONE.to_bytes());
     assert_eq!(found, Ok(Some(MICROPHONE_INDEX)));
-    assert_eq!(source_index(&list, b"omarchypods_input.a304"), Ok(None));
-    assert_eq!(
-        source_index(&list, b"omarchypods_input.a3048.monitor"),
-        Ok(None)
-    );
+    assert_eq!(source_index(&list, b"pods_input.a304"), Ok(None));
+    assert_eq!(source_index(&list, b"pods_input.a3048.monitor"), Ok(None));
     assert_eq!(source_index(&[], MICROPHONE.to_bytes()), Ok(None));
 }
 

@@ -51,10 +51,10 @@ mod tests {
     use super::pods::{self, Pods};
 
     /// What the stub log holds for a dial that came while the installed service was stopped.
-    const DIALLED_STOPPED: &str = "dialled while librepods.service is inactive";
-    const SAID_STOPPED: &str = "xtask probe: stopped librepods.service for this run";
-    const SAID_STARTED: &str = "xtask probe: started librepods.service again";
-    const SAID_NOT_STARTED: &str = "xtask probe: systemctl start librepods.service exited with exit status: 1, so librepods.service is not as the run found it; run systemctl --user start librepods.service";
+    const DIALLED_STOPPED: &str = "dialled while podsd.service is inactive";
+    const SAID_STOPPED: &str = "xtask probe: stopped podsd.service for this run";
+    const SAID_STARTED: &str = "xtask probe: started podsd.service again";
+    const SAID_NOT_STARTED: &str = "xtask probe: systemctl start podsd.service exited with exit status: 1, so podsd.service is not as the run found it; run systemctl --user start podsd.service";
     const SAID_REFUSED: &str =
         "xtask probe: could not connect the L2CAP channel: Host is down (os error 112)";
     const LOCK_HELD_REASON: &str =
@@ -182,7 +182,8 @@ mod tests {
         let ran = Running::start(command, vec![route(ATT_PSM, att)]).finish();
 
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
-        let reason = "librepods.service is still deactivating after its stop; librepods.service was started again";
+        let reason =
+            "podsd.service is still deactivating after its stop; podsd.service was started again";
         assert_eq!(ran.stderr, format!("xtask probe: {reason}\n"));
         assert_eq!(calls(&home), expected(&[&STOPPED, &STARTED]));
         assert_eq!(state(&home), "active\n");

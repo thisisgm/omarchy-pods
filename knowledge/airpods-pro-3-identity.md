@@ -22,7 +22,7 @@ Device AA:BB:CC:DD:EE:FF (public)
 Vendor `0x004C` is Apple, product `0x2027`. Note that the advertised **name
 says "AirPods Pro", not "Pro 3"**, so the generation cannot be read off the
 name. It comes from the AAP metadata packet as a model number, `A3064` on this
-device, which librepods maps to `AirPodsPro3` and therefore to
+device, which pods maps to `AirPodsPro3` and therefore to
 `is_pro_series: true`.
 
 # The service the daemon needs

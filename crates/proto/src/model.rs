@@ -53,40 +53,40 @@ pub struct Capabilities {
     pub ear_detection: bool,
 }
 
-/// Apple's published model numbers (support.apple.com/en-us/109525), in the order of the C++ map, then those it lacks.
+/// Apple's published model numbers (support.apple.com/en-us/109525), sorted by model number.
 pub const MODEL_NUMBERS: &[(&str, Model)] = &[
     ("A1523", Model::AirPods1),
     ("A1722", Model::AirPods1),
-    ("A2032", Model::AirPods2),
     ("A2031", Model::AirPods2),
-    ("A2084", Model::AirPodsPro),
+    ("A2032", Model::AirPods2),
     ("A2083", Model::AirPodsPro),
+    ("A2084", Model::AirPodsPro),
     ("A2096", Model::AirPodsMaxLightning),
-    ("A3184", Model::AirPodsMaxUSBC),
-    ("A3454", Model::AirPodsMax2),
-    ("A2565", Model::AirPods3),
     ("A2564", Model::AirPods3),
+    ("A2565", Model::AirPods3),
+    ("A2698", Model::AirPodsPro2Lightning),
+    ("A2699", Model::AirPodsPro2Lightning),
+    ("A2931", Model::AirPodsPro2Lightning),
     ("A3047", Model::AirPodsPro2USBC),
     ("A3048", Model::AirPodsPro2USBC),
     ("A3049", Model::AirPodsPro2USBC),
-    ("A2931", Model::AirPodsPro2Lightning),
-    ("A2699", Model::AirPodsPro2Lightning),
-    ("A2698", Model::AirPodsPro2Lightning),
-    ("A3053", Model::AirPods4),
     ("A3050", Model::AirPods4),
+    ("A3053", Model::AirPods4),
     ("A3054", Model::AirPods4),
-    ("A3056", Model::AirPods4ANC),
     ("A3055", Model::AirPods4ANC),
+    ("A3056", Model::AirPods4ANC),
     ("A3057", Model::AirPods4ANC),
     ("A3063", Model::AirPodsPro3),
     ("A3064", Model::AirPodsPro3),
     ("A3065", Model::AirPodsPro3),
-    ("A3531", Model::AirPods5),
-    ("A3532", Model::AirPods5),
-    ("A3533", Model::AirPods5),
+    ("A3184", Model::AirPodsMaxUSBC),
     ("A3439", Model::AirPods5WirelessCase),
     ("A3440", Model::AirPods5WirelessCase),
     ("A3441", Model::AirPods5WirelessCase),
+    ("A3454", Model::AirPodsMax2),
+    ("A3531", Model::AirPods5),
+    ("A3532", Model::AirPods5),
+    ("A3533", Model::AirPods5),
 ];
 
 /// Returns the first number for the reported model, or the report itself for an unknown model.
@@ -107,22 +107,22 @@ pub enum Product {
     Unknown,
 }
 
-/// Product identifiers as `Modalias` prints them, in the order of the C++ map, which keys each one byte swapped, then those it lacks.
+/// Product identifiers as `Modalias` prints them, sorted by Bluetooth product ID.
 const AIRPODS_PRODUCTS: &[(u16, Model)] = &[
     (0x2002, Model::AirPods1),
+    (0x200A, Model::AirPodsMaxLightning),
+    (0x200E, Model::AirPodsPro),
     (0x200F, Model::AirPods2),
     (0x2013, Model::AirPods3),
+    (0x2014, Model::AirPodsPro2Lightning),
     (0x2019, Model::AirPods4),
     (0x201B, Model::AirPods4ANC),
-    (0x200A, Model::AirPodsMaxLightning),
     (0x201F, Model::AirPodsMaxUSBC),
-    (0x200E, Model::AirPodsPro),
-    (0x2014, Model::AirPodsPro2Lightning),
     (0x2024, Model::AirPodsPro2USBC),
     (0x2027, Model::AirPodsPro3),
-    (0x2036, Model::AirPods5),
-    (0x2030, Model::AirPods5WirelessCase),
     (0x202D, Model::AirPodsMax2),
+    (0x2030, Model::AirPods5WirelessCase),
+    (0x2036, Model::AirPods5),
 ];
 
 /// Beats products under Apple's vendor identifier, as `Modalias` prints them.

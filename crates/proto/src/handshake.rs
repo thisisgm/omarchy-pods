@@ -24,7 +24,7 @@ impl fmt::Display for Step {
     }
 }
 
-/// The opening exchange, in the order parseData in daemon/main.cpp runs it.
+/// The opening exchange in the order the host sends its requests.
 #[derive(Debug, Default)]
 pub struct Handshake {
     step: Step,

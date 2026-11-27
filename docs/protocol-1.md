@@ -1,17 +1,19 @@
 # Protocol 1
 
-The daemon listens on `$XDG_RUNTIME_DIR/librepods.sock`. Protocol 1 is the
+The daemon listens on `$XDG_RUNTIME_DIR/pods.sock`. Protocol 1 is the
 daemon's own line protocol on that socket: a client can read the state, change
 a setting, ask for an action and follow every change of the state. The
-`librepods status`, `watch`, `set` and `do` commands speak it.
+`pods status`, `watch`, `set` and `do` commands speak it.
 
-This protocol may change until the first release that ships it.
+The separate session D-Bus API uses interface `com.superwhisper.Pods1` at
+`/com/superwhisper/Pods` on bus name `com.superwhisper.Pods`. See
+[the D-Bus API](dbus-api.md) for its methods and errors.
 
 ## Choosing the protocol
 
 The first byte a client sends decides what it speaks. A connection that starts
 with `{` speaks protocol 1. Any other first byte is the older one-verb dialect
-of `librepods-ctl`, which keeps working on the same socket.
+of `pods-ctl`, which keeps working on the same socket.
 
 A connection that sends no byte within 1 second is closed without a reply. The
 daemon serves at most 64 clients at once, in either protocol, and closes the
@@ -140,7 +142,7 @@ A reply carries the request's `id` and `ok`.
 {"id":3,"ok":false,"error":{"code":"unsupported_version","message":"This daemon speaks protocol version 1 only.","supported":[1]}}
 ```
 
-- `get` and `subscribe` reply with `state`, the same object `librepods status`
+- `get` and `subscribe` reply with `state`, the same object `pods status`
   prints and the state file holds. Besides the keys the older daemon wrote, it
   carries `notifications_enabled`, the `notifications` setting, and
   `microphone`, the `microphone` setting. With the setting `off`, `mic` reads
@@ -211,7 +213,7 @@ A reply carries the request's `id` and `ok`.
   START confirmation (a score event with value -1) or first audio, and
   `stopping` while STOP or an owed STOP is pending.
   `mic_source` is empty while the daemon's microphone source is down and
-  otherwise gives its name, `omarchypods_input.` followed by the first number
+  otherwise gives its name, `pods_input.` followed by the first number
   for that model in the model table (or the reported number for an unknown
   model), in lower case. Once per AirPods link, the daemon asks to make it the
   default microphone when the audio server first lists it. The source is
@@ -374,19 +376,19 @@ The connection stays open after any error reply.
 
 ## Command line
 
-- `librepods status` prints the state line.
-- `librepods watch` prints the state line, then one line per change. When the
+- `pods status` prints the state line.
+- `pods watch` prints the state line, then one line per change. When the
   connection ends, because the daemon stopped or closed it for reading too
   slowly (see Events), it prints `The daemon went away.` on stderr and exits 1.
   When nothing reads its output any more, it notices at the next change, when
-  that line cannot be written, and exits 0, so `librepods watch | head -1`
+  that line cannot be written, and exits 0, so `pods watch | head -1`
   succeeds but returns only after the next change of the state.
-- `librepods set <key> <value>` and `librepods do <action>` print nothing and
+- `pods set <key> <value>` and `pods do <action>` print nothing and
   exit 0 on success, or print the error message on stderr and exit 1. After
   `bad_value`, `set` also prints `Values:` and the words the key takes, as
   `Values: off, one, both` for `ear_detection`; `adaptive_level` takes a
   number and gets no such line.
-- When no daemon answers, each prints `Could not connect to OpenPods daemon at
+- When no daemon answers, each prints `Could not connect to the pods daemon at
   <socket> (is it running?)` on stderr and exits 69 (`EX_UNAVAILABLE`).
 - Each reads lines from the daemon of at most 65536 bytes, newline excluded,
   and takes only the shapes given above: a reply with the request's `id` and

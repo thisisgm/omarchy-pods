@@ -22,9 +22,9 @@ use super::players::PROPERTIES;
 use super::{Daemon, HANG_LIMIT, Session, binary, wait_for};
 
 /// The names the daemon serves on the session bus, from `src/daemon/dbus.rs`.
-pub(crate) const BUS_NAME: &str = "io.github.thisisgm.Omapods";
-pub(crate) const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
-pub(crate) const INTERFACE: &str = "io.github.thisisgm.Omapods1";
+pub(crate) const BUS_NAME: &str = "com.superwhisper.Pods";
+pub(crate) const OBJECT_PATH: &str = "/com/superwhisper/Pods";
+pub(crate) const INTERFACE: &str = "com.superwhisper.Pods1";
 /// How the daemon's line about a missing session bus starts, from `NO_SESSION_BUS` in `src/daemon/mod.rs`.
 pub(crate) const NO_SESSION_LOG: &str =
     "session bus unreachable, so the D-Bus interface is off and no player is paused:";

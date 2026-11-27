@@ -1,14 +1,14 @@
 # Contributing
 
-Thanks for looking. This repo is two things in one tree, and which one you are
-touching changes what review will ask of you.
+Pods has a Linux daemon and an Omarchy bar plugin. The project lives at
+[superultrainc/pods](https://github.com/superultrainc/pods).
 
 - **The plugin.** QML that runs inside the Quickshell process drawing the
   Omarchy bar. It is strictly a display: it reads a state file and sends
   commands. It never talks to Bluetooth itself.
-- **The daemon**, under `daemon/`. A fork of librepods that owns the AAP control
-  socket, BLE scanning and the PipeWire profile switching, and publishes one line
-  of JSON to `$XDG_STATE_HOME/librepods/status.json` on every change.
+- **The daemon**, under `crates/daemon/`. It owns the AAP control socket,
+  BLE scanning and PipeWire integration, and publishes JSON on every change.
+  The panel reads `$XDG_STATE_HOME/pods/status.json`.
 
 If a change would have the plugin reach the outside world, it belongs in the
 daemon instead. That split is the reason a new data source can land without the
@@ -16,26 +16,8 @@ panel being edited at all.
 
 ## Build and test
 
-Users install with `omarchy plugin add` then `setup`, which builds without the
-test suite. Contributors want the suite, so leave `BUILD_TESTING` alone:
-
-```bash
-cd daemon
-cmake -B build -G Ninja
-cmake --build build
-ctest --test-dir build
-```
-
-Every test is one `tst_*.cpp` with `QTEST_GUILESS_MAIN`, registered through
-`openpods_add_test` in `daemon/tests/CMakeLists.txt`. That helper links only
-`Qt6::Test` and `Qt6::Core` on purpose: a test that pulls in BlueZ, PulseAudio or
-`Qt6::Widgets` cannot run in this suite, which is why `main.cpp` and
-`mediacontroller.cpp` have no direct tests. Logic you want covered belongs in a
-header or a small translation unit those two can call, the way
-`controlreconnect.hpp` and `eardetection.hpp` do.
-
-The Rust workspace at the repository root has its own gate, the same checks the
-hosted `ci-ok` job runs apart from the workflow audit:
+The Rust workspace gate runs the same checks as the hosted `ci-ok` job apart
+from the workflow audit.
 
 ```bash
 cargo install --locked cargo-nextest cargo-deny
@@ -57,15 +39,18 @@ differs from the checked out commit, and either while an untracked file is prese
 A push is judged by the checked out commit, so push the branch you have checked out.
 
 The plugin's `Model.js` has its own suite, which the hosted `plugin` job runs:
-`deno run --allow-read tests/model.test.js`. The real `Service.qml` runs in the
+`deno test --allow-read tests/model.test.js`. The real `Service.qml` runs in the
 real Quickshell through [tests/harness](tests/harness/README.md), against a state
 directory the run makes; it needs a desktop session.
 
+Run `tests/packaging.sh` to exercise the installers and archive in a temporary
+home. It uses Python 3 for a loopback HTTP server and `script` for a test terminal.
+
 A release build of the daemon must pass
-`cargo xtask release-check target/release/librepods <version>`, which the release
+`cargo xtask release-check target/release/pods <version>`, which the release
 workflow runs: the version it prints, the libraries it needs, the newest glibc it
-needs and its line tables. `LIBREPODS_E2E_BINARY=<absolute path> cargo nextest run
--p librepods` runs the end to end suite against such a file in place of the build's
+needs and its line tables. `PODS_E2E_BINARY=<absolute path> cargo nextest run
+-p pods` runs the end to end suite against such a file in place of the build's
 own binary.
 
 A green suite is not evidence that a fix works. See the next section.
@@ -83,9 +68,8 @@ how you know. Before you open a PR:
    it goes red without your fix. A case that passes either way is worth nothing,
    and reviewers do check.
 4. **The proof is end to end.** Drive the behaviour through a path a user
-   reaches (`librepods-ctl`, the control socket, the D-Bus interface, the state
-   file the plugin reads) against the real daemon binary. A direct test (a
-   `tst_*.cpp`, a Rust unit test) is welcome for pure logic and is support, not
+   reaches (`pods-ctl`, the control socket, the D-Bus interface, the state
+   file the plugin reads) against the real daemon binary. A direct Rust unit test is welcome for pure logic and is support, not
    proof. Code with no user path yet says so in the PR.
 
 If something genuinely cannot be driven (a suspend cycle, a controller quirk you

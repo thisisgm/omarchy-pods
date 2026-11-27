@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.thisisgm.omapods",
+  "id": "superwhisper.pods",
   "name": "AirPods",
-  "version": "1.3.6",
-  "author": "GM",
+  "version": "1.0.0",
+  "author": "SuperUltra, Inc.",
   "license": "MIT",
   "description": "AirPods in the Omarchy bar: per-pod and case battery, listening mode, adaptive noise level, conversation awareness, one-bud ANC and ear detection.",
   "kinds": [
@@ -32,8 +32,8 @@
       {
         "key": "ctlPath",
         "type": "path",
-        "label": "Path to librepods-ctl",
-        "description": "Leave empty to find librepods-ctl on PATH.",
+        "label": "Path to pods-ctl",
+        "description": "Leave empty to find pods-ctl on PATH.",
         "defaultValue": ""
       }
     ]

@@ -50,7 +50,7 @@ pub(super) fn parse_entry(line: &str) -> Option<Entry> {
 pub(super) fn journalctl(extra: &[OsString]) -> Result<Vec<Entry>, String> {
     let mut args: Vec<OsString> = [
         "--user",
-        "--unit=librepods-hw.service",
+        "--unit=pods-hw.service",
         "--boot=0",
         "--output=json",
         "--output-fields=MESSAGE,MESSAGE_ID",

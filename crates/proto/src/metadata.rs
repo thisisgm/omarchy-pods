@@ -5,7 +5,7 @@ use crate::error::{HEADER_LEN, ParseError, Parser, strip_header};
 const HEADER: [u8; HEADER_LEN] = [0x04, 0x00, 0x04, 0x00, 0x1d, 0x00];
 /// Bytes between the header and the name, which no known code reads.
 const SKIPPED_LEN: usize = 5;
-/// Where parseMetadata in daemon/main.cpp starts reading strings.
+/// The first byte of the metadata string fields.
 const MIN_LEN: usize = HEADER_LEN + SKIPPED_LEN;
 const TERMINATOR: u8 = 0x00;
 
@@ -49,12 +49,9 @@ fn text(field: Option<&[u8]>) -> String {
 mod tests {
     use super::*;
     use crate::error::{Header, Parser};
-    use cpp_source::PACKETS;
 
     const NAME: &str = "Test\u{2019}s AirPods Pro";
     const SKIPPED: [u8; 5] = [0x01, 0x02, 0x03, 0x04, 0x05];
-    /// parseMetadata in daemon/main.cpp skips six bytes behind its five byte header.
-    const CPP_SKIPPED_LEN: usize = 6;
 
     fn packet(strings: &[u8]) -> Vec<u8> {
         [&HEADER[..], &SKIPPED, strings].concat()
@@ -156,12 +153,5 @@ mod tests {
             got: Header([0x04, 0x00, 0x04, 0x00, 0x1e, 0x00]),
         };
         assert_eq!(Metadata::parse(&other), Err(bad_header));
-    }
-
-    #[test]
-    fn strings_start_where_the_cpp_parser_starts_them() {
-        let cpp_header = PACKETS.hex(Some("namespace Parse"), "METADATA");
-        assert!(HEADER.starts_with(&cpp_header));
-        assert_eq!(MIN_LEN, cpp_header.len() + CPP_SKIPPED_LEN);
     }
 }

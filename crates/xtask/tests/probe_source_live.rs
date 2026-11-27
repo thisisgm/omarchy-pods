@@ -51,8 +51,8 @@ mod tests {
     };
     use super::pods::{self, Hook, Pods, SILENT_UNIT, Transcript, audio_sdu};
 
-    const NODE: &str = "omapods_input.probe";
-    const UNDER_TEST: &str = "librepods-hw.service";
+    const NODE: &str = "pods_input.probe";
+    const UNDER_TEST: &str = "pods-hw.service";
     const NS_PER_MS: u64 = 1_000_000;
     /// What the two stub calls around the hold add to it, a fork, a `date` and a `flock` each, with room for a loaded host.
     const HOLD_SLACK: Duration = Duration::from_secs(2);
@@ -398,7 +398,7 @@ esac
         let ran = Running::start(command, Vec::new()).finish();
 
         assert_eq!(ran.code, FAILED, "{}", ran.stderr);
-        let said = "librepods.service is still deactivating after its stop";
+        let said = "podsd.service is still deactivating after its stop";
         assert!(ran.stderr.contains(said), "{}", ran.stderr);
         assert_eq!(stubs.calls(), expected(&[&STOPPED, &STARTED]));
         assert_eq!(stubs.state(INSTALLED), "active\n");

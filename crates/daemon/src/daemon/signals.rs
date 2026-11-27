@@ -1,4 +1,4 @@
-//! The signals that stop the daemon cleanly, the set `daemon/main.cpp` installs.
+//! The signals that stop the daemon cleanly.
 
 use std::future::poll_fn;
 use std::task::Poll;
@@ -39,23 +39,5 @@ impl StopSignals {
             Poll::Pending
         })
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use cpp_source::MAIN;
-
-    use super::STOP_SIGNALS;
-
-    #[test]
-    fn stop_signals_are_the_ones_the_cpp_installs() {
-        let rust: Vec<&str> = STOP_SIGNALS.iter().map(|(_, name)| *name).collect();
-        let cpp: Vec<&str> = MAIN
-            .all_between("::sigaction(", ",")
-            .into_iter()
-            .map(str::trim)
-            .collect();
-        assert_eq!(rust, cpp);
     }
 }

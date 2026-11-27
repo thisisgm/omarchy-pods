@@ -14,7 +14,7 @@ const STATE_DISABLED: u8 = 0x02;
 pub struct ControlId(pub u8);
 
 impl ControlId {
-    /// From `docs/control_commands.md` of librepods-org/librepods; the C++ daemon lacks it.
+    /// From `docs/control_commands.md` of librepods-org/librepods: automatic, left or right microphone.
     pub const MIC_SIDE: Self = Self(0x01);
     /// Value is the noise mode plus one.
     pub const NOISE_CONTROL: Self = Self(0x0D);
@@ -94,7 +94,6 @@ impl ControlCommand {
 mod tests {
     use super::*;
     use crate::error::Header;
-    use cpp_source::{CONTROL, PACKETS};
 
     const TEST_ID: ControlId = ControlId(0x42);
 
@@ -176,47 +175,5 @@ mod tests {
         assert_eq!(pkt[8], 0xBB);
         assert_eq!(pkt[9], 0xCC);
         assert_eq!(pkt[10], 0xDD);
-    }
-
-    #[test]
-    fn switch_matches_the_cpp_enabled_and_disabled_packets() {
-        let header = CONTROL.hex(Some("namespace ControlCommand"), "HEADER");
-        for (id, namespace) in [
-            (ControlId::ONE_BUD_ANC, "namespace OneBudANCMode"),
-            (
-                ControlId::CONVERSATIONAL_AWARENESS,
-                "namespace ConversationalAwareness",
-            ),
-            (ControlId::ALLOW_OFF_OPTION, "namespace AllowOffOption"),
-        ] {
-            let cpp_id = PACKETS.byte(Some(namespace), "BasicControlCommand<", '>');
-            for (enabled, create) in [
-                (true, "::ENABLED = create("),
-                (false, "::DISABLED = create("),
-            ] {
-                // create fills the three value bytes it is not given with 0x00.
-                let mut expected = header.clone();
-                expected.extend([cpp_id, CONTROL.byte(None, create, ')'), 0, 0, 0]);
-                let command = ControlCommand::switch(id, enabled);
-                assert_eq!(command.encode(), expected, "{namespace} {create}");
-                assert_eq!(
-                    ControlCommand::parse(&expected).unwrap().state(),
-                    Some(enabled)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn noise_and_adaptive_ids_match_the_cpp_headers() {
-        let noise = Some("namespace NoiseControl");
-        let cpp_noise = PACKETS.byte(noise, "HEADER = ControlCommand::HEADER +", ';');
-        assert_eq!(ControlId::NOISE_CONTROL.0, cpp_noise);
-        let mut adaptive = HEADER.to_vec();
-        adaptive.push(ControlId::ADAPTIVE_NOISE_LEVEL.0);
-        assert_eq!(
-            adaptive,
-            PACKETS.hex(Some("namespace AdaptiveNoise"), "HEADER")
-        );
     }
 }

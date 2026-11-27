@@ -403,7 +403,7 @@ mod tests {
         let reply = listener.call(BUS_NAME, OBJECT_PATH, properties, "GetAll", &(INTERFACE,));
         assert_holds_no_key("the D-Bus properties", reply.unwrap().data().bytes());
         let status = rig.client(&["status"]);
-        assert!(status.status.success(), "librepods status: {status:?}");
+        assert!(status.status.success(), "pods status: {status:?}");
         assert_holds_no_key("status", &status.stdout);
         let state = fs::read(rig.session().state_file()).unwrap();
         assert_holds_no_key("the state file", &state);

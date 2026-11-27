@@ -38,7 +38,7 @@ mod tests {
 
     use Placed::{InEar, OutOfEar};
 
-    /// Sets the preference with `librepods set` and waits for the status to show its number.
+    /// Sets the preference with `pods set` and waits for the status to show its number.
     fn prefer(rig: &Rig, word: &str, number: u64) {
         let output = rig.client(&["set", "ear_detection", word]);
         assert!(

@@ -1,6 +1,6 @@
 //! A proximity advert for tests: a header, one block sealed under the payload key, and an address that resolves under the identity key.
 
-// Layout from `onDeviceDiscovered` in daemon/ble/blemanager.cpp; sealing and address from daemon/ble/bleutils.cpp.
+// The fixtures pair a proximity header and sealed payload with a resolvable private address.
 
 use aes::Aes128;
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
@@ -57,7 +57,7 @@ pub fn address_of(identity: &[u8; 16], random: [u8; 3]) -> String {
     octets.map(|octet| format!("{octet:02X}")).join(":")
 }
 
-/// `ah` of `bleutils.cpp`: the low three bytes of `e(k, r')`, `r'` the random part zero padded, all little endian.
+/// Bluetooth `ah`: the low three bytes of `e(k, r')`, with the random part zero padded and all values little endian.
 fn hash(identity: &[u8; 16], random: [u8; 3]) -> [u8; 3] {
     let mut padded = [0; 16];
     let (front, _) = padded.split_at_mut(random.len());
@@ -66,7 +66,7 @@ fn hash(identity: &[u8; 16], random: [u8; 3]) -> [u8; 3] {
     [h0, h1, h2]
 }
 
-/// `e` of `bleutils.cpp`: AES-128 with key, data and result turned from little to big endian and back.
+/// Bluetooth `e`: AES-128 with the key, data and result converted between little and big endian.
 fn aes_big_endian(key: &[u8; 16], data: [u8; 16]) -> [u8; 16] {
     let mut key = *key;
     key.reverse();
@@ -86,8 +86,7 @@ fn encrypt(key: &[u8; 16], block: [u8; 16]) -> [u8; 16] {
 
 #[cfg(test)]
 mod tests {
-    use super::{ADVERT_LEN, HEADER_LEN, Keys, PRODUCT_AT, SEALED_LEN, advert_of};
-    use cpp_source::BLE_MANAGER_SOURCE;
+    use super::{ADVERT_LEN, HEADER_LEN, Keys, PRODUCT_AT, advert_of};
 
     /// The sample of `onDeviceDiscovered`: `07 19 01 27 20 21 88 8F 11 00 04`.
     const HEADER: [u8; HEADER_LEN] = [
@@ -121,23 +120,6 @@ mod tests {
     };
 
     #[test]
-    fn the_lengths_are_the_cpp_ones() {
-        let total = BLE_MANAGER_SOURCE.find(None, "proximityPairingBytes = ", ';');
-        assert_eq!(total, format!("{HEADER_LEN} + {SEALED_LEN}"));
-        let sealed = BLE_MANAGER_SOURCE.find(None, "data.mid(data.size() - ", ')');
-        assert_eq!(sealed, SEALED_LEN.to_string());
-    }
-
-    #[test]
-    fn the_product_sits_where_the_cpp_reads_it() {
-        // Sample input: `static_cast<quint16>(data[4]) | (static_cast<quint8>(data[3]) << 8))`.
-        let read = BLE_MANAGER_SOURCE.find(None, "deviceInfo.modelName = getModelName(", ';');
-        for at in [PRODUCT_AT, PRODUCT_AT + 1] {
-            assert!(read.contains(&format!("(data[{at}])")), "{read}");
-        }
-    }
-
-    #[test]
     fn the_core_specification_sample_gives_its_address() {
         let advert = advert_of(HEADER, FIPS_PLAIN, &KEYS, SAMPLE_RANDOM);
         assert_eq!(advert.address, SAMPLE_ADDRESS);
@@ -153,6 +135,7 @@ mod tests {
     fn the_header_leads_the_advert() {
         let advert = advert_of(HEADER, FIPS_PLAIN, &KEYS, SAMPLE_RANDOM);
         assert_eq!(advert.data[..HEADER_LEN], HEADER);
+        assert_eq!(advert.data[PRODUCT_AT..PRODUCT_AT + 2], [0x27, 0x20]);
     }
 
     #[test]

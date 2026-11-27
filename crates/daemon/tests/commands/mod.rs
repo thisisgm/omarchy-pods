@@ -14,7 +14,7 @@ use super::support::{HANG_LIMIT, Session, binary, run_to_end, wait_for};
 /// A device on which every write fails with no space left.
 const FULL_DEVICE: &str = "/dev/full";
 
-/// A running `librepods watch`, killed once `HANG_LIMIT` passes so a read of its output ends, and killed and reaped when dropped.
+/// A running `pods watch`, killed once `HANG_LIMIT` passes so a read of its output ends, and killed and reaped when dropped.
 struct Watch {
     child: Arc<Mutex<Child>>,
     /// Dropping it wakes the watchdog, which then ends without a kill.
@@ -42,7 +42,7 @@ fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
     child.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Starts `librepods watch` with its stdout piped back here.
+/// Starts `pods watch` with its stdout piped back here.
 fn spawn_watch(session: &Session) -> (Watch, BufReader<ChildStdout>) {
     let mut child = session
         .command(Path::new(binary()), &["watch"])
@@ -124,7 +124,7 @@ fn watch_ends_quietly_when_nothing_reads_its_output() {
 fn status_fails_like_watch_when_its_line_cannot_be_written_and_ctl_does_not() {
     let session = Session::new();
     let _daemon = session.start();
-    let link = session.dir.path().join("librepods-ctl");
+    let link = session.dir.path().join("pods-ctl");
     symlink(binary(), &link).unwrap();
     let to_full = |program: &Path, args: &[&str]| {
         let full = File::options().write(true).open(FULL_DEVICE).unwrap();
@@ -141,7 +141,7 @@ fn status_fails_like_watch_when_its_line_cannot_be_written_and_ctl_does_not() {
     let status = to_full(Path::new(binary()), &["status"]);
     assert_eq!(status.status.code(), Some(1));
     assert_eq!(String::from_utf8(status.stderr).unwrap(), message);
-    // The legacy client ignores the failed write, as the C++ `librepods-ctl` does.
+    // The legacy client ignores the failed write, as the C++ `pods-ctl` does.
     for (program, args) in [
         (Path::new(binary()), &["ctl", "status"][..]),
         (link.as_path(), &["status"]),
@@ -215,7 +215,7 @@ fn set_exit_codes_and_messages() {
     }
     assert!(daemon.stop().success(), "{}", daemon.log());
     let refused = format!(
-        "Could not connect to OpenPods daemon at {} (is it running?)\n",
+        "Could not connect to the pods daemon at {} (is it running?)\n",
         session.socket().display()
     );
     for args in [

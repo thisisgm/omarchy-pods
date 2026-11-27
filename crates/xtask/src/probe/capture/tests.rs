@@ -35,7 +35,7 @@ use pods::{EAR_PACKET, Heard, SILENT_UNIT, ack, audio_sdu, noise};
 const SHORT_NS: u64 = 50_000_000;
 /// An SDU one receive buffer cannot hold.
 const OVERSIZED_LEN: usize = 5000;
-const ROOT_NAME: &str = "omapods-captures";
+const ROOT_NAME: &str = "pods-captures";
 /// The only mode the store accepts for its root.
 const ROOT_MODE: u32 = 0o700;
 /// The only mode the store accepts for the device file.

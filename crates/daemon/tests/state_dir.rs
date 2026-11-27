@@ -1,4 +1,4 @@
-//! `librepods state-dir` names the directory the built daemon keeps its state file in, the one an uninstall removes.
+//! `pods state-dir` names the directory the built daemon keeps its state file in, the one an uninstall removes.
 
 // Inside cfg(test) so the lint table lets helpers unwrap, as it lets the tests themselves.
 #[cfg(test)]
@@ -26,7 +26,7 @@ mod tests {
         command
     }
 
-    // Sample input: `/tmp/.tmpAb12/state/librepods\n`.
+    // Sample input: `/tmp/.tmpAb12/state/pods\n`.
     fn named_dir(session: &Session, unset: bool) -> PathBuf {
         let mut lookup = command(session, &["state-dir"], unset);
         let output = run_to_end(lookup.stdout(Stdio::piped()).stderr(Stdio::piped()));

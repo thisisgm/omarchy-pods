@@ -13,7 +13,7 @@ impl Bench {
         let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
         command
             .args(["hw", "link", "--binary"])
-            .arg(self.path("bin/librepods"))
+            .arg(self.path("bin/pods"))
             .args(idle_window.unwrap_or(["--idle-window-ms", QUICK_IDLE_MS]))
             .args(extra)
             .env(

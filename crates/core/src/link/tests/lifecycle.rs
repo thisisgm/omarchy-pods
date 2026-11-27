@@ -1,6 +1,5 @@
 //! The session lifecycle, one test per transition or pair of transitions.
 
-use cpp_source::DEVICE_INFO;
 use pods_proto::addr::BdAddr;
 use pods_proto::battery::{Batteries, Charge, Component};
 use pods_proto::ear::{EarPlacement, EarReport};
@@ -482,21 +481,6 @@ fn shutdown_closes_and_ignores_everything_after() {
     sim.check();
 }
 
-/// Each statement of the C++ `DeviceInfo::reset`, with the `State` fields it clears.
-const CPP_RESET: [(&str, &str); 8] = [
-    ("setDeviceName(\"\");", "device_name"),
-    ("setModel(AirPodsModel::Unknown);", "model"),
-    ("m_battery->reset();", "batteries, primary"),
-    ("setBatteryStatus(\"\");", "batteries"),
-    ("setNoiseControlMode(NoiseControlMode::Off);", "noise_mode"),
-    (
-        "setBluetoothAddress(\"\");",
-        "the address lives in the link machine",
-    ),
-    ("getEarDetection()->reset();", "ear"),
-    ("setHearingAidEnabled(false);", "not in the state"),
-];
-
 #[test]
 fn opening_keeps_only_readings_attributed_to_the_connecting_pair() {
     for (owner, expected) in [
@@ -526,16 +510,7 @@ fn opening_keeps_only_readings_attributed_to_the_connecting_pair() {
 }
 
 #[test]
-fn reset_device_covers_the_cpp_reset() {
-    let statements: Vec<&str> = DEVICE_INFO
-        .body("void reset()")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let expected: Vec<&str> = CPP_RESET.iter().map(|(cpp, _)| *cpp).collect();
-    assert_eq!(statements, expected);
-
+fn reset_device_clears_the_link_fields_and_keeps_preferences() {
     let mut state = State {
         connected: true,
         device_name: "Test AirPods".into(),

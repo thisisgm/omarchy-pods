@@ -264,7 +264,7 @@ mod tests {
         stop(&mut daemon);
     }
 
-    /// The state file, `librepods status`, the legacy `status` verb and the D-Bus `StatusJson` each read `enabled`.
+    /// The state file, `pods status`, the legacy `status` verb and the D-Bus `StatusJson` each read `enabled`.
     fn assert_surfaces(session: &Session, listener: &Listener, enabled: bool) {
         wait_for("the state file to show the switch", || {
             let text = fs::read_to_string(session.state_file()).ok()?;

@@ -14,7 +14,6 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-cpp-source = { path = "../cpp-source" }
 # The fake pods and the socket pair they serve, for the arm; the fake names nothing of this crate.
 pods-fake = { path = "../fake" }
 pods-samples = { path = "../samples" }

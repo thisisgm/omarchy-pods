@@ -80,7 +80,7 @@ async fn request_inhibitor(connection: &Connection) -> zbus::Result<OwnedFd> {
             MANAGER_PATH,
             Some(MANAGER),
             "Inhibit",
-            &("sleep", "librepods", "Stop dictation before sleep", "delay"),
+            &("sleep", "pods", "Stop dictation before sleep", "delay"),
         )
         .await?;
     // Sample reply: UNIX_FD 0, the first attached file descriptor.

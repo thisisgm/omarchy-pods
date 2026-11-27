@@ -37,14 +37,14 @@ var UTF8_TWO_BYTES_BELOW = 0x800
 var SURROGATE_FIRST = 0xD800
 var SURROGATE_LAST = 0xDFFF
 
-// A key the Rust daemon always writes and the C++ daemon never did, so its document says `librepods set` exists.
+// A key the Rust daemon always writes and the C++ daemon never did, so its document says `pods set` exists.
 var CURRENT_DAEMON_KEY = "advert_intake"
 
 // The advert_intake word of a daemon that holds the pods' keys and cannot hear their adverts.
 var ADVERT_UNAVAILABLE = "unavailable"
 
 // Found on PATH, where setup installs it.
-var SET_PROGRAM = "librepods"
+var SET_PROGRAM = "pods"
 
 // Longest error the panel will show inside a row, and the cut that leaves room for the ellipsis.
 var MAX_ERROR_CHARS = 140
@@ -120,7 +120,7 @@ function utf8Length(text) {
   return bytes
 }
 
-// The whole of $XDG_STATE_HOME/librepods/status.json, one line, keys sorted by QJsonObject rather than by insert order:
+// The whole of $XDG_STATE_HOME/pods/status.json, one line, keys sorted by QJsonObject rather than by insert order:
 // {"adaptive_level_changes_total":0,"adaptive_noise_level":50,"ca_changes_total":0,
 //  "case":{"available":true,"charging":false,"level":100},"connect_calls_total":0,
 //  "connect_failures_total":0,"connected":true,"conversational_awareness":true,
@@ -139,12 +139,12 @@ function utf8Length(text) {
 function parseStatus(raw) {
   var status = defaultStatus()
   if (utf8Length(String(raw || "")) > MAX_STATUS_BYTES) {
-    status.lastError = "The librepods status file is too large to read"
+    status.lastError = "The pods status file is too large to read"
     return status
   }
   var text = String(raw || "").trim()
   if (text === "") {
-    status.lastError = "The librepods status file is empty"
+    status.lastError = "The pods status file is empty"
     return status
   }
 
@@ -152,11 +152,11 @@ function parseStatus(raw) {
   try {
     parsed = JSON.parse(text)
   } catch (e) {
-    status.lastError = "Could not read the librepods status file"
+    status.lastError = "Could not read the pods status file"
     return status
   }
   if (!parsed || typeof parsed !== "object" || parsed.schema_version === undefined) {
-    status.lastError = "The librepods status file carried no schema_version"
+    status.lastError = "The pods status file carried no schema_version"
     return status
   }
 
@@ -164,7 +164,7 @@ function parseStatus(raw) {
   if (status.schemaVersion > SUPPORTED_SCHEMA) {
     // Newer daemon: report the version rather than draw fields we may be misreading.
     status.schemaTooNew = true
-    status.lastError = "librepods speaks status schema " + status.schemaVersion + ", this panel reads " + SUPPORTED_SCHEMA
+    status.lastError = "pods speaks status schema " + status.schemaVersion + ", this panel reads " + SUPPORTED_SCHEMA
     return status
   }
 
@@ -226,26 +226,26 @@ function noiseModeName(mode) {
   return "Unknown"
 }
 
-// What `librepods set` takes, and the librepods-ctl verb an older daemon takes for the same thing.
+// What `pods set` takes, and the pods-ctl verb an older daemon takes for the same thing.
 function changeOf(key, value, verb) {
   return { key: key, value: value, verb: verb }
 }
 
-// Indexed by mode; librepods-ctl takes the same word after noise:.
+// Indexed by mode; pods-ctl takes the same word after noise:.
 function noiseChange(mode) {
   var values = ["off", "anc", "transparency", "adaptive"]
   if (mode < 0 || mode >= values.length) return null
   return changeOf("noise", values[mode], "noise:" + values[mode])
 }
 
-// Indexed by behaviour; librepods-ctl takes the same word after ear:.
+// Indexed by behaviour; pods-ctl takes the same word after ear:.
 function earChange(behavior) {
   var values = ["one", "both", "off"]
   if (behavior < 0 || behavior >= values.length) return null
   return changeOf("ear_detection", values[behavior], "ear:" + values[behavior])
 }
 
-// The two switches, each with the name librepods-ctl's verbs give it; values is indexed off then on.
+// The two switches, each with the name pods-ctl's verbs give it; values is indexed off then on.
 function switchChange(key, on) {
   var keys = ["conversational_awareness", "one_bud_anc"]
   var verbNames = ["ca", "onebud"]
@@ -259,10 +259,10 @@ function adaptiveChange(level) {
   return changeOf("adaptive_level", String(level), "adaptive:" + level)
 }
 
-// The released plugin runs [ctlPath or "librepods-ctl", verb], and an older daemon gets exactly that.
+// The released plugin runs [ctlPath or "pods-ctl", verb], and an older daemon gets exactly that.
 function commandFor(daemonCurrent, ctlPath, change) {
   if (daemonCurrent) return [SET_PROGRAM, "set", change.key, change.value]
-  return [String(ctlPath || "librepods-ctl"), change.verb]
+  return [String(ctlPath || "pods-ctl"), change.verb]
 }
 
 // Only the current daemon writes advert_intake, so an older daemon's document never shows the hint.
@@ -300,7 +300,7 @@ function podMeta(pod) {
 }
 
 var DAEMON_UNAVAILABLE = 69
-var DAEMON_DOWN_TEXT = "librepods is not running"
+var DAEMON_DOWN_TEXT = "pods is not running"
 
 // Collapse stderr like "Refused\nTry again\n" into one line for the panel.
 function elideError(text) {
@@ -316,6 +316,6 @@ function refusalText(stderr) {
 function commandFailureText(exitCode, isSetProgram, stderr) {
   if (exitCode === DAEMON_UNAVAILABLE) return DAEMON_DOWN_TEXT
   return isSetProgram
-    ? refusalText(stderr || "librepods refused the change")
-    : elideError(stderr || "librepods-ctl rejected the command")
+    ? refusalText(stderr || "pods refused the change")
+    : elideError(stderr || "pods-ctl rejected the command")
 }

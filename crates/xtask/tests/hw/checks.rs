@@ -20,7 +20,7 @@ fn the_installed_service_is_restored_when_a_check_fails() {
 #[test]
 fn a_signal_during_a_check_ends_its_watch_and_restores() {
     let bench = Bench::new();
-    interrupted_by(&bench, "-INT", "librepods watch");
+    interrupted_by(&bench, "-INT", "pods watch");
     let watch = bench.read("watch-pid");
     assert!(
         !Path::new(&format!("/proc/{}", watch.trim())).exists(),
@@ -74,7 +74,7 @@ fn a_failing_main_process_read_names_systemctl() {
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
-        stdout.contains("systemctl show librepods-hw.service exited with"),
+        stdout.contains("systemctl show pods-hw.service exited with"),
         "{stdout}"
     );
     assert_restarted_after_the_run(&bench);
@@ -133,7 +133,7 @@ fn a_failed_activity_query_after_the_stop_is_named() {
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
-        stdout.contains("systemctl is-active librepods-hw.service gave no state (exit status: 1)"),
+        stdout.contains("systemctl is-active pods-hw.service gave no state (exit status: 1)"),
         "{stdout}"
     );
     assert!(!stdout.contains("was not inactive within"), "{stdout}");
@@ -169,19 +169,19 @@ fn a_link_down_before_the_idle_check_is_not_measured_as_link_up() {
 fn a_signal_between_disconnect_and_connect_leaves_the_airpods_connected() {
     let bench = Bench::new();
     bench.set("slow-disconnect", "");
-    let output = signalled(&bench, "-INT", "librepods do disconnect");
+    let output = signalled(&bench, "-INT", "pods do disconnect");
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).contains("stopped by a signal"));
     let calls = bench.calls();
     let disconnected = calls
         .iter()
-        .rposition(|call| call == "librepods do disconnect")
+        .rposition(|call| call == "pods do disconnect")
         .unwrap();
     assert!(
         calls
             .iter()
             .skip(disconnected)
-            .any(|call| call == "librepods do connect"),
+            .any(|call| call == "pods do connect"),
         "{calls:?}"
     );
     assert_restarted_after_the_run(&bench);
@@ -192,19 +192,19 @@ fn a_signal_before_the_disconnect_shows_still_leaves_the_airpods_connected() {
     let bench = Bench::new();
     bench.set("slow-disconnect", "");
     bench.set("disconnect-unseen", "");
-    let output = signalled(&bench, "-INT", "librepods do disconnect");
+    let output = signalled(&bench, "-INT", "pods do disconnect");
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).contains("stopped by a signal"));
     let calls = bench.calls();
     let disconnected = calls
         .iter()
-        .rposition(|call| call == "librepods do disconnect")
+        .rposition(|call| call == "pods do disconnect")
         .unwrap();
     assert!(
         calls
             .iter()
             .skip(disconnected)
-            .any(|call| call == "librepods do connect"),
+            .any(|call| call == "pods do connect"),
         "{calls:?}"
     );
     assert_restarted_after_the_run(&bench);
@@ -215,13 +215,12 @@ fn a_failed_reconnect_after_a_signal_is_reported() {
     let bench = Bench::new();
     bench.set("slow-disconnect", "");
     bench.set("connect-fails", "");
-    let output = signalled(&bench, "-INT", "librepods do disconnect");
+    let output = signalled(&bench, "-INT", "pods do disconnect");
     let stderr = text(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.contains(
-            "xtask hw: the AirPods were left disconnected: librepods do connect exited with"
-        ),
+        stderr
+            .contains("xtask hw: the AirPods were left disconnected: pods do connect exited with"),
         "{stderr}"
     );
     assert_restarted_after_the_run(&bench);
@@ -235,7 +234,7 @@ fn a_watch_that_never_answers_is_not_measured() {
     let stdout = text(&output.stdout);
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(
-        stdout.contains("link up: librepods watch printed nothing within 5 s"),
+        stdout.contains("link up: pods watch printed nothing within 5 s"),
         "{stdout}"
     );
     assert!(!stdout.contains("G3 link up:"), "{stdout}");
@@ -288,16 +287,14 @@ fn systemctl_names_only_the_two_units() {
         .filter(|call| call.starts_with("systemctl"))
         .collect();
     assert!(
-        systemctl.contains(&"systemctl --user stop librepods.service".to_owned()),
+        systemctl.contains(&"systemctl --user stop podsd.service".to_owned()),
         "{systemctl:?}"
     );
     for call in &systemctl {
         assert!(call.starts_with("systemctl --user "), "{call}");
         for word in call.split(' ').skip(3) {
             assert!(
-                word.starts_with("--")
-                    || word == "librepods.service"
-                    || word == "librepods-hw.service",
+                word.starts_with("--") || word == "podsd.service" || word == "pods-hw.service",
                 "{call}"
             );
         }
@@ -455,7 +452,7 @@ fn a_watch_that_ends_inside_the_window_fails_c5() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
     assert!(
-        stdout.contains("  link up: librepods watch ended before the window did: "),
+        stdout.contains("  link up: pods watch ended before the window did: "),
         "{stdout}"
     );
     assert!(!stdout.contains("G3 link up:"), "{stdout}");
@@ -471,13 +468,13 @@ fn a_watch_that_cannot_start_fails_c5() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
     assert!(
-        stdout.contains("  link up: librepods watch could not start: "),
+        stdout.contains("  link up: pods watch could not start: "),
         "{stdout}"
     );
     assert!(!stdout.contains("G3 link up:"), "{stdout}");
     // The do steps run the same binary straight after the watch, so they fail too.
     assert!(
-        stdout.contains("bin/librepods could not start: Permission denied"),
+        stdout.contains("bin/pods could not start: Permission denied"),
         "{stdout}"
     );
     assert!(
@@ -496,8 +493,7 @@ fn a_failed_reconnect_after_the_idle_windows_fails_c5() {
     assert_eq!(output.status.code(), Some(1), "{stdout}");
     assert!(stdout.contains("C5 idle: FAILED"), "{stdout}");
     assert!(
-        stdout
-            .contains("  not connected again after the windows: librepods do connect exited with"),
+        stdout.contains("  not connected again after the windows: pods do connect exited with"),
         "{stdout}"
     );
     assert_restarted_after_the_run(&bench);

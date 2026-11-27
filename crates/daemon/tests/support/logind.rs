@@ -197,7 +197,7 @@ async fn serve(
         }
         assert_eq!(header.path().unwrap().as_str(), MANAGER_PATH);
         assert_eq!(header.interface().unwrap().as_str(), MANAGER_INTERFACE);
-        // Sample request: ("sleep", "librepods", "Stop dictation before sleep", "delay").
+        // Sample request: ("sleep", "pods", "Stop dictation before sleep", "delay").
         let body = message.body();
         let (what, who, why, mode): (&str, &str, &str, &str) = body.deserialize().unwrap();
         assert_eq!((what, mode), ("sleep", "delay"));

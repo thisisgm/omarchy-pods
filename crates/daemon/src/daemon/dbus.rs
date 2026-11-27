@@ -27,9 +27,9 @@ use zbus::{Connection, DBusError, Message, Variant, fdo, interface};
 use super::hub::Hub;
 use super::log;
 
-const BUS_NAME: &str = "io.github.thisisgm.Omapods";
+const BUS_NAME: &str = "com.superwhisper.Pods";
 
-const OBJECT_PATH: &str = "/io/github/thisisgm/Omapods";
+const OBJECT_PATH: &str = "/com/superwhisper/Pods";
 
 /// Between the interface name and an error's own name.
 const ERROR_SEGMENT: &str = "Error";
@@ -110,7 +110,7 @@ pub(super) async fn serve(connection: Connection, hub: Hub) {
             drop(
                 connection
                     .object_server()
-                    .remove::<Omapods, _>(OBJECT_PATH)
+                    .remove::<Pods, _>(OBJECT_PATH)
                     .await,
             );
             log(&format!(
@@ -125,7 +125,7 @@ pub(super) async fn serve(connection: Connection, hub: Hub) {
 async fn own(connection: &Connection, hub: Hub) -> zbus::Result<()> {
     connection
         .object_server()
-        .at(OBJECT_PATH, Omapods { hub })
+        .at(OBJECT_PATH, Pods { hub })
         .await?;
     // Without replacement flags, so no later daemon takes the name from a running one.
     connection
@@ -167,7 +167,7 @@ async fn announce(
         if !changed.is_empty() {
             let sent = fdo::Properties::properties_changed(
                 &emitter,
-                Omapods::name(),
+                Pods::name(),
                 changed,
                 Cow::Borrowed(&[]),
             )
@@ -319,11 +319,11 @@ impl Properties {
 }
 
 #[derive(Debug)]
-struct Omapods {
+struct Pods {
     hub: Hub,
 }
 
-impl Omapods {
+impl Pods {
     fn now(&self) -> Properties {
         Properties::of(&self.hub.state())
     }
@@ -343,8 +343,8 @@ fn answer(outcome: Outcome) -> Result<&'static str, CallError> {
 }
 
 // The interface name is written only here; its trailing number is the interface version.
-#[interface(name = "io.github.thisisgm.Omapods1", introspection_docs = false)]
-impl Omapods {
+#[interface(name = "com.superwhisper.Pods1", introspection_docs = false)]
+impl Pods {
     #[zbus(property(emits_changed_signal = "const"))]
     #[expect(
         clippy::unused_self,
@@ -541,9 +541,9 @@ impl DBusError for CallError {
     }
 }
 
-// Sample input: `not_connected`, which names `io.github.thisisgm.Omapods1.Error.NotConnected`.
+// Sample input: `not_connected`, which names `com.superwhisper.Pods1.Error.NotConnected`.
 fn error_name(code: &str) -> String {
-    let mut name = format!("{}.{ERROR_SEGMENT}.", Omapods::name());
+    let mut name = format!("{}.{ERROR_SEGMENT}.", Pods::name());
     for word in code.split('_') {
         let mut letters = word.chars();
         if let Some(first) = letters.next() {

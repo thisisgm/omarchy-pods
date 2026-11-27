@@ -35,7 +35,7 @@ impl Verb {
     }
 }
 
-/// Every whole-word verb of the dispatch in `daemon/main.cpp`, in its order.
+/// The legacy dispatch verbs matched as whole words, in dispatch order.
 pub(crate) const VERBS: [(Verb, LegacyRequest); 17] = [
     (
         Verb::Whole(REOPEN_VERB),

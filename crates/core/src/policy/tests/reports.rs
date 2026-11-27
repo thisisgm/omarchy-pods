@@ -1,6 +1,7 @@
 //! Support tests: what the media adapter's reports do to the ear rules, the players a pause paused and a pause the closed channel cut.
 
 use super::*;
+use crate::policy::PAUSED_MAX;
 
 const CUT: Step = Step::Cut;
 
