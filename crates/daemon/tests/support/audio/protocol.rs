@@ -11,7 +11,6 @@ use std::ffi::CStr;
 use std::io::{self, Write};
 
 pub(crate) use super::native::*;
-use fields::FixtureFields;
 pub(crate) use replies::*;
 use tags::{TagError, Tags};
 

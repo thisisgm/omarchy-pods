@@ -3,7 +3,6 @@
 use std::ffi::{CStr, CString};
 use std::io;
 
-use super::fields::{FixtureFields, FixtureTags};
 use super::tags::Tags;
 use super::{
     ChannelVolume, FLAG_MEMFD, FLAG_SHM, Props, ProtocolError, Result, SinkState, TagWriter,
