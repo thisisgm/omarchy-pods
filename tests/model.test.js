@@ -5,7 +5,7 @@ const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
   source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, advertHint, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
-const Contrast = new Function(source + "; return { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks }")()
+const Contrast = new Function(source + "; return { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks, mixInk, QML_ROUNDING_MARGIN, SEPARATOR_ALPHA }")()
 
 let failures = 0
 
@@ -264,12 +264,13 @@ function rgb(hex, a = 1) {
   return {r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a}
 }
 
-const { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks } = Contrast
+const { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks, mixInk, QML_ROUNDING_MARGIN, SEPARATOR_ALPHA } = Contrast
 const contrastTable = Deno.args.includes("--contrast-table")
 const panelRows = []
 const barRows = []
 const dimOpacity = 0.6
 const popupAlphas = [1, 0.75, 0.45]
+const dimmedRoles = ["quiet", "quietHero"]
 let unchanged = 0
 let attainable = 0
 let limited = 0
@@ -279,15 +280,50 @@ check("clear backgrounds can match intermediate ink", worstContrast(grayInk(0.5)
 check("grey urgent ink falls back to foreground", huedInk(grayInk(0.5), grayInk(0)), grayInk(0))
 check("coloured urgent ink keeps its role", huedInk(rgb("#f7768e"), grayInk(0)), rgb("#f7768e"))
 
-function measure(label, before, after, grounds, floor, maxAlpha = 1) {
+const byteSteps = 255
+function onScreen(value) {
+  return Math.round(value * byteSteps) / byteSteps
+}
+
+// The output surface stores 8 bits a channel, so the drawn pixel and its ground are both rounded.
+function drawnContrast(ink, grounds) {
+  let least = Infinity
+  for (const exact of grounds) {
+    const ground = { r: onScreen(exact.r), g: onScreen(exact.g), b: onScreen(exact.b), a: 1 }
+    const painted = compositeInk(ink, ground)
+    least = Math.min(least, contrastRatio({ r: onScreen(painted.r), g: onScreen(painted.g), b: onScreen(painted.b), a: 1 }, ground))
+  }
+  return least
+}
+
+const minimalLift = 0.95
+function sameHue(first, second) {
+  return first.r === second.r && first.g === second.g && first.b === second.b
+}
+
+function measure(label, before, after, grounds, floor, maxAlpha = 1, dimmed = false) {
   const start = worstContrast(before, grounds)
   const finish = worstContrast(after, grounds)
   const black = inkAlpha(grayInk(0), maxAlpha)
   const white = inkAlpha(grayInk(1), maxAlpha)
   const best = worstContrast(black, grounds) >= worstContrast(white, grounds) ? black : white
-  if (worstContrast(best, grounds) >= floor) {
+  if (worstContrast(best, grounds) >= floor + QML_ROUNDING_MARGIN) {
     attainable++
     check(label + " reaches " + floor, finish >= floor, true)
+    check(label + " still reaches " + floor + " once drawn", drawnContrast(after, grounds) >= floor, true)
+    if (start >= floor + QML_ROUNDING_MARGIN)
+      check(label + " keeps an ink that already passes", after, inkAlpha(before, Math.min(before.a, maxAlpha)))
+    else
+      check(label + " moves no further than the floor needs",
+        worstContrast(mixInk(before, after, minimalLift), grounds) < floor + QML_ROUNDING_MARGIN, true)
+    // liftInk prefers the start alpha, then the start hue; dimInk only ever changes alpha.
+    const clipped = inkAlpha(before, Math.min(before.a, maxAlpha))
+    if (dimmed)
+      check(label + " keeps its hue while it dims", sameHue(after, before), true)
+    else if (worstContrast(inkAlpha(best, clipped.a), grounds) >= floor + QML_ROUNDING_MARGIN)
+      check(label + " keeps its start alpha", after.a, clipped.a)
+    else if (worstContrast(inkAlpha(clipped, maxAlpha), grounds) >= floor + QML_ROUNDING_MARGIN)
+      check(label + " keeps its start hue", sameHue(after, clipped), true)
   } else {
     limited++
     check(label + " uses the best attainable extreme", after, best)
@@ -314,31 +350,30 @@ for (const [name, [backgroundHex, foregroundHex, accentHex, urgentHex]] of Objec
       toggleOn: foreground
     }
     const inks = panelInks(palette, dimOpacity)
-    const dim = inkAlpha(foreground, dimOpacity)
     const inkChecks = {
       text: [foreground, rowGrounds, 4.5],
-      quiet: [dim, rowGrounds, 4.5],
-      error: [rgb(urgentHex), grounds, 4.5],
+      quiet: [inkAlpha(inks.text, inks.text.a * dimOpacity), rowGrounds, 4.5],
+      error: [urgent, grounds, 4.5],
       hero: [foreground, rowGrounds, 3],
-      quietHero: [dim, rowGrounds, 3],
+      quietHero: [inkAlpha(inks.hero, inks.hero.a * dimOpacity), rowGrounds, 3],
       meterFill: [foreground, grounds, 3],
-      lowBattery: [rgb(urgentHex), grounds, 3],
+      lowBattery: [urgent, grounds, 3],
       meterTrack: [track, grounds, 3],
       sliderTrack: [track, rowGrounds, 3, 0.99],
-      sliderFill: [foreground, rowGrounds, 3],
+      sliderFill: [foreground, rowGrounds, 4.5],
       toggleOff: [palette.toggleOff, rowGrounds, 3],
       toggleOn: [foreground, rowGrounds, 3],
       toggleOffKnob: [foreground, rowGrounds.map(ground => compositeInk(offFill, ground)), 3],
-      toggleOnKnob: [foreground, rowGrounds.map(ground => compositeInk(track, ground)), 3],
-      separator: [inkAlpha(foreground, 0.12), grounds, 3],
+      toggleOnKnob: [accent, rowGrounds.map(ground => compositeInk(track, ground)), 3],
+      separator: [inkAlpha(foreground, SEPARATOR_ALPHA), grounds, 3],
       focus: [palette.focus, rowGrounds, 3],
       glyph: [foreground, rowGrounds, 3]
     }
     const ratios = Object.entries(inkChecks).map(([role, [before, ground, floor, maxAlpha]]) => {
       const label = name + " " + alpha + " " + role
-      return measure(label, before, inks[role], ground, floor, maxAlpha)
+      return measure(label, before, inks[role], ground, floor, maxAlpha, dimmedRoles.includes(role))
     })
-    if (worstContrast(foreground, rowGrounds) >= 4.5) {
+    if (worstContrast(foreground, rowGrounds) >= 4.5 + QML_ROUNDING_MARGIN) {
       unchanged++
       check(name + " " + alpha + " keeps passing foreground", inks.text, foreground)
     }
@@ -361,10 +396,28 @@ for (const [name, [backgroundHex, foregroundHex, accentHex, urgentHex]] of Objec
     const marks = barInks(base, background, foreground, background, mode, blurred, dimOpacity)
     barRatios.push(
       measure(name + " " + mode + " bar mark", base, marks.mark, grounds, 3),
-      measure(name + " " + mode + " quiet bar mark", inkAlpha(base, dimOpacity), marks.quiet, grounds, 3))
+      measure(name + " " + mode + " quiet bar mark", inkAlpha(marks.mark, marks.mark.a * dimOpacity), marks.quiet, grounds, 3, 1, true))
   }
   barRows.push([name, ...barRatios].join(" | "))
 }
+
+// Grounds written out by hand, so a wrong constant or a swapped branch in barContrastGrounds goes red.
+const tokyoBar = rgb("#1a1b26")
+check("an opaque bar is its own colour over any backdrop",
+  barContrastGrounds(rgb("#a9b1d6"), tokyoBar, rgb("#a9b1d6"), tokyoBar, "opaque", true), [tokyoBar, tokyoBar])
+check("a blurred glassy bar is 35% over black and over a 75% grey",
+  barContrastGrounds(grayInk(1), grayInk(1), grayInk(1), grayInk(0), "glassy", true), [grayInk(0.35), grayInk(0.35 + 0.65 * 0.75)])
+check("an unblurred glassy bar is 35% over black and over white",
+  barContrastGrounds(grayInk(1), grayInk(1), grayInk(1), grayInk(0), "glassy", false), [grayInk(0.35), grayInk(1)])
+check("a translucent bar under 35% keeps its own alpha",
+  barContrastGrounds(grayInk(1), inkAlpha(grayInk(1), 0.2), grayInk(1), grayInk(0), "glassy", false), [grayInk(0.2), grayInk(1)])
+// Black text on a white theme crosses over where both inks meet the grey at the same ratio.
+const crossoverLuminance = Math.sqrt(0.05 * 1.05) - 0.05
+const crossoverGray = 1.055 * Math.pow(crossoverLuminance, 1 / 2.4) - 0.055
+const clearDark = barContrastGrounds(grayInk(0), grayInk(1), grayInk(0), grayInk(1), "none", true)
+check("a clear bar with dark ink sits between the crossover grey and white", clearDark.length === 2 && Math.abs(clearDark[0].r - crossoverGray) < 1e-9 && clearDark[1].r === 1, true)
+const clearLight = barContrastGrounds(grayInk(1), grayInk(1), grayInk(0), grayInk(1), "none", true)
+check("a clear bar with light ink sits between black and the crossover grey", clearLight.length === 2 && clearLight[0].r === 0 && Math.abs(clearLight[1].r - crossoverGray) < 1e-9, true)
 
 const whiteAt45 = contrastGrounds(inkAlpha(grayInk(1), 0.45), 1)
 check("White at 0.45 reaches only 4.41:1 even with black ink", worstContrast(grayInk(0), whiteAt45).toFixed(2), "4.41")

@@ -17,7 +17,8 @@ ControlRow {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onEntered: valueRow.pointed(valueRow.rowName)
+    onPositionChanged: function (mouse) { valueRow.pointed(valueRow, mouse) }
+    onPressed: valueRow.pointed(valueRow, null)
     onClicked: valueRow.activated()
   }
 

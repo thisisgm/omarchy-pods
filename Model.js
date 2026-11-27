@@ -317,7 +317,9 @@ const GLASS_BRIGHTNESS = 0.75
 const GLASS_BAR_ALPHA = 0.35
 const MAX_TRACK_ALPHA = 0.99
 const CONTRAST_STEPS = 18
-const QML_ROUNDING_MARGIN = 0.002
+const QML_ROUNDING_MARGIN = 0.06
+// PanelSeparator's stock strength.
+const SEPARATOR_ALPHA = 0.12
 
 function inkAlpha(ink, a) {
   return { r: ink.r, g: ink.g, b: ink.b, a: a }
@@ -368,6 +370,11 @@ function worstContrast(ink, grounds) {
   return lightInk && darkInk ? 1 : least
 }
 
+// The margin covers the 8-bit framebuffer, so a drawn ink never lands under its floor.
+function meetsFloor(ink, grounds, floor) {
+  return worstContrast(ink, grounds) >= floor + QML_ROUNDING_MARGIN
+}
+
 function mixInk(from, to, portion) {
   return {
     r: from.r + (to.r - from.r) * portion,
@@ -382,7 +389,7 @@ function approachContrast(ink, target, grounds, floor) {
   let high = 1
   for (let step = 0; step < CONTRAST_STEPS; step++) {
     const midpoint = (low + high) / 2
-    if (worstContrast(mixInk(ink, target, midpoint), grounds) >= floor + QML_ROUNDING_MARGIN) high = midpoint
+    if (meetsFloor(mixInk(ink, target, midpoint), grounds, floor)) high = midpoint
     else low = midpoint
   }
   return mixInk(ink, target, high)
@@ -390,26 +397,26 @@ function approachContrast(ink, target, grounds, floor) {
 
 function liftInk(ink, grounds, floor, maxAlpha = 1) {
   if (ink.a > maxAlpha) ink = inkAlpha(ink, maxAlpha)
-  if (worstContrast(ink, grounds) >= floor) return ink
+  if (meetsFloor(ink, grounds, floor)) return ink
 
   const dark = inkAlpha(grayInk(0), maxAlpha)
   const light = inkAlpha(grayInk(1), maxAlpha)
   const extreme = worstContrast(dark, grounds) >= worstContrast(light, grounds) ? dark : light
   const originalAlpha = inkAlpha(extreme, ink.a)
-  if (worstContrast(originalAlpha, grounds) >= floor)
+  if (meetsFloor(originalAlpha, grounds, floor))
     return approachContrast(ink, originalAlpha, grounds, floor)
   const originalHue = inkAlpha(ink, maxAlpha)
-  if (worstContrast(originalHue, grounds) >= floor)
+  if (meetsFloor(originalHue, grounds, floor))
     return approachContrast(ink, originalHue, grounds, floor)
-  if (worstContrast(extreme, grounds) >= floor)
+  if (meetsFloor(extreme, grounds, floor))
     return approachContrast(ink, extreme, grounds, floor)
   return extreme
 }
 
 function dimInk(primary, opacity, grounds, floor) {
   const dim = inkAlpha(primary, primary.a * opacity)
-  if (worstContrast(dim, grounds) >= floor) return dim
-  if (worstContrast(primary, grounds) >= floor) return approachContrast(dim, primary, grounds, floor)
+  if (meetsFloor(dim, grounds, floor)) return dim
+  if (meetsFloor(primary, grounds, floor)) return approachContrast(dim, primary, grounds, floor)
   return primary
 }
 
@@ -444,7 +451,7 @@ function panelInks(palette, opacity) {
     toggleOn: liftInk(palette.toggleOn, rowGrounds, FRAME_CONTRAST),
     toggleOffKnob: liftInk(palette.foreground, rowGrounds.map(ground => compositeInk(palette.offFill, ground)), FRAME_CONTRAST),
     toggleOnKnob: liftInk(palette.accent, rowGrounds.map(ground => compositeInk(palette.onFill, ground)), FRAME_CONTRAST),
-    separator: liftInk(inkAlpha(palette.foreground, 0.12), grounds, FRAME_CONTRAST),
+    separator: liftInk(inkAlpha(palette.foreground, SEPARATOR_ALPHA), grounds, FRAME_CONTRAST),
     focus: liftInk(palette.focus, rowGrounds, FRAME_CONTRAST),
     glyph: frame
   }

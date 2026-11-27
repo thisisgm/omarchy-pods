@@ -79,6 +79,8 @@ Panel {
 
   readonly property int adaptiveStepPercent: 5
   readonly property int phraseIntervalMs: 2800
+  // PanelHero's caption tracking.
+  readonly property real phraseTracking: 1.2
 
   // Ten, matching the stock panels.
   readonly property var activePhrases: [
@@ -158,6 +160,12 @@ Panel {
     cursorIndex = at
   }
 
+  // A scroll moves rows under a still pointer, so only a pointer that moved, or a press, takes the cursor.
+  function pointAt(row, mouse) {
+    if (mouse && !pointerGate.moved(row, mouse)) return
+    focusRow(row.rowName)
+  }
+
   function scrollRowIntoView(row: CursorSurface) {
     if (!cursorFromKeyboard) return
     Qt.callLater(function () {
@@ -179,6 +187,7 @@ Panel {
 
   onOpenedChanged: if (opened) {
     cursorActive = false
+    pointerGate.reset()
     cursorIndex = 0
     pods.refresh()
     Qt.callLater(function () {
@@ -186,6 +195,11 @@ Panel {
       root.panelContent.flick.contentY = 0
       root.panelContent.forceActiveFocus()
     })
+  }
+
+  PointerMoveGate {
+    id: pointerGate
+    referenceItem: root.panelContent
   }
 
   Service {
@@ -244,6 +258,7 @@ Panel {
     implicitHeight: column.implicitHeight
     anchors.fill: parent
     onMoveRequested: function (dx, dy) {
+      pointerGate.reset()
       root.cursorFromKeyboard = true
       if (!root.cursorActive) { root.cursorActive = true; return }
       if (dy !== 0) root.moveCursor(dy)
@@ -320,7 +335,7 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
-              font.letterSpacing: 1.2
+              font.letterSpacing: root.phraseTracking
               elide: Text.ElideRight
             }
           }
@@ -398,7 +413,7 @@ Panel {
               ModeRow {
                 colors: root.rowColors
                 hasCursor: root.rowHasCursor(rowName)
-                onPointed: function (name) { root.focusRow(name) }
+                onPointed: function (row, mouse) { root.pointAt(row, mouse) }
                 onCursorEntered: function (row) { root.scrollRowIntoView(row) }
                 required property var modelData
                 width: parent.width
@@ -412,7 +427,7 @@ Panel {
           SliderRow {
             colors: root.rowColors
             hasCursor: root.rowHasCursor(rowName)
-            onPointed: function (name) { root.focusRow(name) }
+            onPointed: function (row, mouse) { root.pointAt(row, mouse) }
             onCursorEntered: function (row) { root.scrollRowIntoView(row) }
             noiseLevel: pods.adaptiveNoiseLevel
             stepPercent: root.adaptiveStepPercent
@@ -434,7 +449,7 @@ Panel {
           ToggleRow {
             colors: root.rowColors
             hasCursor: root.rowHasCursor(rowName)
-            onPointed: function (name) { root.focusRow(name) }
+            onPointed: function (row, mouse) { root.pointAt(row, mouse) }
             onCursorEntered: function (row) { root.scrollRowIntoView(row) }
             busy: pods.busy
             visible: root.caVisible
@@ -449,7 +464,7 @@ Panel {
           ToggleRow {
             colors: root.rowColors
             hasCursor: root.rowHasCursor(rowName)
-            onPointed: function (name) { root.focusRow(name) }
+            onPointed: function (row, mouse) { root.pointAt(row, mouse) }
             onCursorEntered: function (row) { root.scrollRowIntoView(row) }
             busy: pods.busy
             visible: root.oneBudVisible
@@ -474,7 +489,7 @@ Panel {
           ValueRow {
             colors: root.rowColors
             hasCursor: root.rowHasCursor(rowName)
-            onPointed: function (name) { root.focusRow(name) }
+            onPointed: function (row, mouse) { root.pointAt(row, mouse) }
             onCursorEntered: function (row) { root.scrollRowIntoView(row) }
             width: parent.width
             rowName: "ear"

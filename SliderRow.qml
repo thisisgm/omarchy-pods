@@ -18,11 +18,11 @@ ControlRow {
   implicitHeight: sliderColumn.implicitHeight + Style.spacing.controlGap
 
   HoverHandler {
-    onHoveredChanged: if (hovered) sliderRow.pointed(sliderRow.rowName)
+    onPointChanged: if (hovered) sliderRow.pointed(sliderRow, point.position)
   }
 
   TapHandler {
-    onPressedChanged: if (pressed) sliderRow.pointed(sliderRow.rowName)
+    onPressedChanged: if (pressed) sliderRow.pointed(sliderRow, null)
   }
 
   // PanelSlider reads its knob border from its bar argument in Omarchy 4.5.
