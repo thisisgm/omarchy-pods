@@ -163,17 +163,52 @@ mod tests {
     }
 
     #[test]
+    fn waiting_for_the_first_audio_does_not_count_as_gone() {
+        let (mut rig, device, pipewire) = ready();
+        let uplink = device.pods.uplink();
+        uplink.lose(u32::MAX);
+        let recorder = record(&rig, &pipewire, "capture.wav");
+        wait_mic(&rig, "recording");
+        recorder.wait_frames(frames(SOME), HANG_LIMIT);
+        assert_eq!(uplink.sent_packets(), 0);
+        uplink.lose(0);
+        let through_audio = usize::try_from(recorder.frames_on_disk())
+            .unwrap()
+            .saturating_add(frames(AGAIN));
+        recorder.wait_frames(through_audio, HANG_LIMIT);
+        assert!(first_sound(&recorder.finish()) >= frames(SOME));
+
+        let counted = counts_after_leaving(&rig);
+        let status = rig.status();
+        assert_left_counts(
+            rig.daemon(),
+            &status,
+            0,
+            [counted.underruns, counted.concealed, counted.limited],
+        );
+        let log = rig.daemon().log();
+        assert_eq!(status["mic_span_gone_frames"], 0, "{log}");
+        rig.finish();
+    }
+
+    #[test]
     fn a_recorder_is_logged_linked_then_left_with_its_counters() {
+        // Three missing packets exceed the two-packet concealment limit and restart the run.
+        const RESTART_LOSS: u32 = 3;
         let (mut rig, device, pipewire) = ready();
         let uplink = device.pods.uplink();
         let recorder = record(&rig, &pipewire, "capture.wav");
         wait_mic(&rig, "recording");
-        recorder.wait_frames(frames(SOME), HANG_LIMIT);
+        recorder.wait_frames(frames(AGAIN), HANG_LIMIT);
         wait_packets(&uplink, 1);
         uplink.lose(1);
         wait_packets(&uplink, uplink.sent_packets() + 2);
         read_up_to_now(&rig, &device);
-        drop(recorder.finish());
+        uplink.lose(RESTART_LOSS);
+        rig.wait_status("the restarted run's lost frames", |status| {
+            status["mic_span_restarts"] == 1 && status["mic_span_gone_frames"].as_u64().unwrap() > 0
+        });
+        first_sound(&recorder.finish()[..frames(AGAIN)]);
         let counted = counts_after_leaving(&rig);
         let status = rig.status();
         let daemon = rig.daemon();
@@ -184,6 +219,10 @@ mod tests {
             [counted.underruns, counted.concealed, counted.limited],
         );
         assert_eq!(counted.concealed, u64::from(UNITS_PER_PACKET));
+        assert!(
+            status["mic_span_gone_frames"].as_u64().unwrap() > 0,
+            "{status}"
+        );
         let log = daemon.log();
         let linked = log.lines().position(|line| line == LINKED);
         let left = log.lines().position(|line| line.starts_with(LEFT));

@@ -305,6 +305,41 @@ fn a_read_after_200_ms_hands_out_every_frame_once_in_order() {
 }
 
 #[test]
+fn gone_frames_count_only_after_the_recorder_heard_audio() {
+    let counters = Arc::new(Counters::default());
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::clone(&counters));
+    let mut heard = [1.0; QUANTUM];
+    let latency = Duration::from_millis(u64::from(NODE_LATENCY_MS));
+    let gone = || counters.span_gone_frames.load(Ordering::Relaxed);
+
+    resync.request();
+    reader.read(Duration::ZERO, &mut heard);
+    assert!(silent(&heard));
+    assert_eq!(gone(), 0);
+
+    ring.write((0..2 * QUANTUM).map(|_| SPEECH_FLOOR));
+    ring.publish(ns_of(PERIOD));
+    reader.read(PERIOD + latency, &mut heard);
+    assert!(silent(&heard));
+    assert_eq!(gone(), 0, "the first audio was not yet due");
+
+    reader.read(2 * PERIOD + latency, &mut heard);
+    assert!(!silent(&heard));
+    ring.start_run(Path::Uplink);
+    reader.read(3 * PERIOD + latency, &mut heard);
+    assert_eq!(gone(), u64::try_from(QUANTUM).unwrap());
+
+    counters.reset_span();
+    resync.request();
+    ring.write((0..QUANTUM).map(|_| SPEECH_FLOOR));
+    ring.start_run(Path::Uplink);
+    reader.read(4 * PERIOD + latency, &mut heard);
+    assert!(silent(&heard));
+    assert_eq!(gone(), 0, "the next recorder had yet to hear audio");
+}
+
+#[test]
 fn a_lapped_reader_counts_only_the_frames_the_writer_overwrote() {
     let counters = Arc::new(Counters::default());
     let ring = Arc::new(Ring::new());

@@ -99,7 +99,7 @@ pub struct Counters {
     pub span_sdus: AtomicU64,
     /// Uplink runs restarted by an unexpected unit stamp in this span.
     pub span_restarts: AtomicU64,
-    /// Output frames read as Gone in this span.
+    /// Frames gone after the reader first handed out audio in this span.
     pub span_gone_frames: AtomicU64,
     /// The positive float bits sort in amplitude order.
     span_peak: AtomicU32,

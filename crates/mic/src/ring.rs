@@ -726,7 +726,7 @@ impl Reader {
                 0.0
             }
             frame @ (Frame::Sample { .. } | Frame::Gone) => {
-                if matches!(frame, Frame::Gone) {
+                if matches!(frame, Frame::Gone) && self.heard.is_some() {
                     *gone = gone.saturating_add(1);
                 }
                 self.end_audio(at);
