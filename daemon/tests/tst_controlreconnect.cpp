@@ -28,6 +28,20 @@ private slots:
         QVERIFY(!ControlReconnect::hasAttemptRemaining(0, 0));
     }
 
+    // The regression: ear state arrived, battery did not, and nothing asked again until a level changed 23 s later.
+    void missingBatteryIsRequestedAgainWithinLimit()
+    {
+        using ControlReconnect::shouldRequestBatteryAgain;
+        const int limit = ControlReconnect::batteryRequestLimit;
+
+        QVERIFY(shouldRequestBatteryAgain(false, true, 0));
+        QVERIFY(shouldRequestBatteryAgain(false, true, limit - 1));
+        QVERIFY(!shouldRequestBatteryAgain(false, true, limit));
+        QVERIFY(!shouldRequestBatteryAgain(true, true, 0));
+        // A fully silent link is the handshake and reopen ladder's job, not this one.
+        QVERIFY(!shouldRequestBatteryAgain(false, false, 0));
+    }
+
     // The regression: after three unanswered handshakes the daemon stopped, and the link stayed dead until a restart.
     void silentLinkReopensAfterHandshakesThenGivesUp()
     {

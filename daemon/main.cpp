@@ -799,10 +799,24 @@ private slots:
         QTimer::singleShot(ControlReconnect::statusWaitMs, this,
                            [this, armedFor = QPointer<QBluetoothSocket>(socket)]() {
             // A replacement socket arms its own watchdog.
-            if (!armedFor || armedFor != socket || m_controlStatusSeen) {
+            if (!armedFor || armedFor != socket || m_controlBatterySeen) {
                 return;
             }
             const QString address = m_deviceInfo->bluetoothAddress();
+            if (m_controlStatusSeen) {
+                if (!ControlReconnect::shouldRequestBatteryAgain(m_controlBatterySeen, m_controlStatusSeen,
+                                                                 m_batteryRequestsSent)) {
+                    LOG_WARN("AirPods " << address << " sent no battery after " << m_batteryRequestsSent
+                             << " repeated notification requests, it arrives with the next level change");
+                    return;
+                }
+                ++m_batteryRequestsSent;
+                LOG_INFO("AirPods " << address << " sent ear status but no battery, requesting notifications again ("
+                         << m_batteryRequestsSent << "/" << ControlReconnect::batteryRequestLimit << ")");
+                writePacketToSocket(AirPodsPackets::Connection::REQUEST_NOTIFICATIONS, "Request notifications packet written: ");
+                armControlStatusWatchdog();
+                return;
+            }
             switch (ControlReconnect::nextSilentLinkStep(m_handshakesResent, m_silentLinkReopens)) {
             case ControlReconnect::SilentLinkStep::ResendHandshake:
                 break;
@@ -1204,6 +1218,8 @@ private slots:
             QMetaObject::invokeMethod(this, "parseData", Qt::QueuedConnection, Q_ARG(QByteArray, data));
             QMetaObject::invokeMethod(this, "relayPacketToPhone", Qt::QueuedConnection, Q_ARG(QByteArray, data)); });
             m_controlStatusSeen = false;
+            m_controlBatterySeen = false;
+            m_batteryRequestsSent = 0;
             m_handshakesResent = 0;
             sendHandshake();
             armControlStatusWatchdog();
@@ -1392,6 +1408,7 @@ private slots:
         else if ((data.size() == 22 || data.size() == 12) && data.startsWith(AirPodsPackets::Parse::BATTERY_STATUS))
         {
             m_controlStatusSeen = true;
+            m_controlBatterySeen = true;
             m_silentLinkReopens = 0;
             m_deviceInfo->getBattery()->parsePacket(data);
             m_deviceInfo->updateBatteryStatus();
@@ -1717,6 +1734,8 @@ private:
     bool m_bluezReportedConnected = false;
     // Recovery keeps the previous link's DeviceInfo, so only a report on the current socket proves it is talking.
     bool m_controlStatusSeen = false;
+    bool m_controlBatterySeen = false;
+    int m_batteryRequestsSent = 0;
     int m_handshakesResent = 0;
     // Counts fresh sockets per BlueZ connection, so the ladder in armControlStatusWatchdog cannot loop.
     int m_silentLinkReopens = 0;
