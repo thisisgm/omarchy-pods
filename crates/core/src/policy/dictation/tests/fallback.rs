@@ -49,7 +49,14 @@ fn a_refusal_on_the_last_try_falls_back() {
             Some(ModeOff),
             true,
         ),
-        (SECOND_REFUSAL + 1, Fact::Tick, Some(Stop::Left), None, None, false),
+        (
+            SECOND_REFUSAL + 1,
+            Fact::Tick,
+            Some(Stop::Left),
+            None,
+            None,
+            false,
+        ),
     ]);
 }
 
@@ -58,39 +65,57 @@ fn a_timed_out_start_then_a_refusal_on_the_last_try_falls_back() {
     use DictationRequest::{Mode, ModeOff, Start};
     use MicDictation::Starting;
 
+    const FIRST_START: u64 = MODE_SETTLE_MS;
+    const FIRST_REFUSAL: u64 = FIRST_START + 1;
+    const SECOND_START: u64 = FIRST_REFUSAL + MODE_SETTLE_MS;
+    const SECOND_REFUSAL: u64 = SECOND_START + 1;
+    const LEFT: u64 = SECOND_REFUSAL + 1;
+    const NEW_MODE: u64 = LEFT + 1;
+    const NEW_START: u64 = NEW_MODE + MODE_SETTLE_MS;
+    const RETRY_MODE: u64 = NEW_START + DOAP_START_ANSWER_MS;
+    const RETRY_START: u64 = RETRY_MODE + MODE_SETTLE_MS;
+
     let refused = Fact::Dictation(DictationFact::Refused {
         reason: pods_proto::doap::STOP_REASON_UNSOLICITED,
     });
     let host_stop = DictationRequest::Stop {
         reason: pods_proto::doap::STOP_REASON_HOST,
     };
+    let starting = |at, request| (at, Fact::Tick, None, Some(Starting), vec![request], false);
     let mut session = Session::default();
     for (ms, fact, why, status, wanted, gives_up) in [
-        (1506, Fact::Tick, None, Some(Starting), vec![Mode], false),
-        (1656, Fact::Tick, None, Some(Starting), vec![Start], false),
+        starting(0, Mode),
+        starting(FIRST_START, Start),
         (
-            1657,
+            FIRST_REFUSAL,
             refused.clone(),
             None,
             Some(Starting),
             vec![Mode],
             false,
         ),
-        (1807, Fact::Tick, None, Some(Starting), vec![Start], false),
-        (1808, refused.clone(), None, None, vec![ModeOff], true),
-        (1809, Fact::Tick, Some(Stop::Left), None, vec![], false),
-        (1810, Fact::Tick, None, Some(Starting), vec![Mode], false),
-        (1960, Fact::Tick, None, Some(Starting), vec![Start], false),
+        starting(SECOND_START, Start),
         (
-            2460,
+            SECOND_REFUSAL,
+            refused.clone(),
+            None,
+            None,
+            vec![ModeOff],
+            true,
+        ),
+        (LEFT, Fact::Tick, Some(Stop::Left), None, vec![], false),
+        starting(NEW_MODE, Mode),
+        starting(NEW_START, Start),
+        (
+            RETRY_MODE,
             Fact::Tick,
             None,
             Some(Starting),
             vec![host_stop, Mode],
             false,
         ),
-        (2610, Fact::Tick, None, Some(Starting), vec![Start], false),
-        (2611, refused, None, None, vec![ModeOff], true),
+        starting(RETRY_START, Start),
+        (RETRY_START + 1, refused, None, None, vec![ModeOff], true),
     ] {
         let mut effects = Vec::new();
         assert_eq!(
