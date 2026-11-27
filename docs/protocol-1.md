@@ -386,7 +386,7 @@ The connection stays open after any error reply.
   `Values: off, one, both` for `ear_detection`; `adaptive_level` takes a
   number and gets no such line.
 - When no daemon answers, each prints `Could not connect to OpenPods daemon at
-  <socket> (is it running?)` on stderr and exits 1.
+  <socket> (is it running?)` on stderr and exits 69 (`EX_UNAVAILABLE`).
 - Each reads lines from the daemon of at most 65536 bytes, newline excluded,
   and takes only the shapes given above: a reply with the request's `id` and
   `ok` true carrying the `state` or `result` its `op` gets; a refusal with `ok`

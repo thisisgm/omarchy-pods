@@ -276,10 +276,9 @@ Item {
         root._clearPending()
         root.refresh()
         root._queued = null
-        // Its own field and timer, or the next read wipes it unread; the program that ran, not daemonCurrent now, picks the text.
-        root.actionStatus = commandProcess.command[0] === Model.SET_PROGRAM
-          ? Model.refusalText(commandErr.text || "librepods refused the change")
-          : Model.elideError(commandErr.text || "librepods-ctl rejected the command")
+        // The program that ran picks the fallback because daemonCurrent can change during the read.
+        root.actionStatus = Model.commandFailureText(
+          exitCode, commandProcess.command[0] === Model.SET_PROGRAM, commandErr.text)
         actionStatusTimer.restart()
       }
       if (root._queued) {
