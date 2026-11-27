@@ -36,8 +36,10 @@ Item {
   property string actionStatus: ""
 
   readonly property bool busy: commandProcess.running
-  readonly property string statePath: (Quickshell.env("XDG_STATE_HOME")
-    || Quickshell.env("HOME") + "/.local/state") + "/librepods/status.json"
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME")
+    || Quickshell.env("HOME") + "/.local/state"
+  readonly property string stateDirectory: stateHome + "/librepods"
+  readonly property string statePath: stateDirectory + "/status.json"
   readonly property bool hasAirPods: daemonReachable && connected
   // Battery keeps arriving over BLE while the audio link is down, so it is not gated on connected.
   readonly property bool hasBattery: daemonReachable
@@ -50,7 +52,6 @@ Item {
   // How long an optimistic value is held before the daemon's own state wins.
   readonly property int settleHoldMs: 4000
   readonly property int actionStatusMs: 2200
-  readonly property int stateRetryMs: 2000
 
   // Held over incoming reads until the daemon agrees, so a write already in flight
   // when the click landed cannot snap the control back.
@@ -232,11 +233,33 @@ Item {
     onFileChanged: root.refresh()
   }
 
-  Timer {
-    interval: root.stateRetryMs
-    running: !root.daemonReachable
-    repeat: true
-    onTriggered: root.refresh()
+  function rearmStateWatch() {
+    stateWatch.watchChanges = false
+    stateWatch.watchChanges = true
+    refresh()
+  }
+
+  // FileView watches one parent level, so a new librepods directory can arm the file watch.
+  FileView {
+    id: stateDirectoryWatch
+    path: root.stateDirectory
+    watchChanges: !root.daemonReachable
+    preload: false
+    printErrors: false
+    onFileChanged: root.rearmStateWatch()
+  }
+
+  // On a fresh state home, re-arm both watches before reading any file already published there.
+  FileView {
+    path: root.stateHome
+    watchChanges: !root.daemonReachable
+    preload: false
+    printErrors: false
+    onFileChanged: {
+      stateDirectoryWatch.watchChanges = false
+      stateDirectoryWatch.watchChanges = Qt.binding(() => !root.daemonReachable)
+      root.rearmStateWatch()
+    }
   }
 
   Process {
@@ -246,16 +269,7 @@ Item {
     stdout: StdioCollector { id: stateOut; waitForEnd: true }
     onExited: function (exitCode) {
       if (exitCode !== 0) root.stateGone()
-      else {
-        if (!root.daemonReachable) {
-          // Re-arm after a missing directory, then read once more in case the file
-          // was replaced between the first successful read and attaching the watch.
-          stateWatch.watchChanges = false
-          stateWatch.watchChanges = true
-          root._rereadState = true
-        }
-        root.applyLine(stateOut.text)
-      }
+      else root.applyLine(stateOut.text)
       if (root._rereadState) {
         root._rereadState = false
         root.refresh()
