@@ -60,7 +60,7 @@ impl<'server> Recorder<'server> {
         (node, rate): (&'static str, u32),
     ) -> Self {
         let mut command = server.command("pw-record");
-        // Superwhisper's own arguments, latency and resampler quality included, copied as it passes them.
+        // Pass the stock pw-record flags Superwhisper uses, including its latency and resampler quality.
         command
             .args(["--latency", "20ms", "--rate", &rate.to_string()])
             .args(["--channels", &CHANNELS.to_string()])
