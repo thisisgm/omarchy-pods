@@ -5,6 +5,7 @@ const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
   source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, advertHint, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
+const Contrast = new Function(source + "; return { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks }")()
 
 let failures = 0
 
@@ -253,6 +254,131 @@ check("advertHint of a word this panel does not know", Model.advertHint(intakeDo
 check("advertHint of a file that does not parse", Model.advertHint(Model.parseStatus("")), false)
 check("a_document_without_the_new_keys_hides_their_rows: advertIntake", good.advertIntake, "")
 check("a_document_without_the_new_keys_hides_their_rows: no hint", Model.advertHint(good), false)
+
+// Omarchy 4.5.0-3 colors.toml roles in order: background, foreground, accent, urgent.
+const stockThemes = JSON.parse(Deno.readTextFileSync(new URL("stock-theme-colors.json", import.meta.url)))
+check("all stock themes are in the fixture", Object.keys(stockThemes).length, 23)
+
+// Sample input: "#1a1b26".
+function rgb(hex, a = 1) {
+  return {r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a}
+}
+
+const { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks } = Contrast
+const contrastTable = Deno.args.includes("--contrast-table")
+const panelRows = []
+const barRows = []
+const dimOpacity = 0.6
+const popupAlphas = [1, 0.75, 0.45]
+let unchanged = 0
+let attainable = 0
+let limited = 0
+
+check("black and white are 21:1", contrastRatio(grayInk(0), grayInk(1)), 21)
+check("clear backgrounds can match intermediate ink", worstContrast(grayInk(0.5), [grayInk(0), grayInk(1)]), 1)
+check("grey urgent ink falls back to foreground", huedInk(grayInk(0.5), grayInk(0)), grayInk(0))
+check("coloured urgent ink keeps its role", huedInk(rgb("#f7768e"), grayInk(0)), rgb("#f7768e"))
+
+function measure(label, before, after, grounds, floor, maxAlpha = 1) {
+  const start = worstContrast(before, grounds)
+  const finish = worstContrast(after, grounds)
+  const black = inkAlpha(grayInk(0), maxAlpha)
+  const white = inkAlpha(grayInk(1), maxAlpha)
+  const best = worstContrast(black, grounds) >= worstContrast(white, grounds) ? black : white
+  if (worstContrast(best, grounds) >= floor) {
+    attainable++
+    check(label + " reaches " + floor, finish >= floor, true)
+  } else {
+    limited++
+    check(label + " uses the best attainable extreme", after, best)
+  }
+  return start.toFixed(2) + " / " + finish.toFixed(2) + (finish < floor ? "*" : "")
+}
+
+for (const [name, [backgroundHex, foregroundHex, accentHex, urgentHex]] of Object.entries(stockThemes)) {
+  const background = rgb(backgroundHex)
+  const foreground = rgb(foregroundHex)
+  const accent = huedInk(rgb(accentHex), foreground)
+  const urgent = huedInk(rgb(urgentHex), foreground)
+  for (const alpha of popupAlphas) {
+    const popup = inkAlpha(background, alpha)
+    const grounds = contrastGrounds(popup, 1)
+    const focusFill = inkAlpha(foreground, 0.08)
+    const rowGrounds = grounds.concat(grounds.map(ground => compositeInk(focusFill, ground)))
+    const track = inkAlpha(foreground, 0.18)
+    const offFill = inkAlpha(foreground, 0.04)
+    const palette = {
+      foreground, background: popup, accent, urgent, focusFill, track, offFill, onFill: track,
+      focus: inkAlpha(foreground, 0.25),
+      toggleOff: inkAlpha(foreground, 0.4),
+      toggleOn: foreground
+    }
+    const inks = panelInks(palette, dimOpacity)
+    const dim = inkAlpha(foreground, dimOpacity)
+    const inkChecks = {
+      text: [foreground, rowGrounds, 4.5],
+      quiet: [dim, rowGrounds, 4.5],
+      error: [rgb(urgentHex), grounds, 4.5],
+      hero: [foreground, rowGrounds, 3],
+      quietHero: [dim, rowGrounds, 3],
+      meterFill: [foreground, grounds, 3],
+      lowBattery: [rgb(urgentHex), grounds, 3],
+      meterTrack: [track, grounds, 3],
+      sliderTrack: [track, rowGrounds, 3, 0.99],
+      sliderFill: [foreground, rowGrounds, 3],
+      toggleOff: [palette.toggleOff, rowGrounds, 3],
+      toggleOn: [foreground, rowGrounds, 3],
+      toggleOffKnob: [foreground, rowGrounds.map(ground => compositeInk(offFill, ground)), 3],
+      toggleOnKnob: [foreground, rowGrounds.map(ground => compositeInk(track, ground)), 3],
+      separator: [inkAlpha(foreground, 0.12), grounds, 3],
+      focus: [palette.focus, rowGrounds, 3],
+      glyph: [foreground, rowGrounds, 3]
+    }
+    const ratios = Object.entries(inkChecks).map(([role, [before, ground, floor, maxAlpha]]) => {
+      const label = name + " " + alpha + " " + role
+      return measure(label, before, inks[role], ground, floor, maxAlpha)
+    })
+    if (worstContrast(foreground, rowGrounds) >= 4.5) {
+      unchanged++
+      check(name + " " + alpha + " keeps passing foreground", inks.text, foreground)
+    }
+    check(name + " " + alpha + " quiet text is no louder than primary",
+      worstContrast(inks.quiet, rowGrounds) <= worstContrast(inks.text, rowGrounds) + 1e-9, true)
+    check(name + " " + alpha + " phrase fade reaches the attainable text floor",
+      worstContrast(inkAlpha(inks.quiet, inks.quiet.a * inks.phraseOpacity), rowGrounds)
+        + 1e-9 >= Math.min(4.5, worstContrast(inks.quiet, rowGrounds)), true)
+    check(name + " " + alpha + " track remains translucent", inks.sliderTrack.a < 1, true)
+    panelRows.push([name, alpha, ...ratios].join(" | "))
+  }
+
+  const barCases = [
+    ["opaque", foreground, true], ["glassy", foreground, true], ["glassy", foreground, false],
+    ["none", foreground, true], ["none", background, true]
+  ]
+  const barRatios = []
+  for (const [mode, base, blurred] of barCases) {
+    const grounds = barContrastGrounds(base, background, foreground, background, mode, blurred)
+    const marks = barInks(base, background, foreground, background, mode, blurred, dimOpacity)
+    barRatios.push(
+      measure(name + " " + mode + " bar mark", base, marks.mark, grounds, 3),
+      measure(name + " " + mode + " quiet bar mark", inkAlpha(base, dimOpacity), marks.quiet, grounds, 3))
+  }
+  barRows.push([name, ...barRatios].join(" | "))
+}
+
+const whiteAt45 = contrastGrounds(inkAlpha(grayInk(1), 0.45), 1)
+check("White at 0.45 reaches only 4.41:1 even with black ink", worstContrast(grayInk(0), whiteAt45).toFixed(2), "4.41")
+check("White at 0.45 chooses black as the best attainable extreme", liftInk(grayInk(0.3), whiteAt45, 4.5), grayInk(0))
+check("stock matrix exercises colors that already pass", unchanged > 0, true)
+check("stock matrix exercises opacity limits", limited > 0, true)
+console.log("contrast: " + attainable + " floor checks, " + limited + " best-attainable checks, " + unchanged + " unchanged primary inks")
+
+if (contrastTable) {
+  console.log("<!-- panel -->")
+  console.log(panelRows.join("\n"))
+  console.log("<!-- bar -->")
+  console.log(barRows.join("\n"))
+}
 
 if (failures > 0) {
   console.log(failures + " failed")
