@@ -237,8 +237,30 @@ Deno.test('Plain AirPods hide noise modes (including Off), Max uses Headphones r
     assertEq(ext._percentage.text, '42%', 'headset percentage');
     const headsetRow = ext._batteries.find(b => b.key === 'headset');
     assert(headsetRow.line.visible, 'headset row visible');
-    assertEq(headsetRow.line.children[1].x_align, 'start', 'meter track anchored flush-left');
-    assertEq(headsetRow.fill.width, 77, 'headset meter rounded pixel width (42% of 184)');
+    assertEq(headsetRow.track.x_align, 'start', 'meter track anchored flush-left');
+    assertEq(headsetRow.meta.visible, false, 'headset hides empty meta slot when not charging');
+    assertEq(headsetRow.track.width, 180, 'uncharged headset meter uses wide track');
+    assertEq(headsetRow.fill.width, 76, 'headset meter rounded pixel width (42% of 180)');
+
+    // Charging AirPods Max reveals Charging meta, shrinks track to fit rail, and suppresses low-battery red.
+    harness.emitStatus(makeStatus({
+        device_name: 'AirPods Max',
+        model_name: 'AirPods Max',
+        is_pro_series: false,
+        is_headset: true,
+        supports_adaptive: false,
+        supports_conversational_awareness: false,
+        supports_one_bud_anc: false,
+        left: {available: false, level: 0, charging: false, in_ear: false},
+        right: {available: false, level: 0, charging: false, in_ear: false},
+        case: {available: false, level: 0, charging: false},
+        headset: {available: true, level: 15, charging: true},
+    }));
+    assert(headsetRow.meta.visible, 'charging headset shows meta label');
+    assertEq(headsetRow.meta.text, 'Charging', 'charging headset meta text');
+    assertEq(headsetRow.track.width, 112, 'charging headset meter fits rail alongside Charging label');
+    assertEq(headsetRow.fill.width, 17, 'charging headset fill width (15% of 112)');
+    assert(!headsetRow.fill.has_style_class_name('pods-meter-low'), 'charging headset suppresses low-battery class');
 
     // Disconnected with case battery stays visible as NOT CONNECTED with lid state and controls hidden.
     harness.emitStatus(makeStatus({

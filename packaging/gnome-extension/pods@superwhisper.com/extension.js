@@ -15,7 +15,8 @@ const PROPERTIES = 'org.freedesktop.DBus.Properties';
 const REPLY_TIMEOUT_MS = 5000;
 const SLIDER_DELAY_MS = 180;
 const METER_WIDTH = 148;
-const HEADSET_METER_WIDTH = 184;
+const HEADSET_METER_WIDTH = 180;
+const HEADSET_CHARGING_METER_WIDTH = 112;
 const LOW_BATTERY_PERCENT = 20;
 const MODES = [
     ['Off', 'off', 'supports_noise_off', 0],
@@ -163,20 +164,19 @@ export default class PodsExtension extends Extension {
             });
             const fill = new St.Bin({style_class: 'pods-meter-fill'});
             const track = new St.BoxLayout({
-                style_class: key === 'headset' ? 'pods-meter-track pods-meter-track-wide' : 'pods-meter-track',
+                style_class: 'pods-meter-track',
                 x_align: Clutter.ActorAlign.START,
                 y_align: Clutter.ActorAlign.CENTER,
             });
             track.add_child(fill);
             const percent = new St.Label({style_class: 'pods-battery-pct', y_align: Clutter.ActorAlign.CENTER});
             const meta = new St.Label({style_class: 'pods-battery-meta', y_align: Clutter.ActorAlign.CENTER});
-            meta.visible = key !== 'headset';
             line.add_child(name);
             line.add_child(track);
             line.add_child(percent);
             line.add_child(meta);
             batteryBox.add_child(line);
-            return {key, line, fill, percent, meta};
+            return {key, line, track, fill, percent, meta};
         });
         this._batterySection = this._row(batteryBox, 'pods-section-row');
         this._batterySep = this._separator();
@@ -426,14 +426,19 @@ export default class PodsExtension extends Extension {
 
         this._batterySection.visible = available;
         const fillStyle = this._meterFillStyle();
-        for (const {key, line, fill, percent, meta} of this._batteries) {
+        for (const {key, line, track, fill, percent, meta} of this._batteries) {
             const cell = state[key];
             const show = state.is_headset ? key === 'headset' && !!cell?.available : key !== 'headset' && !!cell?.available;
             line.visible = show;
             if (show) {
                 const level = Math.max(0, Math.min(100, cell.level));
-                const width = key === 'headset' ? HEADSET_METER_WIDTH : METER_WIDTH;
+                const metaText = podMeta(key, cell, state.lid_state);
+                const showMeta = key !== 'headset' || metaText.length > 0;
+                const width = key === 'headset'
+                    ? (showMeta ? HEADSET_CHARGING_METER_WIDTH : HEADSET_METER_WIDTH)
+                    : METER_WIDTH;
                 percent.text = `${level}%`;
+                track.width = width;
                 fill.width = Math.round(width * level / 100);
                 const low = level <= LOW_BATTERY_PERCENT && !cell.charging;
                 if (low) {
@@ -443,7 +448,8 @@ export default class PodsExtension extends Extension {
                     fill.remove_style_class_name('pods-meter-low');
                     fill.style = fillStyle;
                 }
-                meta.text = podMeta(key, cell, state.lid_state);
+                meta.visible = showMeta;
+                meta.text = metaText;
             }
         }
 

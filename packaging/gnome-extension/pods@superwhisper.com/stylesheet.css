@@ -71,10 +71,6 @@
   box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.16);
 }
 
-.pods-meter-track-wide {
-  width: 184px;
-}
-
 .pods-meter-fill {
   height: 6px;
   border-radius: 999px;
