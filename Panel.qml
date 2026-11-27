@@ -44,7 +44,24 @@ Panel {
   readonly property color quiet: inkColor(inks.quiet)
   readonly property color urgent: inkColor(inks.error)
   readonly property color separator: inkColor(inks.separator)
-  readonly property color focusInk: inkColor(inks.focus)
+  readonly property var rowColors: ({
+    foreground: foreground,
+    quiet: quiet,
+    focusFill: focusFill,
+    focusInk: inkColor(inks.focus),
+    trackFill: trackFill,
+    toggleOffFill: toggleOffFill,
+    meterTrack: inkColor(inks.meterTrack),
+    meterFill: inkColor(inks.meterFill),
+    lowBattery: inkColor(inks.lowBattery),
+    glyph: inkColor(inks.glyph),
+    toggleOn: inkColor(inks.toggleOn),
+    toggleOff: inkColor(inks.toggleOff),
+    toggleOnKnob: inkColor(inks.toggleOnKnob),
+    toggleOffKnob: inkColor(inks.toggleOffKnob),
+    sliderTrack: inkColor(inks.sliderTrack),
+    sliderFill: inkColor(inks.sliderFill)
+  })
 
   readonly property bool clearBar: bar ? bar.transparent : false
   readonly property var barInks: Model.barInks(
@@ -60,7 +77,6 @@ Panel {
 
   property int phraseIndex: 0
 
-  readonly property int lowBatteryPercent: 20
   readonly property int adaptiveStepPercent: 5
   readonly property int phraseIntervalMs: 2800
 
@@ -339,14 +355,16 @@ Panel {
 
             // A Max has one battery and no case, so the pod trio would draw two dashes and a phantom case.
             PodRow {
+              colors: root.rowColors
               visible: pods.isHeadset
               width: parent.width
               label: "Headphones"
               pod: ({ level: pods.headsetBattery.level, charging: pods.headsetBattery.charging, inEar: false })
             }
-            PodRow { visible: !pods.isHeadset; width: parent.width; label: "Left"; pod: pods.leftPod }
-            PodRow { visible: !pods.isHeadset; width: parent.width; label: "Right"; pod: pods.rightPod }
+            PodRow { colors: root.rowColors; visible: !pods.isHeadset; width: parent.width; label: "Left"; pod: pods.leftPod }
+            PodRow { colors: root.rowColors; visible: !pods.isHeadset; width: parent.width; label: "Right"; pod: pods.rightPod }
             PodRow {
+              colors: root.rowColors
               visible: !pods.isHeadset
               width: parent.width
               label: "Case"
@@ -378,14 +396,27 @@ Panel {
             Repeater {
               model: root.modes
               ModeRow {
+                colors: root.rowColors
+                hasCursor: root.rowHasCursor(rowName)
+                onPointed: function (name) { root.focusRow(name) }
+                onCursorEntered: function (row) { root.scrollRowIntoView(row) }
                 required property var modelData
                 width: parent.width
                 mode: modelData
+                selectedMode: pods.noiseMode
+                onActivated: function (mode) { pods.setNoiseMode(mode) }
               }
             }
           }
 
           SliderRow {
+            colors: root.rowColors
+            hasCursor: root.rowHasCursor(rowName)
+            onPointed: function (name) { root.focusRow(name) }
+            onCursorEntered: function (row) { root.scrollRowIntoView(row) }
+            noiseLevel: pods.adaptiveNoiseLevel
+            stepPercent: root.adaptiveStepPercent
+            onAdjusted: function (level) { pods.setAdaptiveNoiseLevel(level) }
             visible: root.adaptiveVisible
             width: parent.width
           }
@@ -401,6 +432,11 @@ Panel {
           spacing: Style.spacing.md
 
           ToggleRow {
+            colors: root.rowColors
+            hasCursor: root.rowHasCursor(rowName)
+            onPointed: function (name) { root.focusRow(name) }
+            onCursorEntered: function (row) { root.scrollRowIntoView(row) }
+            busy: pods.busy
             visible: root.caVisible
             width: parent.width
             rowName: "ca"
@@ -411,6 +447,11 @@ Panel {
           }
 
           ToggleRow {
+            colors: root.rowColors
+            hasCursor: root.rowHasCursor(rowName)
+            onPointed: function (name) { root.focusRow(name) }
+            onCursorEntered: function (row) { root.scrollRowIntoView(row) }
+            busy: pods.busy
             visible: root.oneBudVisible
             width: parent.width
             rowName: "onebud"
@@ -431,8 +472,13 @@ Panel {
           spacing: Style.spacing.md
 
           ValueRow {
+            colors: root.rowColors
+            hasCursor: root.rowHasCursor(rowName)
+            onPointed: function (name) { root.focusRow(name) }
+            onCursorEntered: function (row) { root.scrollRowIntoView(row) }
             width: parent.width
             rowName: "ear"
+            onActivated: pods.cycleEarDetection()
             label: "Ear detection"
             value: Model.earDetectionName(pods.earDetectionBehavior)
           }
@@ -479,336 +525,8 @@ Panel {
     }
   }
 
-  component PodRow: Item {
-    id: podRow
-    property string label: ""
-    property var pod: Model.defaultPod()
-    property string meta: ""
-
-    readonly property string metaText: meta !== "" ? meta : Model.podMeta(pod)
-    readonly property bool low: pod.level !== Model.LEVEL_UNKNOWN
-      && pod.level <= root.lowBatteryPercent && !pod.charging
-
-    implicitHeight: podLayout.implicitHeight
-
-    RowLayout {
-      id: podLayout
-      anchors.left: parent.left
-      anchors.right: parent.right
-      spacing: Style.spacing.rowGap
-
-      Text {
-        textFormat: Text.PlainText
-        text: podRow.label
-        color: root.quiet
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        // Style.space(44) was cut for Left, Right and Case, so a longer label takes the room it needs.
-        Layout.preferredWidth: Math.max(Style.space(44), implicitWidth + Style.spacing.controlPaddingX)
-      }
-
-      Rectangle {
-        id: meterTrack
-        Layout.fillWidth: true
-        Layout.alignment: Qt.AlignVCenter
-        implicitHeight: Style.spacing.md
-        radius: height / 2
-        color: root.trackFill
-        border.width: Style.spacing.hairline
-        border.color: root.inkColor(root.inks.meterTrack)
-
-        Rectangle {
-          width: meterTrack.width * Model.levelFraction(podRow.pod.level)
-          height: parent.height
-          radius: parent.radius
-          color: root.inkColor(podRow.low ? root.inks.lowBattery : root.inks.meterFill)
-        }
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: Model.levelText(podRow.pod.level)
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        horizontalAlignment: Text.AlignRight
-        Layout.preferredWidth: Style.space(38)
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: podRow.metaText
-        color: root.quiet
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        elide: Text.ElideRight
-        Layout.preferredWidth: Style.space(56)
-      }
-    }
-  }
-
   component SectionRule: PanelSeparator {
     foreground: root.separator
     strength: root.separator.a
-  }
-
-  component ControlRow: CursorSurface {
-    id: controlRow
-    required property string rowName
-    hasCursor: root.rowHasCursor(rowName)
-    foreground: root.foreground
-    fill: root.focusFill
-    borderSpec: hasCursor ? Border.flat(root.focusInk, Math.max(Style.spacing.hairline, Style.hoverBorderWidth)) : Border.none()
-    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(controlRow)
-  }
-
-  component ModeRow: ControlRow {
-    id: modeRow
-    property int mode: 0
-
-    rowName: "mode:" + mode
-    readonly property bool selected: pods.noiseMode === mode
-
-    implicitHeight: modeLabel.implicitHeight + Style.spacing.rowPaddingX
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: root.focusRow(modeRow.rowName)
-      onClicked: pods.setNoiseMode(modeRow.mode)
-    }
-
-    RowLayout {
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.spacing.controlPaddingX
-      anchors.rightMargin: Style.spacing.controlPaddingX
-      spacing: Style.spacing.rowGap
-
-      Text {
-        textFormat: Text.PlainText
-        id: modeLabel
-        Layout.fillWidth: true
-        text: Model.noiseModeName(modeRow.mode)
-        color: modeRow.selected ? root.foreground : root.quiet
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        elide: Text.ElideRight
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        Layout.alignment: Qt.AlignVCenter
-        text: Model.GLYPH_CHECK
-        color: root.inkColor(root.inks.glyph)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.icon
-        opacity: modeRow.selected ? 1.0 : 0.0
-      }
-    }
-  }
-
-  component ToggleRow: ControlRow {
-    id: toggleRow
-    property string label: ""
-    property string caption: ""
-    property bool checked: false
-
-    signal toggled()
-
-    implicitHeight: Math.max(toggleContent.implicitHeight, toggleSwitch.implicitHeight) + Style.spacing.rowPaddingX
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: root.focusRow(toggleRow.rowName)
-      onClicked: if (!pods.busy) toggleRow.toggled()
-    }
-
-    RowLayout {
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.spacing.controlPaddingX
-      anchors.rightMargin: Style.spacing.controlPaddingX
-      spacing: Style.spacing.rowGap
-
-      ColumnLayout {
-        id: toggleContent
-        Layout.fillWidth: true
-        spacing: Style.spacing.hairline
-
-        Text {
-          textFormat: Text.PlainText
-          Layout.fillWidth: true
-          text: toggleRow.label
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          elide: Text.ElideRight
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          Layout.fillWidth: true
-          text: toggleRow.caption
-          color: root.quiet
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
-        }
-      }
-
-      SwitchMark {
-        id: toggleSwitch
-        Layout.alignment: Qt.AlignVCenter
-        checked: toggleRow.checked
-      }
-    }
-  }
-
-  // ToggleSwitch fixes its knob colors and border alpha internally.
-  component SwitchMark: Rectangle {
-    id: mark
-    property bool checked: false
-    readonly property bool rounded: Style.cornerRadius > 0
-    readonly property real knobSize: Math.max(Style.spacing.md, Math.round(height * 0.72))
-    readonly property real knobInset: Math.max(Style.spacing.hairline, Math.round((height - knobSize) / 2))
-    readonly property bool mirrored: LayoutMirroring.enabled
-
-    implicitHeight: Math.max(Style.space(22), Math.round(Style.spacing.controlHeight * 0.55))
-    implicitWidth: Math.round(implicitHeight * 1.9)
-    radius: rounded ? height / 2 : 0
-    color: checked ? root.trackFill : root.toggleOffFill
-    border.width: Style.spacing.hairline
-    border.color: root.inkColor(checked ? root.inks.toggleOn : root.inks.toggleOff)
-
-    Rectangle {
-      width: mark.knobSize
-      height: width
-      anchors.verticalCenter: parent.verticalCenter
-      x: mark.checked !== mark.mirrored ? mark.width - width - mark.knobInset : mark.knobInset
-      radius: mark.rounded ? width / 2 : 0
-      color: root.inkColor(mark.checked ? root.inks.toggleOnKnob : root.inks.toggleOffKnob)
-      Behavior on x {
-        NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic }
-      }
-    }
-  }
-
-  component ValueRow: ControlRow {
-    id: valueRow
-    property string label: ""
-    property string value: ""
-
-    implicitHeight: valueLabel.implicitHeight + Style.spacing.rowPaddingX
-
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: root.focusRow(valueRow.rowName)
-      onClicked: pods.cycleEarDetection()
-    }
-
-    RowLayout {
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.spacing.controlPaddingX
-      anchors.rightMargin: Style.spacing.controlPaddingX
-      spacing: Style.spacing.rowGap
-
-      Text {
-        textFormat: Text.PlainText
-        id: valueLabel
-        Layout.fillWidth: true
-        text: valueRow.label
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        elide: Text.ElideRight
-      }
-
-      Text {
-        textFormat: Text.PlainText
-        text: valueRow.value
-        color: root.quiet
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        elide: Text.ElideRight
-      }
-    }
-  }
-
-  component SliderRow: ControlRow {
-    id: sliderRow
-    readonly property int adaptiveTickCount: 5
-    rowName: "adaptive"
-    implicitHeight: sliderColumn.implicitHeight + Style.spacing.controlGap
-
-    HoverHandler {
-      onHoveredChanged: if (hovered) root.focusRow("adaptive")
-    }
-
-    TapHandler {
-      onPressedChanged: if (pressed) root.focusRow("adaptive")
-    }
-
-    // PanelSlider reads its knob border from its bar argument in Omarchy 4.5.
-    QtObject {
-      id: sliderPalette
-      readonly property color background: Commons.Color.popups.background
-    }
-
-    Column {
-      id: sliderColumn
-      anchors.left: parent.left
-      anchors.right: parent.right
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.spacing.controlPaddingX
-      anchors.rightMargin: Style.spacing.controlPaddingX
-      spacing: Style.spacing.labelGap
-
-      RowLayout {
-        width: parent.width
-        spacing: Style.spacing.rowGap
-
-        Text {
-          Layout.fillWidth: true
-          textFormat: Text.PlainText
-          text: "Adaptive noise"
-          color: root.quiet
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-        }
-
-        Text {
-          textFormat: Text.PlainText
-          text: pods.adaptiveNoiseLevel + "%"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-        }
-      }
-
-      PanelSlider {
-        width: parent.width
-        bar: sliderPalette
-        trackColor: root.inkColor(root.inks.sliderTrack)
-        fillColor: root.inkColor(root.inks.sliderFill)
-        knobColor: fillColor
-        minimum: 0
-        maximum: 100
-        step: root.adaptiveStepPercent
-        integer: true
-        tickCount: sliderPalette.background.a === 1 ? sliderRow.adaptiveTickCount : 0
-        value: pods.adaptiveNoiseLevel
-        onReleased: function (v) { pods.setAdaptiveNoiseLevel(v) }
-      }
-    }
   }
 }
