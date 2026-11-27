@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "Contrast.js" as Contrast
 import "Model.js" as Model
 
 Panel {
@@ -22,12 +23,12 @@ Panel {
   readonly property bool hideWhenDisconnected: typeof hideSetting === "boolean" ? hideSetting : true
   readonly property color popupText: Commons.Color.popups.text
   readonly property color popupBackground: Commons.Color.popups.background
-  readonly property color sourceAccent: inkColor(Model.huedInk(Commons.Color.accent, popupText))
-  readonly property color sourceUrgent: inkColor(Model.huedInk(Commons.Color.urgent, popupText))
+  readonly property color sourceAccent: inkColor(Contrast.huedInk(Commons.Color.accent, popupText))
+  readonly property color sourceUrgent: inkColor(Contrast.huedInk(Commons.Color.urgent, popupText))
   readonly property color focusFill: Style.hoverFillFor(popupText, sourceAccent, sourceUrgent)
   readonly property color trackFill: Style.selectedFillFor(popupText, sourceAccent, sourceUrgent)
   readonly property color toggleOffFill: Style.normalFillFor(popupText, sourceAccent, sourceUrgent)
-  readonly property var inks: Model.panelInks({
+  readonly property var inks: Contrast.panelInks({
     background: popupBackground,
     foreground: popupText,
     accent: sourceAccent,
@@ -64,7 +65,7 @@ Panel {
   })
 
   readonly property bool clearBar: bar ? bar.transparent : false
-  readonly property var barInks: Model.barInks(
+  readonly property var barInks: Contrast.barInks(
     clearBar ? barForeground : Commons.Color.bar.text,
     Commons.Color.bar.background, Commons.Color.bar.text, Commons.Color.background,
     clearBar ? "none" : bar?.shell?.barConfig?.background,

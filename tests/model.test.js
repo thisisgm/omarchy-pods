@@ -1,11 +1,12 @@
 // Run with: deno run --allow-read tests/model.test.js
-// Model.js has no exports, so it is evaluated here rather than imported.
+// The QML JavaScript files have no exports, so the harness evaluates them directly.
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
   source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, commandFailureText, advertHint, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
-const Contrast = new Function(source + "; return { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks, mixInk, QML_ROUNDING_MARGIN, SEPARATOR_ALPHA }")()
+const contrastSource = Deno.readTextFileSync(new URL("../Contrast.js", import.meta.url))
+const Contrast = new Function(contrastSource + "; return { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks, mixInk, QML_ROUNDING_MARGIN, SEPARATOR_ALPHA }")()
 
 let failures = 0
 
