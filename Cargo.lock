@@ -415,7 +415,6 @@ name = "librepods"
 version = "0.0.0"
 dependencies = [
  "allocation-counter",
- "clap",
  "cpp-source",
  "pods-core",
  "pods-fake",

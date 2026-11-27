@@ -41,15 +41,74 @@ mod tests {
 
     #[test]
     fn version_flag_prints_name_and_version() {
-        let out = Command::new(support::binary())
-            .arg("--version")
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        assert_eq!(
-            String::from_utf8(out.stdout).unwrap(),
-            format!("librepods {}\n", env!("CARGO_PKG_VERSION"))
-        );
+        for flag in ["--version", "-V"] {
+            let out = Command::new(support::binary()).arg(flag).output().unwrap();
+            assert!(out.status.success(), "{flag}");
+            assert!(out.stderr.is_empty(), "{flag}");
+            assert_eq!(
+                String::from_utf8(out.stdout).unwrap(),
+                format!("librepods {}\n", env!("CARGO_PKG_VERSION"))
+            );
+        }
+    }
+
+    #[test]
+    fn help_flags_and_subcommand_print_usage_to_stdout() {
+        for (args, usage) in [
+            (&["-h"][..], "librepods <COMMAND>"),
+            (&["--help"][..], "librepods <COMMAND>"),
+            (&["help"][..], "librepods <COMMAND>"),
+            (&["help", "set"][..], "librepods set <KEY> <VALUE>"),
+            (
+                &["set", "noise", "--help"][..],
+                "librepods set <KEY> <VALUE>",
+            ),
+            (&["do", "-h"][..], "librepods do <ACTION>"),
+            (
+                &["--headless", "--help"][..],
+                "librepods {daemon|--headless}",
+            ),
+        ] {
+            let out = Command::new(support::binary()).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}");
+            assert!(out.stderr.is_empty(), "{args:?}");
+            let text = String::from_utf8(out.stdout).unwrap();
+            assert!(text.contains(&format!("\nUsage: {usage}\n")), "{text}");
+        }
+    }
+
+    #[test]
+    fn parser_failures_print_usage_to_stderr_and_exit_two() {
+        for (args, usage, reason) in [
+            (&[][..], "librepods <COMMAND>", "Commands:"),
+            (
+                &["--bogus"][..],
+                "librepods <COMMAND>",
+                "unexpected argument '--bogus'",
+            ),
+            (
+                &["bogus"][..],
+                "librepods <COMMAND>",
+                "unrecognized subcommand 'bogus'",
+            ),
+            (
+                &["set", "noise"][..],
+                "librepods set <KEY> <VALUE>",
+                "\n  <VALUE>\n",
+            ),
+            (
+                &["do", "connect", "extra"][..],
+                "librepods do <ACTION>",
+                "unexpected argument 'extra'",
+            ),
+        ] {
+            let out = Command::new(support::binary()).args(args).output().unwrap();
+            assert_eq!(out.status.code(), Some(2), "{args:?}");
+            assert!(out.stdout.is_empty(), "{args:?}");
+            let text = String::from_utf8(out.stderr).unwrap();
+            assert!(text.contains(&format!("\nUsage: {usage}\n")), "{text}");
+            assert!(text.contains(reason), "{text}");
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cli::Invocation;
+use cli::{Invocation, ParseError, ParseErrorKind};
 
 const RUNTIME_DIR_VAR: &str = "XDG_RUNTIME_DIR";
 
@@ -105,9 +105,20 @@ fn print_state_dir() -> ExitCode {
     }
 }
 
-/// Prints a clap error, help or version where clap chooses, and exits with clap's code.
-fn report_parse_error(error: &clap::Error) -> ExitCode {
-    // A failed write to the terminal has nowhere left to be reported.
-    drop(error.print());
-    u8::try_from(error.exit_code()).map_or(ExitCode::FAILURE, ExitCode::from)
+fn report_parse_error(error: &ParseError) -> ExitCode {
+    let message = error.message().as_bytes();
+    match error.kind() {
+        ParseErrorKind::DisplayHelp | ParseErrorKind::DisplayVersion => {
+            drop(io::stdout().lock().write_all(message));
+            ExitCode::SUCCESS
+        }
+        ParseErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        | ParseErrorKind::InvalidSubcommand
+        | ParseErrorKind::MissingRequiredArgument
+        | ParseErrorKind::UnknownArgument
+        | ParseErrorKind::InvalidUtf8 => {
+            drop(io::stderr().lock().write_all(message));
+            ExitCode::from(2)
+        }
+    }
 }
