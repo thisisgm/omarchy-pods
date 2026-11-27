@@ -488,7 +488,8 @@ impl Driver {
         let now = self.started.elapsed();
         next.audio_server = server_after(next.audio_server, &fact);
         let connect = if let Fact::Advert(sighting) = &fact {
-            self.policy.advert(&mut next, sighting, now)
+            self.policy
+                .advert(&mut next, sighting, self.machine.active_device(), now)
         } else {
             self.policy.apply(&mut next, &fact);
             None

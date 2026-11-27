@@ -28,6 +28,7 @@ fn lost() -> Fact {
     Fact::Link(Signal::Lost {
         device: device(),
         down_at: None,
+        worn_on_link: false,
     })
 }
 

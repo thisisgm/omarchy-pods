@@ -64,6 +64,24 @@ fn out_of_ear(in_case: bool) -> Sighting {
 }
 
 #[test]
+fn an_active_device_accepts_only_its_own_adverts() {
+    for (saved, accepted) in [(Some(device()), true), (None, false)] {
+        let mut policy = Policy::new(Some(SavedKeys {
+            keys: keys().keys,
+            device: saved,
+        }));
+        let mut state = State::default();
+        let before = state.clone();
+        assert_eq!(
+            policy.advert(&mut state, &ours(), Some(device()), Duration::ZERO),
+            None
+        );
+        assert_eq!(state != before, accepted);
+        assert_eq!(state.advert_device, saved);
+    }
+}
+
+#[test]
 fn a_wear_edge_asks_once_and_steady_wear_never_repeats() {
     let (mut policy, mut state) = listening();
     let mut see = |advert, ms| see_advert(&mut policy, &mut state, advert, ms);
@@ -78,9 +96,13 @@ fn only_a_disconnected_wear_edge_asks_to_connect() {
     let (mut policy, mut state) = listening();
     let now = Duration::ZERO;
     for connection in [0x04, 0x05, 0x06, 0x07, 0x09, 0xff, 0x00] {
-        assert!(policy.advert(&mut state, &out_of_ear(false), now).is_none());
+        assert!(
+            policy
+                .advert(&mut state, &out_of_ear(false), None, now)
+                .is_none()
+        );
         assert_eq!(
-            policy.advert(&mut state, &worn_with_connection(connection), now),
+            policy.advert(&mut state, &worn_with_connection(connection), None, now),
             (connection == 0x00).then_some(device()),
             "wear edge with connection byte {connection:#04x}"
         );
@@ -121,7 +143,7 @@ fn a_manual_disconnect_holds_until_the_case() {
     policy.manual_disconnect();
     let mut see = |advert, ms| {
         policy
-            .advert(&mut state, &advert, Duration::from_millis(ms))
+            .advert(&mut state, &advert, None, Duration::from_millis(ms))
             .is_some()
     };
     assert!(!see(out_of_ear(false), 0));
@@ -136,7 +158,7 @@ fn a_manual_disconnect_needs_ten_continuous_seconds_both_out() {
     policy.manual_disconnect();
     let mut see = |advert, ms| {
         policy
-            .advert(&mut state, &advert, Duration::from_millis(ms))
+            .advert(&mut state, &advert, None, Duration::from_millis(ms))
             .is_some()
     };
     assert!(!see(out_of_ear(false), 0));
@@ -159,25 +181,25 @@ fn the_link_pauses_auto_connect_until_intake_is_listening_again() {
     drop(policy.step(&state, link, start));
     assert!(
         policy
-            .advert(&mut state, &out_of_ear(false), start)
+            .advert(&mut state, &out_of_ear(false), None, start)
             .is_none()
     );
-    assert!(policy.advert(&mut state, &ours(), start).is_none());
+    assert!(policy.advert(&mut state, &ours(), None, start).is_none());
     drop(policy.step(&state, Fact::Link(link_down()), start));
     assert!(
         policy
-            .advert(&mut state, &out_of_ear(false), start)
+            .advert(&mut state, &out_of_ear(false), None, start)
             .is_none()
     );
-    assert!(policy.advert(&mut state, &ours(), start).is_none());
+    assert!(policy.advert(&mut state, &ours(), None, start).is_none());
     policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
     assert!(
         policy
-            .advert(&mut state, &out_of_ear(false), start)
+            .advert(&mut state, &out_of_ear(false), None, start)
             .is_none()
     );
     assert!(
-        policy.advert(&mut state, &ours(), start).is_some(),
+        policy.advert(&mut state, &ours(), None, start).is_some(),
         "listening again"
     );
 }
@@ -207,7 +229,7 @@ fn an_open_case_clears_the_hold_only_with_both_buds_charging() {
         policy.manual_disconnect();
         let mut see = |advert, ms| {
             policy
-                .advert(&mut state, &advert, Duration::from_millis(ms))
+                .advert(&mut state, &advert, None, Duration::from_millis(ms))
                 .is_some()
         };
         assert!(!see(out_of_ear(false), 0));
@@ -222,7 +244,7 @@ fn a_monitor_gap_forgets_the_wear_seen_before_it() {
         let (mut policy, mut state) = listening();
         assert!(
             policy
-                .advert(&mut state, &out_of_ear(false), Duration::ZERO)
+                .advert(&mut state, &out_of_ear(false), None, Duration::ZERO)
                 .is_none()
         );
         let gap = Fact::Monitor(gap);
@@ -231,7 +253,7 @@ fn a_monitor_gap_forgets_the_wear_seen_before_it() {
         policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
         assert!(
             policy
-                .advert(&mut state, &ours(), Duration::from_millis(1))
+                .advert(&mut state, &ours(), None, Duration::from_millis(1))
                 .is_none(),
             "no edge across the gap"
         );
@@ -242,14 +264,18 @@ fn a_monitor_gap_forgets_the_wear_seen_before_it() {
 fn a_link_between_out_and_worn_adverts_is_not_a_wear_edge() {
     let (mut policy, mut state) = listening();
     let now = Duration::ZERO;
-    assert!(policy.advert(&mut state, &out_of_ear(false), now).is_none());
+    assert!(
+        policy
+            .advert(&mut state, &out_of_ear(false), None, now)
+            .is_none()
+    );
     let link = Fact::Link(up());
     policy.apply(&mut state, &link);
     drop(policy.step(&state, link, now));
     drop(policy.step(&state, Fact::Link(link_down()), now));
     policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
     assert!(
-        policy.advert(&mut state, &ours(), now).is_none(),
+        policy.advert(&mut state, &ours(), None, now).is_none(),
         "no edge across a link"
     );
 }
@@ -258,7 +284,11 @@ fn a_link_between_out_and_worn_adverts_is_not_a_wear_edge() {
 fn a_payload_key_change_between_adverts_is_not_a_wear_edge() {
     let (mut policy, mut state) = listening();
     let now = Duration::ZERO;
-    assert!(policy.advert(&mut state, &out_of_ear(false), now).is_none());
+    assert!(
+        policy
+            .advert(&mut state, &out_of_ear(false), None, now)
+            .is_none()
+    );
     let renewed = Keys {
         identity: IDENTITY_KEY,
         payload: [0x22; 16],
@@ -272,7 +302,7 @@ fn a_payload_key_change_between_adverts_is_not_a_wear_edge() {
         data: worn.data,
     };
     assert!(
-        policy.advert(&mut state, &sighting, now).is_none(),
+        policy.advert(&mut state, &sighting, None, now).is_none(),
         "no edge across a key change"
     );
 }
@@ -283,10 +313,14 @@ fn a_link_after_a_manual_disconnect_ends_the_hold() {
     policy.manual_disconnect();
     assert!(
         policy
-            .advert(&mut state, &out_of_ear(false), Duration::ZERO)
+            .advert(&mut state, &out_of_ear(false), None, Duration::ZERO)
             .is_none()
     );
-    assert!(policy.advert(&mut state, &ours(), Duration::ZERO).is_none());
+    assert!(
+        policy
+            .advert(&mut state, &ours(), None, Duration::ZERO)
+            .is_none()
+    );
     let link = Fact::Link(up());
     policy.apply(&mut state, &link);
     drop(policy.step(&state, link, Duration::ZERO));
@@ -294,12 +328,12 @@ fn a_link_after_a_manual_disconnect_ends_the_hold() {
     policy.apply(&mut state, &Fact::Monitor(MonitorFact::Registered));
     assert!(
         policy
-            .advert(&mut state, &out_of_ear(false), Duration::ZERO)
+            .advert(&mut state, &out_of_ear(false), None, Duration::ZERO)
             .is_none()
     );
     assert!(
         policy
-            .advert(&mut state, &ours(), Duration::from_millis(1))
+            .advert(&mut state, &ours(), None, Duration::from_millis(1))
             .is_some(),
         "the hold ended with the link"
     );
@@ -313,7 +347,7 @@ fn listening() -> (Policy, State) {
 
 fn see_advert(policy: &mut Policy, state: &mut State, sighting: Sighting, ms: u64) -> bool {
     let now = Duration::from_millis(ms);
-    let connect = policy.advert(state, &sighting, now).is_some();
+    let connect = policy.advert(state, &sighting, None, now).is_some();
     if connect {
         policy.connect_attempted(now);
     }
@@ -336,6 +370,7 @@ fn lost() -> Signal {
     Signal::Lost {
         device: device(),
         down_at: None,
+        worn_on_link: false,
     }
 }
 
@@ -353,7 +388,7 @@ fn advertised(mut policy: Policy, sighting: Sighting) -> State {
     let mut state = State::default();
     assert!(
         policy
-            .advert(&mut state, &sighting, Duration::ZERO)
+            .advert(&mut state, &sighting, None, Duration::ZERO)
             .is_none()
     );
     state
@@ -373,6 +408,7 @@ fn an_advert_from_our_pods_sets_what_the_cpp_sets() {
         primary: Some(pods_proto::battery::Component::Left),
         ear: EarReport::from_in_ear(false, true),
         lid_state: LidState::Open,
+        advert_device: Some(device()),
         ..State::default()
     };
     assert_eq!(state, wanted);

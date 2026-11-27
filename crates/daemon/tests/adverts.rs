@@ -9,6 +9,10 @@
 mod support;
 
 #[cfg(test)]
+#[path = "adverts/pairs.rs"]
+mod pairs;
+
+#[cfg(test)]
 #[path = "adverts/wear.rs"]
 mod wear;
 
@@ -335,6 +339,7 @@ mod tests {
     fn a_closed_channel_with_the_pods_still_connected_reads_adverts_until_it_reopens() {
         let mut rig = keyed();
         let device = rig.add_pods(Profile::default());
+        rig.session().store_sample_keys(Some(device.address));
         rig.start();
         wait_intake(&rig, "listening");
         rig.link_up(&device);

@@ -114,9 +114,10 @@ impl Policy {
         &mut self,
         state: &mut State,
         sighting: &Sighting,
+        active_device: Option<BdAddr>,
         now: Duration,
     ) -> Option<BdAddr> {
-        self.adverts.read(state, sighting, now)
+        self.adverts.read(state, sighting, active_device, now)
     }
 
     pub fn manual_disconnect(&mut self) {

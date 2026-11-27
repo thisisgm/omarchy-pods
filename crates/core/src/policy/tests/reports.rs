@@ -93,6 +93,7 @@ fn a_pause_report_from_before_a_loss_is_dropped_after_the_relink() {
     let lost = Signal::Lost {
         device: device(),
         down_at: Some(now),
+        worn_on_link: true,
     };
     drop(policy.step(&state, Fact::Link(lost), now));
     state.connected = true;

@@ -3,7 +3,7 @@
 use pods_proto::addr::BdAddr;
 
 use super::ladder::Attempt;
-use super::{Action, Call, DeviceAction, Machine, Phase, Session, Ticket, raise, resolve};
+use super::{Action, Call, DeviceAction, Machine, Phase, Session, Signal, Ticket, raise, resolve};
 use crate::command::{CommandError, Outcome};
 use crate::state::{Counters, State};
 
@@ -27,6 +27,29 @@ impl DeviceAction {
 }
 
 impl Machine {
+    #[must_use]
+    pub fn active_device(&self) -> Option<BdAddr> {
+        self.active
+    }
+
+    /// Signals `Lost` when a device had the session; the caller forgets a removed device after this.
+    pub(super) fn reset(&mut self, state: &mut State) -> Option<Action> {
+        let lost = self.active.map(|device| {
+            Action::Signal(Signal::Lost {
+                device,
+                down_at: self.populated.then_some(self.down_at),
+                worn_on_link: self.worn_on_link,
+            })
+        });
+        state.reset_device();
+        self.active = None;
+        self.held = false;
+        self.populated = false;
+        self.worn_on_link = false;
+        self.spend_disconnects();
+        lost
+    }
+
     /// Connects only if the tracked device supplied the keys that resolved the advert.
     #[must_use]
     pub fn connect_when_worn(&self, state: &mut State, device: BdAddr) -> Option<(BdAddr, Call)> {

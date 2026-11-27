@@ -12,7 +12,7 @@ use super::sim::{Answer, Input, NO_ACTIONS, Sim, addr, ms};
 use crate::command::tests::level;
 use crate::command::{Command, CommandError, NoiseTarget, Outcome};
 use crate::link::ladder::{Attempt, KNOWN_MAX};
-use crate::link::{DeviceAction, Event, Machine, Phase};
+use crate::link::{Action, DeviceAction, Event, Machine, Phase};
 use crate::prefs::{MicModels, MicPref};
 use crate::state::{AdvertIntake, AudioServer, EarDetectionBehavior, LidState, Microphone, State};
 
@@ -498,6 +498,34 @@ const CPP_RESET: [(&str, &str); 8] = [
 ];
 
 #[test]
+fn opening_keeps_only_readings_attributed_to_the_connecting_pair() {
+    for (owner, expected) in [
+        (Some(addr(0)), LidState::Open),
+        (Some(addr(1)), LidState::Unknown),
+        (None, LidState::Unknown),
+    ] {
+        let mut machine = Machine::new();
+        let mut state = State {
+            advert_device: owner,
+            lid_state: LidState::Open,
+            model: Model::AirPodsPro3,
+            ..State::default()
+        };
+        assert_eq!(
+            machine.step(&mut state, Event::DeviceUp(addr(0)), ms(0)),
+            [Action::OpenChannel(addr(0))]
+        );
+        assert_eq!(state.lid_state, expected, "keys from {owner:?}");
+        let model = if owner == Some(addr(0)) {
+            Model::AirPodsPro3
+        } else {
+            Model::Unknown
+        };
+        assert_eq!(state.model, model, "keys from {owner:?}");
+    }
+}
+
+#[test]
 fn reset_device_covers_the_cpp_reset() {
     let statements: Vec<&str> = DEVICE_INFO
         .body("void reset()")
@@ -540,6 +568,7 @@ fn reset_device_covers_the_cpp_reset() {
         primary: Some(Component::Left),
         ear_detection_behavior: EarDetectionBehavior::Disabled,
         lid_state: LidState::Open,
+        advert_device: Some(addr(0)),
         counters: crate::state::Counters {
             reconnect_failures: 3,
             ..Default::default()
@@ -565,6 +594,8 @@ fn reset_device_covers_the_cpp_reset() {
             batteries: defaults.batteries,
             ear: defaults.ear,
             primary: None,
+            lid_state: LidState::Unknown,
+            advert_device: None,
             ..kept
         }
     );

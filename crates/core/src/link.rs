@@ -121,6 +121,7 @@ pub enum Signal {
     Lost {
         device: BdAddr,
         down_at: Option<Duration>,
+        worn_on_link: bool,
     },
     /// The pods answered the proximity keys request.
     Keys(SavedKeys),
@@ -186,6 +187,10 @@ pub const STATE_POPULATED_LINE: &str = "link: state populated";
 
 /// The link session: which device has it, what BlueZ last said, and the phase.
 #[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag remembers a separate link or channel observation"
+)]
 pub struct Machine {
     phase: Phase,
     /// The device that has the session.
@@ -194,6 +199,8 @@ pub struct Machine {
     held: bool,
     /// The link reached `Up` since the last device reset.
     populated: bool,
+    /// Wear reported on this connection, or a model without wear detection.
+    worn_on_link: bool,
     /// The last step that began in `Up`, which is when the link last left it.
     down_at: Duration,
     /// Wear at channel loss, kept while BlueZ still reports the same device connected.
@@ -312,6 +319,9 @@ impl Machine {
                 Vec::new()
             }
             (P::Idle, E::DeviceUp(device)) => {
+                if state.advert_device != Some(device) {
+                    state.reset_device();
+                }
                 self.remember(device);
                 self.active = Some(device);
                 self.open(state, device, Attempt::Held(1))
@@ -733,22 +743,6 @@ impl Machine {
         self.enter(state, Phase::Idle);
         actions.push(Action::Sweep);
         actions
-    }
-
-    /// Signals `Lost` when a device had the session; the caller forgets a removed device after this.
-    fn reset(&mut self, state: &mut State) -> Option<Action> {
-        let lost = self.active.map(|device| {
-            Action::Signal(Signal::Lost {
-                device,
-                down_at: self.populated.then_some(self.down_at),
-            })
-        });
-        state.reset_device();
-        self.active = None;
-        self.held = false;
-        self.populated = false;
-        self.spend_disconnects();
-        lost
     }
 
     fn is_active(&self, device: BdAddr) -> bool {

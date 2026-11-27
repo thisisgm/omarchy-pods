@@ -288,6 +288,7 @@ fn stepped(event: Event, column: Column) -> (Fact, Duration, State) {
             Fact::Link(Signal::Lost {
                 device: device(),
                 down_at: None,
+                worn_on_link: false,
             }),
             SOON,
         ),
@@ -573,6 +574,7 @@ fn the_exit_is_answered_once_the_uplink_is_stopped_and_restored() {
     let lost = Fact::Link(Signal::Lost {
         device: device(),
         down_at: None,
+        worn_on_link: false,
     });
     let mut restoring = mic(phase(Kind::Restoring));
     let exit = restoring.step(&state, &Fact::Exit, SENT);

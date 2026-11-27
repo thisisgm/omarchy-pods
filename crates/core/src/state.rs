@@ -1,3 +1,4 @@
+use pods_proto::addr::BdAddr;
 use pods_proto::battery::{Batteries, Component};
 use pods_proto::ear::EarReport;
 use pods_proto::model::{Capabilities, Model, canonical_model_number};
@@ -30,6 +31,8 @@ pub struct State {
     pub primary: Option<Component>,
     pub ear_detection_behavior: EarDetectionBehavior,
     pub lid_state: LidState,
+    /// The device whose proximity advert supplied the readings, if its keys identified it.
+    pub advert_device: Option<BdAddr>,
     pub counters: Counters,
     /// Whether the policy sends desktop notices.
     pub notifications: bool,
@@ -58,6 +61,7 @@ impl Default for State {
             primary: None,
             ear_detection_behavior: EarDetectionBehavior::default(),
             lid_state: LidState::default(),
+            advert_device: None,
             counters: Counters::default(),
             // The C++ `Notifier` starts enabled.
             notifications: true,
@@ -83,6 +87,8 @@ impl State {
         self.batteries = Batteries::default();
         self.ear = EarReport::default();
         self.primary = None;
+        self.lid_state = LidState::default();
+        self.advert_device = None;
     }
 
     /// The pods' own report when they sent one, else the model table.

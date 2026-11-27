@@ -42,6 +42,7 @@ impl Machine {
                 Vec::new()
             }
             Incoming::Ear(report) => {
+                self.worn_on_link |= report.any_in_ear();
                 state.ear = report;
                 Vec::new()
             }
@@ -56,6 +57,7 @@ impl Machine {
             }
             Incoming::Metadata(metadata) => {
                 state.model = Model::from_number(&metadata.model_number);
+                self.worn_on_link |= !state.capabilities().ear_detection;
                 state.model_number = metadata.model_number;
                 state.device_name = metadata.name;
                 // As the C++ daemon asks, with no wait and no retry: pods that never answer cost nothing.

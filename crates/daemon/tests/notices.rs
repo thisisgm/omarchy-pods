@@ -16,6 +16,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use pods_fake::{Fault, Profile};
+    use pods_samples::Placed::{InCase, InEar};
     use rustix::process::{getpid, set_child_subreaper};
     use serde_json::Value;
 
@@ -23,7 +24,7 @@ mod tests {
     use super::support::omarchy::{
         DISCONNECT_NOTICE, Mood, NOTIFY_WAIT, PROGRAM, RECORDED_WITHIN, REFUSAL, loss_is_announced,
     };
-    use super::support::rig::{ABSENT_GRACE, REAL_TIME_SLACK, Rig, assert_gap};
+    use super::support::rig::{ABSENT_GRACE, Device, REAL_TIME_SLACK, Rig, assert_gap};
     use super::support::{HANG_LIMIT, pause, wait_for};
 
     /// The daemon's wait for the notifier to stop.
@@ -73,6 +74,58 @@ mod tests {
         let (rig, device) = Rig::with_linked_pods();
         loss_is_announced(&rig, &device);
         rig.finish();
+    }
+
+    #[test]
+    fn a_link_that_filled_in_the_case_sends_no_disconnect_notice() {
+        let (mut rig, device) = linked_in_case(Profile::default());
+        rig.link_down(&device);
+        rig.wait_entered("idle", 1);
+        rig.omarchy().never_ran(RECORDED_WITHIN);
+        rig.finish();
+    }
+
+    #[test]
+    fn wear_before_a_channel_reopen_and_return_to_case_still_announces_loss() {
+        let (rig, device) = linked_in_case(Profile::default());
+        device.pods.set_ear(InEar, InCase);
+        rig.wait_status("one bud worn", |status| {
+            status["right"]["in_ear"] == true && status["left"]["in_ear"] == false
+        });
+        device.pods.set_ear(InCase, InCase);
+        rig.wait_status("both buds in the case", |status| {
+            status["left"]["in_ear"] == false && status["right"]["in_ear"] == false
+        });
+        rig.close_channel(&device);
+        rig.accept(&device);
+        rig.wait_filled();
+        loss_is_announced(&rig, &device);
+        rig.finish();
+    }
+
+    #[test]
+    fn an_unmapped_model_in_the_case_still_announces_loss() {
+        let (rig, device) = linked_in_case(Profile {
+            model_number: "A0000".to_owned(),
+            ..Profile::default()
+        });
+        loss_is_announced(&rig, &device);
+        rig.finish();
+    }
+
+    fn linked_in_case(profile: Profile) -> (Rig, Device) {
+        let mut rig = Rig::new();
+        let device = rig.add_pods(Profile {
+            primary: InCase,
+            secondary: InCase,
+            ..profile
+        });
+        rig.start();
+        rig.link_up(&device);
+        let status = rig.wait_filled();
+        assert_eq!(status["left"]["in_ear"], false);
+        assert_eq!(status["right"]["in_ear"], false);
+        (rig, device)
     }
 
     #[test]

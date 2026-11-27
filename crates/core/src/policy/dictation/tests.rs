@@ -252,6 +252,7 @@ fn table_failures_are_terminal_until_a_new_link() {
                     Fact::Link(Signal::Lost {
                         device: device(),
                         down_at: None,
+                        worn_on_link: false,
                     }),
                     Off,
                 )
