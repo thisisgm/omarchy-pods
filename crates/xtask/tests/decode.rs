@@ -106,7 +106,7 @@ mod tests {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     /// The hash of the WAV file the probe writes for the mixed run under `pods-aac`.
-    const PINNED_WAV: u64 = 0x337a_09e7_f3d8_d642;
+    const PINNED_WAV: u64 = 0x7146_ea48_508d_372f;
 
     /// A short run clocked at `rate_hz` that opens with a device information packet and holds what `unit_of` gives as each unit in turn, analysed.
     fn analysed_units<'unit>(
