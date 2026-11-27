@@ -213,74 +213,76 @@ fn display_help(kind: ParseErrorKind, command: Option<Command>) -> ParseError {
 
 // Sample input: `/bin/librepods-ctl` with `["noise:anc"]`, or `librepods` with `["ctl", "status"]`.
 pub(crate) fn parse(argv0: &OsStr, args: &[OsString]) -> Result<Invocation, ParseError> {
-    let legacy_name = Path::new(argv0).file_name() == Some(OsStr::new(LEGACY_CLIENT_NAME));
-    let invalid_utf8 = || {
-        let command = args
-            .first()
-            .and_then(|word| word.to_str())
-            .and_then(|name| {
-                if option_name(name) == Some("--headless") {
-                    Some(Command::Daemon)
-                } else {
-                    Command::named(name)
-                }
-            });
-        if legacy_name || command == Some(Command::Ctl) {
-            ParseError::new(
-                ParseErrorKind::InvalidUtf8,
-                format!("error: {INVALID_UTF8}\n"),
-            )
-        } else {
-            ParseError::usage(
-                ParseErrorKind::InvalidUtf8,
-                INVALID_UTF8,
-                &command.map_or(ROOT_HELP, Command::help),
-            )
-        }
-    };
-    let args: Vec<_> = args
-        .iter()
-        .map(|word| word.to_str())
-        .collect::<Option<_>>()
-        .ok_or_else(invalid_utf8)?;
+    if Path::new(argv0).file_name() == Some(OsStr::new(LEGACY_CLIENT_NAME)) {
+        return legacy(LEGACY_CLIENT_NAME, args);
+    }
+    let root_invalid_utf8 =
+        || ParseError::usage(ParseErrorKind::InvalidUtf8, INVALID_UTF8, &ROOT_HELP);
     if argv0.to_str().is_none() {
-        return Err(invalid_utf8());
+        return Err(root_invalid_utf8());
     }
-    if legacy_name {
-        return Ok(legacy(LEGACY_CLIENT_NAME, &args));
-    }
-    match args.as_slice() {
-        [] | ["--"] => Err(display_help(
+    let Some((first, rest)) = args.split_first() else {
+        return Err(display_help(
             ParseErrorKind::DisplayHelpOnMissingArgumentOrSubcommand,
             None,
-        )),
-        ["--", name, ..] if Command::named(name).is_some() => Err(ParseError::usage(
-            ParseErrorKind::UnknownArgument,
-            &format!(
-                "unexpected argument '{name}' found\n\n  tip: subcommand '{name}' exists; to use it, remove the '--' before it"
+        ));
+    };
+    let word = first.to_str().ok_or_else(root_invalid_utf8)?;
+    if word == "--" {
+        let rest = utf8_words(rest, &ROOT_HELP)?;
+        return Err(match rest.as_slice() {
+            [] => display_help(
+                ParseErrorKind::DisplayHelpOnMissingArgumentOrSubcommand,
+                None,
             ),
-            &ROOT_HELP,
-        )),
-        ["--", name, ..] => Err(invalid_subcommand(name, &ROOT_HELP)),
-        [word, rest @ ..] => match option_name(word) {
-            Some("--headless") => parse_command(Command::Daemon, rest),
-            Some(option) => Err(parse_option(word, option, None)),
-            None => match Command::named(word) {
-                Some(command) => parse_command(command, rest),
-                None => Err(invalid_subcommand(word, &ROOT_HELP)),
-            },
-        },
+            [name, ..] if Command::named(name).is_some() => ParseError::usage(
+                ParseErrorKind::UnknownArgument,
+                &format!(
+                    "unexpected argument '{name}' found\n\n  tip: subcommand '{name}' exists; to use it, remove the '--' before it"
+                ),
+                &ROOT_HELP,
+            ),
+            [name, ..] => invalid_subcommand(name, &ROOT_HELP),
+        });
+    }
+    match option_name(word) {
+        Some("--headless") => parse_command(Command::Daemon, rest),
+        Some(option) => {
+            let _rest = utf8_words(rest, &ROOT_HELP)?;
+            Err(parse_option(word, option, None))
+        }
+        None => {
+            if let Some(command) = Command::named(word) {
+                parse_command(command, rest)
+            } else {
+                let _rest = utf8_words(rest, &ROOT_HELP)?;
+                Err(invalid_subcommand(word, &ROOT_HELP))
+            }
+        }
     }
 }
 
-fn legacy(program: &'static str, words: &[&str]) -> Invocation {
+fn utf8_words<'a>(words: &'a [OsString], help: &Help<'_>) -> Result<Vec<&'a str>, ParseError> {
     words
-        .first()
-        .map_or(Invocation::LegacyUsage { program }, |verb| {
-            Invocation::LegacyClient {
-                verb: (*verb).to_owned(),
-            }
-        })
+        .iter()
+        .map(|word| word.to_str())
+        .collect::<Option<_>>()
+        .ok_or_else(|| ParseError::usage(ParseErrorKind::InvalidUtf8, INVALID_UTF8, help))
+}
+
+fn legacy(program: &'static str, words: &[OsString]) -> Result<Invocation, ParseError> {
+    let Some(verb) = words.first() else {
+        return Ok(Invocation::LegacyUsage { program });
+    };
+    match verb.to_str() {
+        Some(verb) => Ok(Invocation::LegacyClient {
+            verb: verb.to_owned(),
+        }),
+        None => Err(ParseError::new(
+            ParseErrorKind::InvalidUtf8,
+            format!("error: {INVALID_UTF8}\n"),
+        )),
+    }
 }
 
 fn invalid_subcommand(name: &str, help: &Help<'_>) -> ParseError {
@@ -292,34 +294,30 @@ fn invalid_subcommand(name: &str, help: &Help<'_>) -> ParseError {
 }
 
 // Sample input: `["noise", "--", "-1"]` for `set`.
-fn parse_command(command: Command, words: &[&str]) -> Result<Invocation, ParseError> {
-    match command {
-        Command::Ctl => {
-            let operands = words.strip_prefix(&["--"]).unwrap_or(words);
-            return Ok(legacy(CTL_SUBCOMMAND_PROGRAM, operands));
-        }
-        Command::Help => {
-            return Err(match words {
-                [] => display_help(ParseErrorKind::DisplayHelp, None),
-                [name, rest @ ..] => match (Command::named(name), rest) {
-                    (Some(topic), []) => display_help(ParseErrorKind::DisplayHelp, Some(topic)),
-                    (Some(topic), [extra, ..]) => invalid_subcommand(extra, &topic.help()),
-                    (None, _) => invalid_subcommand(name, &ROOT_HELP),
-                },
-            });
-        }
-        Command::Daemon
-        | Command::Status
-        | Command::Watch
-        | Command::Set
-        | Command::Do
-        | Command::StateDir => {}
+fn parse_command(command: Command, words: &[OsString]) -> Result<Invocation, ParseError> {
+    if command == Command::Ctl {
+        let operands = match words.split_first() {
+            Some((first, rest)) if first == "--" => rest,
+            _ => words,
+        };
+        return legacy(CTL_SUBCOMMAND_PROGRAM, operands);
+    }
+    let help = command.help();
+    let words = utf8_words(words, &help)?;
+    if command == Command::Help {
+        return Err(match words.as_slice() {
+            [] => display_help(ParseErrorKind::DisplayHelp, None),
+            [name, rest @ ..] => match (Command::named(name), rest) {
+                (Some(topic), []) => display_help(ParseErrorKind::DisplayHelp, Some(topic)),
+                (Some(topic), [extra, ..]) => invalid_subcommand(extra, &topic.help()),
+                (None, _) => invalid_subcommand(name, &ROOT_HELP),
+            },
+        });
     }
 
-    let help = command.help();
     let mut operands = Vec::new();
     let mut literal = false;
-    for &word in words {
+    for &word in &words {
         if !literal {
             if word == "--" {
                 literal = true;
@@ -371,6 +369,7 @@ fn option_name(word: &str) -> Option<&str> {
     word.get(..=first.len_utf8())
 }
 
+// Sample input: `word = "--help=topic"`, `name = "--help"`, `command = None`.
 fn parse_option(word: &str, name: &str, command: Option<Command>) -> ParseError {
     let help = command.map_or(ROOT_HELP, Command::help);
     let kind = match name {
@@ -578,17 +577,34 @@ mod tests {
                 OsString::from("noise"),
                 invalid.clone(),
             ],
-            vec![
-                OsString::from("ctl"),
-                OsString::from("status"),
-                invalid.clone(),
-            ],
+            vec![OsString::from("ctl"), invalid.clone()],
         ] {
             let error = parse(OsStr::new("librepods"), &words).unwrap_err();
             assert_eq!(error.kind(), ErrorKind::InvalidUtf8);
         }
         let error = parse(&invalid, &[]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidUtf8);
+    }
+
+    #[test]
+    fn legacy_client_ignores_non_utf8_trailing_arguments() {
+        let invalid = OsString::from_vec(vec![0xff]);
+        assert_eq!(
+            parse(
+                OsStr::new("librepods-ctl"),
+                &[OsString::from("status"), invalid.clone()],
+            )
+            .unwrap(),
+            client("status")
+        );
+        assert_eq!(
+            parse(
+                OsStr::new("librepods"),
+                &[OsString::from("ctl"), OsString::from("status"), invalid],
+            )
+            .unwrap(),
+            client("status")
+        );
     }
 
     #[test]
