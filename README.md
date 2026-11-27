@@ -218,7 +218,7 @@ published status line the panel reads, and it goes too.
 |-----|--------|
 | `j` / `k`, `↓` / `↑` | move between rows |
 | `enter` / `space` | activate the current row |
-| `←` / `→` | adjust the adaptive noise level |
+| `h` / `l` or `←` / `→` | adjust the adaptive noise level |
 | `o` | Off, on the models that have it |
 | `t` | Transparency |
 | `a` | Adaptive |
