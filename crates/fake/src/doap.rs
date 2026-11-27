@@ -1,5 +1,6 @@
 //! The pods' side of the dictation service: the table an arm reads, what a START and a STOP are answered with and when each frame is due, with no socket or thread.
 
+mod fixture_audio;
 mod table;
 #[cfg(test)]
 mod tests;
@@ -135,22 +136,6 @@ impl Doap {
         self.shared.doap(|doap| doap.live_per_notification = 2);
     }
 
-    /// The next `frames` frames the microphone hears are silent, before any queued mark.
-    pub fn silent(&self, frames: u32) {
-        self.shared.doap(|doap| {
-            doap.hear(Instant::now());
-            doap.silent = frames;
-        });
-    }
-
-    /// The next `frames` frames the microphone hears hold the second tone, streaming or not.
-    pub fn mark(&self, frames: u32) {
-        self.shared.doap(|doap| {
-            doap.hear(Instant::now());
-            doap.marked = frames;
-        });
-    }
-
     /// The counter of the next frame the microphone hears.
     pub fn start_counter(&self, counter: u16) {
         self.shared.doap(|doap| {
@@ -263,6 +248,7 @@ pub(crate) struct Machine {
     live_per_notification: u32,
     repeat: Option<u16>,
     silent: u32,
+    quiet: u32,
     marked: u32,
     lost: u32,
     garbled: u32,
@@ -300,6 +286,7 @@ struct Heard {
     place: u32,
     counter: u16,
     silent: bool,
+    quiet: bool,
     marked: bool,
 }
 
@@ -329,6 +316,7 @@ impl Machine {
             live_per_notification: 1,
             repeat: None,
             silent: 0,
+            quiet: 0,
             marked: 0,
             lost: 0,
             garbled: 0,
@@ -609,6 +597,7 @@ impl Machine {
                 place: mic.heard,
                 counter: self.next_counter,
                 silent: self.silent > 0,
+                quiet: self.quiet > 0,
                 marked: self.marked > 0,
             });
             while mic.kept.len() > KEPT_FRAMES
@@ -620,7 +609,10 @@ impl Machine {
                 mic.kept.pop_front();
             }
             if self.silent == 0 {
-                self.marked = self.marked.saturating_sub(1);
+                if self.quiet == 0 {
+                    self.marked = self.marked.saturating_sub(1);
+                }
+                self.quiet = self.quiet.saturating_sub(1);
             }
             self.silent = self.silent.saturating_sub(1);
             self.next_counter = self.next_counter.wrapping_add(1);
@@ -655,20 +647,6 @@ impl Machine {
             (Some(gap), Some(last)) => gap.saturating_sub(now.saturating_duration_since(last)),
             (None, _) | (_, None) => Duration::ZERO,
         }
-    }
-
-    /// The bytes of the fixture the microphone coded `heard` to.
-    fn coded(&self, heard: Heard) -> &'static [u8] {
-        if heard.silent {
-            return opus::silence();
-        }
-        if heard.marked {
-            return opus::mark_onset();
-        }
-        let fixture = &self.tone;
-        let place = usize::try_from(heard.place).unwrap_or(usize::MAX);
-        let at = place.checked_rem(fixture.len()).unwrap_or(0);
-        fixture.get(at).copied().unwrap_or_default()
     }
 
     /// One audio notification of `frames` on the channel of `run`, less the frames a test loses; none when it loses them all or the host did not ask for audio.

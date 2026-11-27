@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use rustix::process::Signal;
+use rustix::process::{Pid, Signal, kill_process};
 use serde_json::{Value, json};
 
 use crate::{Process, end, log_text, signal_and_wait, spawn, tool_output, wait_until};
@@ -161,6 +161,24 @@ impl Server {
     pub fn restart(&self) {
         self.stop();
         self.launch();
+    }
+
+    /// Suspends the private graph driver while the caller runs `while_stopped`.
+    pub fn while_stopped(&self, while_stopped: impl FnOnce()) {
+        let process = self.process.borrow();
+        let pid = process
+            .as_ref()
+            .map(Pid::from_child)
+            .expect("private PipeWire server must be running");
+        struct Resume(Pid);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                let _ = kill_process(self.0, Signal::CONT);
+            }
+        }
+        kill_process(pid, Signal::STOP).expect("pause the private PipeWire server");
+        let _resume = Resume(pid);
+        while_stopped();
     }
 
     fn launch(&self) {
