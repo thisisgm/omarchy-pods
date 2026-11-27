@@ -9,7 +9,7 @@ CursorSurface {
   required property string rowName
   required property var colors
 
-  signal pointed(string name)
+  signal pointed(Item row, var mouse)
   signal cursorEntered(CursorSurface row)
 
   foreground: colors.foreground

@@ -19,7 +19,8 @@ ControlRow {
     anchors.fill: parent
     hoverEnabled: true
     cursorShape: Qt.PointingHandCursor
-    onEntered: toggleRow.pointed(toggleRow.rowName)
+    onPositionChanged: function (mouse) { toggleRow.pointed(toggleRow, mouse) }
+    onPressed: toggleRow.pointed(toggleRow, null)
     onClicked: if (!toggleRow.busy) toggleRow.toggled()
   }
 
@@ -71,12 +72,16 @@ ControlRow {
     required property var colors
     property bool checked: false
     readonly property bool rounded: Style.cornerRadius > 0
-    readonly property real knobSize: Math.max(Style.spacing.md, Math.round(height * 0.72))
+    // ToggleSwitch's stock geometry, as fractions of the control height.
+    readonly property real trackHeightRatio: 0.55
+    readonly property real trackAspect: 1.9
+    readonly property real knobRatio: 0.72
+    readonly property real knobSize: Math.max(Style.spacing.md, Math.round(height * knobRatio))
     readonly property real knobInset: Math.max(Style.spacing.hairline, Math.round((height - knobSize) / 2))
     readonly property bool mirrored: LayoutMirroring.enabled
 
-    implicitHeight: Math.max(Style.space(22), Math.round(Style.spacing.controlHeight * 0.55))
-    implicitWidth: Math.round(implicitHeight * 1.9)
+    implicitHeight: Math.max(Style.space(22), Math.round(Style.spacing.controlHeight * trackHeightRatio))
+    implicitWidth: Math.round(implicitHeight * trackAspect)
     radius: rounded ? height / 2 : 0
     color: checked ? mark.colors.trackFill : mark.colors.toggleOffFill
     border.width: Style.spacing.hairline
