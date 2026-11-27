@@ -42,6 +42,7 @@ mod tests {
         let mut rig = keyed();
         let audio = rig.start_audio();
         let device = rig.add_pods(Profile::default());
+        rig.session().store_sample_keys(Some(device.address));
         let sink = sink_named(device.address);
         audio.add_sink(&sink, PERCENT);
         audio.set_default_sink(&sink);

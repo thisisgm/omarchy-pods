@@ -59,6 +59,7 @@ fn populated_state() -> State {
         primary: Some(Component::Right),
         ear_detection_behavior: EarDetectionBehavior::Disabled,
         lid_state: LidState::Closed,
+        advert_device: None,
         counters: Counters {
             reconnect_attempts: 1,
             reconnect_failures: 2,

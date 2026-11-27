@@ -64,6 +64,7 @@ fn a_device_lost_after_its_link_was_up_shows_the_disconnect_notice() {
     let lost = Signal::Lost {
         device: device(),
         down_at: Some(Duration::ZERO),
+        worn_on_link: true,
     };
     assert_eq!(
         disconnected(&lost, Suspend::default()),
@@ -72,10 +73,21 @@ fn a_device_lost_after_its_link_was_up_shows_the_disconnect_notice() {
 }
 
 #[test]
+fn an_unworn_device_lost_after_its_link_was_up_shows_nothing() {
+    let lost = Signal::Lost {
+        device: device(),
+        down_at: Some(Duration::ZERO),
+        worn_on_link: false,
+    };
+    assert_eq!(disconnected(&lost, Suspend::default()), None);
+}
+
+#[test]
 fn a_device_lost_before_its_link_came_up_shows_nothing() {
     let lost = Signal::Lost {
         device: device(),
         down_at: None,
+        worn_on_link: false,
     };
     assert_eq!(disconnected(&lost, Suspend::default()), None);
 }
@@ -171,6 +183,7 @@ fn the_policy_answers_a_lost_link_and_a_low_case_and_keeps_the_latch_past_the_lo
     let lost = Signal::Lost {
         device: device(),
         down_at: Some(Duration::ZERO),
+        worn_on_link: true,
     };
     assert_eq!(
         policy.step(&state, Fact::Link(lost), Duration::ZERO),
@@ -190,6 +203,7 @@ fn a_loss_that_began_in_a_suspend_is_silent_and_the_wake_comes_once_at_the_settl
         Fact::Link(Signal::Lost {
             device: device(),
             down_at: Some(at(down_at)),
+            worn_on_link: true,
         })
     };
     assert_eq!(
@@ -229,6 +243,7 @@ fn a_second_sleep_keeps_a_loss_awaiting_its_reset_silent_until_the_link_comes_ba
         Fact::Link(Signal::Lost {
             device: device(),
             down_at: Some(at(down_at)),
+            worn_on_link: true,
         })
     };
     let closes = 500 + RESUME_SETTLE_MS;
@@ -301,6 +316,7 @@ fn the_notices_and_the_latches_are_the_same_with_notices_off() {
     let lost = Signal::Lost {
         device: device(),
         down_at: Some(Duration::ZERO),
+        worn_on_link: true,
     };
     let steps = |notifications: bool| {
         let mut policy = Policy::default();
@@ -607,6 +623,7 @@ fn run_ear_row(row: EarRow) -> (Vec<Asks>, Vec<Asks>, usize) {
                 let lost = Signal::Lost {
                     device: device(),
                     down_at,
+                    worn_on_link: true,
                 };
                 at_once.extend(asks(policy.step(&state, Fact::Link(lost), now)));
                 Fact::Changed

@@ -39,7 +39,7 @@ models! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "each flag is one boolean key of the status document"
+    reason = "each flag is a separate capability of the model"
 )]
 pub struct Capabilities {
     pub noise_off: bool,
@@ -49,6 +49,8 @@ pub struct Capabilities {
     pub one_bud_anc: bool,
     pub is_pro_series: bool,
     pub is_headset: bool,
+    /// Known AirPods report wear, including head detection on AirPods Max.
+    pub ear_detection: bool,
 }
 
 /// Apple's published model numbers (support.apple.com/en-us/109525), in the order of the C++ map, then those it lacks.
@@ -238,6 +240,7 @@ impl Model {
         let listening_modes = Capabilities {
             noise_off: true,
             noise_control: true,
+            ear_detection: true,
             ..Capabilities::default()
         };
         // Apple's own column set for Adaptive Audio and Conversation Awareness.
@@ -249,9 +252,13 @@ impl Model {
         match self {
             Self::AirPods1 | Self::AirPods2 | Self::AirPods3 | Self::AirPods4 => Capabilities {
                 noise_off: true,
+                ear_detection: true,
                 ..Capabilities::default()
             },
-            Self::Unknown => listening_modes,
+            Self::Unknown => Capabilities {
+                ear_detection: false,
+                ..listening_modes
+            },
             Self::AirPodsMaxLightning | Self::AirPodsMaxUSBC => Capabilities {
                 is_headset: true,
                 ..listening_modes

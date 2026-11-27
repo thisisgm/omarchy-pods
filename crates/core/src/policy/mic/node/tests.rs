@@ -380,6 +380,7 @@ fn stepped(event: Event) -> (Fact, Duration, State) {
         Event::Lost => Fact::Link(Signal::Lost {
             device: device(),
             down_at: None,
+            worn_on_link: false,
         }),
         Event::Exit => Fact::Exit,
     };

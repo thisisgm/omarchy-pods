@@ -70,10 +70,16 @@ impl Adverts {
         &mut self,
         state: &mut State,
         sighting: &Sighting,
+        active_device: Option<BdAddr>,
         now: Duration,
     ) -> Option<BdAddr> {
         let saved = self.keys.as_ref().filter(|_| !self.link_up)?;
+        // Legacy keys without an address can supply readings only while no device holds the link.
+        if active_device.is_some_and(|device| saved.device != Some(device)) {
+            return None;
+        }
         let (in_case, connection) = read(state, &saved.keys, sighting)?;
+        state.advert_device = saved.device;
         if state.connected || state.advert_intake != AdvertIntake::Listening {
             return None;
         }

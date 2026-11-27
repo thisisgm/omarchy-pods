@@ -19,6 +19,7 @@ fn lost(down_at: Option<Duration>) -> Signal {
     Signal::Lost {
         device: addr(0),
         down_at,
+        worn_on_link: false,
     }
 }
 
