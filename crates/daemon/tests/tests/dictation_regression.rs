@@ -1,5 +1,7 @@
 //! Opening and tail audio captured from the live dictation source.
 
+use std::io::{self, Write};
+
 use pods_proto::doap::doap_mode_on;
 
 use super::super::super::support::recording::{dictation_marks, frames, rms_dbfs, span_of};
@@ -52,8 +54,11 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
     fixture.stopped(1);
     fixture.no_uplink();
     let marks = dictation_marks(&samples);
-    assert_marks(&samples, 1, MARK_LENGTH, (0, None));
-    let mark = marks[0].start;
+    let mark = marks
+        .iter()
+        .max_by_key(|mark| mark.len())
+        .expect("no opening word recorded")
+        .start;
     let quiet_end = mark - frames(MARK_GUARD);
     let quiet = &samples[quiet_end - frames(CHECK_QUIET)..quiet_end];
     let level = rms_dbfs(
@@ -61,10 +66,16 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
             .iter()
             .map(|&sample| f64::from(sample) / f64::from(i16::MAX)),
     );
+    writeln!(
+        io::stderr(),
+        "quiet opening at {level:.1} dBFS, marks {marks:?}"
+    )
+    .unwrap();
     assert!(
         level >= MIN_QUIET_DBFS,
         "stalled reader lost the quiet opening word ({level:.1} dBFS)"
     );
+    assert_marks(&samples, 1, MARK_LENGTH, (0, None));
     fixture.finish();
 }
 
@@ -72,19 +83,20 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
 fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
     const BURST: u32 = 4;
     const PER_NOTIFICATION: u32 = 3;
-    const LEADING: u32 = 14;
+    const LEADING: u32 = 13;
+    const FIRST_WORD: u32 = 2;
     const RELEASE: Duration = Duration::from_millis(313);
     const STALL: Duration = Duration::from_millis(67);
     const MARK_AT: Duration = Duration::from_millis(1_510);
     const PLAY_WORD: Duration = Duration::from_millis(240);
-    const TAIL_DEADLINE: Duration = Duration::from_millis(1_273);
+    const TAIL_DEADLINE: Duration = Duration::from_millis(1_293);
 
     let fixture = Fixture::with_recorder_quantum();
     let doap = fixture.device.pods.doap();
     doap.hold_start(true);
     doap.burst(BURST, PER_NOTIFICATION);
     doap.silent(LEADING);
-    doap.mark(1);
+    doap.mark(FIRST_WORD);
     // The 3+1 burst sets the initial anchor late. Pausing live packets gives the reader time to use it.
     doap.stall(STALL);
     fixture.list(CAPTURE);
@@ -102,8 +114,9 @@ fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
     let marks = dictation_marks(&samples);
     assert_eq!(marks.len(), 2, "{marks:?}");
     assert_marks(&samples[marks[0].end..], 1, MARK_LENGTH, (0, None));
-    // The words span 1,280 ms in the input. The deadline requires recovering at least 7 ms.
+    // The words span 1,300 ms in the input. The deadline requires recovering at least 7 ms.
     let tail = span_of(marks[1].end - marks[0].start);
+    writeln!(io::stderr(), "tail ends at {tail:?}, marks {marks:?}").unwrap();
     assert!(
         tail <= TAIL_DEADLINE,
         "late anchor lost the last word at {TAIL_DEADLINE:?}, it ended at {tail:?}, {marks:?}"
