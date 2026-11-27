@@ -1,5 +1,8 @@
 //! What a dictation keeps of its opening: a burst flushed at stop, and a reconnected recorder after a stray uplink SDU.
 
+#[path = "dictation_regression.rs"]
+mod dictation_regression;
+
 use super::*;
 
 #[test]
