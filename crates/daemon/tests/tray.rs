@@ -273,7 +273,98 @@ mod tests {
                 (file[field] == value).then_some(())
             });
         }
+        assert_ear_detection_submenu(rig, bus, &adaptive_menu).await;
         click(bus, i32::MAX).await;
+    }
+
+    async fn assert_ear_detection_submenu(rig: &Rig, bus: &Connection, menu: &[Layout]) {
+        let ear = menu
+            .iter()
+            .find(|(_, props, _)| label(props) == "Ear Detection")
+            .unwrap();
+        let ear_choices = children(
+            ear.2
+                .iter()
+                .map(|value| value.try_clone().unwrap())
+                .collect(),
+        );
+        let ear_labels: Vec<_> = ear_choices
+            .iter()
+            .map(|(_, props, _)| label(props))
+            .collect();
+        assert_eq!(
+            ear_labels,
+            [
+                "Pause when one is out",
+                "Pause when both are out",
+                "Never pause",
+            ]
+        );
+        for (_, props, _) in &ear_choices {
+            assert_eq!(<&str>::try_from(&*props["toggle-type"]).unwrap(), "radio");
+        }
+        for (choice, expected) in [
+            ("Pause when both are out", 1_u64),
+            ("Never pause", 2_u64),
+            ("Pause when one is out", 0_u64),
+        ] {
+            let value = serde_json::json!(expected);
+            click(bus, row_at(&ear_choices, choice)).await;
+            rig.wait_status("ear_detection_behavior", |state| {
+                state["ear_detection_behavior"] == value
+            });
+            let json = property(bus, OBJECT_PATH, INTERFACE, "StatusJson").await;
+            let actual: serde_json::Value =
+                serde_json::from_str(&String::try_from(json).unwrap()).unwrap();
+            assert_eq!(actual["ear_detection_behavior"], value);
+            wait_for("ear_detection_behavior", || {
+                let file: serde_json::Value =
+                    serde_json::from_slice(&fs::read(rig.session().state_file()).ok()?).ok()?;
+                (file["ear_detection_behavior"] == value).then_some(())
+            });
+            let updated_ear = wait_for_ear_selection(bus, choice).await;
+            let states: Vec<_> = updated_ear
+                .iter()
+                .map(|(_, props, _)| {
+                    (
+                        label(props),
+                        i32::try_from(&*props["toggle-state"]).unwrap(),
+                    )
+                })
+                .collect();
+            for (name, toggle_state) in states {
+                assert_eq!(toggle_state, i32::from(name == choice));
+            }
+        }
+    }
+
+    async fn wait_for_ear_selection(bus: &Connection, selected: &str) -> Vec<Layout> {
+        tokio::time::timeout(HANG_LIMIT, async {
+            loop {
+                let (_, (_, _, items)) = layout(bus).await;
+                let entries = children(items);
+                if let Some(ear) = entries
+                    .iter()
+                    .find(|(_, props, _)| label(props) == "Ear Detection")
+                {
+                    let choices = children(
+                        ear.2
+                            .iter()
+                            .map(|value| value.try_clone().unwrap())
+                            .collect(),
+                    );
+                    if choices.iter().any(|(_, props, _)| {
+                        label(props) == selected
+                            && i32::try_from(&*props["toggle-state"]).unwrap() == 1
+                    }) {
+                        return choices;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Ear Detection radio state did not update after click")
     }
 
     async fn wait_for_adaptive_menu(bus: &Connection) -> Vec<Layout> {
