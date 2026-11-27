@@ -36,7 +36,6 @@ Item {
   property string actionStatus: ""
 
   readonly property bool busy: commandProcess.running
-  // The daemon publishes here on change, so there is nothing to poll.
   readonly property string statePath: (Quickshell.env("XDG_STATE_HOME")
     || Quickshell.env("HOME") + "/.local/state") + "/librepods/status.json"
   readonly property bool hasAirPods: daemonReachable && connected
@@ -51,6 +50,7 @@ Item {
   // How long an optimistic value is held before the daemon's own state wins.
   readonly property int settleHoldMs: 4000
   readonly property int actionStatusMs: 2200
+  readonly property int stateRetryMs: 2000
 
   // Held over incoming reads until the daemon agrees, so a write already in flight
   // when the click landed cannot snap the control back.
@@ -61,9 +61,9 @@ Item {
   // rather than being dropped, which is what arrow-key repeat produces.
   property var _queued: null
 
-  function setting(name, fallback) {
-    var value = settings ? settings[name] : undefined
-    return value === undefined || value === null ? fallback : value
+  readonly property string ctlPath: {
+    const value = settings ? settings.ctlPath : undefined
+    return typeof value === "string" ? value.trim() : ""
   }
 
   // A change during a read is kept so the reader runs once more with the newer file.
@@ -99,6 +99,10 @@ Item {
     daemonCurrent = false
     advertHint = false
     connected = false
+    deviceName = ""
+    modelName = ""
+    isProSeries = false
+    isHeadset = false
     schemaUnsupported = false
     lastError = ""
   }
@@ -158,7 +162,7 @@ Item {
     _pendingValue = optimistic
     root[field] = optimistic
     settleTimer.restart()
-    commandProcess.command = Model.commandFor(daemonCurrent, setting("ctlPath", ""), change)
+    commandProcess.command = Model.commandFor(daemonCurrent, ctlPath, change)
     commandProcess.running = true
   }
 
@@ -220,11 +224,19 @@ Item {
 
   // Only watches: FileView buffers the whole file with no size cap, so the reader below does the reading.
   FileView {
+    id: stateWatch
     path: root.statePath
     watchChanges: true
     preload: false
     printErrors: false
     onFileChanged: root.refresh()
+  }
+
+  Timer {
+    interval: root.stateRetryMs
+    running: !root.daemonReachable
+    repeat: true
+    onTriggered: root.refresh()
   }
 
   Process {
@@ -234,7 +246,16 @@ Item {
     stdout: StdioCollector { id: stateOut; waitForEnd: true }
     onExited: function (exitCode) {
       if (exitCode !== 0) root.stateGone()
-      else root.applyLine(stateOut.text)
+      else {
+        if (!root.daemonReachable) {
+          // Re-arm after a missing directory, then read once more in case the file
+          // was replaced between the first successful read and attaching the watch.
+          stateWatch.watchChanges = false
+          stateWatch.watchChanges = true
+          root._rereadState = true
+        }
+        root.applyLine(stateOut.text)
+      }
       if (root._rereadState) {
         root._rereadState = false
         root.refresh()
@@ -262,7 +283,7 @@ Item {
         actionStatusTimer.restart()
       }
       if (root._queued) {
-        var next = root._queued
+        const next = root._queued
         root._queued = null
         root._send(next.change, next.field, next.optimistic)
       }
