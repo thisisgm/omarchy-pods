@@ -163,6 +163,10 @@ const long = Model.elideError("x\n\n   y".repeat(60))
 check("an elided error is one line", long.indexOf("\n"), -1)
 check("an elided error fits the row", long.length <= Model.MAX_ERROR_CHARS, true)
 check("elideError copes with nothing", Model.elideError(null), "")
+check("elideError names a daemon that is down, not its socket",
+  Model.elideError("Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)\n"), "librepods is not running")
+check("refusalText names a daemon that is down",
+  Model.refusalText("Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)\n"), "librepods is not running")
 
 // A Max sends one battery under "headset" and no pods at all, so the panel needs the flag to pick a shape.
 const max = Model.parseStatus('{"connected":true,"device_name":"AirPods Max","headset":{"available":true,"charging":false,"level":100},"is_headset":true,"model_name":"AirPods Max","noise_mode":1,"schema_version":1}')
