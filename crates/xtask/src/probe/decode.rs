@@ -24,6 +24,7 @@ use super::wav;
 use candidate::{Candidate, Tally};
 use compare::{
     CompareError, Comparison, LSB_PER_FULL_SCALE, SEARCH_UNITS, TOLERANCE_LSB, compare, lsb_apart,
+    quality_metrics,
 };
 use label::{Label, LabelError};
 use oracle::{OracleError, OracleRun, Refusal, STDERR_FILE, oracle};
@@ -283,6 +284,38 @@ pub(crate) fn why_not(compared: &Result<Comparison, String>) -> &str {
     compared.as_ref().err().map_or("", String::as_str)
 }
 
+/// RMS error and SNR against the oracle at the best offset, or refused when uncompared.
+fn quality_rows(full: &Both<'_>, compared: &Result<Comparison, String>) -> [Row; 2] {
+    let metrics = compared.as_ref().ok().and_then(|found| {
+        let candidate = full.whole_candidate()?;
+        let oracle = full.whole_oracle()?;
+        let offset = found.offset_units.unwrap_or(0);
+        Some(quality_metrics(
+            candidate,
+            oracle,
+            usize::from(SAMPLES_PER_UNIT),
+            offset,
+        ))
+    });
+    let reason = why_not(compared);
+    [
+        figure(
+            "rms_error",
+            "full_scale",
+            metrics.map(|q| format!("{:.3e}", q.rms_error)),
+            "RMS of |candidate - oracle| in full-scale float units at the best offset",
+            reason,
+        ),
+        figure(
+            "snr_db",
+            "dB",
+            metrics.map(|q| format!("{:.2}", q.snr_db)),
+            "signal-to-noise ratio of candidate against oracle at the best offset",
+            reason,
+        ),
+    ]
+}
+
 /// The time the candidate took for each of `calls` units, which is above 0: a magnitude from one run on one machine, never a constant.
 pub(crate) fn timing_rows(tally: &Tally, calls: u32) -> [Row; 2] {
     const US_PER_SECOND: f64 = 1e6;
@@ -342,7 +375,9 @@ pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeError> {
         from_candidate.map(|tally| tally.samples.as_slice()),
     ));
     rows.extend(output_rows("oracle", full.whole_oracle()));
-    rows.extend(compared_rows(&compared(&full)));
+    let compared_result = compared(&full);
+    rows.extend(compared_rows(&compared_result));
+    rows.extend(quality_rows(&full, &compared_result));
     if let Some(tally) = from_candidate {
         rows.extend(timing_rows(tally, calls));
     }
