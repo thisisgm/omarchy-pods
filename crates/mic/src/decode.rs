@@ -3,6 +3,7 @@
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+pub use pods_aac::BAND_EDGES;
 use pods_aac::Decoder as AacDecoder;
 
 use super::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};

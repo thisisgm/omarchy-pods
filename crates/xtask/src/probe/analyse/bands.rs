@@ -1,9 +1,11 @@
 //! The band limit a unit declares in its first bits, and the spectral line and frequency that limit stands for.
 
+use pods_mic::decode::BAND_EDGES;
+
 use super::load::Loaded;
 
 /// Entries in the band table: the limits 0 to 35.
-const BANDS: usize = 36;
+const BANDS: usize = BAND_EDGES.len();
 pub(crate) const LAST_BAND: usize = BANDS - 1;
 /// The band limit is in the second byte of a unit, after the eight bits of the global gain.
 const MAX_SFB_BYTE: usize = 1;
@@ -14,12 +16,6 @@ pub(crate) const LINES_PER_CLOCK: f64 = 960.0;
 /// The sample clock the band table was made for; a stream on another clock may use another table.
 pub(crate) const TABLE_CLOCK_HZ: u32 = 48_000;
 
-// swb_offset_480_48 of FFmpeg 7.1 libavcodec/aactab.c, Copyright (c) 2005-2006 Oded Shimon and 2006-2007 Maxim Gavrilov, LGPL 2.1 or later.
-const SWB_OFFSET_480_48: [u16; BANDS] = [
-    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 108, 120, 132,
-    144, 156, 172, 188, 212, 240, 272, 304, 336, 368, 400, 432, 480,
-];
-
 // Sample input: 00 7c ..., whose bits 8 to 13 read 31; a unit under two bytes declares none.
 pub(crate) fn max_sfb(unit: &[u8]) -> Option<u8> {
     unit.get(MAX_SFB_BYTE).map(|byte| byte >> MAX_SFB_SHIFT)
@@ -27,7 +23,7 @@ pub(crate) fn max_sfb(unit: &[u8]) -> Option<u8> {
 
 /// The first spectral line above the band limit `max_sfb`; `None` for a limit over `LAST_BAND`.
 pub(crate) fn band_line(max_sfb: u8) -> Option<u16> {
-    SWB_OFFSET_480_48.get(usize::from(max_sfb)).copied()
+    BAND_EDGES.get(usize::from(max_sfb)).copied()
 }
 
 /// The frequency of spectral line `line` on a sample clock of `clock_hz`.
