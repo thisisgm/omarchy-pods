@@ -12,26 +12,26 @@ mod tests {
     const DECODES: usize = 1000;
 
     fn tns_unit() -> Vec<u8> {
-        let mut bw = BitWriter::new();
-        bw.write(160, 8);
-        bw.write(2, 6);
-        bw.write(1, 4);
-        bw.write(2, 5);
-        bw.write_bool(false);
-        bw.write_bool(false);
-        bw.write_bool(true);
-        bw.write(1, 2);
-        bw.write_bool(true);
-        bw.write(35, 6);
-        bw.write(3, 5);
-        bw.write_bool(false);
-        bw.write_bool(false);
-        bw.write(2, 4);
-        bw.write(14, 4);
-        bw.write(1, 4);
-        emit_cb1_quad([1, 0, -1, 0], &mut bw);
-        emit_cb1_quad([0, 1, 0, -1], &mut bw);
-        bw.into_bytes()
+        let mut writer = BitWriter::new();
+        writer.write(160, 8); // global_gain
+        writer.write(2, 6); // max_sfb
+        writer.write(1, 4); // codebook 1
+        writer.write(2, 5); // section of 2 bands
+        writer.write_bool(false); // scalefactor delta 0
+        writer.write_bool(false); // scalefactor delta 0
+        writer.write_bool(true); // tns_present
+        writer.write(1, 2); // n_filt
+        writer.write_bool(true); // 4-bit coefficients
+        writer.write(35, 6); // length
+        writer.write(3, 5); // order
+        writer.write_bool(false); // upward
+        writer.write_bool(false); // no compression
+        writer.write(2, 4); // coefficient +2
+        writer.write(14, 4); // coefficient -2
+        writer.write(1, 4); // coefficient +1
+        emit_cb1_quad([1, 0, -1, 0], &mut writer);
+        emit_cb1_quad([0, 1, 0, -1], &mut writer);
+        writer.into_bytes()
     }
 
     #[test]

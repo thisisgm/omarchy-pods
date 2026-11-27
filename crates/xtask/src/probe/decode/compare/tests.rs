@@ -348,21 +348,21 @@ fn a_frame_length_of_zero_is_refused() {
 }
 
 #[test]
-fn quality_metrics_reports_exact_max_rms_and_snr() {
+fn quality_metrics_reports_exact_rms_and_snr_and_nothing_without_an_overlap() {
     let oracle = [0.5_f32, -0.5, 0.5, -0.5];
-    let exact = quality_metrics(&oracle, &oracle, FRAME, 0);
-    assert_eq!(exact.frames, 1);
-    assert_eq!(exact.max_abs, 0.0);
+    let exact = quality_metrics(&oracle, &oracle, FRAME, 0).unwrap();
     assert_eq!(exact.rms_error, 0.0);
     assert!(exact.snr_db.is_infinite() && exact.snr_db.is_sign_positive());
 
+    // One sample 1 LSB off in four: RMS is half an LSB, SNR 10 log10(0.25 * 4 / LSB^2), about 90.3 dB.
     let candidate = [0.5_f32 + ONE_LSB, -0.5, 0.5, -0.5];
-    let q = quality_metrics(&candidate, &oracle, FRAME, 0);
-    assert_eq!(q.frames, 1);
-    assert!((q.max_lsb - 1.0).abs() < 1e-6, "{q:?}");
+    let off = quality_metrics(&candidate, &oracle, FRAME, 0).unwrap();
     assert!(
-        (q.rms_error - f64::from(ONE_LSB) / 2.0).abs() < 1e-10,
-        "{q:?}"
+        (off.rms_error - f64::from(ONE_LSB) / 2.0).abs() < 1e-10,
+        "{off:?}"
     );
-    assert!(q.snr_db > 90.0 && q.snr_db < 91.0, "{q:?}");
+    assert!(off.snr_db > 90.0 && off.snr_db < 91.0, "{off:?}");
+
+    assert_eq!(quality_metrics(&[], &oracle, FRAME, 0), None);
+    assert_eq!(quality_metrics(&oracle, &oracle, FRAME, 1), None);
 }

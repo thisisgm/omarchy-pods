@@ -284,33 +284,37 @@ pub(crate) fn why_not(compared: &Result<Comparison, String>) -> &str {
     compared.as_ref().err().map_or("", String::as_str)
 }
 
-/// RMS error and SNR against the oracle at the best offset, or refused when uncompared.
-fn quality_rows(full: &Both<'_>, compared: &Result<Comparison, String>) -> [Row; 2] {
-    let metrics = compared.as_ref().ok().and_then(|found| {
-        let candidate = full.whole_candidate()?;
-        let oracle = full.whole_oracle()?;
-        let offset = found.offset_units.unwrap_or(0);
-        Some(quality_metrics(
-            candidate,
-            oracle,
-            usize::from(SAMPLES_PER_UNIT),
-            offset,
-        ))
-    });
-    let reason = why_not(compared);
+/// What a comparison found no overlapping frame for, which `compare` refusing a short run leaves unreachable.
+const NO_OVERLAP: &str = "no frame of the candidate lies on a frame of the oracle";
+
+/// RMS error and SNR against the oracle at the offset `compare` named, or refused when it named none.
+fn quality_rows(
+    candidate: &[f32],
+    oracle: &[f32],
+    samples_per_unit: usize,
+    compared: &Result<Comparison, String>,
+) -> [Row; 2] {
+    let offset = compared.as_ref().ok().and_then(|found| found.offset_units);
+    let quality =
+        offset.and_then(|offset| quality_metrics(candidate, oracle, samples_per_unit, offset));
+    let reason = match compared {
+        Ok(found) if found.offset_units.is_none() => NO_OFFSET,
+        Ok(_) => NO_OVERLAP,
+        Err(why) => why.as_str(),
+    };
     [
         figure(
             "rms_error",
             "full_scale",
-            metrics.map(|q| format!("{:.3e}", q.rms_error)),
-            "RMS of |candidate - oracle| in full-scale float units at the best offset",
+            quality.map(|metrics| format!("{:.3e}", metrics.rms_error)),
+            "RMS of candidate - oracle in full-scale float units at the named offset",
             reason,
         ),
         figure(
             "snr_db",
             "dB",
-            metrics.map(|q| format!("{:.2}", q.snr_db)),
-            "signal-to-noise ratio of candidate against oracle at the best offset",
+            quality.map(|metrics| format!("{:.2}", metrics.snr_db)),
+            "signal-to-noise ratio of candidate against oracle at the named offset",
             reason,
         ),
     ]
@@ -377,7 +381,12 @@ pub(crate) fn decode_run(run_dir: &Path) -> Result<String, DecodeError> {
     rows.extend(output_rows("oracle", full.whole_oracle()));
     let compared_result = compared(&full);
     rows.extend(compared_rows(&compared_result));
-    rows.extend(quality_rows(&full, &compared_result));
+    rows.extend(quality_rows(
+        full.whole_candidate().unwrap_or_default(),
+        full.whole_oracle().unwrap_or_default(),
+        usize::from(SAMPLES_PER_UNIT),
+        &compared_result,
+    ));
     if let Some(tally) = from_candidate {
         rows.extend(timing_rows(tally, calls));
     }

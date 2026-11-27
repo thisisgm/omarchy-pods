@@ -1,6 +1,4 @@
-//! Normative AAC Huffman codebooks (ISO/IEC 14496-3 Annex 4.A, Tables 4.A.1 through 4.A.12).
-//!
-//! Each entry is `(bit_length, codeword)` ordered by the standard tuple index.
+//! Normative AAC Huffman codebooks (ISO/IEC 14496-3 Annex 4.A, Tables 4.A.1 to 4.A.12), entries `(bit_length, codeword)` in tuple-index order.
 
 /// ISO/IEC 14496-3 Table 4.A.1: scale factor Huffman codebook (index i => delta i - 60).
 pub(crate) const HCOD_SF: [(u8, u32); 121] = [

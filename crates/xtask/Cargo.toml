@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 clap.workspace = true
 opuscule.workspace = true
-pods-aac.workspace = true
 pods-core = { path = "../core" }
 pods-mic = { path = "../mic" }
 pods-proto.workspace = true

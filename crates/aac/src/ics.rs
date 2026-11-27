@@ -1,6 +1,4 @@
-//! ER AAC-ELD `individual_channel_stream` parsing, inverse quantization, rescaling, and PNS.
-//!
-//! Implements ISO/IEC 14496-3 Clauses 4.5.1.1, 4.6.2, 4.6.3, and 4.6.13 for AOT 39 (mono, 480 samples).
+//! ER AAC-ELD `individual_channel_stream` parsing, inverse quantization and PNS (ISO/IEC 14496-3 Clauses 4.6.2, 4.6.3, 4.6.13).
 
 use crate::Error;
 use crate::bits::BitReader;
@@ -18,7 +16,26 @@ const INTENSITY_HCB2: u8 = 14;
 const INTENSITY_HCB: u8 = 15;
 const ESC_HCB: u8 = 11;
 const SECTION_LEN_ESCAPE: u32 = 31;
-const MAX_ESCAPE_PREFIX_ONES: u32 = 9;
+/// `hcod_sf` symbol meaning a scalefactor delta of zero (ISO/IEC 14496-3 Clause 4.6.2.3.2).
+const SF_DELTA_ZERO: i32 = 60;
+/// Noise energy starts at `global_gain - NOISE_OFFSET` (ISO/IEC 14496-3 Clause 4.6.13.3).
+const NOISE_OFFSET: i32 = 90;
+/// Width of the first noise energy, sent as PCM rather than Huffman coded.
+const NOISE_PCM_BITS: u32 = 9;
+/// Bias subtracted from the first noise energy PCM value.
+const NOISE_PCM_BIAS: i32 = 256;
+/// Largest regular scalefactor (`sf` is 8 bits).
+const MAX_SCALE_FACTOR: i32 = 255;
+/// Noise energy `n` scales by `2^((n - NOISE_GAIN_OFFSET) / 4)`: the spec's `2^(n/4)` times the `2^-15` float output scale.
+const NOISE_GAIN_OFFSET: i32 = 60;
+/// Noise energy clamp, so the loudest noise band equals the loudest regular band (`255 - 100`).
+const NOISE_NRG_MIN: i32 = -100;
+const NOISE_NRG_MAX: i32 = 155;
+/// Multiplier and increment of the 32-bit linear congruential noise generator.
+const LCG_MULTIPLIER: u32 = 1_664_525;
+const LCG_INCREMENT: u32 = 1_013_904_223;
+/// ISO/IEC 14496-3 Clause 4.6.3.3 caps the escape prefix at 8 ones, so `|q| <= 8191`.
+const MAX_ESCAPE_PREFIX_ONES: u32 = 8;
 
 /// Parsed frame ready for TNS and filterbank synthesis (zero heap allocations).
 pub(crate) struct ParsedFrame {
@@ -26,6 +43,7 @@ pub(crate) struct ParsedFrame {
     pub(crate) tns: TnsData,
 }
 
+/// Sample input: `b4 04 42 50` is `global_gain` 180, `max_sfb` 1, one CB1 section of 1 band, sf delta 0, no TNS, one CB1 quad.
 /// Parses one ER AAC-ELD single-channel element into `spec` without mutating decoder filterbank state.
 pub(crate) fn parse_eld_sce(
     reader: &mut BitReader<'_>,
@@ -86,6 +104,7 @@ pub(crate) fn parse_eld_sce(
     Ok(ParsedFrame { max_sfb, tns })
 }
 
+/// Sample input: bits `0001 00010` are one CB1 section of 2 bands; `0000 11111 00100` is one zero section of 35.
 /// Parses `section_data()` for ER AAC-ELD (ISO/IEC 14496-3 Table 4.52, `sect_len_bits = 5`).
 fn parse_sections(reader: &mut BitReader<'_>, max_sfb: usize) -> Result<[u8; NUM_SWB], Error> {
     let mut sfb_cb = [ZERO_HCB; NUM_SWB];
@@ -125,7 +144,8 @@ fn parse_sections(reader: &mut BitReader<'_>, max_sfb: usize) -> Result<[u8; NUM
     Ok(sfb_cb)
 }
 
-/// Parses `scale_factor_data()` (ISO/IEC 14496-3 Table 4.53 & Clause 4.6.2.3).
+/// Sample input: bit `0` is a delta of zero for one coded band; a first noise band reads 9 PCM bits, `100000000` for zero.
+/// Parses `scale_factor_data()` (ISO/IEC 14496-3 Table 4.53 and Clause 4.6.2.3).
 fn parse_scale_factors(
     reader: &mut BitReader<'_>,
     max_sfb: usize,
@@ -136,22 +156,22 @@ fn parse_scale_factors(
     let mut sfb_sf = [0_i32; NUM_SWB];
     let mut sf = global_gain;
     let mut noise_pcm_flag = true;
-    let mut noise_nrg = global_gain.wrapping_sub(90);
+    let mut noise_nrg = global_gain.wrapping_sub(NOISE_OFFSET);
 
     for (cb, sf_slot) in sfb_cb.iter().copied().zip(sfb_sf.iter_mut()).take(max_sfb) {
         match cb {
             ZERO_HCB => {}
             NOISE_HCB => {
                 if noise_pcm_flag {
-                    let delta = i32::try_from(reader.read_bits(9)?)
+                    let delta = i32::try_from(reader.read_bits(NOISE_PCM_BITS)?)
                         .ok()
                         .ok_or(Error::InvalidBitstream)?
-                        .wrapping_sub(256);
+                        .wrapping_sub(NOISE_PCM_BIAS);
                     noise_nrg = noise_nrg.wrapping_add(delta);
                     noise_pcm_flag = false;
                 } else {
                     let sym = i32::from(huff.sf.decode(reader)?);
-                    noise_nrg = noise_nrg.wrapping_add(sym.wrapping_sub(60));
+                    noise_nrg = noise_nrg.wrapping_add(sym.wrapping_sub(SF_DELTA_ZERO));
                 }
                 *sf_slot = noise_nrg;
             }
@@ -161,8 +181,8 @@ fn parse_scale_factors(
             }
             1..=11 => {
                 let sym = i32::from(huff.sf.decode(reader)?);
-                sf = sf.wrapping_add(sym.wrapping_sub(60));
-                if !(0..=255).contains(&sf) {
+                sf = sf.wrapping_add(sym.wrapping_sub(SF_DELTA_ZERO));
+                if !(0..=MAX_SCALE_FACTOR).contains(&sf) {
                     return Err(Error::ScaleFactorOutOfRange(sf));
                 }
                 *sf_slot = sf;
@@ -252,6 +272,7 @@ fn decode_spectral_band(
     Ok(())
 }
 
+/// Sample input: bits `0 0101` are 16 + 5 = 21; `11111111 0 111111111111` are 8191, the largest.
 /// Reads an ISO/IEC 14496-3 Clause 4.6.3.3 escape sequence for codebook 11 (`|q| <= 8191`).
 fn read_escape(reader: &mut BitReader<'_>) -> Result<u32, Error> {
     let mut ones = 0_u32;
@@ -270,17 +291,18 @@ fn read_escape(reader: &mut BitReader<'_>) -> Result<u32, Error> {
 fn fill_pns_band(band: &mut [f64], noise_nrg: i32, seed: &mut u32) {
     let mut energy = 0.0_f64;
     for slot in band.iter_mut() {
-        // Linear congruential PRNG (standard 32-bit LCG).
-        *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *seed = seed
+            .wrapping_mul(LCG_MULTIPLIER)
+            .wrapping_add(LCG_INCREMENT);
         let signed = i32::from_le_bytes(seed.to_le_bytes());
         let sample = f64::from(signed);
         *slot = sample;
         energy += sample * sample;
     }
     if energy > 0.0 {
-        // Normalized to [-1, 1] float scale: 2^(0.25 * (noise_nrg - 160)) / sqrt(energy).
-        let clamped_nrg = noise_nrg.clamp(-100, 300);
-        let scale = (f64::from(clamped_nrg.wrapping_sub(160)) * 0.25).exp2() / energy.sqrt();
+        let clamped_nrg = noise_nrg.clamp(NOISE_NRG_MIN, NOISE_NRG_MAX);
+        let exponent = f64::from(clamped_nrg.wrapping_sub(NOISE_GAIN_OFFSET)) * 0.25;
+        let scale = exponent.exp2() / energy.sqrt();
         for slot in band.iter_mut() {
             *slot *= scale;
         }

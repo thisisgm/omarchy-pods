@@ -26,6 +26,7 @@ pub(crate) struct TnsData {
 }
 
 impl TnsData {
+    /// Sample input: bits `01 0 100011 00010 0 0 001 111` are one 3-bit filter over 35 bands, order 2, upward, coefficients +1 and -1.
     /// Parses `tns_data()` for ER AAC-ELD (ISO/IEC 14496-3 Table 4.54, Clause 4.6.9).
     pub(crate) fn parse(reader: &mut BitReader<'_>) -> Result<Self, Error> {
         let mut data = Self::default();

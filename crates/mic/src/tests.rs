@@ -1,4 +1,4 @@
-//! Support tests: the decode step with decoder calls that panic or give another length, which no unit can be made to do.
+//! Support tests: the decode step with decoder calls that panic or refuse, which no unit can be made to do on order.
 
 use std::iter;
 
@@ -68,15 +68,14 @@ fn a_decoder_that_will_not_open_is_counted_and_the_held_one_stays() {
 }
 
 #[test]
-fn a_frame_of_another_length_is_refused() {
+fn a_refused_unit_is_an_error_and_a_decoded_one_is_a_whole_frame() {
     let mut decoder = Decoder::new().unwrap();
-    for length in [UNIT - 1, UNIT + 1] {
-        let other = decoder.fenced(|_| Some(vec![0.0; length]));
-        assert_eq!(other, Decoded::Error, "{length} samples");
-    }
-    assert_eq!(decoder.fenced(|_| None), Decoded::Error);
-    let whole = decoder.fenced(|_| Some(vec![0.5; UNIT]));
-    assert_eq!(whole, Decoded::Samples(&[0.5; UNIT]));
+    assert_eq!(decoder.unit(&[]), Decoded::Error);
+    let tone = tone_unit(10, 180);
+    let Decoded::Samples(frame) = decoder.unit(&tone) else {
+        panic!("the tone unit did not decode");
+    };
+    assert_eq!(frame.len(), UNIT);
 }
 
 #[test]
