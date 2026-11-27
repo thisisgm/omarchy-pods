@@ -20,8 +20,38 @@ Panel {
 
   readonly property var hideSetting: setting("hideWhenDisconnected", true)
   readonly property bool hideWhenDisconnected: typeof hideSetting === "boolean" ? hideSetting : true
-  readonly property color foreground: Commons.Color.popups.text
-  readonly property color urgent: Commons.Color.urgent
+  readonly property color popupText: Commons.Color.popups.text
+  readonly property color popupBackground: Commons.Color.popups.background
+  readonly property color sourceAccent: inkColor(Model.huedInk(Commons.Color.accent, popupText))
+  readonly property color sourceUrgent: inkColor(Model.huedInk(Commons.Color.urgent, popupText))
+  readonly property color focusFill: Style.hoverFillFor(popupText, sourceAccent, sourceUrgent)
+  readonly property color trackFill: Style.selectedFillFor(popupText, sourceAccent, sourceUrgent)
+  readonly property color toggleOffFill: Style.normalFillFor(popupText, sourceAccent, sourceUrgent)
+  readonly property var inks: Model.panelInks({
+    background: popupBackground,
+    foreground: popupText,
+    accent: sourceAccent,
+    urgent: sourceUrgent,
+    focusFill: focusFill,
+    focus: Style.hoverBorderFor(popupText, sourceAccent, sourceUrgent),
+    track: trackFill,
+    toggleOff: Style.normalBorderFor(popupText, sourceAccent, sourceUrgent),
+    toggleOn: Style.selectedBorderFor(popupText, sourceAccent, sourceUrgent),
+    offFill: toggleOffFill,
+    onFill: trackFill
+  }, dimOpacity)
+  readonly property color foreground: inkColor(inks.text)
+  readonly property color quiet: inkColor(inks.quiet)
+  readonly property color urgent: inkColor(inks.error)
+  readonly property color separator: inkColor(inks.separator)
+  readonly property color focusInk: inkColor(inks.focus)
+
+  readonly property bool clearBar: bar ? bar.transparent : false
+  readonly property var barInks: Model.barInks(
+    clearBar ? barForeground : Commons.Color.bar.text,
+    Commons.Color.bar.background, Commons.Color.bar.text, Commons.Color.background,
+    clearBar ? "none" : bar?.shell?.barConfig?.background,
+    !Style.reduceMotion, dimOpacity)
   readonly property string fontFamily: Style.font.family
   readonly property real dimOpacity: 0.6
   readonly property PanelContent panelContent: panel.loadedContent as PanelContent
@@ -77,6 +107,10 @@ Panel {
   readonly property string cursorRow: cursorRows.length === 0
     ? ""
     : cursorRows[Math.max(0, Math.min(cursorIndex, cursorRows.length - 1))]
+
+  function inkColor(ink): color {
+    return Qt.rgba(ink.r, ink.g, ink.b, ink.a)
+  }
 
   function rowHasCursor(name) {
     return cursorActive && cursorRow === name
@@ -165,8 +199,7 @@ Panel {
           x: (parent.width - width) / 2
           y: (parent.height - height) / 2
           iconSize: button.iconSize
-          color: root.bar ? root.barForeground : Commons.Color.bar.text
-          opacity: pods.hasAirPods ? 1 : root.dimOpacity
+          color: root.inkColor(pods.hasAirPods ? root.barInks.mark : root.barInks.quiet)
           variant: root.podsVariant
         }
       }
@@ -240,8 +273,7 @@ Panel {
           AirPodsIcon {
             // The larger size gives the wide buds enough height against a two-line title.
             iconSize: Style.font.displayLarge
-            color: root.foreground
-            opacity: pods.hasAirPods ? 1 : root.dimOpacity
+            color: root.inkColor(pods.hasAirPods ? root.inks.hero : root.inks.quietHero)
             variant: root.podsVariant
           }
 
@@ -268,8 +300,7 @@ Panel {
                 : pods.schemaUnsupported ? "Unsupported status schema"
                 : pods.daemonReachable ? "Not connected"
                 : "librepods is not running").toUpperCase()
-              color: root.foreground
-              opacity: root.dimOpacity
+              color: root.quiet
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
@@ -325,9 +356,8 @@ Panel {
           }
         }
 
-        PanelSeparator {
+        SectionRule {
           visible: pods.hasBattery && pods.hasAirPods
-          foreground: root.foreground
         }
 
         Column {
@@ -361,9 +391,8 @@ Panel {
           }
         }
 
-        PanelSeparator {
+        SectionRule {
           visible: root.caVisible || root.oneBudVisible
-          foreground: root.foreground
         }
 
         Column {
@@ -392,9 +421,8 @@ Panel {
           }
         }
 
-        PanelSeparator {
+        SectionRule {
           visible: pods.hasAirPods
-          foreground: root.foreground
         }
 
         Column {
@@ -419,8 +447,7 @@ Panel {
             : pods.daemonReachable
             ? "Open the case or connect your AirPods to see battery and listening controls."
             : "Start the librepods daemon to see battery and listening controls."
-          color: root.foreground
-          opacity: root.dimOpacity
+          color: root.quiet
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.WordWrap
@@ -440,14 +467,14 @@ Panel {
       id: phraseSwap
       NumberAnimation {
         target: phrase; property: "opacity"
-        to: 0; duration: Style.duration(180); easing.type: Easing.OutQuad
+        to: root.inks.phraseOpacity; duration: Style.duration(180); easing.type: Easing.OutQuad
       }
       ScriptAction {
         script: root.phraseIndex = (root.phraseIndex + 1) % root.activePhrases.length
       }
       NumberAnimation {
         target: phrase; property: "opacity"
-        to: root.dimOpacity; duration: Style.duration(260); easing.type: Easing.InQuad
+        to: 1; duration: Style.duration(260); easing.type: Easing.InQuad
       }
     }
   }
@@ -473,8 +500,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: podRow.label
-        color: root.foreground
-        opacity: 0.6
+        color: root.quiet
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         // Style.space(44) was cut for Left, Right and Case, so a longer label takes the room it needs.
@@ -487,13 +513,15 @@ Panel {
         Layout.alignment: Qt.AlignVCenter
         implicitHeight: Style.spacing.md
         radius: height / 2
-        color: Style.selectedFillFor(root.foreground, Commons.Color.accent)
+        color: root.trackFill
+        border.width: Style.spacing.hairline
+        border.color: root.inkColor(root.inks.meterTrack)
 
         Rectangle {
           width: meterTrack.width * Model.levelFraction(podRow.pod.level)
           height: parent.height
           radius: parent.radius
-          color: podRow.low ? root.urgent : root.foreground
+          color: root.inkColor(podRow.low ? root.inks.lowBattery : root.inks.meterFill)
         }
       }
 
@@ -510,8 +538,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: podRow.metaText
-        color: root.foreground
-        opacity: root.dimOpacity
+        color: root.quiet
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
@@ -520,16 +547,28 @@ Panel {
     }
   }
 
-  component ModeRow: CursorSurface {
+  component SectionRule: PanelSeparator {
+    foreground: root.separator
+    strength: root.separator.a
+  }
+
+  component ControlRow: CursorSurface {
+    id: controlRow
+    required property string rowName
+    hasCursor: root.rowHasCursor(rowName)
+    foreground: root.foreground
+    fill: root.focusFill
+    borderSpec: hasCursor ? Border.flat(root.focusInk, Math.max(Style.spacing.hairline, Style.hoverBorderWidth)) : Border.none()
+    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(controlRow)
+  }
+
+  component ModeRow: ControlRow {
     id: modeRow
     property int mode: 0
 
-    readonly property string rowName: "mode:" + mode
+    rowName: "mode:" + mode
     readonly property bool selected: pods.noiseMode === mode
 
-    hasCursor: root.rowHasCursor(rowName)
-    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(modeRow)
-    foreground: root.foreground
     implicitHeight: modeLabel.implicitHeight + Style.spacing.rowPaddingX
 
     MouseArea {
@@ -553,8 +592,7 @@ Panel {
         id: modeLabel
         Layout.fillWidth: true
         text: Model.noiseModeName(modeRow.mode)
-        color: root.foreground
-        opacity: modeRow.selected ? 1.0 : 0.75
+        color: modeRow.selected ? root.foreground : root.quiet
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
         elide: Text.ElideRight
@@ -564,7 +602,7 @@ Panel {
         textFormat: Text.PlainText
         Layout.alignment: Qt.AlignVCenter
         text: Model.GLYPH_CHECK
-        color: root.foreground
+        color: root.inkColor(root.inks.glyph)
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
         opacity: modeRow.selected ? 1.0 : 0.0
@@ -572,18 +610,14 @@ Panel {
     }
   }
 
-  component ToggleRow: CursorSurface {
+  component ToggleRow: ControlRow {
     id: toggleRow
-    property string rowName: ""
     property string label: ""
     property string caption: ""
     property bool checked: false
 
     signal toggled()
 
-    hasCursor: root.rowHasCursor(rowName)
-    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(toggleRow)
-    foreground: root.foreground
     implicitHeight: Math.max(toggleContent.implicitHeight, toggleSwitch.implicitHeight) + Style.spacing.rowPaddingX
 
     MouseArea {
@@ -621,33 +655,55 @@ Panel {
           textFormat: Text.PlainText
           Layout.fillWidth: true
           text: toggleRow.caption
-          color: root.foreground
-          opacity: root.dimOpacity
+          color: root.quiet
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
         }
       }
 
-      ToggleSwitch {
+      SwitchMark {
         id: toggleSwitch
         Layout.alignment: Qt.AlignVCenter
         checked: toggleRow.checked
-        interactive: false
-        foreground: root.foreground
       }
     }
   }
 
-  component ValueRow: CursorSurface {
+  // ToggleSwitch fixes its knob colors and border alpha internally.
+  component SwitchMark: Rectangle {
+    id: mark
+    property bool checked: false
+    readonly property bool rounded: Style.cornerRadius > 0
+    readonly property real knobSize: Math.max(Style.spacing.md, Math.round(height * 0.72))
+    readonly property real knobInset: Math.max(Style.spacing.hairline, Math.round((height - knobSize) / 2))
+    readonly property bool mirrored: LayoutMirroring.enabled
+
+    implicitHeight: Math.max(Style.space(22), Math.round(Style.spacing.controlHeight * 0.55))
+    implicitWidth: Math.round(implicitHeight * 1.9)
+    radius: rounded ? height / 2 : 0
+    color: checked ? root.trackFill : root.toggleOffFill
+    border.width: Style.spacing.hairline
+    border.color: root.inkColor(checked ? root.inks.toggleOn : root.inks.toggleOff)
+
+    Rectangle {
+      width: mark.knobSize
+      height: width
+      anchors.verticalCenter: parent.verticalCenter
+      x: mark.checked !== mark.mirrored ? mark.width - width - mark.knobInset : mark.knobInset
+      radius: mark.rounded ? width / 2 : 0
+      color: root.inkColor(mark.checked ? root.inks.toggleOnKnob : root.inks.toggleOffKnob)
+      Behavior on x {
+        NumberAnimation { duration: Style.duration(120); easing.type: Easing.OutCubic }
+      }
+    }
+  }
+
+  component ValueRow: ControlRow {
     id: valueRow
-    property string rowName: ""
     property string label: ""
     property string value: ""
 
-    hasCursor: root.rowHasCursor(rowName)
-    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(valueRow)
-    foreground: root.foreground
     implicitHeight: valueLabel.implicitHeight + Style.spacing.rowPaddingX
 
     MouseArea {
@@ -680,8 +736,7 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: valueRow.value
-        color: root.foreground
-        opacity: root.dimOpacity
+        color: root.quiet
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         elide: Text.ElideRight
@@ -689,12 +744,10 @@ Panel {
     }
   }
 
-  component SliderRow: CursorSurface {
+  component SliderRow: ControlRow {
     id: sliderRow
     readonly property int adaptiveTickCount: 5
-    hasCursor: root.rowHasCursor("adaptive")
-    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(sliderRow)
-    foreground: root.foreground
+    rowName: "adaptive"
     implicitHeight: sliderColumn.implicitHeight + Style.spacing.controlGap
 
     HoverHandler {
@@ -709,7 +762,6 @@ Panel {
     QtObject {
       id: sliderPalette
       readonly property color background: Commons.Color.popups.background
-      readonly property color foreground: root.foreground
     }
 
     Column {
@@ -729,8 +781,7 @@ Panel {
           Layout.fillWidth: true
           textFormat: Text.PlainText
           text: "Adaptive noise"
-          color: root.foreground
-          opacity: 0.6
+          color: root.quiet
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
         }
@@ -747,6 +798,9 @@ Panel {
       PanelSlider {
         width: parent.width
         bar: sliderPalette
+        trackColor: root.inkColor(root.inks.sliderTrack)
+        fillColor: root.inkColor(root.inks.sliderFill)
+        knobColor: fillColor
         minimum: 0
         maximum: 100
         step: root.adaptiveStepPercent
