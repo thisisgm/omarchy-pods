@@ -8,6 +8,8 @@ use super::*;
 const POINT_SLACK_DB: f64 = 0.05;
 const SLOPE_SLACK: f64 = 1e-3;
 const FORMULA_SLACK_DB: f64 = 1e-4;
+/// A level in dB is twenty times the decimal logarithm of an amplitude.
+const DB_PER_DECADE: f32 = 20.0;
 /// The floats tried on each side of an edge.
 const NEIGHBOURS: usize = 2000;
 /// The steps of a sweep from nothing to the knee, and of one from the knee to the largest float.
@@ -15,16 +17,37 @@ const SWEEP: u16 = 4000;
 /// How far the sweep past the knee reaches: a tenth of full scale times this power of ten is still a float.
 const DECADES: f32 = 38.0;
 
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "reference conversion from f64 powf to f32 for exact const verification"
+)]
+fn amplitude(db: f32) -> f32 {
+    10_f64.powf(f64::from(db) / f64::from(DB_PER_DECADE)) as f32
+}
+
 fn gain() -> f32 {
-    amplitude(MIC_GAIN_DB)
+    MIC_GAIN
 }
 
 fn knee() -> f32 {
-    amplitude(LIMIT_KNEE_DBFS)
+    LIMIT_KNEE
 }
 
 fn ceiling() -> f32 {
-    amplitude(LIMIT_CEILING_DBFS)
+    LIMIT_CEILING
+}
+
+#[test]
+fn precomputed_amplitudes_match_f64_powf_to_zero_ulp() {
+    assert_eq!(MIC_GAIN.to_bits(), amplitude(MIC_GAIN_DB).to_bits());
+    assert_eq!(LIMIT_KNEE.to_bits(), amplitude(LIMIT_KNEE_DBFS).to_bits());
+    assert_eq!(
+        LIMIT_CEILING.to_bits(),
+        amplitude(LIMIT_CEILING_DBFS).to_bits()
+    );
+    assert_eq!(LIMIT_ROOM.to_bits(), (LIMIT_CEILING - LIMIT_KNEE).to_bits());
+    assert_eq!(LIMIT_HIGHEST.to_bits(), LIMIT_CEILING.next_down().to_bits());
 }
 
 fn levelled(sample: f32) -> (f32, Tally) {
