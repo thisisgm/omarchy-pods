@@ -1,6 +1,6 @@
 //! Synthetic uplink packets: the start and the stop, the pods' two markers, and AAC low delay units written bit by bit in the SDU that carries them.
 
-use rusty_aac::encode::{BitWriter, spectral_emit};
+use pods_aac::encode::{BitWriter, emit_cb1_quad};
 
 use super::packet;
 
@@ -89,9 +89,13 @@ pub fn tone_unit(line: u16, level: u8) -> Vec<u8> {
     // No noise shaping follows.
     bits.write_bool(false);
     for quad in (from..to).step_by(usize::from(LINES_PER_QUAD)) {
-        let lines = quad..quad.saturating_add(LINES_PER_QUAD);
-        let held: Vec<i32> = lines.map(|at| i32::from(at == line)).collect();
-        spectral_emit(usize::from(QUAD_BOOK), &held, &mut bits);
+        let held = [
+            i32::from(quad == line),
+            i32::from(quad.saturating_add(1) == line),
+            i32::from(quad.saturating_add(2) == line),
+            i32::from(quad.saturating_add(3) == line),
+        ];
+        emit_cb1_quad(held, &mut bits);
     }
     bits.into_bytes()
 }

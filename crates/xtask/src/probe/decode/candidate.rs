@@ -3,9 +3,9 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
+use pods_aac::Decoder as AacDecoder;
 use pods_mic::EXPECTED_CONFIG;
 use pods_mic::decode::{Decoded, Decoder};
-use rusty_aac::AacDecoder;
 
 /// A call into the decoder longer than this is counted as slow: 100 ms, thirteen times the 7.5 ms a unit lasts.
 pub(crate) const SLOW_CALL: Duration = Duration::from_millis(100);
@@ -33,12 +33,12 @@ impl Candidate {
         if config == EXPECTED_CONFIG {
             return Self::of_the_chain();
         }
-        let built = catch_unwind(|| AacDecoder::with_config_bytes(&config));
+        let built = catch_unwind(|| AacDecoder::with_config(&config));
         let mut decoder = built
             .map_err(|_panic| "the decoder panicked on the configuration".to_owned())?
             .map_err(|error| error.to_string())?;
-        let call = Box::new(move |unit: &[u8]| match decoder.decode(unit, None) {
-            Ok(audio) => UnitResult::Samples(audio.samples),
+        let call = Box::new(move |unit: &[u8]| match decoder.decode(unit) {
+            Ok(samples) => UnitResult::Samples(samples.to_vec()),
             Err(error) => UnitResult::Error(error.to_string()),
         });
         Ok(Self { call })

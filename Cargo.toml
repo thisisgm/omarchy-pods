@@ -14,11 +14,11 @@ publish = false
 allocation-counter = "0.8"
 clap = { version = "4.6", features = ["derive"] }
 opuscule = "0.2"
+pods-aac = { path = "crates/aac" }
 pods-proto = { path = "crates/proto" }
 pods-sys = { path = "crates/sys" }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 rustix = { version = "1.1", default-features = false, features = ["std", "net", "event"] }
-rusty_aac = { version = "2", default-features = false }
 serde_json = "1.0"
 signal-hook = { version = "0.4", default-features = false }
 tempfile = "3"

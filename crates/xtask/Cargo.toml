@@ -10,13 +10,13 @@ publish.workspace = true
 [dependencies]
 clap.workspace = true
 opuscule.workspace = true
+pods-aac.workspace = true
 pods-core = { path = "../core" }
 pods-mic = { path = "../mic" }
 pods-proto.workspace = true
 pods-pw = { path = "../pw" }
 pods-sys.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }
-rusty_aac.workspace = true
 # `RawValue` keeps each value of a status line as the bytes it holds, for C9.
 serde_json = { workspace = true, features = ["raw_value"] }
 signal-hook.workspace = true

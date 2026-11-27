@@ -519,6 +519,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pods-aac"
+version = "0.0.0"
+dependencies = [
+ "allocation-counter",
+ "proptest",
+]
+
+[[package]]
 name = "pods-core"
 version = "0.0.0"
 dependencies = [
@@ -546,9 +554,9 @@ version = "0.0.0"
 dependencies = [
  "allocation-counter",
  "opuscule",
+ "pods-aac",
  "pods-samples",
  "proptest",
- "rusty_aac",
 ]
 
 [[package]]
@@ -593,7 +601,7 @@ version = "0.0.0"
 dependencies = [
  "aes",
  "cpp-source",
- "rusty_aac",
+ "pods-aac",
 ]
 
 [[package]]
@@ -701,9 +709,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.11"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "rustix"
@@ -723,12 +731,6 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
-
-[[package]]
-name = "rusty_aac"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3dbc43fb52354757803c3d465d3471b3ab344889e6df34ebcbdff18132a6f6f"
 
 [[package]]
 name = "serde"
@@ -1044,6 +1046,7 @@ dependencies = [
  "allocation-counter",
  "clap",
  "opuscule",
+ "pods-aac",
  "pods-core",
  "pods-fake",
  "pods-mic",
@@ -1055,7 +1058,6 @@ dependencies = [
  "pods-trap",
  "proptest",
  "rustix",
- "rusty_aac",
  "serde_json",
  "signal-hook",
  "tempfile",
