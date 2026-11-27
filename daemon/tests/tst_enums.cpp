@@ -78,6 +78,28 @@ private slots:
         QCOMPARE(parseModelNumber(""),      AirPodsModel::Unknown);
     }
 
+    void modelFromModalias_readsAppleProductId_data()
+    {
+        QTest::addColumn<QString>("modalias");
+        QTest::addColumn<int>("model");
+        // The first two are read off the operator's own pairs through bluetoothctl info.
+        QTest::newRow("Pro 2 USB-C") << "bluetooth:v004Cp2024d215C" << int(AirPodsModel::AirPodsPro2USBC);
+        QTest::newRow("Pro 3")       << "bluetooth:v004Cp2027d242F" << int(AirPodsModel::AirPodsPro3);
+        QTest::newRow("lower case")  << "bluetooth:v004cp2014d0001" << int(AirPodsModel::AirPodsPro2Lightning);
+        QTest::newRow("unknown id")  << "bluetooth:v004Cp9999d0001" << int(AirPodsModel::Unknown);
+        QTest::newRow("not Apple")   << "bluetooth:v0075p2024d0001" << int(AirPodsModel::Unknown);
+        QTest::newRow("usb source")  << "usb:v05ACp2024d0001"       << int(AirPodsModel::Unknown);
+        QTest::newRow("truncated")   << "bluetooth:v004Cp"          << int(AirPodsModel::Unknown);
+        QTest::newRow("empty")       << ""                          << int(AirPodsModel::Unknown);
+    }
+
+    void modelFromModalias_readsAppleProductId()
+    {
+        QFETCH(QString, modalias);
+        QFETCH(int, model);
+        QCOMPARE(int(modelFromModalias(modalias)), model);
+    }
+
     void modelDisplayName_covers_all() {
         QCOMPARE(modelDisplayName(AirPodsModel::AirPodsPro3),
                  QStringLiteral("AirPods Pro 3"));

@@ -77,6 +77,36 @@ namespace AirpodsTrayApp
             return modelNumberMap.value(modelNumber, AirPodsModel::Unknown);
         }
 
+        // Apple's product id, as BlueZ's Modalias and the BLE proximity frame both carry it.
+        inline AirPodsModel modelFromProductId(quint16 productId)
+        {
+            static const QHash<quint16, AirPodsModel> productIdMap = {
+                {0x2002, AirPodsModel::AirPods1},
+                {0x200F, AirPodsModel::AirPods2},
+                {0x2013, AirPodsModel::AirPods3},
+                {0x2019, AirPodsModel::AirPods4},
+                {0x201B, AirPodsModel::AirPods4ANC},
+                {0x200A, AirPodsModel::AirPodsMaxLightning},
+                {0x201F, AirPodsModel::AirPodsMaxUSBC},
+                {0x200E, AirPodsModel::AirPodsPro},
+                {0x2014, AirPodsModel::AirPodsPro2Lightning},
+                {0x2024, AirPodsModel::AirPodsPro2USBC},
+                {0x2027, AirPodsModel::AirPodsPro3}};
+            // No AirPods Max 2 id yet: AAP names it instead, and an unrecognized id is ignored.
+            return productIdMap.value(productId, AirPodsModel::Unknown);
+        }
+
+        // Parses BlueZ Device1.Modalias, for example "bluetooth:v004Cp2024d215C" (Apple, product 0x2024, version 0x215C).
+        inline AirPodsModel modelFromModalias(const QString &modalias)
+        {
+            static const QString applePrefix = QStringLiteral("bluetooth:v004Cp");
+            if (!modalias.startsWith(applePrefix, Qt::CaseInsensitive))
+                return AirPodsModel::Unknown;
+            bool ok = false;
+            const quint16 productId = modalias.mid(applePrefix.size(), 4).toUShort(&ok, 16);
+            return ok ? modelFromProductId(productId) : AirPodsModel::Unknown;
+        }
+
         // Return icons based on model
         inline QPair<QString, QString> getModelIcon(AirPodsModel model) {
             switch (model) {

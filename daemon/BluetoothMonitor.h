@@ -19,7 +19,7 @@ public:
     void probeDeviceConnected(const QString &macAddress, quint64 requestId);
 
 signals:
-    void deviceConnected(const QString &macAddress, const QString &deviceName);
+    void deviceConnected(const QString &macAddress, const QString &deviceName, const QString &modalias);
     void deviceDisconnected(const QString &macAddress, const QString &deviceName);
     void deviceConnectionProbeFinished(const QString &macAddress, quint64 requestId,
                                        bool connected);
@@ -37,6 +37,7 @@ private:
     void registerDBusService();
     bool isAirPodsDevice(const QString &devicePath);
     QString getDeviceName(const QString &devicePath);
+    QString getModalias(const QString &devicePath);
 };
 
 #endif // BLUETOOTHMONITOR_H

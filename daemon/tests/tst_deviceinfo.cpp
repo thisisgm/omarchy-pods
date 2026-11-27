@@ -128,6 +128,19 @@ private slots:
         QCOMPARE(a.adaptiveNoiseLevel(), 80);
         QCOMPARE(a.deviceName(), QString()); // device name IS reset
     }
+
+    void resetClearsModelNumber()
+    {
+        DeviceInfo a;
+        a.setModelNumber("A3063");
+        a.setModel(AirPodsModel::AirPodsPro3);
+
+        a.reset();
+
+        // A pair that sends no AAP metadata would otherwise report the previous pair's model number.
+        QCOMPARE(a.modelNumber(), QString());
+        QCOMPARE(a.model(), AirPodsModel::Unknown);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestDeviceInfo)

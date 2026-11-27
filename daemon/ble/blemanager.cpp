@@ -8,26 +8,10 @@
 // Fixed header data[0] through data[10], then a 16-byte encrypted payload.
 static constexpr int proximityPairingBytes = 11 + 16;
 
+// The frame carries the product id low byte first, so 0x2027 arrives as data[3]=0x27, data[4]=0x20 and the key is 0x2720.
 AirpodsTrayApp::Enums::AirPodsModel getModelName(quint16 modelId)
 {
-    using namespace AirpodsTrayApp::Enums;
-    static const QMap<quint16, AirPodsModel> modelMap = {
-        {0x0220, AirPodsModel::AirPods1},
-        {0x0F20, AirPodsModel::AirPods2},
-        {0x1320, AirPodsModel::AirPods3},
-        {0x1920, AirPodsModel::AirPods4},
-        {0x1B20, AirPodsModel::AirPods4ANC},
-        {0x0A20, AirPodsModel::AirPodsMaxLightning},
-        {0x1F20, AirPodsModel::AirPodsMaxUSBC},
-        {0x0E20, AirPodsModel::AirPodsPro},
-        {0x1420, AirPodsModel::AirPodsPro2Lightning},
-        {0x2420, AirPodsModel::AirPodsPro2USBC},
-        // Apple product 0x2027 arrives byte-swapped, so data[3] is 0x27 and this key is 0x2720.
-        {0x2720, AirPodsModel::AirPodsPro3}
-        // No AirPods Max 2 id yet: AAP names it instead, and an unrecognized id is ignored.
-    };
-
-    return modelMap.value(modelId, AirPodsModel::Unknown);
+    return AirpodsTrayApp::Enums::modelFromProductId(static_cast<quint16>((modelId >> 8) | (modelId << 8)));
 }
 
 QString getColorName(quint8 colorId)

@@ -165,6 +165,7 @@ public:
     {
         setDeviceName("");
         setModel(AirPodsModel::Unknown);
+        setModelNumber("");
         m_battery->reset();
         setBatteryStatus("");
         setNoiseControlMode(NoiseControlMode::Off);

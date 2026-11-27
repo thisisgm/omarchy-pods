@@ -49,6 +49,7 @@
 #include "QRCodeImageProvider.hpp"
 #include "systemsleepmonitor.hpp"
 #include "controlreconnect.hpp"
+#include "pairidentity.hpp"
 
 using namespace AirpodsTrayApp::Enums;
 
@@ -817,7 +818,7 @@ private slots:
         });
     }
 
-    void bluezDeviceConnected(const QString &address, const QString &name)
+    void bluezDeviceConnected(const QString &address, const QString &name, const QString &modalias)
     {
         rememberAirPodsDevice(address, name);
         m_disconnectFinalized = false;
@@ -833,6 +834,7 @@ private slots:
             m_controlRecovery.beginConnection();
         }
         connectToDevice(device, recovering);
+        adoptBluezIdentity(name, modalias);
 
         // After system reboot, AirPods might be connected but A2DP profile not active
         // Attempt to activate A2DP profile after a delay to ensure connection is established
@@ -846,6 +848,24 @@ private slots:
                 mediaController->activateA2dpProfileWithRetry(formattedAddress);
             }
         });
+    }
+
+    // Some pairs never send AAP metadata, so BlueZ's name and Modalias are the only identity they get until it arrives.
+    void adoptBluezIdentity(const QString &name, const QString &modalias)
+    {
+        if (m_deviceInfo->model() == AirPodsModel::Unknown) {
+            const AirPodsModel model = modelFromModalias(modalias);
+            if (model == AirPodsModel::Unknown) {
+                LOG_WARN("BlueZ Modalias " << modalias << " names no known AirPods model");
+            } else {
+                m_deviceInfo->setModel(model);
+                emit modelChanged();
+            }
+        }
+        if (m_deviceInfo->deviceName().isEmpty()) {
+            m_deviceInfo->setDeviceName(name);
+        }
+        emit airPodsStatusChanged();
     }
 
     void onDeviceDisconnected(const QBluetoothAddress &address)
@@ -1247,10 +1267,9 @@ private slots:
         localSocket->connectToService(device.address(), QBluetoothUuid("74ec2172-0bad-4d01-8f77-997b2be0722a"));
         // Recovery can land on another pair, and the old pair's battery and ear state would read as this one's.
         const QString previousAddress = m_deviceInfo->bluetoothAddress();
-        if (!previousAddress.isEmpty()
-            && previousAddress.compare(device.address().toString(), Qt::CaseInsensitive) != 0) {
-            LOG_INFO("Control link moved from " << previousAddress << " to "
-                     << device.address().toString() << ", clearing the previous pair's state");
+        if (!PairIdentity::stateBelongsTo(previousAddress, device.address().toString())) {
+            LOG_INFO("Control link moved from " << (previousAddress.isEmpty() ? QStringLiteral("no pair") : previousAddress)
+                     << " to " << device.address().toString() << ", clearing the previous pair's state");
             m_deviceInfo->reset();
         }
         m_deviceInfo->setBluetoothAddress(device.address().toString());
@@ -1530,6 +1549,11 @@ private slots:
     void bleDeviceFound(const BleInfo &device)
     {
         if (BLEUtils::isValidIrkRpa(m_deviceInfo->magicAccIRK(), device.address)) {
+            if (PairIdentity::advertIsFromOtherPair(!m_deviceInfo->bluetoothAddress().isEmpty(), m_deviceInfo->model(), device.modelName)) {
+                LOG_DEBUG("BLE adv from " << modelDisplayName(device.modelName) << " ignored, "
+                          << modelDisplayName(m_deviceInfo->model()) << " is connected");
+                return;
+            }
             LOG_DEBUG("BLE adv accepted caseBattery=" << device.caseBattery << " charge=" << device.caseCharging << " primaryLeft=" << device.primaryLeft);
             // Only adopt the BLE-broadcast model when it's actually
             // recognized. AirPods Pro 3 (and any future model whose

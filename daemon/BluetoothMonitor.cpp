@@ -72,6 +72,14 @@ QString BluetoothMonitor::getDeviceName(const QString &devicePath)
     return "Unknown";
 }
 
+// BlueZ leaves Modalias unset for a device that never answered the Device ID query, so empty is a normal answer.
+QString BluetoothMonitor::getModalias(const QString &devicePath)
+{
+    QDBusInterface deviceInterface("org.bluez", devicePath, "org.freedesktop.DBus.Properties", m_dbus);
+    QDBusReply<QVariant> modaliasReply = deviceInterface.call("Get", "org.bluez.Device1", "Modalias");
+    return modaliasReply.isValid() ? modaliasReply.value().toString() : QString();
+}
+
 bool BluetoothMonitor::checkAlreadyConnectedDevices()
 {
     // QDBusInterface introspects the remote object from its constructor on the default 25 s
@@ -117,7 +125,7 @@ bool BluetoothMonitor::checkAlreadyConnectedDevices()
         if (deviceProps["Connected"].toBool()) {
             QString macAddress = deviceProps["Address"].toString();
             QString deviceName = deviceProps["Name"].toString();
-            emit deviceConnected(macAddress, deviceName);
+            emit deviceConnected(macAddress, deviceName, deviceProps.value("Modalias").toString());
             LOG_DEBUG("Found already connected AirPods: " << macAddress << " Name: " << deviceName);
             deviceFound = true;
         }
@@ -201,7 +209,7 @@ void BluetoothMonitor::onPropertiesChanged(const QDBusMessage &message)
     const bool connected = changedProps["Connected"].toBool();
 
     if (connected) {
-        emit deviceConnected(macAddress, deviceName);
+        emit deviceConnected(macAddress, deviceName, getModalias(path));
         LOG_DEBUG("AirPods device connected:" << macAddress << " Name:" << deviceName);
     } else {
         emit deviceDisconnected(macAddress, deviceName);
