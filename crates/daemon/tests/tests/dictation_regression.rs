@@ -82,8 +82,8 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
 
 #[test]
 fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
-    const BURST: u32 = 4;
-    const PER_NOTIFICATION: u32 = 3;
+    const BURST: u32 = 3;
+    const PER_NOTIFICATION: u32 = 2;
     const LEADING: u32 = 13;
     const FIRST_WORD: u32 = 2;
     const RELEASE: Duration = Duration::from_millis(317);
@@ -92,13 +92,13 @@ fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
     const PLAY_WORD: Duration = Duration::from_millis(240);
     const TAIL_DEADLINE: Duration = Duration::from_millis(1_277);
 
-    let fixture = Fixture::with_recorder_quantum();
+    let mut fixture = Fixture::with_recorder_quantum();
     let doap = fixture.device.pods.doap();
     doap.hold_start(true);
     doap.burst(BURST, PER_NOTIFICATION);
     doap.silent(LEADING);
     doap.mark(FIRST_WORD);
-    // The 3+1 burst sets the initial anchor late. Pausing live packets gives the reader time to use it.
+    // The 2+1 burst sets the initial anchor late and fits inside the reader's normal latency.
     doap.stall(STALL);
     fixture.list(CAPTURE);
     let recorder = fixture.capture();
@@ -112,6 +112,7 @@ fn late_anchor_keeps_the_last_word_at_the_tail_deadline() {
     let samples = recorder.finish();
     fixture.stopped(1);
     fixture.no_uplink();
+    assert_eq!(opening(&mut fixture), (0, None), "opening catch-up ran");
     let marks = dictation_marks(&samples);
     assert_eq!(marks.len(), 2, "{marks:?}");
     assert_marks(&samples[marks[0].end..], 1, MARK_LENGTH, (0, None));
