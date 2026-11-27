@@ -4,6 +4,8 @@
 #include <QDebug>
 #include <QDBusObjectPath>
 #include <QDBusMetaType>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 
 // bluetoothd answers this sweep in milliseconds, and the watchdog repeats it, so a wedged
 // bluetoothd must not hold the event loop for the 25 s D-Bus default on every tick.
@@ -49,35 +51,6 @@ void BluetoothMonitor::registerDBusService()
     {
         LOG_WARN("Failed to connect to D-Bus PropertiesChanged signal");
     }
-}
-
-bool BluetoothMonitor::isAirPodsDevice(const QString &devicePath)
-{
-    QDBusInterface deviceInterface("org.bluez", devicePath, "org.freedesktop.DBus.Properties", m_dbus);
-    QDBusReply<QVariant> uuidsReply = deviceInterface.call("Get", "org.bluez.Device1", "UUIDs");
-    if (!uuidsReply.isValid()) {
-        return false;
-    }
-    QStringList uuids = uuidsReply.value().toStringList();
-    return uuids.contains("74ec2172-0bad-4d01-8f77-997b2be0722a");
-}
-
-QString BluetoothMonitor::getDeviceName(const QString &devicePath)
-{
-    QDBusInterface deviceInterface("org.bluez", devicePath, "org.freedesktop.DBus.Properties", m_dbus);
-    QDBusReply<QVariant> nameReply = deviceInterface.call("Get", "org.bluez.Device1", "Name");
-    if (nameReply.isValid()) {
-        return nameReply.value().toString();
-    }
-    return "Unknown";
-}
-
-// BlueZ leaves Modalias unset for a device that never answered the Device ID query, so empty is a normal answer.
-QString BluetoothMonitor::getModalias(const QString &devicePath)
-{
-    QDBusInterface deviceInterface("org.bluez", devicePath, "org.freedesktop.DBus.Properties", m_dbus);
-    QDBusReply<QVariant> modaliasReply = deviceInterface.call("Get", "org.bluez.Device1", "Modalias");
-    return modaliasReply.isValid() ? modaliasReply.value().toString() : QString();
 }
 
 bool BluetoothMonitor::checkAlreadyConnectedDevices()
@@ -194,25 +167,31 @@ void BluetoothMonitor::onPropertiesChanged(const QDBusMessage &message)
         return;
     }
 
-    if (!isAirPodsDevice(path)) {
-        return;
-    }
-
-    QDBusInterface deviceInterface("org.bluez", path, "org.freedesktop.DBus.Properties", m_dbus);
-    QDBusReply<QVariant> addrReply = deviceInterface.call("Get", "org.bluez.Device1", "Address");
-    if (!addrReply.isValid()) {
-        return;
-    }
-
-    const QString macAddress = addrReply.value().toString();
-    const QString deviceName = getDeviceName(path);
     const bool connected = changedProps["Connected"].toBool();
 
-    if (connected) {
-        emit deviceConnected(macAddress, deviceName, getModalias(path));
-        LOG_DEBUG("AirPods device connected:" << macAddress << " Name:" << deviceName);
-    } else {
-        emit deviceDisconnected(macAddress, deviceName);
-        LOG_DEBUG("AirPods device disconnected:" << macAddress << " Name:" << deviceName);
-    }
+    // One asynchronous GetAll, so a BlueZ that stops answering cannot hold the event loop. Replies come in call order.
+    QDBusMessage request = QDBusMessage::createMethodCall("org.bluez", path, "org.freedesktop.DBus.Properties", "GetAll");
+    request << QStringLiteral("org.bluez.Device1");
+    auto *watcher = new QDBusPendingCallWatcher(m_dbus.asyncCall(request), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, connected](QDBusPendingCallWatcher *call) {
+        call->deleteLater();
+        const QDBusPendingReply<QVariantMap> reply = *call;
+        if (reply.isError()) {
+            LOG_WARN("Reading Device1 properties for a connection change failed: " << reply.error().message());
+            return;
+        }
+        const QVariantMap props = reply.value();
+        if (!props.value("UUIDs").toStringList().contains("74ec2172-0bad-4d01-8f77-997b2be0722a")) {
+            return;
+        }
+        const QString macAddress = props.value("Address").toString();
+        const QString deviceName = props.value("Name", QStringLiteral("Unknown")).toString();
+        if (connected) {
+            emit deviceConnected(macAddress, deviceName, props.value("Modalias").toString());
+            LOG_DEBUG("AirPods device connected");
+        } else {
+            emit deviceDisconnected(macAddress, deviceName);
+            LOG_DEBUG("AirPods device disconnected");
+        }
+    });
 }

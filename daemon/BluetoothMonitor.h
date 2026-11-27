@@ -35,9 +35,6 @@ private:
     // The watchdog repeats the sweep, so only a change of error is worth logging again.
     QString m_lastSweepError;
     void registerDBusService();
-    bool isAirPodsDevice(const QString &devicePath);
-    QString getDeviceName(const QString &devicePath);
-    QString getModalias(const QString &devicePath);
 };
 
 #endif // BLUETOOTHMONITOR_H

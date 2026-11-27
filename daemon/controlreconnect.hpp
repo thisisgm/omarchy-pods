@@ -69,12 +69,6 @@ inline constexpr int silentLinkReopenLimit = 2;
 // A live link answered a repeated notification request with its battery in 9 ms on hardware, so two requests cover a slow answer.
 inline constexpr int batteryRequestLimit = 2;
 
-// Some links report ear state at once but battery only when a level next changes, which can take minutes.
-inline bool shouldRequestBatteryAgain(bool batterySeen, bool statusSeen, int requestsSent)
-{
-    return !batterySeen && statusSeen && hasAttemptRemaining(requestsSent, batteryRequestLimit);
-}
-
 enum class SilentLinkStep { ResendHandshake, ReopenSocket, GiveUp };
 
 // Re-sending on the same socket has never revived a silent link; a new socket to the same pair always has.

@@ -4,6 +4,9 @@
 
 #include "../pairidentity.hpp"
 
+// main.cpp defines the Q_LOGGING_CATEGORY symbol, but tests don't link main.cpp.
+Q_LOGGING_CATEGORY(openpods, "openpods.test", QtWarningMsg)
+
 using AirpodsTrayApp::Enums::AirPodsModel;
 
 class TestPairIdentity : public QObject
@@ -60,6 +63,33 @@ private slots:
                                                      static_cast<AirPodsModel>(connectedModel),
                                                      static_cast<AirPodsModel>(advertModel)),
                  other);
+    }
+
+    // The regression: a Pro 2 that sends no AAP metadata showed no model, or the last pair's.
+    void adoptBluezIdentity_fillsWhatAapHasNotSent()
+    {
+        DeviceInfo info;
+        QVERIFY(PairIdentity::adoptBluezIdentity(info, "Pods", "bluetooth:v004Cp2024d215C"));
+        QCOMPARE(info.model(), AirPodsModel::AirPodsPro2USBC);
+        QCOMPARE(info.deviceName(), QString("Pods"));
+    }
+
+    void adoptBluezIdentity_keepsWhatAapSent()
+    {
+        DeviceInfo info;
+        info.setModel(AirPodsModel::AirPodsPro3);
+        info.setDeviceName("From AAP");
+        QVERIFY(!PairIdentity::adoptBluezIdentity(info, "From BlueZ", "bluetooth:v004Cp2024d215C"));
+        QCOMPARE(info.model(), AirPodsModel::AirPodsPro3);
+        QCOMPARE(info.deviceName(), QString("From AAP"));
+    }
+
+    void adoptBluezIdentity_unknownModaliasSetsNoModel()
+    {
+        DeviceInfo info;
+        QVERIFY(!PairIdentity::adoptBluezIdentity(info, "Pods", ""));
+        QCOMPARE(info.model(), AirPodsModel::Unknown);
+        QCOMPARE(info.deviceName(), QString("Pods"));
     }
 };
 

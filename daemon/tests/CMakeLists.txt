@@ -157,5 +157,14 @@ target_link_libraries(tst_blemanager PRIVATE Qt6::Bluetooth)
 openpods_add_test(tst_pairidentity
     tst_pairidentity.cpp
     ../pairidentity.hpp
+    ../deviceinfo.hpp
+    ../battery.hpp
+    ../eardetection.hpp
     ../enums.h
+)
+
+openpods_add_test(tst_controlstatuswatchdog
+    tst_controlstatuswatchdog.cpp
+    ../controlstatuswatchdog.hpp
+    ../controlreconnect.hpp
 )
