@@ -174,6 +174,102 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stack_resampler_matches_reference_kaiser_sinc_within_1e_6() {
+        use std::collections::VecDeque;
+        use std::f64::consts::PI;
+
+        const CUT: f64 = 0.45;
+        const BETA: f64 = 8.2;
+        const BESSEL_TERMS: u8 = 32;
+        const MAX_DIFF: f32 = 1e-6;
+
+        fn bessel(x: f64) -> f64 {
+            let (mut term, mut sum) = (1.0, 1.0);
+            for k in 1..=BESSEL_TERMS {
+                term *= (x / (2.0 * f64::from(k))).powi(2);
+                sum += term;
+            }
+            sum
+        }
+
+        fn ref_taps(up: u8, step: u8) -> Vec<Vec<f32>> {
+            let taps = u8::try_from(RESAMPLE_TAPS).unwrap();
+            let centre = (f64::from(up) * f64::from(taps) - 1.0) / 2.0;
+            let turn = PI * 2.0 * CUT / f64::from(up.max(step));
+            (0..up)
+                .map(|phase| {
+                    let raw: Vec<f64> = (0..taps)
+                        .map(|tap| {
+                            let off = f64::from(phase) + f64::from(tap) * f64::from(up) - centre;
+                            let win = bessel(BETA * (1.0 - (off / centre).powi(2)).sqrt());
+                            (turn * off).sin() / (turn * off) * win
+                        })
+                        .collect();
+                    let sum: f64 = raw.iter().sum();
+                    raw.into_iter().map(|v| sample(v / sum)).collect()
+                })
+                .collect()
+        }
+
+        // Deterministic multi-component waveform spanning full scale.
+        let input: Vec<f32> = (0..FRAMES)
+            .map(|i| {
+                let t = seconds(i, HIGH_HZ);
+                let v = 0.45 * (TAU * 440.0 * t).sin()
+                    + 0.35 * (TAU * 3700.0 * t).cos()
+                    + 0.20 * (TAU * 11_300.0 * t).sin();
+                sample(v)
+            })
+            .collect();
+
+        for ((from, to), (up, step)) in RATIOS.into_iter().zip([(3_u8, 4_u8), (4_u8, 3_u8)]) {
+            let phases = ref_taps(up, step);
+            let mut history: VecDeque<f32> = std::iter::repeat_n(0.0, RESAMPLE_TAPS).collect();
+            let mut phase = 0_usize;
+            let mut ref_f32 = Vec::new();
+            let mut ref_f64 = Vec::new();
+            for &x in &input {
+                history.pop_back();
+                history.push_front(x);
+                while let Some(taps) = phases.get(phase) {
+                    let sum_f32: f32 = taps.iter().zip(&history).map(|(t, s)| t * s).sum();
+                    let sum_f64: f64 = taps
+                        .iter()
+                        .zip(&history)
+                        .map(|(&t, &s)| f64::from(t) * f64::from(s))
+                        .sum();
+                    ref_f32.push(sum_f32);
+                    ref_f64.push(sample(sum_f64));
+                    phase += usize::from(step);
+                }
+                phase -= phases.len();
+            }
+
+            let mut actual = Vec::new();
+            Resampler::new(from, to).unwrap().push(&input, &mut actual);
+            assert_eq!(actual.len(), ref_f32.len(), "{from} to {to}");
+            let max_diff_f32 = actual
+                .iter()
+                .zip(&ref_f32)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            let max_diff_f64 = actual
+                .iter()
+                .zip(&ref_f64)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                max_diff_f32 <= MAX_DIFF,
+                "{from} to {to}: max diff vs serial f32 {max_diff_f32:e}"
+            );
+            assert!(
+                max_diff_f64 <= MAX_DIFF,
+                "{from} to {to}: max diff vs f64 {max_diff_f64:e}"
+            );
+        }
+    }
+
     fn block() -> impl Strategy<Value = Vec<f32>> {
         proptest::collection::vec(-1.0_f32..1.0, 0..BLOCK_UNDER)
     }

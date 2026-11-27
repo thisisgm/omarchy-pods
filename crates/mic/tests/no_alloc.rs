@@ -128,4 +128,44 @@ mod tests {
         assert_eq!(ok_units, 1000);
         assert_eq!(measured.count_total, 0);
     }
+
+    #[test]
+    fn the_resampler_never_allocates() {
+        use pods_mic::resample::Resampler;
+
+        const LOW_HZ: u32 = 48_000;
+        const HIGH_HZ: u32 = 64_000;
+        const BLOCK: usize = 480;
+        const MAX_OUT: usize = 640;
+
+        let input: [f32; BLOCK] = std::array::from_fn(|i| {
+            let phase = f64::from(u32::try_from(i).unwrap()) * 0.1;
+            #[expect(
+                clippy::as_conversions,
+                clippy::cast_possible_truncation,
+                reason = "test sine sample inside full scale"
+            )]
+            let s = phase.sin() as f32;
+            s
+        });
+        let mut out = Vec::with_capacity(MAX_OUT);
+        let mut total_out = 0_usize;
+
+        let measured = allocation_counter::measure(|| {
+            for (from_hz, to_hz) in [(LOW_HZ, HIGH_HZ), (HIGH_HZ, LOW_HZ)] {
+                let mut resampler = black_box(Resampler::new(from_hz, to_hz).unwrap());
+                for _ in 0..8 {
+                    out.clear();
+                    resampler.push(black_box(&input), &mut out);
+                    total_out += black_box(out.len());
+                }
+                resampler.reset();
+                out.clear();
+                resampler.push(black_box(&input), &mut out);
+                total_out += black_box(out.len());
+            }
+        });
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(total_out, 9 * (640 + 360));
+    }
 }
