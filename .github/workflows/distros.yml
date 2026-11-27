@@ -14,25 +14,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: public.ecr.aws/docker/library/archlinux:latest
+          - image: quay.io/archlinux/archlinux:latest
             runner: ubuntu-24.04
             manager: pacman
-          - image: public.ecr.aws/docker/library/ubuntu:24.04
+          - image: mirror.gcr.io/library/ubuntu:24.04
             runner: ubuntu-24.04
             manager: apt
-          - image: public.ecr.aws/docker/library/ubuntu:24.04
+          - image: mirror.gcr.io/library/ubuntu:24.04
             runner: ubuntu-24.04-arm
             manager: apt
-          - image: public.ecr.aws/docker/library/debian:trixie
+          - image: mirror.gcr.io/library/debian:trixie
             runner: ubuntu-24.04
             manager: apt
-          - image: public.ecr.aws/docker/library/fedora:latest
+          - image: quay.io/fedora/fedora:latest
             runner: ubuntu-24.04
             manager: dnf
-          - image: public.ecr.aws/docker/library/fedora:latest
+          - image: quay.io/fedora/fedora:latest
             runner: ubuntu-24.04-arm
             manager: dnf
-          - image: public.ecr.aws/docker/library/almalinux:10
+          - image: quay.io/almalinuxorg/almalinux:10
             runner: ubuntu-24.04
             manager: dnf
           - image: registry.opensuse.org/opensuse/tumbleweed:latest
@@ -52,7 +52,7 @@ jobs:
             case "$MANAGER" in
               pacman) pacman -Sy --noconfirm --needed curl tar zstd coreutils diffutils findutils python util-linux pipewire pipewire-pulse bluez ;;
               apt) apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl tar zstd coreutils diffutils findutils python3 util-linux pipewire pipewire-pulse bluez ;;
-              dnf) dnf install -y --allowerasing curl tar zstd coreutils diffutils findutils python3 util-linux pipewire pipewire-pulseaudio bluez ;;
+              dnf) dnf install -y --allowerasing curl tar zstd coreutils diffutils findutils python3 util-linux /usr/bin/script pipewire pipewire-pulseaudio bluez ;;
               zypper) zypper --non-interactive install curl tar zstd coreutils diffutils findutils python3 util-linux pipewire pipewire-pulseaudio bluez ;;
             esac
             exec setpriv --reuid=10001 --regid=10001 --clear-groups bash /workspace/tests/packaging.sh --check-distro

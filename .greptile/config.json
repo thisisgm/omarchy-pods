@@ -130,7 +130,7 @@
     },
     {
       "id": "house-text",
-      "rule": "Flag a comment longer than one line that is not stating a timing or race constraint, an invented abbreviation, an em dash, and any line in code, documentation or commit text that attributes the work to a tool. Flag a README change that removes the line under Credits, the licence notice for the daemon, or the Support section. Flag a diff that carries more than the change needs: a comment that restates the code, dead code, and leftover debug output.",
+      "rule": "Flag a comment longer than one line that is not stating a timing or race constraint, an invented abbreviation, an em dash, and any line in code, documentation or commit text that attributes the work to a tool. Flag a README change that removes the line under Credits or the licence notice for the daemon. Flag a diff that carries more than the change needs: a comment that restates the code, dead code, and leftover debug output.",
       "severity": "low"
     }
   ]

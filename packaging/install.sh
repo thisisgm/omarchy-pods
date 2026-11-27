@@ -275,9 +275,30 @@ if [[ -z ${INVOCATION_ID:-} ]]; then
         printf 'pods: could not write fish PATH file\n' >&2
 fi
 
+restore_legacy_plugin() {
+    case "${legacy_kind:-}" in
+        symlink) ln -s -- "$legacy_target" "$legacy_link" || true ;;
+        dir)
+            if [[ -e $legacy_backup/$legacy_plugin ]] && mv -T -- "$legacy_backup/$legacy_plugin" "$legacy_link"; then
+                rmdir -- "$legacy_backup" || true
+            fi
+            ;;
+    esac
+    if [[ -n ${legacy_kind:-} ]]; then
+        omarchy-shell -q shell rescanPlugins || true
+    fi
+    if ((legacy_disabled)); then
+        omarchy plugin enable "$legacy_plugin" >/dev/null 2>&1 || true
+    fi
+}
+
 if command -v omarchy >/dev/null && [[ -d $omarchy_dir ]]; then
     legacy_plugin=io.github.thisisgm.omapods
     legacy_link="$omarchy_dir/plugins/$legacy_plugin"
+    legacy_kind=
+    legacy_target=
+    legacy_backup=
+    legacy_disabled=0
     mkdir -p -- "$omarchy_dir/plugins"
     first_plugin=0
     if ! exists "$plugin_link"; then
@@ -286,20 +307,27 @@ if command -v omarchy >/dev/null && [[ -d $omarchy_dir ]]; then
         fail "existing plugin path: $plugin_link"
     fi
     if exists "$legacy_link"; then
-        if [[ -f $legacy_link/manifest.json ]] && ! omarchy plugin disable "$legacy_plugin"; then
-            printf 'pods: could not disable legacy plugin %s; moving it aside\n' "$legacy_plugin" >&2
+        if [[ -f $legacy_link/manifest.json ]]; then
+            if omarchy plugin disable "$legacy_plugin"; then
+                legacy_disabled=1
+            else
+                printf 'pods: could not disable legacy plugin %s; moving it aside\n' "$legacy_plugin" >&2
+            fi
         fi
         if [[ -L $legacy_link ]]; then
+            legacy_kind=symlink
+            legacy_target=$(readlink -- "$legacy_link")
             rm -- "$legacy_link"
         else
-            backup=$(mktemp -d "$omarchy_dir/pods-legacy.XXXXXX")
-            mv -T -- "$legacy_link" "$backup/$legacy_plugin"
-            printf 'pods: previous plugin saved in %s\n' "$backup"
+            legacy_kind=dir
+            legacy_backup=$(mktemp -d "$omarchy_dir/pods-legacy.XXXXXX")
+            mv -T -- "$legacy_link" "$legacy_backup/$legacy_plugin"
         fi
     fi
     if ((first_plugin)); then ln -s -- "$app/current/plugin" "$plugin_link"; fi
     if ! omarchy-shell -q shell rescanPlugins; then
-        if ((first_plugin)); then rm -- "$plugin_link"; fi
+        if ((first_plugin)); then rm -f -- "$plugin_link"; fi
+        restore_legacy_plugin
         fail 'Omarchy shell could not rescan its plugins'
     fi
     if ((first_plugin)); then
@@ -308,12 +336,16 @@ if command -v omarchy >/dev/null && [[ -d $omarchy_dir ]]; then
         deadline=$((SECONDS + plugin_wait_s))
         until omarchy plugin enable superwhisper.pods > "$scratch/enable.log" 2>&1; do
             if ((SECONDS >= deadline)); then
-                rm -- "$plugin_link"
+                rm -f -- "$plugin_link"
+                restore_legacy_plugin
                 cat -- "$scratch/enable.log" >&2
                 fail 'Omarchy could not enable superwhisper.pods'
             fi
             sleep 1
         done
+    fi
+    if [[ $legacy_kind == dir ]]; then
+        printf 'pods: previous plugin saved in %s\n' "$legacy_backup"
     fi
 fi
 

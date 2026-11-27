@@ -294,6 +294,20 @@ chmod 0755 -- stubs/omarchy
 "$install" --binary "$fixture/pods-good" 2> legacy-disable.log
 grep -Fq 'could not disable legacy plugin io.github.thisisgm.omapods' legacy-disable.log
 [[ ! -e $plugin/io.github.thisisgm.omapods && -f $plugin/superwhisper.pods/Panel.qml ]]
+"$root/setup" --uninstall --keep-keys
+mkdir -p -- "$plugin/io.github.thisisgm.omapods"
+printf 'keep me on failure\n' > "$plugin/io.github.thisisgm.omapods/manifest.json"
+cat > stubs/omarchy <<'STUB'
+#!/bin/sh
+printf 'omarchy %s\n' "$*" >> "$TEST_COMMANDS"
+if [ "$1 $2 $3" = 'plugin enable superwhisper.pods' ]; then exit 1; fi
+STUB
+chmod 0755 -- stubs/omarchy
+expect_error 'Omarchy could not enable superwhisper.pods' "$install" --binary "$fixture/pods-good"
+[[ ! -e $plugin/superwhisper.pods && -f $plugin/io.github.thisisgm.omapods/manifest.json ]]
+grep -Fqx 'keep me on failure' "$plugin/io.github.thisisgm.omapods/manifest.json"
+grep -Fqx 'omarchy plugin enable io.github.thisisgm.omapods' "$TEST_COMMANDS"
+rm -rf -- "$plugin/io.github.thisisgm.omapods"
 mv -f -- stubs/omarchy.orig stubs/omarchy
 "$root/setup" --uninstall --keep-keys
 sha_name="$archive.sha256"
