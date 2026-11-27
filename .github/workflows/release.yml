@@ -101,6 +101,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.build.outputs.version }}
-        run: >-
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "$TAG"
-          "dist/librepods-$VERSION-x86_64" "dist/librepods-$VERSION-x86_64.sha256"
+        shell: bash
+        run: |
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag "${prerelease[@]}" --title "$TAG" \
+            "dist/librepods-$VERSION-x86_64" "dist/librepods-$VERSION-x86_64.sha256"

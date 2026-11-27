@@ -116,6 +116,9 @@ debug = "line-tables-only"
 split-debuginfo = "off"
 strip = "none"
 
+[profile.release.package."*"]
+debug = 0
+
 [profile.dev]
 debug = "line-tables-only"
 
