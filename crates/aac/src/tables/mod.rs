@@ -17,7 +17,7 @@ pub(crate) const TNS_MAX_BANDS: usize = 31;
 pub(crate) const TNS_MAX_ORDER: usize = 12;
 
 /// Scalefactor band edge offsets `swb_offset_480_48` (ISO/IEC 14496-3 Table 4.183).
-pub(crate) const BAND_EDGES: [usize; NUM_SWB + 1] = [
+pub const BAND_EDGES: [u16; NUM_SWB + 1] = [
     0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 108, 120, 132,
     144, 156, 172, 188, 212, 240, 272, 304, 336, 368, 400, 432, 480,
 ];

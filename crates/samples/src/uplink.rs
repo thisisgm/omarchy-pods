@@ -1,5 +1,6 @@
 //! Synthetic uplink packets: the start and the stop, the pods' two markers, and AAC low delay units written bit by bit in the SDU that carries them.
 
+use pods_aac::BAND_EDGES;
 use pods_aac::encode::{BitWriter, emit_cb1_quad};
 
 use super::packet;
@@ -24,11 +25,6 @@ const ZERO_BOOK: u8 = 0;
 /// The first spectral codebook: four lines a codeword, each -1, 0 or 1.
 const QUAD_BOOK: u8 = 1;
 const LINES_PER_QUAD: u16 = 4;
-/// Where each band of a 480 line frame starts at the 48 kHz the configuration declares, and where the last one ends.
-const BAND_EDGES: [u16; 36] = [
-    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 108, 120, 132,
-    144, 156, 172, 188, 212, 240, 272, 304, 336, 368, 400, 432, 480,
-];
 
 /// The packet a host starts the uplink with.
 pub const START: [u8; 19] = [

@@ -43,8 +43,7 @@ pub(crate) struct ParsedFrame {
     pub(crate) tns: TnsData,
 }
 
-/// Sample input: `b4 04 42 50` is `global_gain` 180, `max_sfb` 1, one CB1 section of 1 band, sf delta 0, no TNS, one CB1 quad.
-/// Parses one ER AAC-ELD single-channel element into `spec` without mutating decoder filterbank state.
+/// Parses one ER AAC-ELD single-channel element into `spec` without mutating filterbank state; sample `b4 04 42 50` is gain 180, `max_sfb` 1, one CB1 band, delta 0, no TNS, one quad.
 pub(crate) fn parse_eld_sce(
     reader: &mut BitReader<'_>,
     spec: &mut [f64; 480],
@@ -78,7 +77,7 @@ pub(crate) fn parse_eld_sce(
         else {
             return Err(Error::InvalidBitstream);
         };
-        let Some(band_spec) = spec.get_mut(start..end) else {
+        let Some(band_spec) = spec.get_mut(usize::from(start)..usize::from(end)) else {
             return Err(Error::InvalidBitstream);
         };
         match cb {
@@ -104,8 +103,7 @@ pub(crate) fn parse_eld_sce(
     Ok(ParsedFrame { max_sfb, tns })
 }
 
-/// Sample input: bits `0001 00010` are one CB1 section of 2 bands; `0000 11111 00100` is one zero section of 35.
-/// Parses `section_data()` for ER AAC-ELD (ISO/IEC 14496-3 Table 4.52, `sect_len_bits = 5`).
+/// Parses `section_data()` (`sect_len_bits = 5`, Table 4.52); sample `0001 00010` is one CB1 section of 2 bands and `0000 11111 00100` is one zero section of 35.
 fn parse_sections(reader: &mut BitReader<'_>, max_sfb: usize) -> Result<[u8; NUM_SWB], Error> {
     let mut sfb_cb = [ZERO_HCB; NUM_SWB];
     let mut band = 0_usize;
@@ -144,8 +142,7 @@ fn parse_sections(reader: &mut BitReader<'_>, max_sfb: usize) -> Result<[u8; NUM
     Ok(sfb_cb)
 }
 
-/// Sample input: bit `0` is a delta of zero for one coded band; a first noise band reads 9 PCM bits, `100000000` for zero.
-/// Parses `scale_factor_data()` (ISO/IEC 14496-3 Table 4.53 and Clause 4.6.2.3).
+/// Parses `scale_factor_data()` (Table 4.53, Clause 4.6.2.3); sample bit `0` is a zero delta and a first noise band reads 9 PCM bits (`100000000` for zero).
 fn parse_scale_factors(
     reader: &mut BitReader<'_>,
     max_sfb: usize,
@@ -272,8 +269,7 @@ fn decode_spectral_band(
     Ok(())
 }
 
-/// Sample input: bits `0 0101` are 16 + 5 = 21; `11111111 0 111111111111` are 8191, the largest.
-/// Reads an ISO/IEC 14496-3 Clause 4.6.3.3 escape sequence for codebook 11 (`|q| <= 8191`).
+/// Reads a CB11 escape sequence (`|q| <= 8191`, Clause 4.6.3.3); sample `0 0101` is 21 and `11111111 0 111111111111` is 8191.
 fn read_escape(reader: &mut BitReader<'_>) -> Result<u32, Error> {
     let mut ones = 0_u32;
     while reader.read_bool()? {

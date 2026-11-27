@@ -14,6 +14,7 @@ use std::fmt;
 
 use bits::BitReader;
 use filterbank::Filterbank;
+pub use tables::BAND_EDGES;
 
 /// The only `AudioSpecificConfig` accepted: AOT 39, 48 kHz, mono, 480-sample frames, no resilience, SBR, extension or `epConfig`.
 pub const EXPECTED_CONFIG: [u8; 4] = [0xf8, 0xe6, 0x30, 0x00];
