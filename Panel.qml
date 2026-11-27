@@ -1,8 +1,8 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Quickshell
-import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -16,13 +16,15 @@ Panel {
 
   property int cursorIndex: 0
   property bool cursorActive: false
+  property bool cursorFromKeyboard: false
 
-  readonly property bool hideWhenDisconnected: setting("hideWhenDisconnected", true) === true
-  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
-  readonly property color dim: Qt.darker(foreground, 1.55)
-  readonly property color barIconColor: pods.hasAirPods ? barForeground : Qt.darker(barForeground, 1.55)
-  readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property var hideSetting: setting("hideWhenDisconnected", true)
+  readonly property bool hideWhenDisconnected: typeof hideSetting === "boolean" ? hideSetting : true
+  readonly property color foreground: Commons.Color.popups.text
+  readonly property color urgent: Commons.Color.urgent
+  readonly property string fontFamily: Style.font.family
+  readonly property real dimOpacity: 0.6
+  readonly property PanelContent panelContent: panel.loadedContent as PanelContent
   // Say nothing extra once a section already explains the state.
   readonly property bool guidanceVisible: !pods.hasAirPods && !pods.hasBattery && !pods.schemaUnsupported
 
@@ -64,7 +66,7 @@ Panel {
   readonly property var cursorRows: {
     var rows = []
     if (!pods.hasAirPods) return rows
-    for (var i = 0; i < modes.length; i++) rows.push("mode:" + modes[i])
+    for (let i = 0; i < modes.length; i++) rows.push("mode:" + modes[i])
     if (adaptiveVisible) rows.push("adaptive")
     if (caVisible) rows.push("ca")
     if (oneBudVisible) rows.push("onebud")
@@ -101,8 +103,24 @@ Panel {
   function focusRow(name) {
     var at = cursorRows.indexOf(name)
     if (at < 0) return
+    cursorFromKeyboard = false
     cursorActive = true
     cursorIndex = at
+  }
+
+  function scrollRowIntoView(row: CursorSurface) {
+    if (!cursorFromKeyboard) return
+    Qt.callLater(function () {
+      if (!root.opened || !root.cursorFromKeyboard || !root.panelContent || !row || !row.visible || !row.hasCursor) return
+      const flick = root.panelContent.flick
+      const margin = Style.spacing.md
+      const top = row.mapToItem(flick.contentItem, 0, 0).y
+      const bottom = top + row.height
+      const maxY = Math.max(0, flick.contentHeight - flick.height)
+      if (top < flick.contentY + margin) flick.contentY = Math.max(0, top - margin)
+      else if (bottom > flick.contentY + flick.height - margin)
+        flick.contentY = Math.min(maxY, bottom + margin - flick.height)
+    })
   }
 
   visible: !hideWhenDisconnected || pods.hasAirPods || pods.hasBattery
@@ -112,9 +130,12 @@ Panel {
   onOpenedChanged: if (opened) {
     cursorActive = false
     cursorIndex = 0
-    if (panelFlick) panelFlick.contentY = 0
     pods.refresh()
-    Qt.callLater(function () { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function () {
+      if (!root.opened || !root.panelContent) return
+      root.panelContent.flick.contentY = 0
+      root.panelContent.forceActiveFocus()
+    })
   }
 
   Service {
@@ -122,10 +143,12 @@ Panel {
     settings: root.settings
   }
 
-  IpcHandler {
+  Commons.ShellIpc {
     target: root.ipcTarget
     function open(): void { root.open() }
     function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { pods.refresh(); return "ok" }
     function noise(): string { pods.cycleNoiseMode(); return "ok" }
@@ -139,10 +162,11 @@ Panel {
     iconComponent: Component {
       Item {
         AirPodsIcon {
-          anchors.centerIn: parent
-          // A pair of buds is wider than it is tall, so it takes a size above the stock 12 to carry the row.
-          iconSize: Style.space(13)
-          color: root.barIconColor
+          x: (parent.width - width) / 2
+          y: (parent.height - height) / 2
+          iconSize: button.iconSize
+          color: root.bar ? root.barForeground : Commons.Color.bar.text
+          opacity: pods.hasAirPods ? 1 : root.dimOpacity
           variant: root.podsVariant
         }
       }
@@ -159,243 +183,272 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(560))
 
-    PanelKeyCatcher {
-      id: keyCatcher
+    content: PanelContent {}
+  }
+
+  component PanelContent: PanelKeyCatcher {
+    property alias flick: panelFlick
+    implicitHeight: column.implicitHeight
+    anchors.fill: parent
+    onMoveRequested: function (dx, dy) {
+      root.cursorFromKeyboard = true
+      if (!root.cursorActive) { root.cursorActive = true; return }
+      if (dy !== 0) root.moveCursor(dy)
+      else if (dx !== 0) root.nudgeCursor(dx)
+    }
+    onActivateRequested: if (root.cursorActive) root.activateCursor()
+    onCloseRequested: root.close()
+    onTabRequested: function (direction) { root.switchPanel(direction) }
+    onTextKey: function (t) {
+      var key = String(t).toLowerCase()
+      if (key === "r") pods.refresh()
+      else if (!pods.hasAirPods) return
+      // The mode keys need no capability check of their own: setNoiseMode drops a mode this device does not have.
+      else if (key === "o") pods.setNoiseMode(Model.NOISE_OFF)
+      else if (key === "t") pods.setNoiseMode(Model.NOISE_TRANSPARENCY)
+      else if (key === "n") pods.setNoiseMode(Model.NOISE_ANC)
+      else if (key === "a") pods.setNoiseMode(Model.NOISE_ADAPTIVE)
+      else if (key === "c" && pods.supportsConversationalAwareness) pods.setConversationalAwareness(!pods.conversationalAwareness)
+      else if (key === "b" && pods.supportsOneBudANC) pods.setOneBudANC(!pods.oneBudANC)
+      else if (key === "e") pods.cycleEarDetection()
+    }
+
+    Flickable {
+      id: panelFlick
       anchors.fill: parent
-      onMoveRequested: function (dx, dy) {
-        if (!root.cursorActive) { root.cursorActive = true; return }
-        if (dy !== 0) root.moveCursor(dy)
-        else if (dx !== 0) root.nudgeCursor(dx)
-      }
-      onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.close()
-      onTabRequested: function (direction) { root.switchPanel(direction) }
-      onTextKey: function (t) {
-        var key = String(t).toLowerCase()
-        if (key === "r") pods.refresh()
-        else if (!pods.hasAirPods) return
-        // The mode keys need no capability check of their own: setNoiseMode drops a mode this device does not have.
-        else if (key === "o") pods.setNoiseMode(Model.NOISE_OFF)
-        else if (key === "t") pods.setNoiseMode(Model.NOISE_TRANSPARENCY)
-        else if (key === "n") pods.setNoiseMode(Model.NOISE_ANC)
-        else if (key === "a") pods.setNoiseMode(Model.NOISE_ADAPTIVE)
-        else if (key === "c" && pods.supportsConversationalAwareness) pods.setConversationalAwareness(!pods.conversationalAwareness)
-        else if (key === "b" && pods.supportsOneBudANC) pods.setOneBudANC(!pods.oneBudANC)
-        else if (key === "e") pods.cycleEarDetection()
-      }
+      contentWidth: width
+      contentHeight: column.implicitHeight
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.VerticalFlick
+      interactive: contentHeight > height
+      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-      Flickable {
-        id: panelFlick
-        anchors.fill: parent
-        contentWidth: width
-        contentHeight: column.implicitHeight
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.VerticalFlick
-        interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+      Column {
+        id: column
+        width: panelFlick.width
+        spacing: Style.spacing.xxl
+
+        RowLayout {
+          width: parent.width
+          spacing: Style.spacing.panelGap
+
+          AirPodsIcon {
+            // The larger size gives the wide buds enough height against a two-line title.
+            iconSize: Style.font.displayLarge
+            color: root.foreground
+            opacity: pods.hasAirPods ? 1 : root.dimOpacity
+            variant: root.podsVariant
+          }
+
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Style.spacing.xxs
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: pods.modelName || pods.deviceName || "AirPods"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
+            }
+
+            Text {
+              id: phrase
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: (pods.hasAirPods ? root.heroPhraseText
+                : pods.schemaUnsupported ? "Unsupported status schema"
+                : pods.daemonReachable ? "Not connected"
+                : "librepods is not running").toUpperCase()
+              color: root.foreground
+              opacity: root.dimOpacity
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+            }
+          }
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          // A command failure gets its own field, or the next status read wipes it unread.
+          visible: pods.actionStatus !== "" || (pods.lastError !== "" && pods.daemonReachable)
+          width: parent.width
+          text: pods.actionStatus !== "" ? pods.actionStatus : pods.lastError
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+        }
 
         Column {
-          id: column
-          width: panelFlick.width
-          spacing: Style.space(12)
+          visible: pods.hasBattery
+          width: parent.width
+          spacing: Style.spacing.xl
 
-          PanelHero {
-            id: hero
-            width: parent.width
-            title: pods.modelName !== "" ? pods.modelName : (pods.deviceName !== "" ? pods.deviceName : "AirPods")
-            meta: pods.hasAirPods ? root.heroPhraseText
-              : pods.schemaUnsupported ? "Unsupported status schema"
-              : pods.daemonReachable ? "Not connected"
-              : "librepods is not running"
+          PanelSectionHeader {
+            text: "BATTERY"
             foreground: root.foreground
             fontFamily: root.fontFamily
-            iconOpacity: pods.hasAirPods ? 1.0 : 0.5
-            iconComponent: Component {
-              AirPodsIcon {
-                // Same reason as the bar: display leaves the wide marks short against a two line title.
-                iconSize: Style.font.displayLarge
-                color: pods.hasAirPods ? root.foreground : root.dim
-                variant: root.podsVariant
-              }
-            }
-          }
-
-          Text {
-            textFormat: Text.PlainText
-            // A command failure gets its own field, or the next status read wipes it unread.
-            visible: pods.actionStatus !== "" || (pods.lastError !== "" && pods.daemonReachable)
-            width: parent.width
-            text: pods.actionStatus !== "" ? pods.actionStatus : pods.lastError
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
           }
 
           Column {
-            visible: pods.hasBattery
             width: parent.width
-            spacing: Style.space(10)
+            spacing: Style.spacing.md
 
-            PanelSectionHeader {
-              text: "BATTERY"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Column {
+            // A Max has one battery and no case, so the pod trio would draw two dashes and a phantom case.
+            PodRow {
+              visible: pods.isHeadset
               width: parent.width
-              spacing: Style.space(6)
+              label: "Headphones"
+              pod: ({ level: pods.headsetBattery.level, charging: pods.headsetBattery.charging, inEar: false })
+            }
+            PodRow { visible: !pods.isHeadset; width: parent.width; label: "Left"; pod: pods.leftPod }
+            PodRow { visible: !pods.isHeadset; width: parent.width; label: "Right"; pod: pods.rightPod }
+            PodRow {
+              visible: !pods.isHeadset
+              width: parent.width
+              label: "Case"
+              pod: ({ level: pods.caseBattery.level, charging: pods.caseBattery.charging, inEar: false })
+              meta: root.lidLabel
+            }
+          }
+        }
 
-              // A Max has one battery and no case, so the pod trio would draw two dashes and a phantom case.
-              PodRow {
-                visible: pods.isHeadset
+        PanelSeparator {
+          visible: pods.hasBattery && pods.hasAirPods
+          foreground: root.foreground
+        }
+
+        Column {
+          visible: root.modesVisible
+          width: parent.width
+          spacing: Style.spacing.xl
+
+          PanelSectionHeader {
+            text: "LISTENING MODE"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Column {
+            width: parent.width
+            spacing: Style.spacing.md
+
+            Repeater {
+              model: root.modes
+              ModeRow {
+                required property var modelData
                 width: parent.width
-                label: "Headphones"
-                pod: ({ level: pods.headsetBattery.level, charging: pods.headsetBattery.charging, inEar: false })
-              }
-              PodRow { visible: !pods.isHeadset; width: parent.width; label: "Left"; pod: pods.leftPod }
-              PodRow { visible: !pods.isHeadset; width: parent.width; label: "Right"; pod: pods.rightPod }
-              PodRow {
-                visible: !pods.isHeadset
-                width: parent.width
-                label: "Case"
-                pod: ({ level: pods.caseBattery.level, charging: pods.caseBattery.charging, inEar: false })
-                meta: root.lidLabel
+                mode: modelData
               }
             }
           }
 
-          PanelSeparator {
-            visible: pods.hasBattery && pods.hasAirPods
-            foreground: root.foreground
-          }
-
-          Column {
-            visible: root.modesVisible
+          SliderRow {
+            visible: root.adaptiveVisible
             width: parent.width
-            spacing: Style.space(10)
-
-            PanelSectionHeader {
-              text: "LISTENING MODE"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Column {
-              width: parent.width
-              spacing: Style.space(6)
-
-              Repeater {
-                model: root.modes
-                ModeRow {
-                  required property var modelData
-                  width: parent.width
-                  mode: modelData
-                }
-              }
-            }
-
-            SliderRow {
-              visible: root.adaptiveVisible
-              width: parent.width
-            }
           }
+        }
 
-          PanelSeparator {
-            visible: root.caVisible || root.oneBudVisible
-            foreground: root.foreground
-          }
+        PanelSeparator {
+          visible: root.caVisible || root.oneBudVisible
+          foreground: root.foreground
+        }
 
-          Column {
-            visible: root.caVisible || root.oneBudVisible
+        Column {
+          visible: root.caVisible || root.oneBudVisible
+          width: parent.width
+          spacing: Style.spacing.md
+
+          ToggleRow {
+            visible: root.caVisible
             width: parent.width
-            spacing: Style.space(6)
-
-            ToggleRow {
-              visible: root.caVisible
-              width: parent.width
-              rowName: "ca"
-              label: "Conversation Awareness"
-              caption: "Lower the volume when you start talking"
-              checked: pods.conversationalAwareness
-              onToggled: pods.setConversationalAwareness(!pods.conversationalAwareness)
-            }
-
-            ToggleRow {
-              visible: root.oneBudVisible
-              width: parent.width
-              rowName: "onebud"
-              label: "One-Bud ANC"
-              caption: "Keep noise cancellation on with one pod in"
-              checked: pods.oneBudANC
-              onToggled: pods.setOneBudANC(!pods.oneBudANC)
-            }
+            rowName: "ca"
+            label: "Conversation Awareness"
+            caption: "Lower the volume when you start talking"
+            checked: pods.conversationalAwareness
+            onToggled: pods.setConversationalAwareness(!pods.conversationalAwareness)
           }
 
-          PanelSeparator {
-            visible: pods.hasAirPods
-            foreground: root.foreground
-          }
-
-          Column {
-            visible: pods.hasAirPods
+          ToggleRow {
+            visible: root.oneBudVisible
             width: parent.width
-            spacing: Style.space(6)
-
-            ValueRow {
-              width: parent.width
-              rowName: "ear"
-              label: "Ear detection"
-              value: Model.earDetectionName(pods.earDetectionBehavior)
-            }
+            rowName: "onebud"
+            label: "One-Bud ANC"
+            caption: "Keep noise cancellation on with one pod in"
+            checked: pods.oneBudANC
+            onToggled: pods.setOneBudANC(!pods.oneBudANC)
           }
+        }
 
-          Text {
-            textFormat: Text.PlainText
-            visible: root.guidanceVisible
+        PanelSeparator {
+          visible: pods.hasAirPods
+          foreground: root.foreground
+        }
+
+        Column {
+          visible: pods.hasAirPods
+          width: parent.width
+          spacing: Style.spacing.md
+
+          ValueRow {
             width: parent.width
-            text: pods.advertHint
-              ? "The case battery cannot show while the AirPods are away, because BlueZ is not serving its advertisement monitor. See \"Case battery while away\" in the README."
-              : pods.daemonReachable
-              ? "Open the case or connect your AirPods to see battery and listening controls."
-              : "Start the librepods daemon to see battery and listening controls."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-            wrapMode: Text.WordWrap
-            horizontalAlignment: Text.AlignHCenter
+            rowName: "ear"
+            label: "Ear detection"
+            value: Model.earDetectionName(pods.earDetectionBehavior)
           }
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          visible: root.guidanceVisible
+          width: parent.width
+          text: pods.advertHint
+            ? "The case battery cannot show while the AirPods are away, because BlueZ is not serving its advertisement monitor. See \"Case battery while away\" in the README."
+            : pods.daemonReachable
+            ? "Open the case or connect your AirPods to see battery and listening controls."
+            : "Start the librepods daemon to see battery and listening controls."
+          color: root.foreground
+          opacity: root.dimOpacity
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
+          horizontalAlignment: Text.AlignHCenter
         }
       }
     }
-  }
 
-  Timer {
-    id: phraseTimer
-    interval: root.phraseIntervalMs
-    running: root.opened && pods.hasAirPods
-    repeat: true
-    onTriggered: phraseSwap.restart()
-  }
+    Timer {
+      interval: root.phraseIntervalMs
+      running: root.opened && pods.hasAirPods
+      repeat: true
+      onTriggered: phraseSwap.restart()
+    }
 
-  SequentialAnimation {
-    id: phraseSwap
-    PropertyAnimation {
-      target: hero; property: "metaOpacity"
-      to: 0.0; duration: 180; easing.type: Easing.OutQuad
-    }
-    ScriptAction {
-      script: root.phraseIndex = (root.phraseIndex + 1) % root.activePhrases.length
-    }
-    PropertyAnimation {
-      target: hero; property: "metaOpacity"
-      to: 1.0; duration: 260; easing.type: Easing.InQuad
+    SequentialAnimation {
+      id: phraseSwap
+      NumberAnimation {
+        target: phrase; property: "opacity"
+        to: 0; duration: Style.duration(180); easing.type: Easing.OutQuad
+      }
+      ScriptAction {
+        script: root.phraseIndex = (root.phraseIndex + 1) % root.activePhrases.length
+      }
+      NumberAnimation {
+        target: phrase; property: "opacity"
+        to: root.dimOpacity; duration: Style.duration(260); easing.type: Easing.InQuad
+      }
     }
   }
 
@@ -415,7 +468,7 @@ Panel {
       id: podLayout
       anchors.left: parent.left
       anchors.right: parent.right
-      spacing: Style.space(8)
+      spacing: Style.spacing.rowGap
 
       Text {
         textFormat: Text.PlainText
@@ -425,16 +478,16 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         // Style.space(44) was cut for Left, Right and Case, so a longer label takes the room it needs.
-        Layout.preferredWidth: Math.max(Style.space(44), implicitWidth + Style.space(10))
+        Layout.preferredWidth: Math.max(Style.space(44), implicitWidth + Style.spacing.controlPaddingX)
       }
 
       Rectangle {
         id: meterTrack
         Layout.fillWidth: true
         Layout.alignment: Qt.AlignVCenter
-        implicitHeight: Style.space(6)
+        implicitHeight: Style.spacing.md
         radius: height / 2
-        color: Qt.darker(root.foreground, 3.2)
+        color: Style.selectedFillFor(root.foreground, Commons.Color.accent)
 
         Rectangle {
           width: meterTrack.width * Model.levelFraction(podRow.pod.level)
@@ -457,7 +510,8 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: podRow.metaText
-        color: root.dim
+        color: root.foreground
+        opacity: root.dimOpacity
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
@@ -474,6 +528,7 @@ Panel {
     readonly property bool selected: pods.noiseMode === mode
 
     hasCursor: root.rowHasCursor(rowName)
+    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(modeRow)
     foreground: root.foreground
     implicitHeight: modeLabel.implicitHeight + Style.spacing.rowPaddingX
 
@@ -489,9 +544,9 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      spacing: Style.space(8)
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
+      spacing: Style.spacing.rowGap
 
       Text {
         textFormat: Text.PlainText
@@ -527,29 +582,30 @@ Panel {
     signal toggled()
 
     hasCursor: root.rowHasCursor(rowName)
+    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(toggleRow)
     foreground: root.foreground
-    implicitHeight: toggleContent.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: Math.max(toggleContent.implicitHeight, toggleSwitch.implicitHeight) + Style.spacing.rowPaddingX
 
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
       onEntered: root.focusRow(toggleRow.rowName)
-      onClicked: toggleRow.toggled()
+      onClicked: if (!pods.busy) toggleRow.toggled()
     }
 
     RowLayout {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      spacing: Style.space(8)
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
+      spacing: Style.spacing.rowGap
 
       ColumnLayout {
         id: toggleContent
         Layout.fillWidth: true
-        spacing: Style.space(1)
+        spacing: Style.spacing.hairline
 
         Text {
           textFormat: Text.PlainText
@@ -565,7 +621,8 @@ Panel {
           textFormat: Text.PlainText
           Layout.fillWidth: true
           text: toggleRow.caption
-          color: root.dim
+          color: root.foreground
+          opacity: root.dimOpacity
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
@@ -573,12 +630,11 @@ Panel {
       }
 
       ToggleSwitch {
+        id: toggleSwitch
         Layout.alignment: Qt.AlignVCenter
         checked: toggleRow.checked
-        busy: pods.busy
-        hasCursor: toggleRow.hasCursor
+        interactive: false
         foreground: root.foreground
-        onToggled: toggleRow.toggled()
       }
     }
   }
@@ -590,6 +646,7 @@ Panel {
     property string value: ""
 
     hasCursor: root.rowHasCursor(rowName)
+    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(valueRow)
     foreground: root.foreground
     implicitHeight: valueLabel.implicitHeight + Style.spacing.rowPaddingX
 
@@ -605,9 +662,9 @@ Panel {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      spacing: Style.space(8)
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
+      spacing: Style.spacing.rowGap
 
       Text {
         textFormat: Text.PlainText
@@ -623,7 +680,8 @@ Panel {
       Text {
         textFormat: Text.PlainText
         text: valueRow.value
-        color: root.dim
+        color: root.foreground
+        opacity: root.dimOpacity
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         elide: Text.ElideRight
@@ -631,34 +689,50 @@ Panel {
     }
   }
 
-  component SliderRow: Item {
+  component SliderRow: CursorSurface {
     id: sliderRow
-    implicitHeight: sliderColumn.implicitHeight
+    readonly property int adaptiveTickCount: 5
+    hasCursor: root.rowHasCursor("adaptive")
+    onHasCursorChanged: if (hasCursor) root.scrollRowIntoView(sliderRow)
+    foreground: root.foreground
+    implicitHeight: sliderColumn.implicitHeight + Style.spacing.controlGap
+
+    HoverHandler {
+      onHoveredChanged: if (hovered) root.focusRow("adaptive")
+    }
+
+    TapHandler {
+      onPressedChanged: if (pressed) root.focusRow("adaptive")
+    }
+
+    // PanelSlider reads its knob border from its bar argument in Omarchy 4.5.
+    QtObject {
+      id: sliderPalette
+      readonly property color background: Commons.Color.popups.background
+      readonly property color foreground: root.foreground
+    }
 
     Column {
       id: sliderColumn
       anchors.left: parent.left
       anchors.right: parent.right
-      anchors.leftMargin: Style.space(10)
-      anchors.rightMargin: Style.space(10)
-      spacing: Style.space(4)
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
+      spacing: Style.spacing.labelGap
 
-      Row {
+      RowLayout {
         width: parent.width
-        spacing: Style.space(8)
+        spacing: Style.spacing.rowGap
 
         Text {
+          Layout.fillWidth: true
           textFormat: Text.PlainText
           text: "Adaptive noise"
           color: root.foreground
           opacity: 0.6
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
-        }
-
-        Item {
-          width: Math.max(0, parent.width - parent.children[0].implicitWidth - parent.children[2].implicitWidth - parent.spacing * 2)
-          height: 1
         }
 
         Text {
@@ -672,12 +746,12 @@ Panel {
 
       PanelSlider {
         width: parent.width
-        bar: root.bar
+        bar: sliderPalette
         minimum: 0
         maximum: 100
         step: root.adaptiveStepPercent
         integer: true
-        tickCount: 5
+        tickCount: sliderPalette.background.a === 1 ? sliderRow.adaptiveTickCount : 0
         value: pods.adaptiveNoiseLevel
         onReleased: function (v) { pods.setAdaptiveNoiseLevel(v) }
       }

@@ -7,11 +7,13 @@ import qs.Commons as Commons
 Item {
   id: root
 
-  property real iconSize: 16
+  property real iconSize: Style.font.icon
   property color color: Commons.Color.foreground
   // One of "buds", "pro" or "max"; anything else draws the plain buds.
   property string variant: "buds"
 
+  width: iconSize
+  height: iconSize
   implicitWidth: iconSize
   implicitHeight: iconSize
 
