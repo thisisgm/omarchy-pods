@@ -169,7 +169,11 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: 2.9.8
-      - run: deno test --allow-read tests/model.test.js
+      - run: deno test --allow-read tests/model.test.js tests/icons.test.js
+      - run: |
+          extension=packaging/gnome-extension/pods@superwhisper.com
+          node --input-type=module --check < "$extension/extension.js"
+          python3 -m json.tool "$extension/metadata.json" > /dev/null
       # The stock plugin validator refuses a plugin folder that holds a symlink.
       - run: |
           tracked=$(git ls-files -s)

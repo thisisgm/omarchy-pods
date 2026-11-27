@@ -46,10 +46,11 @@ install -m 0755 -- "$here"/{install,uninstall,dependencies}.sh "$tree"
 install -m 0644 -- "$here/common.sh" "$tree"
 install -m 0644 -- "$here/systemd/podsd.service" "$tree/systemd"
 install -m 0644 -- "$root"/{manifest.json,*.qml,*.js,preview.png} "$tree/plugin"
+stage_desktop_assets "$here" "$tree"
 printf '%s\n' "$version" > "$tree/VERSION"
 (
     cd -- "$tree"
-    sha256sum -- VERSION bin/pods ./*.sh systemd/podsd.service plugin/* > MANIFEST.sha256
+    bundle_hashes > MANIFEST.sha256
 )
 if ((tree_only)); then
     [[ ! -e $output/$name && ! -L $output/$name ]] || fail "bundle tree already exists: $output/$name"

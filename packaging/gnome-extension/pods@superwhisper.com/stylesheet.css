@@ -1,0 +1,34 @@
+.pods-panel, .pods-header, .pods-batteries {
+  spacing: 8px;
+}
+
+.pods-device {
+  font-weight: bold;
+}
+
+.pods-track {
+  width: 64px;
+  height: 3px;
+  border-radius: 2px;
+  background-color: rgba(127, 127, 127, 0.35);
+}
+
+.pods-progress {
+  height: 3px;
+  border-radius: 2px;
+  background-color: rgba(127, 127, 127, 0.9);
+}
+
+.pods-modes {
+  spacing: 4px;
+}
+
+.pods-mode {
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.pods-mode:checked {
+  font-weight: bold;
+  box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.8);
+}

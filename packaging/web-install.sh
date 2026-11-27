@@ -147,6 +147,15 @@ while IFS= read -r entry; do
         "$name"/|"$name"/VERSION|"$name"/MANIFEST.sha256|"$name"/bin/|"$name"/bin/pods|\
         "$name"/systemd/|"$name"/systemd/podsd.service|"$name"/plugin/|"$name"/plugin/manifest.json|\
         "$name"/plugin/preview.png|"$name"/install.sh|"$name"/uninstall.sh|"$name"/common.sh|"$name"/dependencies.sh) ;;
+        "$name"/icons/|"$name"/icons/pods-buds-symbolic.svg|"$name"/icons/pods-pro-symbolic.svg|"$name"/icons/pods-max-symbolic.svg|\
+        "$name"/gnome-extension/|"$name"/gnome-extension/pods@superwhisper.com/) ;;
+        "$name"/gnome-extension/pods@superwhisper.com/*)
+            file=${entry#"$name/gnome-extension/pods@superwhisper.com/"}
+            case "$file" in
+                extension.js|metadata.json|stylesheet.css|pods-buds-symbolic.svg|pods-pro-symbolic.svg|pods-max-symbolic.svg) ;;
+                *) fail "unsafe archive path: $entry" ;;
+            esac
+            ;;
         "$name"/plugin/*.qml|"$name"/plugin/*.js)
             file=${entry#"$name/plugin/"}
             case "$file" in

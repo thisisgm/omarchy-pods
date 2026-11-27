@@ -1,0 +1,8 @@
+{
+  "uuid": "pods@superwhisper.com",
+  "name": "Pods",
+  "description": "AirPods battery and listening controls in the GNOME top bar. Needs the Pods daemon.",
+  "shell-version": ["46", "47", "48", "49", "50", "51"],
+  "url": "https://github.com/superultrainc/pods",
+  "version-name": "1"
+}

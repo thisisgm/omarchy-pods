@@ -103,8 +103,14 @@ pub(super) async fn serve(connection: Connection, hub: Hub) {
     let updates = hub.subscribe();
     // Taken before serving, so a change while the name is requested is still announced.
     let shown = Properties::of(&updates.borrow());
-    match own(&connection, hub).await {
-        Ok(()) => announce(connection, updates, shown).await,
+    match own(&connection, hub.clone()).await {
+        Ok(()) => {
+            super::both(
+                announce(connection.clone(), updates, shown),
+                Box::pin(super::tray::serve(&connection, hub)),
+            )
+            .await;
+        }
         Err(error) => {
             // Removed so a peer cannot reach the interface at the unique name; an error is an object already gone.
             drop(

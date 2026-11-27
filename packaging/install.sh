@@ -28,9 +28,9 @@ verify_bundle() {
         fail 'bundle is missing VERSION, MANIFEST.sha256 or bin/pods'
     version=$(< "$here/VERSION")
     valid_version "$version" || fail "invalid bundle version: $version"
-    actual=$(cd -- "$here" && find VERSION MANIFEST.sha256 bin systemd plugin ./*.sh -type l -print)
+    actual=$(cd -- "$here" && find VERSION MANIFEST.sha256 bin systemd plugin icons gnome-extension ./*.sh -type l -print)
     [[ -z $actual ]] || fail "unexpected bundle symlink: $actual"
-    expected=$(cd -- "$here" && sha256sum -- VERSION bin/pods ./*.sh systemd/podsd.service plugin/*) ||
+    expected=$(cd -- "$here" && bundle_hashes) ||
         fail 'could not hash the bundle files'
     [[ $expected == "$(< "$here/MANIFEST.sha256")" ]] || fail 'bundle MANIFEST.sha256 does not match the files'
     (cd -- "$here" && sha256sum --check --strict --status MANIFEST.sha256) ||
@@ -112,6 +112,8 @@ migrated=()
 paths=("$unit" "${shadow_units[@]}" "$bin_dir/pods" "$bin_dir/pods-ctl")
 prior_active=0
 prior_enabled=0
+first_plugin=0
+first_gnome=0
 
 atomic_link() {
     local link_tmp
@@ -137,6 +139,8 @@ rollback() {
     printf 'pods: rolling back %s\n' "$version" >&2
     if ((prior_active == 0)); then units stop podsd.service; fi
     if ((prior_enabled == 0)); then units disable podsd.service; fi
+    if ((first_plugin)) && link_is "$plugin_link" "$app/current/plugin"; then rm -- "$plugin_link"; fi
+    if ((first_gnome)) && link_is "$gnome_link" "$gnome_target"; then rm -- "$gnome_link"; fi
     restore_link "$old_version" "$app/current"
     restore_link "$old_previous" "$app/previous"
     for index in "${!paths[@]}"; do
@@ -169,6 +173,7 @@ trap 'exit 143' TERM
 install -d -m 0755 "$scratch/version" "$scratch/version/bin" "$scratch/version/plugin"
 install -m 0755 -- "$binary" "$scratch/version/bin/pods"
 install -m 0644 -- "$plugin_source"/{manifest.json,*.qml,*.js,preview.png} "$scratch/version/plugin"
+stage_desktop_assets "$here" "$scratch/version"
 if exists "$version_dir"; then
     if [[ ! -d $version_dir || -L $version_dir ]] || ! diff -qr -- "$scratch/version" "$version_dir"; then
         fail "installed version $version has different files; use a new version"
@@ -214,6 +219,27 @@ if ! install -m 0644 -- "$unit_source" "$unit_tmp" || ! mv -Tf -- "$unit_tmp" "$
     fail "could not install $unit"
 fi
 if ((${#shadow_units[@]})); then rm -f -- "${shadow_units[@]}"; fi
+# Publish desktop links before podsd checks for duplicate indicators at startup.
+if command -v omarchy >/dev/null && [[ -d $omarchy_dir ]]; then
+    if ! exists "$plugin_link"; then
+        mkdir -p -- "$omarchy_dir/plugins"
+        ln -s -- "$app/current/plugin" "$plugin_link"
+        first_plugin=1
+    elif ! link_is "$plugin_link" "$app/current/plugin"; then
+        fail "existing plugin path: $plugin_link"
+    fi
+fi
+if [[ ${XDG_CURRENT_DESKTOP:-} == *GNOME* ]] || command -v gnome-shell >/dev/null; then
+    if ! exists "$gnome_link"; then
+        if mkdir -p -- "$(dirname -- "$gnome_link")" && ln -s -- "$gnome_target" "$gnome_link"; then
+            first_gnome=1
+        else
+            printf 'pods: could not link GNOME extension at %s\n' "$gnome_link" >&2
+        fi
+    elif ! link_is "$gnome_link" "$gnome_target"; then
+        printf 'pods: keeping existing GNOME extension at %s\n' "$gnome_link" >&2
+    fi
+fi
 units daemon-reload
 units enable podsd.service
 units restart podsd.service
@@ -237,6 +263,32 @@ if [[ -n $old_version && $old_version != "$version" ]]; then
     atomic_link "$old_version" "$app/previous"
 fi
 changed=0
+
+install_icons() {
+    local source path icon
+    mkdir -p -- "$status_icons" || return 1
+    for source in "$version_dir"/icons/pods-*-symbolic.svg; do
+        icon=${source##*/}
+        path="$status_icons/$icon"
+        if checksum_matches "$path" "$source"; then
+            continue
+        fi
+        if exists "$path" && ! checksum_matches "$path" "$app/${old_version:-current}/icons/$icon" &&
+            ! checksum_matches "$path" "$app/${old_previous:-current}/icons/$icon"; then
+            printf 'pods: keeping existing status icon at %s\n' "$path" >&2
+            continue
+        fi
+        install -m 0644 -- "$source" "$path" || return 1
+    done
+    refresh_icon_cache
+}
+install_icons || printf 'pods: could not install status icons in %s\n' "$status_icons" >&2
+
+if ((first_gnome)); then
+    if ! command -v gnome-extensions >/dev/null || ! gnome-extensions enable "$gnome_uuid" > "$scratch/gnome-enable.log" 2>&1; then
+        printf 'pods: log out and back in, then enable %s in GNOME Extensions\n' "$gnome_uuid" >&2
+    fi
+fi
 
 if ((${#legacy_units[@]})); then
     rm -f -- "${legacy_units[@]}"
@@ -275,6 +327,17 @@ if [[ -z ${INVOCATION_ID:-} ]]; then
         printf 'pods: could not write fish PATH file\n' >&2
 fi
 
+enable_omarchy_plugin() {
+    local plugin=$1
+    # The shell returns from rescanPlugins before the asynchronous manifest scan completes.
+    local -r plugin_wait_s=5
+    local deadline=$((SECONDS + plugin_wait_s))
+    until omarchy plugin enable "$plugin" > "$scratch/enable.log" 2>&1; do
+        ((SECONDS < deadline)) || return 1
+        sleep 1
+    done
+}
+
 restore_legacy_plugin() {
     case "${legacy_kind:-}" in
         symlink) ln -s -- "$legacy_target" "$legacy_link" || true ;;
@@ -288,7 +351,9 @@ restore_legacy_plugin() {
         omarchy-shell -q shell rescanPlugins || true
     fi
     if ((legacy_disabled)); then
-        omarchy plugin enable "$legacy_plugin" >/dev/null 2>&1 || true
+        if ! enable_omarchy_plugin "$legacy_plugin"; then
+            printf 'pods: could not re-enable legacy widget %s\n' "$legacy_plugin" >&2
+        fi
     fi
 }
 
@@ -299,13 +364,6 @@ if command -v omarchy >/dev/null && [[ -d $omarchy_dir ]]; then
     legacy_target=
     legacy_backup=
     legacy_disabled=0
-    mkdir -p -- "$omarchy_dir/plugins"
-    first_plugin=0
-    if ! exists "$plugin_link"; then
-        first_plugin=1
-    elif ! link_is "$plugin_link" "$app/current/plugin"; then
-        fail "existing plugin path: $plugin_link"
-    fi
     if exists "$legacy_link"; then
         if [[ -f $legacy_link/manifest.json ]]; then
             if omarchy plugin disable "$legacy_plugin"; then
@@ -324,25 +382,16 @@ if command -v omarchy >/dev/null && [[ -d $omarchy_dir ]]; then
             mv -T -- "$legacy_link" "$legacy_backup/$legacy_plugin"
         fi
     fi
-    if ((first_plugin)); then ln -s -- "$app/current/plugin" "$plugin_link"; fi
     if ! omarchy-shell -q shell rescanPlugins; then
         if ((first_plugin)); then rm -f -- "$plugin_link"; fi
         restore_legacy_plugin
         fail 'Omarchy shell could not rescan its plugins'
     fi
-    if ((first_plugin)); then
-        # The shell returns from rescanPlugins before the asynchronous manifest scan completes.
-        readonly plugin_wait_s=5
-        deadline=$((SECONDS + plugin_wait_s))
-        until omarchy plugin enable superwhisper.pods > "$scratch/enable.log" 2>&1; do
-            if ((SECONDS >= deadline)); then
-                rm -f -- "$plugin_link"
-                restore_legacy_plugin
-                cat -- "$scratch/enable.log" >&2
-                fail 'Omarchy could not enable superwhisper.pods'
-            fi
-            sleep 1
-        done
+    if ((first_plugin)) && ! enable_omarchy_plugin superwhisper.pods; then
+        rm -f -- "$plugin_link"
+        cat -- "$scratch/enable.log" >&2
+        restore_legacy_plugin
+        fail 'Omarchy could not enable superwhisper.pods'
     fi
     if [[ $legacy_kind == dir ]]; then
         printf 'pods: previous plugin saved in %s\n' "$legacy_backup"

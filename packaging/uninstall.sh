@@ -65,6 +65,23 @@ if [[ -L $plugin_link ]]; then
     fi
 fi
 
+if link_is "$gnome_link" "$gnome_target"; then
+    if command -v gnome-extensions >/dev/null && ! gnome-extensions disable "$gnome_uuid"; then
+        printf 'pods: could not disable %s in GNOME Shell\n' "$gnome_uuid" >&2
+    fi
+    rm -- "$gnome_link"
+fi
+
+removed_icons=0
+for path in "$status_icons"/pods-{buds,pro,max}-symbolic.svg; do
+    icon=${path##*/}
+    if checksum_matches "$path" "$app/current/icons/$icon" || checksum_matches "$path" "$app/previous/icons/$icon"; then
+        rm -- "$path"
+        removed_icons=1
+    fi
+done
+if ((removed_icons)); then refresh_icon_cache; fi
+
 [[ $app == "$data_home"/pods/app && $data_home == /?* ]] || fail "invalid app directory: $app"
 rm -rf -- "$app"
 rm -f -- "$XDG_RUNTIME_DIR/pods.sock"

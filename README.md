@@ -64,7 +64,9 @@ services.pods.enable = true;
 The module installs both CLI names and the hardened user service. Enable BlueZ
 and PipeWire with PulseAudio compatibility in the system configuration.
 
-## Omarchy bar
+## Desktop controls
+
+### Omarchy
 
 The installer registers the `superwhisper.pods` widget on Omarchy. The panel
 displays battery levels for each pod and the case and exposes the listening
@@ -77,6 +79,24 @@ omarchy bar set superwhisper.pods hideWhenDisconnected false --json
 ```
 
 ![The AirPods panel in the Omarchy bar](preview.png)
+
+### KDE Plasma and Waybar
+
+Pods provides a built-in D-Bus tray item and menu. It appears on KDE Plasma
+and in the Waybar tray on Hyprland and Sway when AirPods are connected or
+reporting battery levels nearby. Set `PODS_TRAY=0` or `PODS_TRAY=1` in the
+daemon's environment to disable or force the tray. The daemon normally
+suppresses it when it finds the Omarchy widget or the GNOME extension on GNOME.
+
+### GNOME Shell
+
+The installer links the `pods@superwhisper.com` extension on GNOME Shell 46
+through 51. It shows battery levels and listening controls in the top bar.
+Log out and back in once so GNOME Shell discovers the extension. If needed,
+open GNOME Extensions or run `gnome-extensions enable pods@superwhisper.com`.
+
+For Home Manager, set `services.pods.gnomeExtension.enable = true;` alongside
+`services.pods.enable`, then enable the extension in GNOME after logging in.
 
 ## Superwhisper Linux integration
 

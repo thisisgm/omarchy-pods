@@ -32,6 +32,7 @@ if [[ ${1:-} == --check-distro ]]; then
     PODS_SKIP_PACKAGES=0 "$root/packaging/dependencies.sh" check
 fi
 export PODS_SKIP_PACKAGES=1
+export XDG_CURRENT_DESKTOP=GNOME
 unset PODS_SKIP_SERVICE INVOCATION_ID
 mkdir -p -- "$HOME" "$XDG_RUNTIME_DIR" "$TMPDIR" "$XDG_CACHE_HOME" stubs
 export PATH="$fixture/stubs:$PATH"
@@ -40,6 +41,9 @@ install="$root/packaging/install.sh"
 uninstall="$root/packaging/uninstall.sh"
 plugin="$XDG_CONFIG_HOME/omarchy/plugins"
 unit="$XDG_CONFIG_HOME/systemd/user/podsd.service"
+gnome_uuid=pods@superwhisper.com
+gnome_link="$XDG_DATA_HOME/gnome-shell/extensions/$gnome_uuid"
+status_icons="$XDG_DATA_HOME/icons/hicolor/scalable/status"
 shadow="$XDG_DATA_HOME/systemd/user/podsd.service"
 default_shadow="$HOME/.local/share/systemd/user/podsd.service"
 marker='# >>> Pods: pods on PATH >>>'
@@ -88,6 +92,15 @@ STUB
 cat > stubs/omarchy-shell <<'STUB'
 #!/bin/sh
 printf '%s\n' "omarchy-shell $*" >> "$TEST_COMMANDS"
+STUB
+cat > stubs/gnome-extensions <<'STUB'
+#!/bin/sh
+printf '%s\n' "gnome-extensions $*" >> "$TEST_COMMANDS"
+test "${PODS_TEST_GNOME_ENABLE_FAIL:-0}" != 1
+STUB
+cat > stubs/gtk-update-icon-cache <<'STUB'
+#!/bin/sh
+printf '%s\n' "gtk-update-icon-cache $*" >> "$TEST_COMMANDS"
 STUB
 chmod 0755 -- stubs/*
 
@@ -160,6 +173,15 @@ chmod 0444 -- "$HOME/.zshrc"
 [[ $(< "$XDG_DATA_HOME/applications/me.kavishdevar.librepods.desktop") == 'custom desktop' ]]
 [[ $(readlink -- "$plugin/superwhisper.pods") == "$app/current/plugin" ]]
 [[ -f $plugin/superwhisper.pods/Panel.qml && ! -e $plugin/io.github.thisisgm.omapods ]]
+[[ $(readlink -- "$gnome_link") == "$app/current/gnome-extension/$gnome_uuid" ]]
+[[ -f $gnome_link/extension.js && -f $gnome_link/metadata.json && -f $gnome_link/stylesheet.css ]]
+for model in buds pro max; do
+    icon="pods-$model-symbolic.svg"
+    cmp -- "$root/packaging/icons/$icon" "$status_icons/$icon"
+    cmp -- "$status_icons/$icon" "$gnome_link/$icon"
+    cmp -- "$status_icons/$icon" "extracted/$name/gnome-extension/$gnome_uuid/$icon"
+done
+grep -Fqx "gtk-update-icon-cache -q -t $XDG_DATA_HOME/icons/hicolor" "$TEST_COMMANDS"
 grep -Fqx 'legacy plugin' "$XDG_CONFIG_HOME"/omarchy/pods-legacy.*/io.github.thisisgm.omapods/manifest.json
 grep -Fqx 'systemctl --user disable --now librepods.service' "$TEST_COMMANDS"
 grep -Fqx 'omarchy plugin disable io.github.thisisgm.omapods' "$TEST_COMMANDS"
@@ -171,6 +193,7 @@ chmod 0644 -- "$HOME/.zshrc"
 [[ $(grep -Fxc -- "$marker" "$HOME/.bashrc") == 1 ]]
 [[ $(grep -Fxc -- "$marker" "$HOME/.zshrc") == 1 ]]
 [[ $(grep -Fxc 'omarchy plugin enable superwhisper.pods' "$TEST_COMMANDS") == 1 ]]
+[[ $(grep -Fxc "gnome-extensions enable $gnome_uuid" "$TEST_COMMANDS") == 1 ]]
 grep -Fqx -- "$marker" "$XDG_CONFIG_HOME/environment.d/60-pods-path.conf"
 grep -Fqx -- "$marker" "$XDG_CONFIG_HOME/fish/conf.d/pods.fish"
 
@@ -192,9 +215,14 @@ expect_error 'refusing to purge state outside HOME' env PODS_TEST_STATE_DIR="$fi
 [[ -f $unit && -f outside/keys.json ]]
 printf 'custom PATH file\n' >> "$XDG_CONFIG_HOME/fish/conf.d/pods.fish"
 touch "$XDG_RUNTIME_DIR/pods.sock"
+printf 'custom icon\n' > "$status_icons/pods-max-symbolic.svg"
 "$root/setup" --uninstall
 [[ -f $XDG_STATE_HOME/pods/keys.json && ! -e $unit && ! -e $app && ! -e $XDG_RUNTIME_DIR/pods.sock ]]
 [[ ! -L $HOME/.local/bin/pods && ! -L $HOME/.local/bin/pods-ctl && ! -L $plugin/superwhisper.pods ]]
+[[ ! -L $gnome_link && ! -e $status_icons/pods-buds-symbolic.svg && ! -e $status_icons/pods-pro-symbolic.svg ]]
+grep -Fqx "gnome-extensions disable $gnome_uuid" "$TEST_COMMANDS"
+grep -Fqx 'custom icon' "$status_icons/pods-max-symbolic.svg"
+rm -- "$status_icons/pods-max-symbolic.svg"
 [[ ! -e $XDG_CONFIG_HOME/environment.d/60-pods-path.conf ]]
 grep -Fqx 'custom PATH file' "$XDG_CONFIG_HOME/fish/conf.d/pods.fish"
 grep -Fqx 'export KEEP=1' "$HOME/.bashrc"
@@ -301,12 +329,18 @@ cat > stubs/omarchy <<'STUB'
 #!/bin/sh
 printf 'omarchy %s\n' "$*" >> "$TEST_COMMANDS"
 if [ "$1 $2 $3" = 'plugin enable superwhisper.pods' ]; then exit 1; fi
+if [ "$1 $2 $3" = 'plugin enable io.github.thisisgm.omapods' ]; then
+    if [ ! -f "$XDG_RUNTIME_DIR/legacy-enable-attempt" ]; then
+        touch "$XDG_RUNTIME_DIR/legacy-enable-attempt"
+        exit 1
+    fi
+fi
 STUB
 chmod 0755 -- stubs/omarchy
 expect_error 'Omarchy could not enable superwhisper.pods' "$install" --binary "$fixture/pods-good"
 [[ ! -e $plugin/superwhisper.pods && -f $plugin/io.github.thisisgm.omapods/manifest.json ]]
 grep -Fqx 'keep me on failure' "$plugin/io.github.thisisgm.omapods/manifest.json"
-grep -Fqx 'omarchy plugin enable io.github.thisisgm.omapods' "$TEST_COMMANDS"
+[[ $(grep -Fxc 'omarchy plugin enable io.github.thisisgm.omapods' "$TEST_COMMANDS") == 2 ]]
 rm -rf -- "$plugin/io.github.thisisgm.omapods"
 mv -f -- stubs/omarchy.orig stubs/omarchy
 "$root/setup" --uninstall --keep-keys
@@ -349,8 +383,10 @@ INVOCATION_ID=test PODS_SKIP_SERVICE=1 "$checkout/setup" --from-source
 cmp -- before.bashrc "$HOME/.bashrc"
 [[ $(grep -c '^systemctl ' "$TEST_COMMANDS") == "$calls_before" ]]
 PODS_SKIP_SERVICE=1 "$checkout/setup" --uninstall
-PODS_SKIP_SERVICE=1 XDG_CONFIG_HOME="$XDG_DATA_HOME" "$install" --binary "$fixture/pods-good"
-[[ -f $XDG_DATA_HOME/systemd/user/podsd.service ]]
+PODS_SKIP_SERVICE=1 PODS_TEST_GNOME_ENABLE_FAIL=1 XDG_CONFIG_HOME="$XDG_DATA_HOME" \
+    "$install" --binary "$fixture/pods-good" > result.log 2>&1
+[[ -f $XDG_DATA_HOME/systemd/user/podsd.service && -L $gnome_link ]]
+grep -Fq 'log out and back in, then enable' result.log
 PODS_SKIP_SERVICE=1 XDG_CONFIG_HOME="$XDG_DATA_HOME" "$uninstall"
 [[ ! -e $XDG_DATA_HOME/systemd/user/podsd.service ]]
 

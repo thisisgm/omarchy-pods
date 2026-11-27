@@ -21,6 +21,8 @@ repo_version() {
     sed -n 's/^version = "\([^"]*\)"$/\1/p' "$1/crates/daemon/Cargo.toml"
 }
 
+readonly gnome_uuid=pods@superwhisper.com
+
 setup_paths() {
     [[ $(id -u) != 0 ]] || fail 'run as your own user'
     [[ ${HOME:-} == /?* && -d $HOME && -O $HOME ]] || fail 'HOME must be an absolute directory owned by the user'
@@ -56,11 +58,41 @@ setup_paths() {
     omarchy_dir="$config_home/omarchy"
     plugin_link="$omarchy_dir/plugins/superwhisper.pods"
     pods_link="$app/current/bin/pods"
+    gnome_link="$data_home/gnome-shell/extensions/$gnome_uuid"
+    gnome_target="$app/current/gnome-extension/$gnome_uuid"
+    status_icons="$data_home/icons/hicolor/scalable/status"
     if [[ -L $data_home/pods || -L $app ]]; then
         fail "refusing a symlinked app directory: $app"
     fi
     exec 9< "$runtime_real"
     flock -x 9
+}
+
+stage_desktop_assets() {
+    local source=$1 destination=$2
+    local extension="gnome-extension/$gnome_uuid"
+    install -d -m 0755 -- "$destination/icons" "$destination/$extension" &&
+        install -m 0644 -- "$source"/icons/pods-*-symbolic.svg "$destination/icons" &&
+        install -m 0644 -- "$source/$extension"/{extension.js,metadata.json,stylesheet.css} "$destination/$extension" &&
+        install -m 0644 -- "$destination"/icons/pods-*-symbolic.svg "$destination/$extension"
+}
+
+bundle_hashes() {
+    sha256sum -- VERSION bin/pods ./*.sh systemd/podsd.service plugin/* icons/* "gnome-extension/$gnome_uuid"/*
+}
+
+# Sample input: sha256sum prints a 64-hex digest followed by two spaces and a hyphen.
+checksum_matches() {
+    local path=$1 reference=$2 checksum expected
+    [[ -f $path && ! -L $path && -f $reference && ! -L $reference ]] || return 1
+    checksum=$(sha256sum < "$path") && expected=$(sha256sum < "$reference") && [[ $checksum == "$expected" ]]
+}
+
+refresh_icon_cache() {
+    if command -v gtk-update-icon-cache >/dev/null; then
+        gtk-update-icon-cache -q -t "$data_home/icons/hicolor" ||
+            printf 'pods: could not refresh the hicolor icon cache\n' >&2
+    fi
 }
 
 link_is() {

@@ -21,6 +21,7 @@ mod signals;
 mod sleep;
 mod socket;
 pub(crate) mod state_file;
+mod tray;
 
 use std::fs::File;
 use std::future::poll_fn;
