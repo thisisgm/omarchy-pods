@@ -3,7 +3,8 @@
 use std::ffi::{CStr, CString};
 use std::io;
 
-use super::fields::{FixtureTags, Reader};
+use super::fields::{FixtureFields, FixtureTags};
+use super::tags::Tags;
 use super::{
     ChannelVolume, FLAG_MEMFD, FLAG_SHM, Props, ProtocolError, Result, SinkState, TagWriter,
     Volume, field_length, protocol_version, tag, version_flags,
@@ -25,7 +26,7 @@ const RECORDER_VOLUME_VERSION: u16 = 22;
 
 pub(crate) trait CommandReply: Sized {
     fn write(&self, writer: &mut TagWriter<'_>, version: u16) -> io::Result<()>;
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self>;
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self>;
 }
 
 impl<T: CommandReply> CommandReply for Vec<T> {
@@ -37,7 +38,7 @@ impl<T: CommandReply> CommandReply for Vec<T> {
     }
 
     // Sample: a sequence of adjacent records without a list count.
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self> {
         let mut records = Vec::new();
         while !reader.is_empty() {
             records.push(T::read(reader, version)?);
@@ -60,7 +61,7 @@ impl CommandReply for AuthReply {
     }
 
     // Sample: L 40000023 means version 35 with memfd.
-    fn read(reader: &mut Reader<'_>, _: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, _: u16) -> Result<Self> {
         let raw = reader.u32()?;
         Ok(Self {
             version: protocol_version(raw),
@@ -82,7 +83,7 @@ impl CommandReply for SetClientNameReply {
     }
 
     // Sample: L 00000007 assigns client ID 7.
-    fn read(reader: &mut Reader<'_>, _: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, _: u16) -> Result<Self> {
         Ok(Self {
             client_id: reader.u32()?,
         })
@@ -116,16 +117,16 @@ impl CommandReply for ServerInfo {
     }
 
     // Sample: N N N N a 03 02 0000ac44 t sink\0 N L 00000000 m 02 01 02.
-    fn read(reader: &mut Reader<'_>, _: u16) -> Result<Self> {
-        let server_name = reader.string()?;
-        reader.string()?;
-        reader.string()?;
-        reader.string()?;
+    fn read(reader: &mut Tags<'_>, _: u16) -> Result<Self> {
+        let server_name = reader.owned_string()?;
+        reader.owned_string()?;
+        reader.owned_string()?;
+        reader.owned_string()?;
         reader.sample_rate()?;
-        let default_sink = reader.string()?;
-        let default_source = reader.string()?;
+        let default_sink = reader.owned_string()?;
+        let default_source = reader.owned_string()?;
         reader.u32()?;
-        reader.skip_map()?;
+        reader.skip_expected(tag::CHANNEL_MAP)?;
         Ok(Self {
             server_name,
             default_sink,
@@ -180,18 +181,18 @@ impl CommandReply for SinkInfo {
     }
 
     // Sample: L 0 t sink\0 N a 03 02 0000ac44 m 02 01 02 L ffffffff v 02 00010000 00010000 0 L ffffffff N U 0 N L 0 P N U 0 V 00010000 L 1 L 0 L ffffffff L 0 N B 0.
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self> {
         let (index, name, cvolume, _) = read_device(reader)?;
         let monitor_source_index = reader.index()?;
-        let monitor_source_name = reader.string()?;
+        let monitor_source_name = reader.owned_string()?;
         read_latency_driver_flags(reader)?;
         let props = reader.props()?;
-        reader.skip_latency()?;
+        reader.skip_expected(tag::USEC)?;
         let state = read_device_state(reader, version, true)?;
         let mut formats = Vec::new();
         if version >= DEVICE_FORMATS_VERSION {
             for _ in 0..reader.u8()? {
-                formats.push(reader.format()?);
+                formats.push(reader.format_props()?);
             }
         }
         Ok(Self {
@@ -241,19 +242,19 @@ impl CommandReply for SourceInfo {
     }
 
     // Sample: the sink record above with monitor index and name identifying a sink.
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self> {
         let (index, name, cvolume, sample_rate) = read_device(reader)?;
         let monitor_of_sink_index = reader.index()?;
-        let monitor_of_sink_name = reader.string()?;
+        let monitor_of_sink_name = reader.owned_string()?;
         read_latency_driver_flags(reader)?;
         if version >= SOURCE_PROPS_VERSION {
             reader.props()?;
-            reader.skip_latency()?;
+            reader.skip_expected(tag::USEC)?;
         }
         read_device_state(reader, version, false)?;
         if version >= DEVICE_FORMATS_VERSION {
             for _ in 0..reader.u8()? {
-                reader.format()?;
+                reader.format_props()?;
             }
         }
         Ok(Self {
@@ -284,13 +285,13 @@ fn write_device(
 }
 
 // Sample: L 0 t sink\0 N a 03 02 0000ac44 m 02 01 02 L ffffffff v 01 00010000 0.
-fn read_device(reader: &mut Reader<'_>) -> Result<(u32, CString, ChannelVolume, u32)> {
+fn read_device(reader: &mut Tags<'_>) -> Result<(u32, CString, ChannelVolume, u32)> {
     let index = reader.u32()?;
     let name = reader.name()?;
-    reader.string()?;
+    reader.owned_string()?;
     let sample_rate = reader.sample_and_map()?;
     reader.index()?;
-    let volume = reader.channels()?;
+    let volume = reader.channel_volume()?;
     reader.boolean()?;
     Ok((index, name, volume, sample_rate))
 }
@@ -302,9 +303,9 @@ fn write_latency_driver_flags(writer: &mut TagWriter<'_>) {
 }
 
 // Sample: U 0000000000000000 N L 00000000 means zero latency and flags and no driver.
-fn read_latency_driver_flags(reader: &mut Reader<'_>) -> Result<()> {
-    reader.skip_latency()?;
-    reader.string()?;
+fn read_latency_driver_flags(reader: &mut Tags<'_>) -> Result<()> {
+    reader.skip_expected(tag::USEC)?;
+    reader.owned_string()?;
     reader.u32()?;
     Ok(())
 }
@@ -341,11 +342,10 @@ fn write_device_state(
 }
 
 // Sample: V 00010000 L 00000001 L 00000000 L ffffffff L 00000000 N means idle with no card or ports.
-fn read_device_state(reader: &mut Reader<'_>, version: u16, sink: bool) -> Result<SinkState> {
+fn read_device_state(reader: &mut Tags<'_>, version: u16, sink: bool) -> Result<SinkState> {
     let mut state = SinkState::Idle;
     if version >= DEVICE_STATE_VERSION {
-        reader.tag(tag::VOLUME)?;
-        reader.take(size_of::<u32>())?;
+        reader.skip_expected(tag::VOLUME)?;
         state = match reader.u32()? {
             n if n == SinkState::Running.number() => SinkState::Running,
             n if n == SinkState::Idle.number() => SinkState::Idle,
@@ -358,17 +358,17 @@ fn read_device_state(reader: &mut Reader<'_>, version: u16, sink: bool) -> Resul
     if version >= DEVICE_PORTS_VERSION {
         for _ in 0..reader.u32()? {
             reader.name()?;
-            reader.string()?;
+            reader.owned_string()?;
             reader.u32()?;
             if version >= PORT_AVAILABILITY_VERSION {
                 reader.u32()?;
             }
             if sink && version >= PORT_TYPE_VERSION {
-                reader.string()?;
+                reader.owned_string()?;
                 reader.u32()?;
             }
         }
-        reader.string()?;
+        reader.owned_string()?;
     }
     Ok(state)
 }
@@ -411,25 +411,25 @@ impl CommandReply for SourceOutputInfo {
     }
 
     // Sample: L 0 t recorder\0 L ffffffff L ffffffff L 7 a 03 02 0000ac44 m 02 01 02 U 0 U 0 N N P N 0 v 02 00010000 00010000 0 1 1 f B 01 P N.
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self> {
         let index = reader.u32()?;
         let name = reader.name()?;
         reader.index()?;
         reader.index()?;
         let source_index = reader.u32()?;
         let sample_rate = reader.sample_and_map()?;
-        reader.skip_latency()?;
-        reader.skip_latency()?;
-        reader.string()?;
-        reader.string()?;
+        reader.skip_expected(tag::USEC)?;
+        reader.skip_expected(tag::USEC)?;
+        reader.owned_string()?;
+        reader.owned_string()?;
         let props = reader.props()?;
         let corked = version >= RECORDER_CORKED_VERSION && reader.boolean()?;
         let cvolume = if version >= RECORDER_VOLUME_VERSION {
-            let volume = reader.channels()?;
+            let volume = reader.channel_volume()?;
             reader.boolean()?;
             reader.boolean()?;
             reader.boolean()?;
-            reader.format()?;
+            reader.format_props()?;
             volume
         } else {
             ChannelVolume::empty()
@@ -501,15 +501,15 @@ impl CommandReply for CardInfo {
     }
 
     // Sample: L 0 t card\0 L ffffffff N L 0 N P N L 0 is a card with no profiles or ports.
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self> {
         let index = reader.u32()?;
         let name = reader.name()?;
         reader.index()?;
-        reader.string()?;
+        reader.owned_string()?;
         let mut profiles = Vec::new();
         for _ in 0..reader.u32()? {
             let name = reader.name()?;
-            reader.string()?;
+            reader.owned_string()?;
             let num_sinks = reader.u32()?;
             let num_sources = reader.u32()?;
             reader.u32()?;
@@ -525,7 +525,7 @@ impl CommandReply for CardInfo {
                 available,
             });
         }
-        let active_profile = reader.string()?;
+        let active_profile = reader.owned_string()?;
         let props = reader.props()?;
         let mut ports = Vec::new();
         if version >= CARD_PORTS_VERSION {
@@ -569,9 +569,9 @@ impl CardPortInfo {
     }
 
     // Sample: t output\0 N L 0 L 0 B 01 P N L 0 r 0000000000000000 N L 0 is a bare output port.
-    fn read(reader: &mut Reader<'_>, version: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, version: u16) -> Result<Self> {
         let name = reader.name()?;
-        reader.string()?;
+        reader.owned_string()?;
         reader.u32()?;
         reader.u32()?;
         reader.u8()?;
@@ -582,11 +582,10 @@ impl CardPortInfo {
         }
         let mut availability_group = None;
         if version >= PORT_OFFSET_VERSION {
-            reader.tag(tag::S64)?;
-            reader.take(size_of::<i64>())?;
+            reader.skip_expected(tag::S64)?;
         }
         if version >= PORT_TYPE_VERSION {
-            availability_group = reader.string()?;
+            availability_group = reader.owned_string()?;
             reader.u32()?;
         }
         Ok(Self {
@@ -615,11 +614,11 @@ impl CommandReply for ClientInfo {
     }
 
     // Sample: L 0 t Recorder\0 L ffffffff N P N gives a client without properties.
-    fn read(reader: &mut Reader<'_>, _: u16) -> Result<Self> {
+    fn read(reader: &mut Tags<'_>, _: u16) -> Result<Self> {
         let index = reader.u32()?;
         let name = reader.name()?;
         reader.index()?;
-        reader.string()?;
+        reader.owned_string()?;
         Ok(Self {
             index,
             name,

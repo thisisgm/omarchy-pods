@@ -144,10 +144,10 @@ impl Sources {
 
     /// One `stream` after another, up to `MAX_RECORD_STREAMS` for routing counts.
     fn recorders(&self, body: &[u8]) -> Result<Recording, Malformed> {
-        let mut tags = Tags(body);
+        let mut tags = Tags::new(body);
         let mut counted = Recording::default();
         for _ in 0..MAX_RECORD_STREAMS {
-            if tags.0.is_empty() {
+            if tags.is_empty() {
                 return Ok(counted);
             }
             let (on, node, corked) = stream(&mut tags)?;
@@ -166,10 +166,10 @@ impl Sources {
             }
         }
         // The frame already bounds the list. Keep checking capture when routing refuses its counts.
-        if !tags.0.is_empty() {
+        if !tags.is_empty() {
             counted.microphone = Recorders::default();
         }
-        while !counted.active && !tags.0.is_empty() {
+        while !counted.active && !tags.is_empty() {
             let (on, _, corked) = stream(&mut tags)?;
             counted.active = !corked && self.capture.binary_search(&on).is_ok();
         }

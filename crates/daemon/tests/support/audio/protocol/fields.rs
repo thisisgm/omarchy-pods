@@ -1,22 +1,29 @@
-//! Checked readers and additional tag writers used by audio server fixtures.
+//! Ownership and validation for fixture values, plus additional tag writers.
+
+#![forbid(unsafe_code)]
 
 use std::ffi::{CStr, CString};
 use std::io;
 
+use super::tags::{TagError, Tags};
 use super::{
-    ChannelVolume, DeviceLookup, INDEX_NONE, MAX_CHANNELS, Props, ProtocolError, Result, TagWriter,
-    Volume, tag,
+    ChannelVolume, DeviceLookup, INDEX_NONE, Props, ProtocolError, Result, TagWriter, Volume, tag,
 };
 
-#[derive(Debug)]
-pub(crate) struct Reader<'a>(pub(super) &'a [u8]);
+pub(super) trait FixtureFields {
+    fn finish(&self) -> Result<()>;
+    fn index(&mut self) -> Result<Option<u32>>;
+    fn owned_string(&mut self) -> Result<Option<CString>>;
+    fn name(&mut self) -> Result<CString>;
+    fn device(&mut self) -> Result<DeviceLookup>;
+    fn props(&mut self) -> Result<Props>;
+    fn channel_volume(&mut self) -> Result<ChannelVolume>;
+    fn sample_and_map(&mut self) -> Result<u32>;
+    fn format_props(&mut self) -> Result<Props>;
+}
 
-impl<'a> Reader<'a> {
-    pub(super) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub(super) fn finish(self) -> Result<()> {
+impl FixtureFields for Tags<'_> {
+    fn finish(&self) -> Result<()> {
         if self.is_empty() {
             Ok(())
         } else {
@@ -26,178 +33,72 @@ impl<'a> Reader<'a> {
         }
     }
 
-    // Sample: take(2) consumes 01 02 from 01 02 03.
-    pub(super) fn take(&mut self, count: usize) -> Result<&'a [u8]> {
-        let (bytes, rest) = self
-            .0
-            .split_at_checked(count)
-            .ok_or(ProtocolError::Invalid("cut PulseAudio field"))?;
-        self.0 = rest;
-        Ok(bytes)
-    }
-
-    // Sample: 00 00 00 07 reads as 7.
-    fn raw_u32(&mut self) -> Result<u32> {
-        let (bytes, rest) = self
-            .0
-            .split_first_chunk()
-            .ok_or(ProtocolError::Invalid("cut PulseAudio integer"))?;
-        self.0 = rest;
-        Ok(u32::from_be_bytes(*bytes))
-    }
-
-    // Sample: L is the u32 tag.
-    pub(super) fn tag(&mut self, expected: u8) -> Result<()> {
-        if self.take(1)? == [expected] {
-            Ok(())
-        } else {
-            Err(ProtocolError::Invalid("unexpected PulseAudio tag"))
-        }
-    }
-
-    // Sample: L 00000007 reads as 7.
-    pub(super) fn u32(&mut self) -> Result<u32> {
-        self.tag(tag::U32)?;
-        self.raw_u32()
-    }
-
-    // Sample: B 01 reads as 1.
-    pub(super) fn u8(&mut self) -> Result<u8> {
-        self.tag(tag::U8)?;
-        self.byte()
-    }
-
-    // Sample: ff reads as 255.
-    fn byte(&mut self) -> Result<u8> {
-        self.0
-            .split_first()
-            .map(|(&byte, rest)| {
-                self.0 = rest;
-                byte
-            })
-            .ok_or(ProtocolError::Invalid("cut PulseAudio byte"))
-    }
-
     // Sample: L ffffffff represents an absent index.
-    pub(super) fn index(&mut self) -> Result<Option<u32>> {
+    fn index(&mut self) -> Result<Option<u32>> {
         let index = self.u32()?;
         Ok((index != INDEX_NONE).then_some(index))
     }
 
-    // Sample: 1 reads as true.
-    pub(super) fn boolean(&mut self) -> Result<bool> {
-        match self.byte()? {
-            tag::TRUE => Ok(true),
-            tag::FALSE => Ok(false),
-            _ => Err(ProtocolError::Invalid("invalid PulseAudio boolean")),
-        }
+    // Sample: t sink\0 yields an owned name.
+    fn owned_string(&mut self) -> Result<Option<CString>> {
+        Ok(self.string()?.map(CStr::to_owned))
     }
 
-    // Sample: t sink\0 reads as a name, N as null.
-    pub(super) fn string(&mut self) -> Result<Option<CString>> {
-        match self.byte()? {
-            tag::STRING_NULL => Ok(None),
-            tag::STRING => {
-                let text = CStr::from_bytes_until_nul(self.0)
-                    .map_err(|_error| ProtocolError::Invalid("unterminated PulseAudio string"))?;
-                self.take(text.to_bytes_with_nul().len())?;
-                Ok(Some(text.to_owned()))
-            }
-            _ => Err(ProtocolError::Invalid("invalid PulseAudio string tag")),
-        }
-    }
-
-    // Sample: t sink\0 reads as a required name.
-    pub(super) fn name(&mut self) -> Result<CString> {
-        self.string()?
+    // Sample: t sink\0 yields a required name.
+    fn name(&mut self) -> Result<CString> {
+        self.owned_string()?
             .ok_or(ProtocolError::Invalid("missing PulseAudio name"))
     }
 
     // Sample: L ffffffff t sink\0 selects a sink by name.
-    pub(super) fn device(&mut self) -> Result<DeviceLookup> {
+    fn device(&mut self) -> Result<DeviceLookup> {
         Ok(DeviceLookup {
             index: self.index()?,
-            name: self.string()?,
+            name: self.owned_string()?,
         })
     }
 
-    // Sample: x 00000002 ff 00 reads as two bytes.
-    pub(super) fn arbitrary(&mut self) -> Result<&'a [u8]> {
-        self.tag(tag::ARBITRARY)?;
-        let length = self.raw_u32()?;
-        self.take(
-            usize::try_from(length)
-                .map_err(|_error| ProtocolError::Invalid("invalid PulseAudio length"))?,
-        )
-    }
-
-    // Sample: P t key\0 L 00000002 x 00000002 v\0 N reads as one property.
-    pub(super) fn props(&mut self) -> Result<Props> {
-        self.tag(tag::PROPLIST)?;
+    // Sample: P t key\0 L 00000002 x 00000002 v\0 N yields one owned property.
+    fn props(&mut self) -> Result<Props> {
         let mut props = Props::new();
-        while let Some(key) = self.string()? {
-            let length = self.u32()?;
-            let value = self.arbitrary()?;
-            if usize::try_from(length) != Ok(value.len()) {
-                return Err(ProtocolError::Invalid(
-                    "inconsistent PulseAudio property size",
-                ));
-            }
-            props.set_bytes(key, value);
-        }
+        self.properties(|key, declared, value| store_property(&mut props, key, declared, value))?;
         Ok(props)
     }
 
-    // Sample: v 02 00010000 00008000 gives two channel volumes.
-    pub(super) fn channels(&mut self) -> Result<ChannelVolume> {
-        self.tag(tag::CVOLUME)?;
-        let count = self.byte()?;
-        if !(1..=MAX_CHANNELS).contains(&usize::from(count)) {
-            return Err(ProtocolError::Invalid("invalid PulseAudio channel count"));
-        }
-        let mut volume = ChannelVolume::empty();
-        for _ in 0..count {
-            volume.push(Volume::from_u32_clamped(self.raw_u32()?));
-        }
-        Ok(volume)
+    // Sample: v 02 00010000 00008000 yields two channel volumes.
+    fn channel_volume(&mut self) -> Result<ChannelVolume> {
+        Ok(self.channels()?.0)
     }
 
     // Sample: a 03 02 0000bb80 m 02 01 02 is stereo S16LE at 48 kHz.
-    pub(super) fn sample_and_map(&mut self) -> Result<u32> {
+    fn sample_and_map(&mut self) -> Result<u32> {
         let rate = self.sample_rate()?;
-        self.skip_map()?;
+        self.skip_expected(tag::CHANNEL_MAP)?;
         Ok(rate)
     }
 
-    // Sample: a 03 02 0000bb80 is stereo S16LE at 48 kHz.
-    pub(super) fn sample_rate(&mut self) -> Result<u32> {
-        self.tag(tag::SAMPLE_SPEC)?;
-        self.byte()?;
-        self.byte()?;
-        self.raw_u32()
-    }
-
-    // Sample: m 02 01 02 maps the front-left and front-right channels.
-    pub(super) fn skip_map(&mut self) -> Result<()> {
-        self.tag(tag::CHANNEL_MAP)?;
-        let count = self.byte()?;
-        self.take(usize::from(count))?;
-        Ok(())
-    }
-
-    // Sample: U 0000000000000000 gives a zero latency.
-    pub(super) fn skip_latency(&mut self) -> Result<()> {
-        self.tag(tag::USEC)?;
-        self.take(size_of::<u64>())?;
-        Ok(())
-    }
-
     // Sample: f B 01 P N is PCM with no format properties.
-    pub(super) fn format(&mut self) -> Result<Props> {
-        self.tag(tag::FORMAT_INFO)?;
-        self.u8()?;
-        self.props()
+    fn format_props(&mut self) -> Result<Props> {
+        let mut props = Props::new();
+        self.format(|key, declared, value| store_property(&mut props, key, declared, value))?;
+        Ok(props)
     }
+}
+
+fn store_property(
+    props: &mut Props,
+    key: &CStr,
+    declared: u32,
+    value: &[u8],
+) -> std::result::Result<(), TagError> {
+    if usize::try_from(declared) != Ok(value.len()) {
+        return Err(TagError::PropertyLength {
+            declared,
+            actual: value.len(),
+        });
+    }
+    props.set_bytes(key, value);
+    Ok(())
 }
 
 const S16LE: u8 = 3;

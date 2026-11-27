@@ -11,8 +11,9 @@ use std::ffi::CStr;
 use std::io::{self, Write};
 
 pub(crate) use super::native::*;
-use fields::Reader;
+use fields::FixtureFields;
 pub(crate) use replies::*;
+use tags::{TagError, Tags};
 
 pub(crate) const MAX_VERSION: u16 = PROTOCOL_VERSION;
 pub(crate) const DEFAULT_SINK: &CStr = c"@DEFAULT_SINK@";
@@ -20,6 +21,7 @@ pub(crate) const DEFAULT_SINK: &CStr = c"@DEFAULT_SINK@";
 #[derive(Debug)]
 pub(crate) enum ProtocolError {
     Invalid(&'static str),
+    Field(TagError),
     Io(io::Error),
     ServerError(PulseError),
 }
@@ -28,9 +30,16 @@ impl std::fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(problem) => f.write_str(problem),
+            Self::Field(error) => error.fmt(f),
             Self::Io(error) => error.fmt(f),
             Self::ServerError(error) => write!(f, "server refused with {error:?}"),
         }
+    }
+}
+
+impl From<TagError> for ProtocolError {
+    fn from(error: TagError) -> Self {
+        Self::Field(error)
     }
 }
 
@@ -44,13 +53,13 @@ pub(crate) type Result<T> = std::result::Result<T, ProtocolError>;
 
 // Sample: L 00000014 L 00000001 gives GetServerInfo at sequence 1.
 pub(crate) fn command_header(payload: &[u8]) -> Result<(u32, u32)> {
-    let mut reader = Reader(payload);
+    let mut reader = Tags::new(payload);
     Ok((reader.u32()?, reader.u32()?))
 }
 
 // Sample: L 00000024 L 00000001 L 00000007 N v 01 00010000 sets sink 7 to full volume.
 pub(crate) fn read_command(payload: &[u8]) -> Result<(u32, Command)> {
-    let mut reader = Reader(payload);
+    let mut reader = Tags::new(payload);
     let number = reader.u32()?;
     let seq = reader.u32()?;
     let command = match number {
@@ -77,8 +86,8 @@ pub(crate) fn read_command(payload: &[u8]) -> Result<(u32, Command)> {
         n if n == CommandTag::SetSinkVolume.number() => {
             Command::SetSinkVolume(SetDeviceVolumeParams {
                 device_index: reader.index()?,
-                device_name: reader.string()?,
-                volume: reader.channels()?,
+                device_name: reader.owned_string()?,
+                volume: reader.channel_volume()?,
             })
         }
         n if n == CommandTag::SetDefaultSource.number() => {
@@ -89,7 +98,7 @@ pub(crate) fn read_command(payload: &[u8]) -> Result<(u32, Command)> {
         }
         n if n == CommandTag::SuspendSink.number() => Command::SuspendSink(SuspendParams {
             device_index: reader.index()?,
-            device_name: reader.string()?,
+            device_name: reader.owned_string()?,
             suspend: reader.boolean()?,
         }),
         n if n == CommandTag::GetCardInfo.number() => Command::GetCardInfo(reader.device()?),
@@ -97,7 +106,7 @@ pub(crate) fn read_command(payload: &[u8]) -> Result<(u32, Command)> {
         n if n == CommandTag::SetCardProfile.number() => {
             Command::SetCardProfile(SetCardProfileParams {
                 card_index: reader.index()?,
-                card_name: reader.string()?,
+                card_name: reader.owned_string()?,
                 profile_name: reader.name()?,
             })
         }
@@ -108,7 +117,7 @@ pub(crate) fn read_command(payload: &[u8]) -> Result<(u32, Command)> {
 }
 
 // Sample: L 00000010 L 00000007 reports a change to sink 7.
-fn read_event(reader: &mut Reader<'_>) -> Result<SubscriptionEvent> {
+fn read_event(reader: &mut Tags<'_>) -> Result<SubscriptionEvent> {
     let flags = reader.u32()?;
     Ok(SubscriptionEvent {
         event_facility: SubscriptionEventFacility::from_number(flags & FACILITY_MASK)
@@ -191,8 +200,8 @@ pub(crate) fn write_reply_message(
 }
 
 // Sample: L 00000000 L 00000007 L 00000005 refuses sequence 7 with NoEntity.
-fn reply_body(frame: &[u8]) -> Result<(u32, Reader<'_>)> {
-    let mut reader = Reader(control_payload(frame)?);
+fn reply_body(frame: &[u8]) -> Result<(u32, Tags<'_>)> {
+    let mut reader = Tags::new(control_payload(frame)?);
     let command = reader.u32()?;
     let seq = reader.u32()?;
     if command == CommandTag::Reply.number() {

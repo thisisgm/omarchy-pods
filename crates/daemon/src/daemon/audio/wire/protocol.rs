@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::io::{self, Read};
 
+#[path = "tags.rs"]
+pub(crate) mod tags;
+
 pub(crate) const PROTOCOL_VERSION: u16 = 35;
 pub(crate) const CONTROL_CHANNEL: u32 = u32::MAX;
 pub(crate) const DESCRIPTOR_SIZE: usize = 20;
