@@ -299,9 +299,14 @@ function podMeta(pod) {
   return ""
 }
 
+// librepods-ctl when the daemon is down: "Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)\n".
+var CONNECT_FAILED_PREFIX = "Could not connect to "
+var DAEMON_DOWN_TEXT = "librepods is not running"
+
 // Collapse librepods-ctl's stderr into one line the panel can show inside a row.
 function elideError(text) {
   var value = String(text || "").replace(/\s+/g, " ").trim()
+  if (value.indexOf(CONNECT_FAILED_PREFIX) === 0) return DAEMON_DOWN_TEXT
   return value.length > MAX_ERROR_CHARS ? value.substring(0, ELIDED_ERROR_CHARS) + "…" : value
 }
 
