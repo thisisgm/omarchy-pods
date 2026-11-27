@@ -103,7 +103,7 @@ enum ProbeCommand {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,
     },
-    /// Decodes the units of an analysed run with `rusty_aac` and with FFmpeg, compares the two, and writes the decodes and decode.tsv into it.
+    /// Decodes the units of an analysed run with `pods-aac` and with FFmpeg, compares the two, and writes the decodes and decode.tsv into it.
     Decode {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,

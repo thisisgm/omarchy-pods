@@ -3,12 +3,13 @@
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use rusty_aac::AacDecoder;
+use pods_aac::Decoder as AacDecoder;
 
 use super::{EXPECTED_CONFIG, SAMPLES_PER_UNIT};
 
 pub struct Decoder {
     aac: AacDecoder,
+    #[cfg(test)]
     frame: Vec<f32>,
 }
 
@@ -24,18 +25,27 @@ impl Decoder {
     /// None when the decoder refuses `EXPECTED_CONFIG`.
     #[must_use]
     pub fn new() -> Option<Self> {
-        let aac = catch_unwind(|| AacDecoder::with_config_bytes(&EXPECTED_CONFIG));
+        let aac = catch_unwind(|| AacDecoder::with_config(&EXPECTED_CONFIG));
         Some(Self {
             aac: aac.ok()?.ok()?,
+            #[cfg(test)]
             frame: Vec::new(),
         })
     }
 
     pub fn unit(&mut self, unit: &[u8]) -> Decoded<'_> {
-        self.fenced(|aac| aac.decode(unit, None).ok().map(|audio| audio.samples))
+        let aac = &mut self.aac;
+        match catch_unwind(AssertUnwindSafe(|| aac.decode(unit).map(<[f32]>::len))) {
+            Ok(Ok(len)) if len == usize::from(SAMPLES_PER_UNIT) => {
+                Decoded::Samples(self.aac.last_frame())
+            }
+            Ok(_) => Decoded::Error,
+            Err(_) => Decoded::Panic,
+        }
     }
 
     /// One call into the decoder; a call that panicked leaves the decoder as the panic left it.
+    #[cfg(test)]
     pub(crate) fn fenced(
         &mut self,
         call: impl FnOnce(&mut AacDecoder) -> Option<Vec<f32>>,

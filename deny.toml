@@ -9,7 +9,6 @@ yanked = "deny"
 [licenses]
 # The allow-list is policy for crates added later, so an unused entry is not a warning.
 unused-allowed-license = "allow"
-# rusty_aac is labelled Apache-2.0 and reads as a port of the LGPL-2.1-or-later FFmpeg decoder; open, and GPL-3.0 takes either.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -27,7 +26,6 @@ deny = [
     { crate = "openssl-sys", reason = "TLS is not part of this daemon" },
     { crate = "libdbus-sys", reason = "D-Bus is reached through pure Rust, not libdbus" },
     { crate = "opuscule", wrappers = ["pods-mic", "xtask"], reason = "the dictation stream's decoder: pods-mic fences every call into it, and the developer tool measures it against other decoders" },
-    { crate = "rusty_aac", wrappers = ["pods-mic", "pods-samples", "xtask"], reason = "the microphone's decoder: pods-mic fences every call into it, the samples use its bit writer and codebooks, and the developer tool measures it under other configurations" },
 ]
 
 [sources]

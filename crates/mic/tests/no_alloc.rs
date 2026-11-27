@@ -100,4 +100,32 @@ mod tests {
             "ratio {catch_up} stayed at the drift clamp"
         );
     }
+
+    #[test]
+    fn the_uplink_decoder_never_allocates_across_1000_units() {
+        use pods_mic::decode::{Decoded, Decoder};
+        use pods_samples::uplink::tone_unit;
+
+        let mut decoder = Decoder::new().unwrap();
+        let tone = tone_unit(10, 180);
+        let silent = silent_unit();
+        assert!(matches!(decoder.unit(&tone), Decoded::Samples(_)));
+        assert!(matches!(decoder.unit(&silent), Decoded::Samples(_)));
+
+        let mut ok_units = 0_usize;
+        let measured = allocation_counter::measure(|| {
+            for i in 0..1000_usize {
+                let unit = if i % 2 == 0 {
+                    tone.as_slice()
+                } else {
+                    silent.as_slice()
+                };
+                if matches!(black_box(decoder.unit(unit)), Decoded::Samples(_)) {
+                    ok_units += 1;
+                }
+            }
+        });
+        assert_eq!(ok_units, 1000);
+        assert_eq!(measured.count_total, 0);
+    }
 }

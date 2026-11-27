@@ -9,7 +9,7 @@ publish.workspace = true
 
 [dependencies]
 opuscule.workspace = true
-rusty_aac.workspace = true
+pods-aac.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true
