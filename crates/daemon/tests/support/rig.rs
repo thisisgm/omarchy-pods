@@ -1,11 +1,13 @@
 //! The built daemon under the trap, a private system bus with the fake BlueZ, a private session bus and the fake pods, joined.
 
+mod status;
+
 use std::fmt::Debug;
 use std::fs::File;
 use std::mem;
 use std::ops::{RangeBounds, RangeInclusive};
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -18,8 +20,8 @@ use rustix::io::Errno;
 use rustix::process::{Signal, kill_process};
 use serde_json::Value;
 
+use super::audio::FakeAudio;
 use super::audio::wire::sink_named;
-use super::audio::{Asked as AudioAsked, FakeAudio, PERCENT};
 use super::bluez::{AAP_UUID, AdapterPath, Bluez, Call, DeviceMethod, DevicePath, FakeBluez};
 use super::bus::{Bus, bus_address, bus_socket, start_bus};
 use super::logind::{FakeLogind, Impostor};
@@ -27,15 +29,11 @@ use super::omarchy::{Mood, Omarchy};
 use super::players::{FakePlayer, Playback};
 use super::relay::Relay;
 use super::uplink::keep_off;
-use super::watch::Watch;
 use super::{
-    DAEMON_LOG, Daemon, POLL, Proto1, Session, binary, do_request, outcome, pause, wait_for,
-    wait_within,
+    DAEMON_LOG, Daemon, Proto1, Session, binary, do_request, outcome, wait_for, wait_within,
 };
 
 pub(crate) const REAL_TIME_SLACK: Duration = Duration::from_millis(500);
-/// A sink no test names, added and removed to make the audio adapter refresh without changing the pods' sink.
-const PASSING_SINK: &str = "alsa_output.passing";
 /// A dial may leave just as `Connected` falls.
 pub(crate) const SIGNAL_SLACK: Duration = Duration::from_millis(200);
 /// BlueZ method calls the daemon leaves unanswered at once before it fails the next.
@@ -487,100 +485,6 @@ impl Rig {
                 panic!("a dial came within {quiet:?}: {record:#?}");
             }
         }
-    }
-
-    /// The `librepods` client in this session, run to its end.
-    pub(crate) fn client(&self, args: &[&str]) -> Output {
-        self.session.run_client(Path::new(binary()), args)
-    }
-
-    /// The control socket's status document, parsed.
-    pub(crate) fn status(&self) -> Value {
-        // Sample input: `{"schema_version":1,"connected":false}\n`.
-        serde_json::from_str(&self.session.status()).expect("the status socket returns JSON")
-    }
-
-    /// What `librepods status` prints, parsed.
-    pub(crate) fn cli_status(&self) -> Value {
-        let output = self.client(&["status"]);
-        assert!(output.status.success(), "librepods status: {output:?}");
-        // Sample input: `{"schema_version":1,"connected":false}\n`.
-        serde_json::from_slice(&output.stdout).unwrap()
-    }
-
-    /// `librepods watch` in this session, its lines read as they come.
-    pub(crate) fn watch(&self) -> Watch {
-        Watch::start(&self.session)
-    }
-
-    /// Reads status until `ready` holds, failing at `HANG_LIMIT`.
-    pub(crate) fn wait_status(&self, what: &str, ready: impl Fn(&Value) -> bool) -> Value {
-        wait_for(what, || {
-            let status = self.status();
-            ready(&status).then_some(status)
-        })
-    }
-
-    /// Reads status until `audio_server` reads `word`.
-    pub(crate) fn wait_audio_server(&self, word: &str) -> Value {
-        self.wait_status(&format!("audio_server {word}"), |status| {
-            status["audio_server"] == word
-        })
-    }
-
-    /// Waits for `up`, for a refresh after a sink came and went (asked only once the sink read at `up` was queued), then for the driver to apply it.
-    pub(crate) fn wait_sink_told(&self) {
-        self.wait_audio_server("up");
-        let audio = self.audio.as_ref().expect("the fake audio server runs");
-        let before = audio.requests().len();
-        audio.add_sink(PASSING_SINK, PERCENT);
-        audio.remove_sink(PASSING_SINK);
-        wait_for("a refresh after a sink came and went", || {
-            audio.requests()[before..]
-                .contains(&AudioAsked::SinkList)
-                .then_some(())
-        });
-        self.wait_queued_inputs_applied();
-    }
-
-    /// Returns once the driver applied every input queued before the call, as a command is answered from that queue and a status from the published state; `reopen` only counts `reopen_calls_total`.
-    pub(crate) fn wait_queued_inputs_applied(&self) {
-        let reply = self.session.ask(b"reopen");
-        assert!(
-            !reply.is_empty(),
-            "reopen, the barrier behind the queued inputs: no reply, so the driver did not answer it"
-        );
-    }
-
-    /// Reads status for `duration`, failing at the first answer where `check` does not hold; the first is checked whenever it comes, as every caller's state outlasts the window.
-    pub(crate) fn holds_for(&self, duration: Duration, what: &str, check: impl Fn(&Value) -> bool) {
-        let started = Instant::now();
-        loop {
-            let status = self.status();
-            assert!(
-                check(&status),
-                "{what} ended after {:?}: {status}",
-                started.elapsed()
-            );
-            if started.elapsed() >= duration {
-                return;
-            }
-            pause(POLL);
-        }
-    }
-
-    /// Waits for the link up and the pods' name in the status, which the burst brings after the batteries and the ears.
-    pub(crate) fn wait_filled(&self) -> Value {
-        self.wait_status("the link up and the pods' name", |status| {
-            connected(status) && named(status)
-        })
-    }
-
-    /// Takes `do disconnect`, then waits for the name to clear, which only the reset does.
-    pub(crate) fn disconnect(&self) {
-        let output = self.client(&["do", "disconnect"]);
-        assert!(output.status.success(), "do disconnect: {output:?}");
-        self.wait_status("the name cleared", |status| status["device_name"] == "");
     }
 
     /// Closes the control channel with every redial refused while BlueZ keeps `device` connected.
