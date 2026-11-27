@@ -13,14 +13,16 @@ mod tests {
     use pods_core::policy::dictation::{
         BEARER_RETRY_MS, DOAP_STOP_ANSWER_MS, INHIBIT_WAIT_MS, MODE_SETTLE_MS,
     };
+    use pods_fake::doap::FRAME;
     use pods_proto::doap::{STOP_REASON_UNSOLICITED, doap_mode_off, doap_mode_on};
+    use pods_samples::opus::TONE_HZ;
     use pods_samples::uplink::START;
 
     use super::support::dictation::{CAPTURE, Fixture, HOST_STOP, opening, ready_to_read, status};
     use super::support::logind::INHIBIT;
     use super::support::pipewire::{record, wait_no_node};
     use super::support::recording::{
-        assert_sounds, first_sound, frames, longest_zero_run, marked, span_at,
+        assert_sounds, first_sound, frames, frames_at as at_rate, longest_zero_run, marked, span_at,
     };
     use super::support::sleep::{WATCHING, inhibitor_closed, logged, sleep, wake};
     use super::support::uplink::{assert_no_sink_call, lose};
@@ -34,6 +36,7 @@ mod tests {
     const INHIBIT_WAIT: Duration = Duration::from_millis(INHIBIT_WAIT_MS);
     const AFTER_SETTLE: Duration = Duration::from_millis(MODE_SETTLE_MS + INHIBIT_WAIT_MS / 5);
     const AUDIO: Duration = Duration::from_millis(400);
+    const DECODER_SETTLE: Duration = FRAME.saturating_mul(2);
 
     fn wait_for_inhibitor(fixture: &Fixture) {
         wait_for("the open logind delay inhibitor", || {
@@ -72,20 +75,34 @@ mod tests {
             .collect()
     }
 
-    fn assert_control_window(
+    fn check_stock_player(
         exit: Option<ExitStatus>,
         samples: &[i16],
+        start: usize,
         minimum_frames: usize,
-        detail: &str,
-    ) {
-        assert!(
-            exit.is_none(),
-            "the rig missed its timing: the stock player ended inside the window with {exit:?}, so this run cannot judge the daemon\n{detail}"
-        );
-        assert!(
-            samples.len() >= minimum_frames && samples.iter().any(|&sample| sample != 0),
-            "the rig missed its timing: the stock player recording lacks {minimum_frames} frames or is silent in the window, so this run cannot judge the daemon\n{detail}"
-        );
+        bound: f64,
+        rate: u32,
+    ) -> Result<u16, String> {
+        if exit.is_some() {
+            return Err(format!(
+                "the stock player ended inside the window with {exit:?}"
+            ));
+        }
+        let window = samples.get(start..).unwrap_or_default();
+        if window.len() < minimum_frames || window.iter().all(|&sample| sample == 0) {
+            return Err(format!(
+                "the stock player recording lacks {minimum_frames} frames or is silent in the window"
+            ));
+        }
+        let step = RecordedStep::largest(samples, first_sound(samples), start);
+        if f64::from(step.size()) > bound {
+            return Err(format!(
+                "the stock player step {} exceeds {bound:.1}\nstock player: {}",
+                step.size(),
+                step.describe(rate)
+            ));
+        }
+        Ok(step.size())
     }
 
     struct RecordedStep {
@@ -96,6 +113,25 @@ mod tests {
     }
 
     impl RecordedStep {
+        fn history(name: &str, samples: &[i16], rate: u32, caught_up: u32) -> Self {
+            let zeroes = longest_zero_run(samples);
+            assert!(
+                zeroes < usize::try_from(rate / TONE_HZ).unwrap(),
+                "{name} has a gap of {zeroes} zero samples"
+            );
+            // First sound anchors opening on each recorder's clock.
+            let first = first_sound(samples);
+            let last = samples.iter().rposition(|&sample| sample != 0).unwrap();
+            let catch_up = Duration::from_millis(u64::from(caught_up));
+            let required = at_rate(catch_up.saturating_add(AUDIO), rate);
+            assert!(
+                first.saturating_add(required) <= last,
+                "{name} lacks {AUDIO:?} of tone after catch-up at {caught_up} ms"
+            );
+            let start = first.saturating_add(at_rate(DECODER_SETTLE, rate));
+            Self::largest(samples, first, start)
+        }
+
         fn largest(samples: &[i16], first: usize, start: usize) -> Self {
             let (offset, &[before, after]) = samples[start..]
                 .array_windows::<2>()
@@ -127,7 +163,7 @@ mod tests {
 
     fn stream_history_opening(fixture: &Fixture) {
         // Keep enough pre-roll to force catch-up across the rig's 2048-frame quantum.
-        const OPENING_PRE_ROLL: Duration = pods_fake::doap::FRAME.saturating_mul(8);
+        const OPENING_PRE_ROLL: Duration = FRAME.saturating_mul(8);
         let mode = mode_set_at(fixture);
         fixture.start(1);
         pause(OPENING_PRE_ROLL.saturating_sub(mode.elapsed()));
@@ -136,22 +172,33 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::print_stderr,
+        reason = "nextest captures the evidence for the retry"
+    )]
     fn history_recorder_stays_click_free_across_opening_catchup_exit() {
-        use pods_fake::doap::FRAME;
+        const MAX_ATTEMPTS: usize = 2;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let Some(detail) = history_rig_miss() else {
+                return;
+            };
+            assert!(attempt < MAX_ATTEMPTS, "attempt {attempt}: {detail}");
+            eprintln!("attempt {attempt}: {detail}; retrying on a fresh server");
+        }
+    }
+
+    fn history_rig_miss() -> Option<String> {
         use pods_mic::OPENING_MAX_PPM;
         use pods_mic::level::MIC_GAIN_DB;
         use pods_pwrig::Recorder;
-        use pods_samples::opus::{TONE_DBFS, TONE_HZ};
+        use pods_samples::opus::TONE_DBFS;
 
         use super::support::pipewire::node_name;
-        use super::support::recording::{
-            Pace, counts_after_leaving, frames_at as at_rate, record_stock_player,
-        };
+        use super::support::recording::{Pace, counts_after_leaving, record_stock_player};
 
         const SPEECH: Duration = Duration::from_secs(3);
         // Setup and close waits of a slow runner can pass HANG_LIMIT, and a tone that ran out there would blame the rig for its own length.
         const CONTROL_COVER: Duration = HANG_LIMIT.saturating_mul(4);
-        const DECODER_SETTLE: Duration = FRAME.saturating_mul(2);
         const PARTS_PER_MILLION: f64 = 1_000_000.0;
         // Allow for the decoder and resampler's deviation from a pure sine.
         const STEP_TOLERANCE: f64 = 1.20;
@@ -163,7 +210,8 @@ mod tests {
         let witness = Recorder::program(&fixture.server, &node, &dir.join("witness.wav"));
         let rate = history.rate();
         let peak = 10_f64.powf(f64::from(TONE_DBFS + MIC_GAIN_DB) / 20.0) * f64::from(i16::MAX);
-        let tone = control_tone(at_rate(SPEECH + CONTROL_COVER, rate), rate, TONE_HZ, peak);
+        let cover = at_rate(SPEECH.saturating_add(CONTROL_COVER), rate);
+        let tone = control_tone(cover, rate, TONE_HZ, peak);
         let Pace {
             mut player,
             recorder: stock_recorder,
@@ -189,7 +237,9 @@ mod tests {
             behind > 0,
             "history recorder did not exercise dictation opening"
         );
-        let caught_up = caught_up.expect("the reader never caught up");
+        let Some(caught_up) = caught_up else {
+            panic!("the reader never caught up");
+        };
         assert_sounds(&capture, "");
         let underruns = counts_after_leaving(&fixture.rig).underruns;
         assert_eq!(underruns, 0);
@@ -199,25 +249,12 @@ mod tests {
             "catch-up after {caught_up} ms overlaps decoder settle"
         );
         let recordings = [("history", &history_samples), ("witness", &witness_samples)];
-        let [history_step, witness_step] = recordings.map(|(name, samples)| {
-            let zeroes = longest_zero_run(samples);
-            assert!(
-                zeroes < usize::try_from(rate / TONE_HZ).unwrap(),
-                "{name} has a gap of {zeroes} zero samples"
-            );
-            // First sound anchors opening on each recorder's clock.
-            let first = first_sound(samples);
-            let last = samples.iter().rposition(|&sample| sample != 0).unwrap();
-            assert!(
-                first + at_rate(catch_up + AUDIO, rate) <= last,
-                "{name} lacks {AUDIO:?} of tone after catch-up at {caught_up} ms"
-            );
-            RecordedStep::largest(samples, first, first + at_rate(DECODER_SETTLE, rate))
-        });
+        let [history_step, witness_step] =
+            recordings.map(|(name, samples)| RecordedStep::history(name, samples, rate, caught_up));
         let fastest_tone = f64::from(TONE_HZ) * (1.0 + OPENING_MAX_PPM / PARTS_PER_MILLION);
         let bound = 2.0 * (PI * fastest_tone / f64::from(rate)).sin() * peak * STEP_TOLERANCE;
         // A missed quantum in one recorder can also make a large step.
-        if f64::from(history_step.size().min(witness_step.size())) > bound {
+        let outcome = if f64::from(history_step.size().min(witness_step.size())) > bound {
             let detail = format!(
                 "history step {} and witness step {} exceed {bound:.1} (opening {behind} ms behind, caught up after {caught_up} ms, underruns {underruns}, largest DoAP gap {:?})\nhistory: {}\nwitness: {}",
                 history_step.size(),
@@ -226,24 +263,28 @@ mod tests {
                 history_step.describe(rate),
                 witness_step.describe(rate)
             );
-            let control_window = control_samples.get(control_start..).unwrap_or_default();
             let minimum = at_rate(SPEECH, rate);
-            assert_control_window(player_exit, control_window, minimum, &detail);
-            let first = first_sound(&control_samples);
-            let control_step = RecordedStep::largest(&control_samples, first, control_start);
-            assert!(
-                f64::from(control_step.size()) <= bound,
-                "the rig missed its timing: the stock player step {} exceeds {bound:.1}, so this run cannot judge the daemon\nstock player: {}\n{detail}",
-                control_step.size(),
-                control_step.describe(rate)
-            );
-            panic!(
-                "the daemon produced a discontinuity with a clean stock player (largest step {})\n{detail}",
-                control_step.size()
-            );
-        }
+            match check_stock_player(
+                player_exit,
+                &control_samples,
+                control_start,
+                minimum,
+                bound,
+                rate,
+            ) {
+                Ok(step) => panic!(
+                    "the daemon produced a discontinuity with a clean stock player (largest step {step})\n{detail}"
+                ),
+                Err(reason) => Some(format!(
+                    "the rig missed its timing, so this run cannot judge the daemon: {reason}\n{detail}"
+                )),
+            }
+        } else {
+            None
+        };
         fixture.no_uplink();
         fixture.finish();
+        outcome
     }
 
     #[test]
