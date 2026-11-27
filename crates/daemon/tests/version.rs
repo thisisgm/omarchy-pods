@@ -11,7 +11,10 @@ mod support;
 #[cfg(test)]
 mod tests {
     use std::env;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
     use std::process::{Command, ExitStatus, Stdio};
 
@@ -108,6 +111,37 @@ mod tests {
             let text = String::from_utf8(out.stderr).unwrap();
             assert!(text.contains(&format!("\nUsage: {usage}\n")), "{text}");
             assert!(text.contains(reason), "{text}");
+        }
+    }
+
+    #[test]
+    fn legacy_client_commands_ignore_trailing_non_utf8_arguments() {
+        let session = Session::new();
+        let _daemon = session.start();
+        let dir = tempfile::tempdir().unwrap();
+        let ctl = dir.path().join("librepods-ctl");
+        symlink(support::binary(), &ctl).unwrap();
+        let invalid = OsString::from_vec(vec![0xff]);
+        let ctl_args = [OsString::from("status"), invalid.clone()];
+        let sub_args = [OsString::from("ctl"), OsString::from("status"), invalid];
+
+        for (program, args) in [
+            (ctl.as_os_str(), ctl_args.as_slice()),
+            (OsStr::new(support::binary()), sub_args.as_slice()),
+        ] {
+            let out = Command::new(program)
+                .args(args)
+                .env("XDG_RUNTIME_DIR", session.runtime_dir())
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{program:?} {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(out.stderr.is_empty(), "{program:?} {args:?}");
+            let reply = String::from_utf8(out.stdout).unwrap();
+            assert!(reply.trim().starts_with('{'), "{reply}");
         }
     }
 
