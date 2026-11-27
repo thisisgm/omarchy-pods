@@ -25,6 +25,9 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// Upper bound on a reply, so a peer that never sends a newline cannot grow memory.
 const MAX_REPLY_BYTES: usize = 65536;
 
+/// `EX_UNAVAILABLE` from `sysexits.h`, when no daemon accepts the connection.
+const DAEMON_UNAVAILABLE: u8 = 69;
+
 const ERROR_PREFIX: &[u8] = b"error:";
 
 /// The usage block of `librepods-ctl.cpp`, after its first line.
@@ -113,7 +116,7 @@ fn no_daemon(socket: &Path, err: &mut dyn Write) -> ExitCode {
     message.extend_from_slice(socket.as_os_str().as_bytes());
     message.extend_from_slice(b" (is it running?)\n");
     emit(err, &message);
-    ExitCode::FAILURE
+    ExitCode::from(DAEMON_UNAVAILABLE)
 }
 
 /// Reports that no reply to `request` came in time, in the C++ client's words.

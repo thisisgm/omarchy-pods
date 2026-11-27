@@ -225,7 +225,7 @@ fn set_exit_codes_and_messages() {
         &["do", "connect"],
     ] {
         let out = session.run_client(client, args);
-        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert_eq!(out.status.code(), Some(69), "{args:?}");
         assert_eq!(out.stdout, b"", "{args:?}");
         assert_eq!(String::from_utf8(out.stderr).unwrap(), refused, "{args:?}");
     }

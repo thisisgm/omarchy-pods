@@ -3,7 +3,7 @@
 
 const source = Deno.readTextFileSync(new URL("../Model.js", import.meta.url))
 const Model = new Function(
-  source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, advertHint, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
+  source + "; return { parseStatus, podFrom, defaultPod, noiseChange, earChange, switchChange, adaptiveChange, commandFor, refusalText, commandFailureText, advertHint, levelFraction, levelText, podMeta, elideError, availableModes, markVariant, NOISE_OFF, NOISE_ANC, NOISE_TRANSPARENCY, NOISE_ADAPTIVE, LEVEL_UNKNOWN, NOISE_UNKNOWN, EAR_PAUSE_ONE_OUT, EAR_PAUSE_BOTH_OUT, EAR_DISABLED, LID_UNKNOWN, MAX_ERROR_CHARS, MAX_STATUS_BYTES }"
 )()
 const Contrast = new Function(source + "; return { inkAlpha, grayInk, compositeInk, contrastRatio, contrastGrounds, worstContrast, liftInk, huedInk, panelInks, barContrastGrounds, barInks, mixInk, QML_ROUNDING_MARGIN, SEPARATOR_ALPHA }")()
 
@@ -163,10 +163,17 @@ const long = Model.elideError("x\n\n   y".repeat(60))
 check("an elided error is one line", long.indexOf("\n"), -1)
 check("an elided error fits the row", long.length <= Model.MAX_ERROR_CHARS, true)
 check("elideError copes with nothing", Model.elideError(null), "")
-check("elideError names a daemon that is down, not its socket",
-  Model.elideError("Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)\n"), "librepods is not running")
-check("refusalText names a daemon that is down",
-  Model.refusalText("Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)\n"), "librepods is not running")
+const connectError = "Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)"
+check("exit 69 names a stopped daemon despite different stderr",
+  Model.commandFailureText(69, true, "Changed client wording"), "librepods is not running")
+check("exit 69 also names a stopped daemon for librepods-ctl",
+  Model.commandFailureText(69, false, ""), "librepods is not running")
+check("the old wording is ordinary stderr on exit 1",
+  Model.commandFailureText(1, false, connectError + "\n"), connectError)
+check("other set failures display only the refusal",
+  Model.commandFailureText(1, true, "Refused\nValues: off"), "Refused")
+check("other ctl failures keep the elided error",
+  Model.commandFailureText(1, false, "Refused\nTry again"), "Refused Try again")
 
 // A Max sends one battery under "headset" and no pods at all, so the panel needs the flag to pick a shape.
 const max = Model.parseStatus('{"connected":true,"device_name":"AirPods Max","headset":{"available":true,"charging":false,"level":100},"is_headset":true,"model_name":"AirPods Max","noise_mode":1,"schema_version":1}')

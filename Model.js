@@ -299,20 +299,25 @@ function podMeta(pod) {
   return ""
 }
 
-// librepods-ctl when the daemon is down: "Could not connect to OpenPods daemon at /run/user/1000/librepods.sock (is it running?)\n".
-var CONNECT_FAILED_PREFIX = "Could not connect to "
+var DAEMON_UNAVAILABLE = 69
 var DAEMON_DOWN_TEXT = "librepods is not running"
 
-// Collapse librepods-ctl's stderr into one line the panel can show inside a row.
+// Collapse stderr like "Refused\nTry again\n" into one line for the panel.
 function elideError(text) {
   var value = String(text || "").replace(/\s+/g, " ").trim()
-  if (value.indexOf(CONNECT_FAILED_PREFIX) === 0) return DAEMON_DOWN_TEXT
   return value.length > MAX_ERROR_CHARS ? value.substring(0, ELIDED_ERROR_CHARS) + "…" : value
 }
 
 // The refusal is the first line: "That setting does not take this value.\nValues: off, anc, transparency, adaptive, cycle\n".
 function refusalText(stderr) {
   return elideError(String(stderr || "").split("\n")[0])
+}
+
+function commandFailureText(exitCode, isSetProgram, stderr) {
+  if (exitCode === DAEMON_UNAVAILABLE) return DAEMON_DOWN_TEXT
+  return isSetProgram
+    ? refusalText(stderr || "librepods refused the change")
+    : elideError(stderr || "librepods-ctl rejected the command")
 }
 
 const TEXT_CONTRAST = 4.5

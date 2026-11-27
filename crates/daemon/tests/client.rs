@@ -239,7 +239,7 @@ mod tests {
     fn connect_failure_names_the_path() {
         let session = Session::new();
         let out = run_ctl(&session, "status");
-        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(out.status.code(), Some(69));
         assert_eq!(text(&out.stdout), "");
         let path = format!("{}{SOCKET_SUFFIX}", session.runtime_dir().display());
         assert_eq!(
