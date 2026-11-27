@@ -632,7 +632,7 @@ impl Reader {
                 .unwrap_or(0);
             let bound = i64::from(REALIGN_MS.saturating_mul(FRAMES_PER_MS));
             place = place.saturating_sub(bound).saturating_sub(recoverable);
-            // The first word can start below the steady quiet threshold, so only cut digital silence.
+            // A word can start below the steady quiet threshold, so a linked dictation only cuts digital silence.
             peak = f32::MIN_POSITIVE;
         }
         let fade = i64::from(FADE_FRAMES);

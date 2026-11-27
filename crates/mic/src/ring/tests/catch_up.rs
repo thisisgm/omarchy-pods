@@ -3,7 +3,7 @@ use super::{
     Path, QUANTUM, RATE_HZ, REALIGN_MS, Reader, Ring, SPEECH_FLOOR, STALL_RATIO_LIMIT,
     STEER_MAX_PPM, ns_of, scaled,
 };
-use crate::NS_PER_MS;
+use crate::{NS_PER_MS, OPENING_EXIT_MS};
 
 #[test]
 fn stalled_speech_gets_at_most_one_second_of_fast_source_frames_per_stall() {
@@ -185,4 +185,52 @@ fn an_anchor_advance_does_not_renew_a_spent_stall_budget() {
             now += PERIOD.div_f64(ratio);
         }
     }
+}
+
+/// Reads `count` quanta of speech from `now` and gives how many asked for more than the drift ratio, and the time after them.
+fn fast_reads(
+    ring: &Ring,
+    reader: &mut Reader,
+    mut now: Duration,
+    count: usize,
+) -> (usize, Duration) {
+    let drift = STEER_MAX_PPM / PARTS_PER_MILLION;
+    let mut heard = [0.0; QUANTUM];
+    let mut fast = 0_usize;
+    for _ in 0..count {
+        let end = scaled(ns_of(now), RATE_HZ, NS_PER_SECOND);
+        ring.write((ring.end()..end).map(|_| SPEECH_FLOOR));
+        let ratio = reader.read(now, &mut heard);
+        if ratio > 1.0 + drift {
+            fast = fast.saturating_add(1);
+        }
+        now = now.saturating_add(PERIOD.div_f64(ratio));
+    }
+    (fast, now)
+}
+
+#[test]
+fn an_anchor_advance_on_a_caught_up_reader_arms_its_own_budget() {
+    const ADVANCE_MS: i64 = 3;
+    let ring = Arc::new(Ring::new());
+    let (mut reader, resync) = Reader::new(Arc::clone(&ring), Arc::default());
+    ring.start_run(Path::Dictation);
+    ring.publish(0);
+    resync.request();
+    let first = Duration::from_millis(u64::from(DOAP_LATENCY_MS)) + PERIOD;
+    let (fast, now) = fast_reads(&ring, &mut reader, first, 2);
+    assert_eq!(fast, 0);
+    assert!(reader.opening.is_none());
+    assert_eq!(reader.catch_up_left, 0);
+    assert_eq!(reader.catch_up_floor, REALIGN_MS);
+
+    ring.publish(-ADVANCE_MS * NS_PER_MS);
+    let (fast, _) = fast_reads(&ring, &mut reader, now, 1);
+    assert_eq!(
+        fast, 1,
+        "a {ADVANCE_MS} ms anchor advance did not arm catch-up"
+    );
+    assert!(reader.opening.is_none());
+    assert!(reader.catch_up_left > 0);
+    assert_eq!(reader.catch_up_floor, OPENING_EXIT_MS);
 }
