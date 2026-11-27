@@ -286,8 +286,9 @@ A reply carries the request's `id` and `ok`.
   expected stamp (including repeated or backward stamps), or by a forward gap
   beyond `MAX_GAP_UNITS` (two packets' worth of missing units). Forward gaps
   up to that limit are concealed and counted in `mic_concealed`.
-  `mic_span_gone_frames` counts output frames the reader asked for that were
-  before the current run, before the ring began, or already overwritten.
+  After handing out its first audio for the recorder, the reader counts frames
+  before the current run, before the ring began, or already overwritten in
+  `mic_span_gone_frames`.
   `mic_span_peak_dbfs` is the peak of the audio decoded for playout on either
   route before gain, rounded to one decimal place, or `null` if there were no
   nonzero decoded samples. The four fields reset when the recording span

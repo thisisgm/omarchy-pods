@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn discontinuous_sdus_restart_the_run_and_lose_frames_that_a_clean_run_keeps() {
+    fn only_discontinuous_sdus_restart_the_run_before_first_playout() {
         const SDUS: u32 = 5;
         const REPEATED_FIRST_STAMP: u32 = 0;
         let playout_delay = ms(NODE_LATENCY_MS).checked_sub(period()).unwrap();
@@ -104,12 +104,7 @@ mod tests {
                 count(&rig.counters.span_restarts),
                 if broken { u64::from(SDUS) } else { 0 }
             );
-            let gone = if broken {
-                u64::from(SDUS) * u64::try_from(PACKET_FRAMES).unwrap()
-            } else {
-                0
-            };
-            assert_eq!(count(&rig.counters.span_gone_frames), gone);
+            assert_eq!(count(&rig.counters.span_gone_frames), 0);
         }
     }
 
