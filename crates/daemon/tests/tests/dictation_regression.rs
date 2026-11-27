@@ -78,7 +78,13 @@ fn stalled_reader_keeps_the_quiet_opening_word() {
             );
         },
     );
+    let resumed_from = recorder.frames_on_disk();
     pause(PLAY_WORD);
+    // pw-cli exits 0 on a driver command it rejects, so the resume is checked on the recorder.
+    assert!(
+        recorder.frames_on_disk() > resumed_from,
+        "PipeWire driver did not resume"
+    );
 
     let samples = recorder.finish();
     fixture.stopped(1);
