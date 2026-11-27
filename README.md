@@ -1,7 +1,7 @@
 <h1 align="center">AirPods for Omarchy</h1>
 
 <p align="center">
-  Battery for each pod and the case, the listening modes, adaptive noise level, Conversation Awareness, One-Bud ANC and ear detection, drawn in Omarchy's own panel idiom.
+  Check battery and change listening modes from the Omarchy bar. Use the AirPods microphone for dictation and calls through the librepods daemon.
 </p>
 
 <p align="center">
@@ -13,262 +13,167 @@
   <img src="preview.png" alt="The AirPods panel open in the Omarchy bar" width="420">
 </p>
 
-## What it shows
-
-- **Battery** for the left pod, the right pod and the case, each with a charging
-  and in-ear hint. Nothing else on a Linux box knows these numbers: BlueZ does
-  not expose `org.bluez.Battery1` for AirPods.
-- **Listening mode**, and only the modes the device actually has. AirPods 1, 2, 3
-  and the plain AirPods 4 get no section at all, AirPods Pro 3 dropped Off, and
-  Adaptive needs an H2 part that also has noise cancellation, so the panel asks
-  the daemon rather than assuming four rows.
-- **Adaptive noise level**, shown only while Adaptive is the active mode.
-- **Conversation Awareness** on the same models that have Adaptive, and
-  **One-Bud ANC** on the ones with a second bud, which is why an AirPods Max 2
-  shows the first and not the second.
-- **Ear detection**: pause when one pod is out, pause when both are out, or
-  never pause.
-- **Case lid**, when the case has broadcast its state. Lid state comes from BLE
-  advertisements, and the daemon pauses that discovery while the control link is
-  up, because discovery running alongside a live link is what the crackle in issue
-  26 tracks. So lid state holds its last value for as long as the pods stay
-  connected, and the case level may keep refreshing over the control link, as it
-  does here, or hold like the lid, as the issue 26 reporter saw. Per-pod battery, ANC and ear detection keep updating
-  throughout.
-- **A mark that matches the hardware**: stemmed buds, AirPods Pro or AirPods Max,
-  chosen from the model the daemon reports. AirPods Max carry no case, so their
-  panel drops the case row and shows a single headphone battery.
-
-## Deliberately absent
-
-- **Volume and output device** live in the stock Audio panel, which already
-  switches PipeWire sinks. Press `Tab` in this panel to walk to it.
-- **Connect, disconnect and forget** live in the stock Bluetooth panel, and in
-  `omarchy bluetooth device`.
-- **Spatial Audio** has no renderer on Linux, so there is nothing to draw and
-  no row for it.
-- **Mic mode** is not an AirPods control. macOS applies Voice Isolation to the
-  input stream itself, for any microphone, and the AAP protocol carries no mic
-  packet. Input mute and input device live in the stock Audio panel.
-
-## Screenshots
-
-The panel is built from the capability keys the daemon publishes, so three
-different AirPods give three different panels. Same plugin, same build, nothing
-configured differently between them.
-
-| | | |
-|:---:|:---:|:---:|
-| <img src="docs/panel-model-airpods4.png" alt="AirPods 4 with ANC"><br>**AirPods 4 with ANC**<br>all four modes, and One-Bud ANC to hold them with one pod in | <img src="docs/panel-model-pro3.png" alt="AirPods Pro 3"><br>**AirPods Pro 3**<br>no Off row: the Pro 3 dropped it | <img src="docs/panel-model-max2.png" alt="AirPods Max 2"><br>**AirPods Max 2**<br>one battery, no case, and no One-Bud ANC to offer |
-
-Both AirPods 4 variants say **AirPods 4** in the title, because the name is the
-family and the rows underneath are what the unit can actually do. The plain
-AirPods 4 has no listening modes at all, so it gets no listening section.
-
-Every screenshot in this section, the Pro 3 included, was made by writing one
-status line by hand and photographing the panel that came back. An AirPods Pro 3
-is the only pair on hand here, and it would not have posed for all of these
-anyway. It works because the panel reads that file and nothing else.
-
-### States
-
-| | |
-|:---:|:---:|
-| <img src="docs/panel-noise-cancellation.png" alt="Noise Cancellation"><br>Noise Cancellation, both pods in | <img src="docs/panel-adaptive.png" alt="Adaptive"><br>Adaptive, with the noise level and Conversation Awareness on |
-| <img src="docs/panel-transparency.png" alt="Transparency"><br>Transparency | <img src="docs/panel-one-bud.png" alt="One pod in the case"><br>One pod in the case, lid open, One-Bud ANC on |
-| <img src="docs/panel-in-case.png" alt="Both pods in the case"><br>Both pods charging, lid closed | <img src="docs/panel-daemon-down.png" alt="Daemon not running"><br>librepods not running |
-
-## Requirements
-
-- **The daemon in [`daemon/`](daemon/), built and running.** It ships in this
-  repository because nothing packaged will do: upstream librepods and every AUR
-  package built from it carry no state file, no `status` verb, none of the
-  `ca:`, `onebud:` or `adaptive:` verbs, and a model map that stops before
-  AirPods Pro 3, so the panel would stay hidden forever. The copy here carries
-  every model number Apple lists as of August 2026, up to the 2026 AirPods
-  Max 2, and what each of those models can actually do. See [daemon/UPSTREAM.md](daemon/UPSTREAM.md)
-  for what it is, who wrote it and what was changed. `omarchy plugin add` only
-  clones the plugin; `setup` builds the daemon.
-- AirPods paired to the machine through the usual Bluetooth flow.
-
-## How it works
-
-The plugin does not poll. The daemon writes its status to
-`$XDG_STATE_HOME/librepods/status.json` whenever that status changes, and
-removes the file when it stops. The panel watches it, so an idle desktop runs no
-processes at all on its behalf. `librepods-ctl` is used only when you actually
-change something.
-
-The plugin never talks to Bluetooth itself. If `librepods-ctl` is missing or
-the daemon is not running, the panel says so in one line instead of drawing an
-empty surface.
-
-### The output codec, and what the microphone costs
-
-The daemon always selects the highest-bitrate playback profile the card offers,
-which is SBC-XQ at 453 kbps ahead of SBC at 328 and AAC at 256. That is the
-default, and it is re-applied every time the daemon activates the card, because
-PipeWire's own profile priority puts AAC first and would otherwise win.
-
-Selecting the AirPods as a **microphone** gives that up. Over the standard
-Bluetooth profiles, two-way voice runs on a separate low-bandwidth channel, so
-the only profiles exposing a source are `headset-head-unit` at 16 kHz mSBC and
-`headset-head-unit-cvsd` at 8 kHz, and each one replaces the playback profile
-rather than joining it. A card cannot offer a high-quality sink and a microphone
-at the same time. macOS is bound by the same profiles and simply negotiates a
-better voice codec on them.
-
-So take the microphone from another device and leave the AirPods on SBC-XQ. The
-daemon helps here: it defers its activation ladder while a capture is live, so it
-will not pull a live call off the headset profile mid-sentence.
-
-If the headset profiles are missing from the card altogether, so that nothing can
-offer the AirPods microphone at all, BlueZ has no HFP connection to the device.
-The card carries those two profiles only while that connection is up, which is
-why nothing logs an error: no profile is malformed, one is simply not connected.
-Reconnecting that one profile brings them back within a few seconds and leaves
-A2DP playing:
-
-```bash
-busctl call org.bluez /org/bluez/hci0/dev_<MAC> org.bluez.Device1 \
-  ConnectProfile s 0000111e-0000-1000-8000-00805f9b34fb
-```
-
-Disconnecting and reconnecting the whole device also works, at the cost of the
-playback link. This daemon registers no Bluetooth profile, so that list is
-BlueZ's and PipeWire's to produce.
-
-There is a route around all of this that uses no audio profile at all: the AirPods
-can send a high-resolution microphone stream over the same AACP channel this
-daemon already uses for battery and controls, which leaves A2DP playback running
-untouched. Upstream librepods has an implementation of it for its Rust rewrite in
-[PR 655](https://github.com/kavishdevar/librepods/pull/655), unmerged at the time
-of writing. Nothing in this daemon does that today.
-
-## Case battery while away
-
-The daemon `packaging/setup` installs hears the case report its battery, lid
-and ear state while the AirPods are away only when BlueZ serves its
-advertisement monitor, which needs BlueZ experimental features. They are off by
-default, and turning them on is yours to do:
-
-1. As root, set `Experimental = true` under `[General]` in
-   `/etc/bluetooth/main.conf`.
-2. Restart the Bluetooth service, or reboot. Every Bluetooth device disconnects
-   for a moment.
-
 ## Install
+
+Use Omarchy with BlueZ, PipeWire and its PulseAudio compatibility service.
+Pair your AirPods in Omarchy's Bluetooth panel. Run setup as your desktop user.
 
 ```bash
 omarchy plugin add https://github.com/thisisgm/omarchy-pods --enable
-~/.config/omarchy/plugins/io.github.thisisgm.omapods/setup
 ```
 
-`--enable` already places the widget on the right of the bar. The
-[marketplace listing](https://omarchyplugins.com/plugin.html?id=io.github.thisisgm.omapods)
-installs to the same place.
+The widget goes on the right side of the bar. Then install the daemon.
 
-`setup` installs `cmake`, `ninja`, `qt6-connectivity`, `qt6-tools`,
-`qt6-declarative`, `pkgconf` and `libpulse` if they are missing, builds the
-daemon into `~/.local`, and enables `librepods.service`. The icon stays hidden
-until AirPods are connected (`hideWhenDisconnected`). To keep it visible:
+```bash
+~/.config/omarchy/plugins/io.github.thisisgm.omapods/packaging/setup
+```
+
+On x86-64, setup downloads the release binary named in
+`packaging/librepods.sha256` and refuses it unless its checksum matches. To
+build the daemon on this machine instead, install the Rust toolchain and pass
+`--from-source`.
+
+```bash
+omarchy install dev-env rust
+~/.config/omarchy/plugins/io.github.thisisgm.omapods/packaging/setup --from-source
+```
+
+Setup installs `librepods` and its `librepods-ctl` command in `~/.local/bin`.
+It enables and starts the `librepods.service` user unit for the graphical
+session. Use the same setup command to update the daemon after updating the
+plugin with `omarchy plugin update io.github.thisisgm.omapods`. If the service
+fails to start, check its log.
+
+```bash
+journalctl --user -u librepods.service -n 30
+```
+
+## Panel
+
+- See battery and charging state for each pod and the case, and which pods
+  are in your ears. AirPods Max show one battery row.
+- Choose the listening modes your model supports. The noise level slider
+  appears in Adaptive mode.
+- Toggle Conversation Awareness or One-Bud ANC on models that support them.
+- Set ear detection to pause playback when one pod comes out, when both
+  come out, or never.
+
+Left click the bar icon to toggle the panel. Right click to cycle the available
+listening modes. Use Omarchy's Audio panel for volume and device selection.
+Use its Bluetooth panel to connect, disconnect or forget your AirPods.
+
+The plugin watches `${XDG_STATE_HOME:-$HOME/.local/state}/librepods/status.json`.
+A missing file shows as `librepods is not running` when the panel is visible.
+
+### Case battery while away
+
+Connect your AirPods once so the daemon can save the keys it needs to read their
+Bluetooth advertisements. When the AirPods disconnect, the daemon uses BlueZ's
+advertisement monitor to read battery, lid and in-ear state.
+
+If setup reports that the monitor is unavailable, set `Experimental = true`
+under `[General]` in `/etc/bluetooth/main.conf` as root. Restart Bluetooth or
+reboot. Restarting Bluetooth disconnects all Bluetooth devices.
+
+The daemon pauses the monitor while its control link is up. Battery can still
+update over that link. The lid indicator keeps its last reading until the
+monitor hears another advertisement.
+
+### Microphone
+
+Connect your AirPods, put in a bud and select the AirPods microphone as the
+input in your app or Omarchy's Audio panel. The daemon exposes it in PipeWire
+once it confirms microphone support. It tries to make it the default input
+once per connection.
+
+The daemon uses Apple's DoAP dictation service for Superwhisper capture and
+history when the service is ready. It uses the AirPods 0x58 uplink for calls and
+other recognized recording streams, or when DoAP is unavailable or fails.
+Both paths let playback stay on A2DP. If you select a Bluetooth headset profile
+(HFP), the daemon withdraws its microphone input.
+
+The microphone setting persists across restarts. Run `librepods set microphone`
+with one of these values:
+
+- `auto` (default) starts capture as needed.
+- `always` keeps the uplink ready while you wear a bud, even before an app records.
+- `off` removes the daemon's microphone input.
+
+### Keyboard
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `↓` / `↑` | Move between rows |
+| `Enter` / `Space` | Activate the focused button or toggle |
+| `←` / `→` | Adjust the focused adaptive noise level in steps of 5 |
+| `o` | Off |
+| `t` | Transparency |
+| `a` | Adaptive |
+| `n` | Noise Cancellation |
+| `c` | Toggle Conversation Awareness |
+| `b` | Toggle One-Bud ANC |
+| `e` | Cycle ear detection |
+| `r` | Refresh from the state file |
+| `Tab` | Move to the next panel |
+| `Esc` | Close |
+
+The first navigation key focuses the current row. Shortcuts for unsupported
+listening modes and toggles have no effect.
+
+### Settings
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `hideWhenDisconnected` | `true` | Hide the widget when the AirPods are disconnected and no battery reading is available. |
+| `ctlPath` | empty | Path to `librepods-ctl` for the legacy daemon. An empty value uses `PATH`. The Rust daemon uses `librepods` on `PATH`. |
+
+To keep the icon visible, including when the daemon is down:
 
 ```bash
 omarchy bar set io.github.thisisgm.omapods hideWhenDisconnected false --json
 ```
 
-To build the daemon by hand instead of running `setup`:
+## Screenshots
 
-```bash
-omarchy pkg add cmake ninja qt6-connectivity qt6-tools qt6-declarative pkgconf libpulse
-cd ~/.config/omarchy/plugins/io.github.thisisgm.omapods/daemon
-cmake -B build -G Ninja -DBUILD_TESTING=OFF && cmake --build build
-cmake --install build --prefix ~/.local
-systemctl --user daemon-reload
-systemctl --user enable librepods.service
-systemctl --user restart librepods.service
-```
+These panels use sample status data.
 
-`~/.local` is the prefix the unit expects, because it runs
-`%h/.local/bin/librepods`, and Omarchy already puts `~/.local/bin` on `PATH`,
-which is where the panel finds `librepods-ctl`. The unit is bound to
-`graphical-session.target`, so the daemon comes back after a reboot.
+| | | |
+|:---:|:---:|:---:|
+| <img src="docs/panel-model-airpods4.png" alt="AirPods 4 with ANC"><br>AirPods 4 with ANC | <img src="docs/panel-model-pro3.png" alt="AirPods Pro 3"><br>AirPods Pro 3 | <img src="docs/panel-model-max2.png" alt="AirPods Max 2"><br>AirPods Max 2 |
+
+| | |
+|:---:|:---:|
+| <img src="docs/panel-noise-cancellation.png" alt="Noise Cancellation"><br>Noise Cancellation | <img src="docs/panel-adaptive.png" alt="Adaptive"><br>Adaptive, with Conversation Awareness on |
+| <img src="docs/panel-transparency.png" alt="Transparency"><br>Transparency | <img src="docs/panel-one-bud.png" alt="One pod in the case"><br>One pod in the case, One-Bud ANC on |
+| <img src="docs/panel-in-case.png" alt="Both pods in the case"><br>Both pods charging, lid closed | <img src="docs/panel-daemon-down.png" alt="Daemon not running"><br>librepods stopped |
 
 ## Remove
 
+Run the daemon uninstaller before removing the plugin. The uninstaller stops
+the service and removes the installed daemon files and its state directory,
+including saved keys and settings. Add `--keep-keys` to the first command to
+keep the keys and settings for a later reinstall.
+
 ```bash
-systemctl --user disable --now librepods.service
-xargs rm -f < ~/.config/omarchy/plugins/io.github.thisisgm.omapods/daemon/build/install_manifest.txt
-rm -rf ~/.config/AirPodsTrayApp ~/.local/state/librepods
+~/.config/omarchy/plugins/io.github.thisisgm.omapods/packaging/setup --uninstall
 omarchy plugin remove io.github.thisisgm.omapods
 ```
 
-The daemon installs into `~/.local`, so it outlives the plugin. CMake lists what it
-put there in `install_manifest.txt`, which lives in the build tree, so that line has
-to run before the plugin directory goes.
+## Contributing
 
-`~/.config/AirPodsTrayApp` holds the paired device's name and its `magicAccIRK` and
-`magicAccEncKey`, which are pairing secrets, so the directory and the file are created
-owner only and both go with the plugin. `~/.local/state/librepods/status.json` is the
-published status line the panel reads, and it goes too.
-
-## Keyboard
-
-| Key | Action |
-|-----|--------|
-| `j` / `k`, `↓` / `↑` | move between rows |
-| `enter` / `space` | activate the current row |
-| `h` / `l` or `←` / `→` | adjust the adaptive noise level |
-| `o` | Off, on the models that have it |
-| `t` | Transparency |
-| `a` | Adaptive |
-| `n` | Noise Cancellation |
-| `c` | toggle Conversation Awareness |
-| `b` | toggle One-Bud ANC |
-| `e` | cycle ear detection |
-| `r` | refresh |
-| `tab` | move to the next panel |
-| `esc` | close |
-
-Every listening key is ignored on a device the daemon says lacks the mode, so
-`a` does nothing on an AirPods Pro 1 and the four mode keys do nothing on an
-AirPods 3. A daemon older than the capability keys cannot say, and the panel
-falls back to what it gated on before.
-
-Left click opens the panel. Right click cycles the listening mode without
-opening anything.
-
-## Settings
-
-| Setting | Default | Notes |
-|---------|---------|-------|
-| Hide when disconnected | on | Leaves the bar entirely rather than sitting there with nothing to say. |
-| Path to librepods-ctl | empty | Leave empty to find it on `PATH`. |
-
-## Tests
-
-`Model.js` holds the parsing and formatting, with no QML imports, so it runs
-outside the shell. The suite covers the shapes that bite: the objects the daemon
-omits entirely, a pod it has stopped hearing from, an empty file, a line that is
-not JSON, and a schema newer than this panel reads.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for builds and tests. To test the panel's
+status parsing and command formatting, run:
 
 ```bash
 deno run --allow-read tests/model.test.js
 ```
 
-## Contributing
-
-Bug reports and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
-covers the build, what review will ask you to prove, and the house style;
-[AGENTS.md](AGENTS.md) adds the traps coding agents hit in this tree.
-
 ## Credits
 
-The hard part is not this panel. It is
-[librepods](https://github.com/kavishdevar/librepods) by **Kavish Devar**, which
-reverse-engineered Apple's AAP protocol over L2CAP and the BLE advertisement
-path that carries battery, in-ear and case lid state. The daemon in `daemon/` is
-a modified copy of his work, and this panel is a display for it.
+This project builds on [librepods](https://github.com/kavishdevar/librepods)
+by Kavish Devar, who reverse-engineered the AirPods control protocol and
+Bluetooth advertisements. See [daemon/UPSTREAM.md](daemon/UPSTREAM.md) for
+the original daemon's source and changes.
 
 ## Support
 
@@ -278,24 +183,12 @@ If this saved you an afternoon, you can
 
 ## Licence
 
-Two programs live here, and they are licensed separately because they are
-separate works that talk over a state file and a command line.
+- Omarchy plugin in the repository root, [MIT](LICENSE).
+- Legacy C++ librepods fork in `daemon/`, [GPL-3.0](daemon/LICENSE).
+- Rust daemon in `crates/`, [GPL-3.0-only](crates/LICENSE).
 
-| Path | Licence | |
-|---|---|---|
-| repository root outside `daemon/` and `crates/`, the bar widget | MIT | [LICENSE](LICENSE) |
-| `daemon/`, a modified copy of librepods | GPL-3.0 | [daemon/LICENSE](daemon/LICENSE) |
-| `crates/`, the Rust daemon | GPL-3.0-only | [crates/LICENSE](crates/LICENSE) |
-
-Shipping the widget and the daemon in one repository is aggregation, not
-combination, so the widget stays MIT and the daemon, in `daemon/` and in
-`crates/`, stays GPL-3.0. What was modified, and the upstream
-commit it was forked from, are recorded in
-[daemon/UPSTREAM.md](daemon/UPSTREAM.md).
-
-The three product outlines in `AirPodsIcon.qml` are Apple's, taken from the
-chapter navigation on [apple.com/airpods](https://www.apple.com/airpods/) so the
-bar shows the hardware you actually own. AirPods, AirPods Pro and AirPods Max are
-trademarks of Apple Inc., which does not sponsor or endorse this plugin. Those
-outlines are not this project's to license, so the MIT grant above does not reach
-them and nothing here gives you permission to reuse them.
+The plugin and daemon are separate programs. They communicate through a state
+file and the command line. The MIT licence excludes the Apple product outlines
+in `AirPodsIcon.qml`, sourced from [Apple's AirPods site](https://www.apple.com/airpods/).
+AirPods, AirPods Pro and AirPods Max are trademarks of Apple Inc.
+Apple does not sponsor or endorse this plugin.
