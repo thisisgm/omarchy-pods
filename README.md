@@ -9,6 +9,8 @@
   <a href="https://github.com/thisisgm/omarchy-pods/tags"><img alt="Latest tag" src="https://img.shields.io/github/v/tag/thisisgm/omarchy-pods?label=version"></a>
 </p>
 
+> **Moved:** Active development has moved to [Superwhisper Pods](https://github.com/superultrainc/pods), a pure-Rust MIT rewrite with multi-distro Linux support and built-in AirPods microphone and dictation audio. This repository remains frozen at v1.3.6 for existing `io.github.thisisgm.omapods` users.
+
 <p align="center">
   <img src="preview.png" alt="The AirPods panel open in the Omarchy bar" width="420">
 </p>
