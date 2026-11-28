@@ -1,0 +1,18 @@
+[package]
+name = "pods-opus"
+description = "Clean-room MIT Opus CELT (wideband 20 ms mono, TOC 0xb8) decoder with packet loss concealment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+allocation-counter.workspace = true
+pods-samples = { path = "../samples" }
+proptest.workspace = true
+
+[lints]
+workspace = true

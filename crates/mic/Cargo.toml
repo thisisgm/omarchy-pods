@@ -8,8 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-opuscule.workspace = true
 pods-aac.workspace = true
+pods-opus.workspace = true
 
 [dev-dependencies]
 allocation-counter.workspace = true

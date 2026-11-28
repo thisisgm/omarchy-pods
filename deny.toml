@@ -17,14 +17,13 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
-    "MPL-2.0",
 ]
 
 [bans]
 deny = [
     { crate = "openssl-sys", reason = "TLS is not part of this daemon" },
     { crate = "libdbus-sys", reason = "D-Bus is reached through pure Rust, not libdbus" },
-    { crate = "opuscule", wrappers = ["pods-mic", "xtask"], reason = "the dictation stream's decoder: pods-mic fences every call into it, and the developer tool measures it against other decoders" },
+    { crate = "pods-opus", wrappers = ["pods-mic", "xtask"], reason = "the dictation stream's decoder: pods-mic fences every call into it, and the developer tool measures it against other decoders" },
     { crate = "pods-aac", wrappers = ["pods-mic", "pods-samples"], reason = "the microphone's decoder: pods-mic fences every call into it, and the samples use its bit writer and codebook 1 emitter" },
 ]
 

@@ -13,8 +13,8 @@ publish = false
 [workspace.dependencies]
 allocation-counter = "0.8"
 clap = { version = "4.6", features = ["derive"] }
-opuscule = "0.2"
 pods-aac = { path = "crates/aac" }
+pods-opus = { path = "crates/opus" }
 pods-proto = { path = "crates/proto" }
 pods-sys = { path = "crates/sys" }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
@@ -125,6 +125,9 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 1
 
-# "*" skips workspace members; the steer tests spend their time in pods-mic.
+# "*" skips workspace members; the steer tests spend their time in pods-mic and pods-opus.
 [profile.dev.package.pods-mic]
+opt-level = 1
+
+[profile.dev.package.pods-opus]
 opt-level = 1

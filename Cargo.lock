@@ -385,12 +385,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "opuscule"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "418827b94acaa183462024021324b6e733086466375604eb60e584c7acd4462c"
-
-[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -463,8 +457,17 @@ name = "pods-mic"
 version = "0.0.0"
 dependencies = [
  "allocation-counter",
- "opuscule",
  "pods-aac",
+ "pods-opus",
+ "pods-samples",
+ "proptest",
+]
+
+[[package]]
+name = "pods-opus"
+version = "0.0.0"
+dependencies = [
+ "allocation-counter",
  "pods-samples",
  "proptest",
 ]
@@ -906,10 +909,10 @@ version = "0.0.0"
 dependencies = [
  "allocation-counter",
  "clap",
- "opuscule",
  "pods-core",
  "pods-fake",
  "pods-mic",
+ "pods-opus",
  "pods-proto",
  "pods-pw",
  "pods-pwrig",
@@ -988,9 +991,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
+checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
 
 [[package]]
 name = "zmij"

@@ -211,7 +211,7 @@ fn mutation_rows(frames: &[Logged<'_>]) -> Vec<Row> {
             break;
         };
         let damaged = mutated(frame, &mut random);
-        // A first byte that is another one names another length, so any count of samples is a decode.
+        // Mutated frames include empty slices and non-0xb8 TOC bytes refused cleanly by the strict decoder, so tally counts decodes, refusals, and panics.
         tally.call(None, || candidate.frame(&damaged));
         tally.samples.clear();
     }

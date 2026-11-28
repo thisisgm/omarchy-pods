@@ -108,7 +108,7 @@ enum ProbeCommand {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,
     },
-    /// Decodes the dictation frames of an analysed run with `opuscule` and with FFmpeg's two Opus decoders, compares them, and writes the decodes and decode-opus.tsv into it.
+    /// Decodes the dictation frames of an analysed run with `pods-opus` and with FFmpeg's two Opus decoders, compares them, and writes the decodes and decode-opus.tsv into it.
     DecodeOpus {
         /// The run directory, a session directory of the store then the run name.
         run_dir: PathBuf,

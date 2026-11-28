@@ -2,11 +2,9 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use opuscule::{Channels, Decoder, SampleRate};
-
 pub(crate) use crate::probe::decode::candidate::UnitResult as FrameResult;
 
-/// The longest packet Opus allows, 120 ms, in samples at 48 kHz, so no packet finds the buffer too small.
+/// Generic panic-fence buffer sized for Opus's 120 ms ceiling at 48 kHz; the strict `0xb8` decoder writes 960 or 320 samples per frame.
 const MAX_PACKET_SAMPLES: usize = 5760;
 
 /// The rate the candidate decodes to.
@@ -46,13 +44,21 @@ pub(crate) struct Candidate {
 impl Candidate {
     pub(crate) fn new(rate: OutputRate) -> Self {
         let sample_rate = match rate {
-            OutputRate::Hz16000 => SampleRate::Hz16000,
-            OutputRate::Hz48000 => SampleRate::Hz48000,
+            OutputRate::Hz16000 => pods_opus::OutputRate::Hz16000,
+            OutputRate::Hz48000 => pods_opus::OutputRate::Hz48000,
         };
-        let mut decoder = Decoder::new(sample_rate, Channels::Mono);
-        let call = move |packet: Option<&[u8]>, pcm: &mut [f32]| {
-            let samples = decoder.decode(packet, pcm, false);
-            samples.map_err(|error| error.to_string())
+        let mut decoder = pods_opus::Decoder::new(sample_rate);
+        let call = move |packet: Option<&[u8]>, pcm: &mut [f32]| -> Result<usize, String> {
+            let samples = match packet {
+                Some(bytes) => decoder.decode(bytes).map_err(|error| error.to_string())?,
+                None => decoder.conceal(),
+            };
+            let room = pcm.len();
+            let dst = pcm
+                .get_mut(..samples.len())
+                .ok_or_else(|| format!("{} samples in a buffer of {room}", samples.len()))?;
+            dst.copy_from_slice(samples);
+            Ok(samples.len())
         };
         Self::calling(Box::new(call), rate)
     }

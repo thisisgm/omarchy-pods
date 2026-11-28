@@ -9,15 +9,14 @@ mod xorshift;
 mod tests {
     use std::hint::black_box;
 
-    use opuscule::{Channels, Decoder, SampleRate};
+    use pods_opus::{Decoder, OutputRate};
     use pods_proto::dictation::TOC_CELT_WIDEBAND_20MS_MONO;
 
     use super::xorshift::next_random;
 
     const SEED: u64 = 0x5eed_0019;
-    /// The samples of one 20 ms frame at 48 kHz, and of the longest packet Opus allows.
+    /// The samples of one 20 ms frame at 48 kHz.
     const FRAME: usize = 960;
-    const LONGEST: usize = 5760;
     /// The coded bytes after the table of contents byte of the frame this test decodes.
     const CODED_BYTES: usize = 80;
 
@@ -26,15 +25,16 @@ mod tests {
         let mut random = SEED;
         let mut frame = vec![TOC_CELT_WIDEBAND_20MS_MONO];
         frame.extend((0..CODED_BYTES).map(|_| next_random(&mut random).to_le_bytes()[0]));
-        let mut decoder = Decoder::new(SampleRate::Hz48000, Channels::Mono);
-        let mut pcm = vec![0.0_f32; LONGEST];
+        let mut decoder = Decoder::new(OutputRate::Hz48000);
         // The first call is the warm up: whatever a decoder sets up once is not what a stream pays a frame.
-        assert_eq!(decoder.decode(Some(&frame), &mut pcm, false), Ok(FRAME));
+        assert_eq!(decoder.decode(&frame).map(<[f32]>::len), Ok(FRAME));
 
         let decoding = allocation_counter::measure(|| {
-            let heard = decoder.decode(Some(&frame), &mut pcm, false);
-            let concealed = decoder.decode(None, &mut pcm[..FRAME], false);
-            assert_eq!((heard, concealed), (Ok(FRAME), Ok(FRAME)));
+            for _ in 0..1_000_usize {
+                let heard = decoder.decode(&frame).map(<[f32]>::len);
+                let concealed = decoder.conceal().len();
+                assert_eq!((heard, concealed), (Ok(FRAME), FRAME));
+            }
         });
         assert_eq!(decoding.count_total, 0);
         // The counter does count in this binary: one vector is one allocation.

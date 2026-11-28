@@ -9,9 +9,9 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
-opuscule.workspace = true
 pods-core = { path = "../core" }
 pods-mic = { path = "../mic" }
+pods-opus.workspace = true
 pods-proto.workspace = true
 pods-pw = { path = "../pw" }
 pods-sys.workspace = true

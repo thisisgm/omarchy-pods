@@ -290,3 +290,54 @@ impl Decoded {
         both / (of_x * of_y).sqrt()
     }
 }
+
+/// Replays the CLI's deterministic `0x5eed_0017` mutation draw over `frames` and returns `(expected_refusals, first_0x5d_packet)`.
+pub(crate) fn expected_mutation_refusals(
+    frames: &[Sent],
+    mutations: usize,
+) -> (usize, Option<Vec<u8>>) {
+    const MUTATION_SEED: u64 = 0x5eed_0017;
+    const DAMAGES: usize = 3;
+    let below = |rng: &mut u64, limit: usize| -> usize {
+        let lim = u64::try_from(limit).unwrap();
+        usize::try_from(next_random(rng).checked_rem(lim).unwrap()).unwrap()
+    };
+    let mut rng = MUTATION_SEED;
+    let mut refused = 0_usize;
+    let mut toc_5d = None;
+    for _ in 0..mutations {
+        let frame = &frames[below(&mut rng, frames.len())].data;
+        let damaged = match below(&mut rng, DAMAGES) {
+            0 => {
+                let mut out = frame.clone();
+                let bit = below(&mut rng, frame.len().saturating_mul(8));
+                let byte = bit / 8;
+                let in_byte = u32::try_from(bit % 8).unwrap();
+                out[byte] ^= 1_u8.rotate_left(in_byte);
+                out
+            }
+            1 => {
+                let kept = below(&mut rng, frame.len());
+                frame[..kept].to_vec()
+            }
+            _ => {
+                let mut out = frame.clone();
+                let [first, ..] = next_random(&mut rng).to_le_bytes();
+                if let Some(slot) = out.first_mut() {
+                    *slot = first;
+                }
+                out
+            }
+        };
+        if damaged.first() == Some(&0x5d) && toc_5d.is_none() {
+            toc_5d = Some(damaged.clone());
+        }
+        let invalid = damaged.is_empty()
+            || damaged.len() > pods_opus::MAX_PACKET_BYTES
+            || damaged.first() != Some(&TOC_CELT_WIDEBAND_20MS_MONO);
+        if invalid {
+            refused = refused.saturating_add(1);
+        }
+    }
+    (refused, toc_5d)
+}

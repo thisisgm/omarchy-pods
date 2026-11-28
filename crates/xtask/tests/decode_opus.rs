@@ -53,8 +53,8 @@ mod tests {
 
     use super::fixture::ffprobe;
     use super::opus_run::{
-        Decoded, FRAME, REFUSED, SAMPLE_BYTES, Sent, count, decode, decoded, seeded, silent,
-        stand_in,
+        Decoded, FRAME, REFUSED, SAMPLE_BYTES, Sent, count, decode, decoded,
+        expected_mutation_refusals, seeded, silent, stand_in,
     };
     use super::oracles::opus_oracles_installed as oracles_installed;
     use super::support::{OWNER_FILE, PERMISSION_BITS, names_in, probe, row};
@@ -512,16 +512,22 @@ mod tests {
         if !oracles_installed() {
             return;
         }
-        let found = decoded("seeded", &[seeded(SEED, FRAMES)]);
+        let frames = seeded(SEED, FRAMES);
+        let (expected_refusals, _) = expected_mutation_refusals(&frames, 10_000);
+        let found = decoded("seeded", &[frames]);
         assert_eq!(found.number("mutations"), MUTATIONS);
         let outcomes = ["mutations_decoded", "mutations_errors", "mutations_panics"];
         let counted: f64 = outcomes.iter().map(|key| found.number(key)).sum();
         assert_eq!(counted, MUTATIONS);
         assert_eq!(found.value("mutations_panics"), "0");
-        // Two damages in three leave a packet of one frame, and most replaced first bytes name another length that decodes too; held to 960 samples, fewer than three in four would count.
-        assert!(found.number("mutations_decoded") > MUTATIONS * 3.0 / 4.0);
-        // One damage in three replaces the first byte, and a first byte drawn at random is refused far more often than one time in seven.
-        assert!(found.number("mutations_errors") > MUTATIONS / 20.0);
+        assert_eq!(
+            found.value("mutations_errors"),
+            expected_refusals.to_string()
+        );
+        assert_eq!(
+            found.value("mutations_decoded"),
+            (10_000_usize - expected_refusals).to_string()
+        );
         // How long a call took is this machine's and this run's: the row is a count, and no count of it is wrong.
         assert!(found.value("mutations_over_100_ms").parse::<u32>().is_ok());
         let how = row(&found.table, "mutations").1;
@@ -532,19 +538,31 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_inside_the_decoder_is_counted_and_the_decode_goes_on() {
+    fn hostile_toc_5d_mutation_seed_completes_without_panicking() {
+        let frames = seeded(PANIC_SEED, FRAMES);
+        let (expected_refusals, toc_5d) = expected_mutation_refusals(&frames, 10_000);
+        let toc_5d = toc_5d.expect("PANIC_SEED must generate a 0x5d TOC mutation");
+        assert_eq!(
+            pods_opus::Decoder::new_48k().decode(&toc_5d),
+            Err(pods_opus::Error::UnsupportedToc(0x5d))
+        );
         let oracle = stand_in(FRAMES, "exit 0");
-        let (home, analysed) = super::opus_run::analysed("panic", &[seeded(PANIC_SEED, FRAMES)]);
+        let (home, analysed) = super::opus_run::analysed("panic", &[frames]);
         let done = decode(&home, &analysed.run, Some(&oracle));
         assert!(done.status.success(), "{done:?}");
-        let said = String::from_utf8(done.stderr).unwrap();
-        assert!(said.contains("panicked at"), "{said}");
         let table = String::from_utf8(done.stdout).unwrap();
         let number = |key: &str| row(&table, key).0.parse::<f64>().unwrap();
-        assert_eq!(number("mutations_panics"), 1.0, "{table}");
-        let outcomes = ["mutations_decoded", "mutations_errors", "mutations_panics"];
-        let counted: f64 = outcomes.iter().map(|key| number(key)).sum();
-        assert_eq!(counted, MUTATIONS, "{table}");
+        assert_eq!(number("mutations_panics"), 0.0, "{table}");
+        assert_eq!(
+            row(&table, "mutations_errors").0,
+            expected_refusals.to_string(),
+            "{table}"
+        );
+        assert_eq!(
+            row(&table, "mutations_decoded").0,
+            (10_000_usize - expected_refusals).to_string(),
+            "{table}"
+        );
         assert_eq!(number("candidate_panics"), 0.0, "{table}");
         assert_eq!(names_in(&analysed.run), every_name());
     }
