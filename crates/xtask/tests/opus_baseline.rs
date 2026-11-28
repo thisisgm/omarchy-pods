@@ -379,6 +379,13 @@ mod tests {
         let pkt19 = sol_pkt19();
         let pkt19_refs: [&[u8]; 1] = [pkt19.as_slice()];
         let cap_carry_refs: [&[u8]; 1] = [BAND0_CAP_CARRY_PKT];
+        // Short 3..6 byte packets exercise the `< 15` remaining-bit coarse-energy fallback (`0, -1, +1` and `0, -1`) including stateful `old_e` carry-over.
+        let short_energy_stream: Vec<&[u8]> = vec![
+            &[0xb8, 0x00, 0x00],
+            &[0xb8, 0x20, 0x55, 0xaa],
+            &[0xb8, 0x40, 0x12, 0x34, 0x56],
+            &[0xb8, 0x10, 0xab, 0xcd, 0xef, 0x01],
+        ];
         let sol_pair: Vec<Vec<u8>> = SOL_R2_PAIR_HEX.iter().map(|h| decode_hex(h)).collect();
         let sol_pair_refs: Vec<&[u8]> = sol_pair.iter().map(Vec::as_slice).collect();
         let stress_vecs: Vec<(&str, Vec<u8>)> = STRESS_REGRESSION_HEX
@@ -399,6 +406,7 @@ mod tests {
             ("multibitrate", MULTIBITRATE_PACKETS.to_vec()),
             ("pkt19", pkt19_refs.to_vec()),
             ("band0_cap_carry", cap_carry_refs.to_vec()),
+            ("short_energy_3_6b", short_energy_stream),
             ("sol_r2_pair", sol_pair_refs),
         ];
         for (name, pkt) in &stress_vecs {

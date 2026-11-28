@@ -38,10 +38,13 @@ pub(crate) fn decode_coarse(
             let (p0, decay) = model.get(band).copied().unwrap_or((128, 64));
             ec.dec_laplace(u32::from(p0) << 7, u32::from(decay) << 6)
         } else if rem >= 2 {
-            let sym = ec.dec_icdf(&SMALL_ENERGY_ICDF, 2);
-            (-1_i32).wrapping_sub(i32::try_from(sym).unwrap_or(0))
+            match ec.dec_icdf(&SMALL_ENERGY_ICDF, 2) {
+                0 => 0,
+                1 => -1,
+                _ => 1,
+            }
         } else if rem == 1 {
-            (-1_i32).wrapping_sub(i32::try_from(ec.dec_bit_logp(1)).unwrap_or(0))
+            if ec.dec_bit_logp(1) == 0 { 0 } else { -1 }
         } else {
             -1
         };
